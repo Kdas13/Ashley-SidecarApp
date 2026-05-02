@@ -1,5 +1,4 @@
 uploads = []
-outputs = []
 
 [[generated]]
 id = "LVmns5F_AwdgVkUhMXDpD"
@@ -18,3 +17,9 @@ id = "hOJdHb25wKVxgQH63Qh4g"
 uri = "file://artifacts/mobile/assets/images/ambient_bg.png"
 type = "image"
 title = "ambient background"
+
+[[outputs]]
+id = "CrIW7d43T5xQpQfvzgiB-"
+uri = "file://.local/share/ashley_qr.png"
+type = "image"
+title = "Scan with Expo Go (Android) — Ashley-Sidecar"
