@@ -24,39 +24,72 @@ function getApiBase(): string {
 }
 
 /**
- * In Replit's dev environment the api-server is recycled every ~10 min
- * (workflow auto-restart). The cold restart takes ~3-5s of build + ~1-2s
- * of node bootstrap, so a request landing at exactly the wrong moment
- * needs to wait up to ~7s for the server to come back. During that
- * window the public proxy returns its "Run this app to see the results
- * here." placeholder HTML — typically with a 404 or 503 status.
+ * In Replit's dev environment the api-server is recycled by the workflow
+ * runner roughly every 8-12 minutes. The actual dead-window between the
+ * old instance dying and the new one accepting connections has been
+ * observed to last 30s+ in practice — much longer than the build itself
+ * (~1.5s) because the workflow runner spins up a fresh shell each time.
  *
- * This helper detects that placeholder and quietly retries with
- * exponential-ish backoff (3s, then another 5s — so ~8s total) before
- * giving up. Real 4xx/5xx JSON errors are returned untouched so callers
- * can surface the real error. If we still see the placeholder after the
- * full backoff window, we throw a clean, user-friendly Error instead of
- * letting the caller dump HTML into the chat error banner.
+ * During that window the public proxy returns its "Run this app to see
+ * the results here." placeholder HTML — typically with a 404 or 503.
+ *
+ * Strategy: when we see the placeholder, poll /api/healthz every second
+ * until the server reports 200 (or we hit the deadline), then retry the
+ * original request ONCE. This is much cleaner than blind backoff because
+ * we wait exactly as long as the outage lasts and no longer. The total
+ * deadline is ~30s — comfortably covering the observed dead-window
+ * without making the user feel like the app is hung. Real 4xx/5xx JSON
+ * errors from the api-server are returned untouched.
  */
 const PROXY_PLACEHOLDER_MARKER = "Run this app to see the results here";
-const PROXY_RETRY_DELAYS_MS = [3000, 5000];
+const HEALTH_POLL_INTERVAL_MS = 1000;
+const HEALTH_POLL_DEADLINE_MS = 30_000;
 
 async function fetchWithProxyRetry(
   url: string,
   init: RequestInit,
 ): Promise<Response> {
-  let res = await fetch(url, init);
-  for (const delay of PROXY_RETRY_DELAYS_MS) {
-    if (!(await looksLikeProxyPlaceholder(res))) return res;
-    await new Promise((r) => setTimeout(r, delay));
-    res = await fetch(url, init);
-  }
-  if (await looksLikeProxyPlaceholder(res)) {
+  const first = await fetch(url, init);
+  if (!(await looksLikeProxyPlaceholder(first))) return first;
+
+  // Server is in its restart dead-window. Wait for healthz to come back.
+  const healthUrl = healthzUrlFor(url);
+  const came_back = await waitForServerBack(healthUrl);
+  if (!came_back) {
     throw new Error(
       "Ashley's server is restarting — give it a few seconds and try again.",
     );
   }
-  return res;
+
+  // Server is back. Retry the original request once.
+  const second = await fetch(url, init);
+  if (await looksLikeProxyPlaceholder(second)) {
+    throw new Error(
+      "Ashley's server is restarting — give it a few seconds and try again.",
+    );
+  }
+  return second;
+}
+
+function healthzUrlFor(reqUrl: string): string {
+  // reqUrl is like https://<domain>/api/chat/reply — strip back to /api/healthz.
+  const idx = reqUrl.indexOf("/api/");
+  if (idx < 0) return reqUrl; // shouldn't happen; fall back, healthz will fail and we'll bail
+  return `${reqUrl.slice(0, idx)}/api/healthz`;
+}
+
+async function waitForServerBack(healthUrl: string): Promise<boolean> {
+  const deadline = Date.now() + HEALTH_POLL_DEADLINE_MS;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, HEALTH_POLL_INTERVAL_MS));
+    try {
+      const res = await fetch(healthUrl, { method: "GET" });
+      if (res.ok && !(await looksLikeProxyPlaceholder(res))) return true;
+    } catch {
+      // network blip during the restart — keep polling
+    }
+  }
+  return false;
 }
 
 async function looksLikeProxyPlaceholder(res: Response): Promise<boolean> {
