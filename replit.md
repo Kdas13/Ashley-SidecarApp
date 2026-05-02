@@ -39,6 +39,21 @@ no DB knowledge of the conversation — the phone is the source of truth.
   When `ready`, the imageUrl is patched into the existing bubble and the
   placeholder disappears. On failure, the bubble shows a tap-to-retry
   affordance with the actual error inline.
+- **Dev-server resilience.** The mobile `aiClient` wraps every POST in
+  `fetchWithProxyRetry`, which detects Replit's "Run this app to see the
+  results here." placeholder HTML (status 404/502/503 + matching body
+  marker) and retries once after 4 s. This makes the chat self-healing
+  during the brief api-server rebuild gap that happens whenever the
+  workflow recycles in dev. Real 4xx/5xx JSON errors pass through
+  untouched and are surfaced verbatim in the chat error banner along
+  with the resolved API base URL — so any future "couldn't reach Ashley"
+  is debuggable from a single screenshot.
+- **Onboarding persistence guard.** After `useUpdateProfile` mutates,
+  `onboarding.tsx` re-reads the profile from AsyncStorage and verifies
+  `onboardedAt` is set before navigating to `/`. If the write didn't
+  stick (silent storage failure), an Alert surfaces the error instead of
+  bouncing the user to chat with nothing saved. Prevents the "onboarding
+  repeats every reload" bug class.
 - No emojis in UI chrome — Feather icons only (Ashley herself uses
   emoji sparingly in her texts, that's part of her voice)
 - No camera / phone-side image upload — image flow is one-way

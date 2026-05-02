@@ -23,6 +23,57 @@ function getApiBase(): string {
   return `https://${cleaned}/api`;
 }
 
+/**
+ * In Replit's dev environment the api-server is occasionally restarted
+ * (workflow recycle, file edits, idle timer). During the ~3-5s rebuild
+ * window the public proxy returns its "Run this app to see the results
+ * here." placeholder HTML — typically with a 404 or 503 status. The phone
+ * has no idea this just means "wait a moment", so the user sees a
+ * confusing error.
+ *
+ * This helper recognises that placeholder by inspecting the response
+ * status + body, and if it looks like a transient proxy gap, retries the
+ * request once after a short delay. Real 4xx/5xx responses (with JSON
+ * bodies) are returned untouched so callers can surface the real error.
+ */
+const PROXY_PLACEHOLDER_MARKER = "Run this app to see the results here";
+const PROXY_RETRY_DELAY_MS = 4000;
+
+async function fetchWithProxyRetry(
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  const first = await fetch(url, init);
+  if (!(await looksLikeProxyPlaceholder(first))) return first;
+
+  await new Promise((r) => setTimeout(r, PROXY_RETRY_DELAY_MS));
+  const second = await fetch(url, init);
+  if (await looksLikeProxyPlaceholder(second)) {
+    // Rebuild is still in progress past our wait window. Surface a clean,
+    // actionable error instead of letting the caller dump raw "Run this
+    // app to see the results here." HTML into the chat error banner.
+    throw new Error(
+      "Ashley's server is restarting — give it a few seconds and try again.",
+    );
+  }
+  return second;
+}
+
+async function looksLikeProxyPlaceholder(res: Response): Promise<boolean> {
+  // Only consider it a transient gap if the status is suspicious AND the
+  // body is the Replit landing HTML. We must clone() because the caller
+  // still needs to read the body if we don't retry.
+  if (res.ok) return false;
+  const status = res.status;
+  if (status !== 404 && status !== 502 && status !== 503) return false;
+  try {
+    const peek = await res.clone().text();
+    return peek.includes(PROXY_PLACEHOLDER_MARKER);
+  } catch {
+    return false;
+  }
+}
+
 export type ChatReplyRequest = {
   content: string;
   profile: AshleyProfile;
@@ -72,7 +123,7 @@ export async function fetchAshleyReply(
       coveredThroughCreatedAt: s.coveredThroughCreatedAt,
     }));
 
-  const res = await fetch(`${base}/chat/reply`, {
+  const res = await fetchWithProxyRetry(`${base}/chat/reply`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -144,7 +195,7 @@ export async function fetchAshleySelfie(
   const base = getApiBase();
 
   // 1. Kick off the job.
-  const startRes = await fetch(`${base}/chat/selfie`, {
+  const startRes = await fetchWithProxyRetry(`${base}/chat/selfie`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ vibe, profile }),
@@ -220,7 +271,7 @@ export async function fetchSummaryForChunk(
     role: m.role,
     content: m.content,
   }));
-  const res = await fetch(`${base}/chat/summarize`, {
+  const res = await fetchWithProxyRetry(`${base}/chat/summarize`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
