@@ -47,7 +47,7 @@ function getApiBase(): string {
  */
 const PROXY_PLACEHOLDER_MARKER = "Run this app to see the results here";
 const RETRY_INTERVAL_MS = 2000;
-const RETRY_DEADLINE_MS = 30_000;
+const RETRY_DEADLINE_MS = 60_000;
 
 async function fetchWithProxyRetry(
   url: string,
