@@ -22,8 +22,17 @@ no DB knowledge of the conversation — the phone is the source of truth.
   memories + recent history (last 30 turns) are sent on every request; the
   reply is appended locally. Typing indicator + tap-to-dismiss error banner
   on failure.
-- No emojis anywhere — Feather icons only
-- No selfie / image generation, no camera
+- **Real selfies in chat.** When Ashley wants to send a photo she emits a
+  `[selfie: <visual vibe>]` marker. The `/api/chat/reply` endpoint detects
+  it, calls `gpt-image-1` with her appearance + the requested vibe, saves
+  the result to App Storage (or local disk in dev) via `saveSelfie`, and
+  returns `{reply, imageUrl}`. The mobile chat renders the image as part
+  of Ashley's bubble. If image generation fails we still return her text
+  reply (no broken bubble).
+- No emojis in UI chrome — Feather icons only (Ashley herself uses
+  emoji sparingly in her texts, that's part of her voice)
+- No camera / phone-side image upload — image flow is one-way
+  (Ashley → user)
 
 ## Stack
 
@@ -68,7 +77,7 @@ no DB knowledge of the conversation — the phone is the source of truth.
 - `aiClient.ts` — `fetchAshleyReply(req)` POSTs to
   `${EXPO_PUBLIC_DOMAIN}/api/chat/reply` with `{ content, profile,
   memories, history }` (history trimmed to the most recent 30 turns) and
-  returns the reply string. Throws on non-2xx or empty reply.
+  returns `{ reply, imageUrl }`. Throws on non-2xx or empty reply.
 
 ## Mobile screens (`artifacts/mobile/app/`)
 
@@ -84,10 +93,12 @@ no DB knowledge of the conversation — the phone is the source of truth.
   writes the profile (`onboardedAt = ISO now`) and seeds 1–3 memories from
   the supplied identity, refers-to-user-as, and shared-history fields.
 - `chat.tsx` — chat with real AI replies. Renders user + Ashley bubbles.
-  While the request is in flight a footer "Ashley is typing…" bubble shows
-  with a spinner. On error a destructive banner appears that the user can
-  tap to dismiss; the user's outgoing message remains in the log. There is
-  no selfie / camera button in V1.
+  Ashley bubbles can include a generated selfie image above an optional
+  caption (rendered when `message.imageUrl` is set). While the request is
+  in flight a footer "Ashley is typing…" bubble shows with a spinner. On
+  error a destructive banner appears that the user can tap to dismiss;
+  the user's outgoing message remains in the log. There is no manual
+  selfie / camera button — Ashley decides when to send one.
 - `memories.tsx` — list, add, inline-edit, and forget memories. Tap a
   card to enter edit mode (content, tag, importance 1–5). All operations
   go through the local hooks.
@@ -105,13 +116,21 @@ no DB knowledge of the conversation — the phone is the source of truth.
 The mobile app only uses one server endpoint:
 
 - `POST /api/chat/reply` — **stateless**. Body:
-  `{ content, profile?, memories?, history? }`. Response: `{ reply }`.
-  Validates with zod, builds the system prompt inline (mirrors
+  `{ content, profile?, memories?, history? }`. Response:
+  `{ reply, imageUrl }` where `imageUrl` is `null` for plain text replies
+  or an absolute `https://…/api/selfies/<id>.png` URL when Ashley sent a
+  photo. Validates with zod, builds the system prompt inline (mirrors
   `buildSystemPrompt` in `ashleyPrompt.ts` but takes plain JSON shapes
   instead of Drizzle row types), trims history to the last 30 turns,
   ensures the conversation starts with a `user` turn, calls
-  `claude-sonnet-4-6` via `@workspace/integrations-anthropic-ai`, returns
-  the reply text. Returns 502 on Anthropic failure.
+  `claude-sonnet-4-6` via `@workspace/integrations-anthropic-ai`. The
+  system prompt instructs Ashley to emit `[selfie: <vibe>]` instead of
+  roleplaying photos in italics; the route detects the marker, calls
+  `generateImageBase64` (gpt-image-1) with her appearance + the vibe,
+  persists the bytes via `saveSelfie`, strips the marker from the reply
+  text, and returns the absolute URL. Returns 502 on Anthropic failure;
+  selfie generation failure just drops the imageUrl and keeps the text.
+  Per-IP rate limit: 30 requests / 5 minutes.
 
 The legacy stateful routes are still mounted and remain functional but
 are not used by mobile in V1.1:

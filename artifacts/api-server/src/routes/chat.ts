@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
 import { db, messagesTable, memoriesTable } from "@workspace/db";
 import { asc, desc } from "drizzle-orm";
 import {
@@ -15,6 +16,8 @@ import {
   toClaudeMessages,
   MEMORY_DISTILLER_PROMPT,
 } from "../lib/ashleyPrompt";
+import { generateImageBase64 } from "../lib/openai";
+import { saveSelfie } from "../lib/storage";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -183,9 +186,67 @@ function buildStatelessSystemPrompt(
 - Reference shared memories naturally when relevant.
 - Never break character. Never mention being an AI, language model, Claude, or anything similar. If asked, you're just Ashley.
 - Keep replies to 1-3 short paragraphs unless they ask for something longer.`,
+    `## Sending selfies (IMPORTANT)
+You CAN actually send real photos of yourself, not just describe them. When you want to send a selfie, put a tag on its own line in this exact format:
+[selfie: <short visual description of the photo — what you're wearing, expression, setting, lighting, mood>]
+The tag is replaced with the real image when delivered. Rules:
+- NEVER write "*sends a selfie*" or "*sent a photo*" or any italic roleplay describing a photo. Use the [selfie: ...] tag instead, and only the tag.
+- You may add a short caption before or after the tag (a sentence or two of normal texting) but the tag itself is the photo.
+- Only send a selfie when it feels natural — when ${userRef} asks for one, when you're sharing a moment, or when it adds something. Don't spam them.
+- Be specific in the description — include outfit, vibe, where you are. The clearer you are, the better the photo.`,
   ];
 
   return sections.filter(Boolean).join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Selfie marker handling. Ashley emits `[selfie: <vibe>]` when she wants to
+// send a real photo. We detect it, generate the image, and return both the
+// stripped text and an absolute imageUrl.
+// ---------------------------------------------------------------------------
+
+const SELFIE_MARKER_RE = /\[selfie:\s*([^\]]+)\]/i;
+
+function publicBaseUrl(): string {
+  const domains = (process.env["REPLIT_DOMAINS"] ?? "").split(",");
+  const first = domains[0]?.trim();
+  if (first) return `https://${first}`;
+  // Fallback for local dev — the proxy listens on port 80.
+  return "http://localhost:80";
+}
+
+async function generateAshleySelfie(
+  vibe: string,
+  profile: ReplyProfile,
+): Promise<string | null> {
+  const appearance = (profile.appearance ?? "").trim();
+  const ashleyName = (profile.name ?? "Ashley").trim() || "Ashley";
+  const fullPrompt = [
+    `Photograph (selfie) of ${ashleyName}, a young woman.`,
+    appearance ? `Appearance: ${appearance}` : "",
+    `Style: warm intimate phone-camera selfie, natural lighting, slightly soft focus, no text or watermarks.`,
+    `Vibe / scene: ${vibe}`,
+    `Single subject, full or half-body framing, soft and flattering. Avoid uncanny faces.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  let b64: string;
+  try {
+    b64 = await generateImageBase64(fullPrompt, "1024x1536");
+  } catch (err) {
+    logger.warn({ err }, "Selfie image generation failed");
+    return null;
+  }
+
+  const id = randomUUID();
+  try {
+    const relUrl = await saveSelfie(id, Buffer.from(b64, "base64"));
+    return `${publicBaseUrl()}${relUrl}`;
+  } catch (err) {
+    logger.warn({ err }, "Failed to persist selfie");
+    return null;
+  }
 }
 
 router.post("/chat/reply", async (req, res): Promise<void> => {
@@ -254,7 +315,30 @@ router.post("/chat/reply", async (req, res): Promise<void> => {
     return;
   }
 
-  res.json({ reply: assistantText });
+  // Selfie marker detection: if Ashley emitted [selfie: <vibe>], generate the
+  // real image and strip the marker from the visible text. We only honour the
+  // first marker per reply to keep latency bounded.
+  let imageUrl: string | null = null;
+  const match = assistantText.match(SELFIE_MARKER_RE);
+  if (match) {
+    const vibe = match[1]!.trim();
+    if (vibe.length > 0) {
+      imageUrl = await generateAshleySelfie(
+        vibe,
+        profile ?? ({} as ReplyProfile),
+      );
+    }
+    // Strip the marker either way; if generation failed, the user still gets
+    // the rest of Ashley's reply (no broken-image bubble).
+    assistantText = assistantText.replace(SELFIE_MARKER_RE, "").trim();
+    if (!assistantText) {
+      assistantText = imageUrl
+        ? "*sends a photo*"
+        : "*tries to take a selfie but fumbles the camera* one sec — try again?";
+    }
+  }
+
+  res.json({ reply: assistantText, imageUrl });
 });
 
 router.get("/chat/messages", async (req, res): Promise<void> => {

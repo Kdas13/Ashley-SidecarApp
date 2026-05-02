@@ -23,9 +23,14 @@ export type ChatReplyRequest = {
   history: Message[];
 };
 
+export type AshleyReply = {
+  reply: string;
+  imageUrl: string | null;
+};
+
 export async function fetchAshleyReply(
   req: ChatReplyRequest,
-): Promise<string> {
+): Promise<AshleyReply> {
   const base = getApiBase();
   const trimmedHistory = req.history.slice(-HISTORY_WINDOW).map((m) => ({
     role: m.role,
@@ -55,9 +60,16 @@ export async function fetchAshleyReply(
     );
   }
 
-  const data = (await res.json()) as { reply?: unknown };
+  const data = (await res.json()) as {
+    reply?: unknown;
+    imageUrl?: unknown;
+  };
   if (typeof data.reply !== "string" || !data.reply.trim()) {
     throw new Error("Ashley's brain returned an empty reply.");
   }
-  return data.reply.trim();
+  const imageUrl =
+    typeof data.imageUrl === "string" && data.imageUrl.trim().length > 0
+      ? data.imageUrl
+      : null;
+  return { reply: data.reply.trim(), imageUrl };
 }

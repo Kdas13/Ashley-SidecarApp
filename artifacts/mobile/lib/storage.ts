@@ -41,6 +41,12 @@ export type Message = {
   role: "user" | "ashley";
   content: string;
   createdAt: string;
+  /**
+   * When Ashley sends a real selfie, this is set to the absolute URL of the
+   * generated image. The text in `content` is the caption (or empty marker
+   * fallback like "*sends a photo*").
+   */
+  imageUrl?: string | null;
 };
 
 export const DEFAULT_PROFILE: AshleyProfile = {

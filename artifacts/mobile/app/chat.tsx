@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -192,22 +193,36 @@ export default function ChatScreen(): React.JSX.Element {
 
 function MessageBubble({ message }: { message: Message }): React.JSX.Element {
   const isUser = message.role === "user";
+  const hasImage = !!message.imageUrl;
+  const hasText = !!message.content && message.content.trim().length > 0;
   return (
     <View style={[styles.row, isUser ? styles.rowRight : styles.rowLeft]}>
       <View
         style={[
           styles.bubble,
           isUser ? styles.bubbleUser : styles.bubbleAshley,
+          hasImage && styles.bubbleWithImage,
         ]}
       >
-        <Text
-          style={[
-            styles.bubbleText,
-            isUser ? styles.bubbleUserText : styles.bubbleAshleyText,
-          ]}
-        >
-          {message.content}
-        </Text>
+        {hasImage ? (
+          <Image
+            source={{ uri: message.imageUrl! }}
+            style={styles.bubbleImage}
+            resizeMode="cover"
+            accessibilityLabel="Selfie from Ashley"
+          />
+        ) : null}
+        {hasText ? (
+          <Text
+            style={[
+              styles.bubbleText,
+              isUser ? styles.bubbleUserText : styles.bubbleAshleyText,
+              hasImage && styles.bubbleTextWithImage,
+            ]}
+          >
+            {message.content}
+          </Text>
+        ) : null}
       </View>
     </View>
   );
@@ -276,6 +291,23 @@ const styles = StyleSheet.create({
   },
   bubbleUserText: { color: colors.light.bubbleUserText },
   bubbleAshleyText: { color: colors.light.bubbleAshleyText },
+  bubbleWithImage: {
+    paddingHorizontal: 4,
+    paddingTop: 4,
+    paddingBottom: 6,
+    overflow: "hidden",
+  },
+  bubbleImage: {
+    width: 240,
+    height: 320,
+    borderRadius: 14,
+    backgroundColor: "rgba(0,0,0,0.2)",
+  },
+  bubbleTextWithImage: {
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 2,
+  },
   emptyWrap: {
     flex: 1,
     alignItems: "center",

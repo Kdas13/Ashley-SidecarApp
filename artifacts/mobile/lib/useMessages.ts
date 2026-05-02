@@ -74,9 +74,9 @@ export function useSendMessage() {
         loadMemories(),
       ]);
 
-      let replyText: string;
+      let reply: { reply: string; imageUrl: string | null };
       try {
-        replyText = await fetchAshleyReply({
+        reply = await fetchAshleyReply({
           content,
           profile,
           memories,
@@ -91,8 +91,9 @@ export function useSendMessage() {
       const ashleyMessage: Message = {
         id: newId(),
         role: "ashley",
-        content: replyText,
+        content: reply.reply,
         createdAt: new Date().toISOString(),
+        imageUrl: reply.imageUrl,
       };
       // Abort if the conversation was cleared (or a newer turn was appended)
       // while we were waiting on Claude.
