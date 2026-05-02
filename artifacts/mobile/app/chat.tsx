@@ -25,6 +25,13 @@ import {
 import type { Message, ReplyToRef } from "@/lib/storage";
 import colors from "@/constants/colors";
 import { SwipeToReply } from "@/components/SwipeToReply";
+// Gesture-aware Pressable from react-native-gesture-handler. We need this
+// (instead of RN's built-in Pressable) for buttons that live INSIDE the
+// SwipeToReply swipeable — RN's responder system loses to gesture-handler's
+// native pan, so taps on a regular <Pressable> inside the bubble never
+// reach onPress. The gesture-handler version cooperates with parent
+// gesture handlers and fires reliably.
+import { Pressable as GHPressable } from "react-native-gesture-handler";
 
 // Maximum length of the quote preview we capture from a swiped message.
 // Keeps storage and the on-screen quote header from getting unwieldy.
@@ -378,7 +385,7 @@ function MessageBubble({
           </View>
         ) : null}
         {pendingSelfieVibe && !showImage && !imageFailed ? (
-          <Pressable
+          <GHPressable
             onPress={retryingThis ? undefined : onRetrySelfie}
             style={styles.selfiePending}
             accessibilityLabel={
@@ -404,7 +411,7 @@ function MessageBubble({
                 ? "taking a selfie…"
                 : "couldn't send the photo — tap to retry"}
             </Text>
-          </Pressable>
+          </GHPressable>
         ) : null}
         {hasText ? (
           <Text
