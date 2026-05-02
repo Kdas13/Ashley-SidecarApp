@@ -12,18 +12,30 @@ import { router } from "expo-router";
 
 import { AmbientBackground } from "@/components/AmbientBackground";
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
-import { useProfile } from "@/lib/useProfile";
+import { useProfile, useUpdateProfile } from "@/lib/useProfile";
 import colors from "@/constants/colors";
 
 export default function HomeScreen(): React.JSX.Element {
   const insets = useSafeAreaInsets();
   const profileQuery = useProfile();
+  const update = useUpdateProfile();
 
+  // Auto-onboard with defaults the first time the profile loads without an
+  // onboardedAt timestamp. Expo Go's AsyncStorage scope can change between
+  // dev sessions on Replit (different cluster / experience URL → different
+  // namespace), which makes a multi-step onboarding wall feel like the user
+  // is forced to redo it on every reload. Skipping straight to chat means
+  // the user can refine Ashley's details from the settings screen at their
+  // own pace, and reloads land them back in chat in ~1s.
   useEffect(() => {
-    if (profileQuery.data && !profileQuery.data.onboardedAt) {
-      router.replace("/onboarding");
+    if (
+      profileQuery.data &&
+      !profileQuery.data.onboardedAt &&
+      !update.isPending
+    ) {
+      update.mutate({ markOnboarded: true });
     }
-  }, [profileQuery.data]);
+  }, [profileQuery.data, update]);
 
   const profile = profileQuery.data;
   const greeting = greetingForHour(new Date().getHours());
