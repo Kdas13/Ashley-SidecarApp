@@ -1,12 +1,13 @@
 # Ashley-Sidecar
 
 A personal AI companion mobile app (Expo / React Native, targeting Expo Go on
-Android). The current shipped scope is **V1 — local-first**: everything runs
-on-device with no backend dependency and no AI calls. The API server and
-database schema are kept in the repo as scaffolding for a future "AI on" mode
-but are not contacted by the mobile app.
+Android). The shipped scope is **V1.1 — local-first with stateless AI chat**:
+profile, memories, and chat messages all live on the device in AsyncStorage;
+the only thing the API server does for the mobile app is run a single
+stateless Claude call per outgoing message and return the reply. Server has
+no DB knowledge of the conversation — the phone is the source of truth.
 
-## V1 scope (what ships today)
+## V1.1 scope (what ships today)
 
 - Expo shell with Expo Router
 - Animated avatar (`AnimatedAvatar`) on an ambient indigo / amber / violet
@@ -16,8 +17,11 @@ but are not contacted by the mobile app.
 - Local profile storage and profile editor
 - Local long-term memory store with full CRUD (add, edit, delete, importance
   stars, single tag)
-- Chat screen as a placeholder UI: messages persist locally, a small banner
-  reads "replies will arrive once AI is connected", no AI call is made
+- Chat with real Ashley replies via stateless `POST /api/chat/reply`
+  (Anthropic Claude through the Replit AI Integrations proxy). Profile +
+  memories + recent history (last 30 turns) are sent on every request; the
+  reply is appended locally. Typing indicator + tap-to-dismiss error banner
+  on failure.
 - No emojis anywhere — Feather icons only
 - No selfie / image generation, no camera
 
@@ -30,9 +34,11 @@ but are not contacted by the mobile app.
   unreachable).
 - **Local storage**: `@react-native-async-storage/async-storage` (uses
   `localStorage` on the web preview).
-- **API server (dormant)**: Express 5 + Pino, Drizzle ORM (Postgres),
-  generated React Query hooks + Zod schemas from a single OpenAPI spec.
-  Kept running as scaffolding; the mobile app does not call it in V1.
+- **API server**: Express 5 + Pino, Drizzle ORM (Postgres), generated
+  React Query hooks + Zod schemas from a single OpenAPI spec. Mobile only
+  calls the new stateless `POST /api/chat/reply`; the legacy stateful
+  `/api/chat/messages` + `/api/memories` + `/api/profile` + `/api/image/selfie`
+  routes remain available for future server-backed mode.
 
 ## Artifacts
 
@@ -54,8 +60,15 @@ but are not contacted by the mobile app.
   which the home screen uses to gate the redirect to onboarding.
 - `useMemories.ts` — `useMemories()`, `useCreateMemory()`,
   `useUpdateMemory()`, `useDeleteMemory()`. IDs are strings (`newId()`).
-- `useMessages.ts` — `useMessages()`, `useSendMessage()` (appends a
-  user-only message; no AI reply yet), `useClearMessages()`.
+- `useMessages.ts` — `useMessages()`, `useSendMessage()`, and
+  `useClearMessages()`. `useSendMessage` appends the user message
+  locally, calls `fetchAshleyReply` with the current profile + memories +
+  prior history, then appends Ashley's reply locally. On error the user
+  message stays in the log and the error surfaces via `mutation.error`.
+- `aiClient.ts` — `fetchAshleyReply(req)` POSTs to
+  `${EXPO_PUBLIC_DOMAIN}/api/chat/reply` with `{ content, profile,
+  memories, history }` (history trimmed to the most recent 30 turns) and
+  returns the reply string. Throws on non-2xx or empty reply.
 
 ## Mobile screens (`artifacts/mobile/app/`)
 
@@ -70,10 +83,11 @@ but are not contacted by the mobile app.
   (4) what Ashley calls the user, (5) optional shared history. On finish it
   writes the profile (`onboardedAt = ISO now`) and seeds 1–3 memories from
   the supplied identity, refers-to-user-as, and shared-history fields.
-- `chat.tsx` — placeholder chat. Renders user bubbles only. Empty state
-  reads "say something to her". A small banner reads "replies will arrive
-  once AI is connected." Send is local-only; no network call. There is no
-  selfie / camera button in V1.
+- `chat.tsx` — chat with real AI replies. Renders user + Ashley bubbles.
+  While the request is in flight a footer "Ashley is typing…" bubble shows
+  with a spinner. On error a destructive banner appears that the user can
+  tap to dismiss; the user's outgoing message remains in the log. There is
+  no selfie / camera button in V1.
 - `memories.tsx` — list, add, inline-edit, and forget memories. Tap a
   card to enter edit mode (content, tag, importance 1–5). All operations
   go through the local hooks.
@@ -86,28 +100,42 @@ but are not contacted by the mobile app.
 - `lib/api.ts` — the absolute-URL API base helper; mobile no longer
   speaks to the backend.
 
-## Backend (dormant — kept for future AI-on mode)
+## Backend
 
-The Express routes, Drizzle schema, and OpenAPI spec are untouched and
-documented for the future:
+The mobile app only uses one server endpoint:
+
+- `POST /api/chat/reply` — **stateless**. Body:
+  `{ content, profile?, memories?, history? }`. Response: `{ reply }`.
+  Validates with zod, builds the system prompt inline (mirrors
+  `buildSystemPrompt` in `ashleyPrompt.ts` but takes plain JSON shapes
+  instead of Drizzle row types), trims history to the last 30 turns,
+  ensures the conversation starts with a `user` turn, calls
+  `claude-sonnet-4-6` via `@workspace/integrations-anthropic-ai`, returns
+  the reply text. Returns 502 on Anthropic failure.
+
+The legacy stateful routes are still mounted and remain functional but
+are not used by mobile in V1.1:
 
 - `GET/PUT /api/profile`, `GET/POST/DELETE /api/chat/messages`,
   `GET/POST/PATCH/DELETE /api/memories`, `POST /api/image/selfie`.
 - Schema: `lib/db/src/schema/ashley.ts` (`ashley_profile`, `messages`,
   `memories`).
-- Spec: `lib/api-spec/openapi.yaml`. Codegen:
+- Spec: `lib/api-spec/openapi.yaml`. The new `/chat/reply` endpoint is
+  intentionally **not** in the OpenAPI spec — it is a thin internal
+  helper, not part of the public API contract. Add it to the spec if/when
+  a non-mobile client needs it. Codegen:
   `pnpm --filter @workspace/api-spec run codegen`.
-
-When AI is enabled in a future version, the mobile hooks in
-`artifacts/mobile/lib/` are the swap point: each `useX` hook can be
-re-implemented against the generated React Query client without touching
-the screens.
 
 ## Environment
 
-- `DATABASE_URL` — provisioned Postgres (used only by the dormant backend).
+- `DATABASE_URL` — provisioned Postgres (used by the legacy stateful
+  routes; not touched by V1.1 mobile flow).
 - `SESSION_SECRET` — backend session secret.
-- AI integration env vars (Anthropic, OpenAI) are **not required** for V1.
+- `AI_INTEGRATIONS_ANTHROPIC_BASE_URL` + `AI_INTEGRATIONS_ANTHROPIC_API_KEY`
+  — Replit AI Integrations proxy creds, required for `/api/chat/reply`.
+- `EXPO_PUBLIC_DOMAIN` — set automatically by the mobile dev script from
+  `$REPLIT_DEV_DOMAIN`; the AI client builds `https://${EXPO_PUBLIC_DOMAIN}/api/chat/reply`
+  from it.
 
 ## Workflows
 
@@ -124,5 +152,6 @@ the screens.
   app on a phone, where it renders normally.
 - Storage is per-device. Clearing app data (or `localStorage` on web)
   resets the profile and triggers onboarding again.
-- Chat in V1 only stores the user's outgoing messages; Ashley does not
-  reply until the AI hookup is added in a follow-up version.
+- AI replies require the api-server to be reachable on the same Replit
+  domain as the Expo dev server. In production deployments both are
+  served behind the same proxy automatically.

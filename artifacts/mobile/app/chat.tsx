@@ -37,17 +37,21 @@ export default function ChatScreen(): React.JSX.Element {
     [messagesQuery.data],
   );
 
+  const sendError =
+    sendMutation.error instanceof Error ? sendMutation.error.message : null;
+
   useEffect(() => {
-    if (messages.length === 0) return;
+    if (messages.length === 0 && !sendMutation.isPending) return;
     requestAnimationFrame(() => {
       listRef.current?.scrollToEnd({ animated: true });
     });
-  }, [messages.length]);
+  }, [messages.length, sendMutation.isPending]);
 
   const send = useCallback(() => {
     const content = draft.trim();
     if (!content || sendMutation.isPending) return;
     setDraft("");
+    sendMutation.reset();
     sendMutation.mutate(content);
   }, [draft, sendMutation]);
 
@@ -119,22 +123,41 @@ export default function ChatScreen(): React.JSX.Element {
                 </Text>
               </View>
             }
+            ListFooterComponent={
+              sendMutation.isPending ? (
+                <View style={[styles.row, styles.rowLeft]}>
+                  <View style={[styles.bubble, styles.bubbleAshley, styles.typingBubble]}>
+                    <ActivityIndicator
+                      size="small"
+                      color={colors.light.mutedForeground}
+                    />
+                    <Text style={styles.typingText}>Ashley is typing…</Text>
+                  </View>
+                </View>
+              ) : null
+            }
             onContentSizeChange={() =>
               listRef.current?.scrollToEnd({ animated: false })
             }
           />
         )}
 
-        <View style={styles.placeholderBanner}>
-          <Feather
-            name="info"
-            size={12}
-            color={colors.light.mutedForeground}
-          />
-          <Text style={styles.placeholderText}>
-            replies will arrive once AI is connected
-          </Text>
-        </View>
+        {sendError ? (
+          <Pressable
+            onPress={() => sendMutation.reset()}
+            style={styles.errorBanner}
+            accessibilityLabel="Dismiss error"
+          >
+            <Feather
+              name="alert-circle"
+              size={12}
+              color={colors.light.destructiveForeground}
+            />
+            <Text style={styles.errorText} numberOfLines={2}>
+              couldn't reach Ashley — tap to dismiss
+            </Text>
+          </Pressable>
+        ) : null}
 
         <View style={[styles.inputBar, { paddingBottom: insets.bottom + 8 }]}>
           <TextInput
@@ -272,19 +295,30 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textAlign: "center",
   },
-  placeholderBanner: {
+  typingBubble: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  typingText: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_400Regular",
+    fontSize: 13,
+    fontStyle: "italic",
+  },
+  errorBanner: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
-    paddingVertical: 6,
+    paddingVertical: 8,
     paddingHorizontal: 12,
-    backgroundColor: "rgba(245, 232, 216, 0.04)",
+    backgroundColor: colors.light.destructive,
   },
-  placeholderText: {
-    color: colors.light.mutedForeground,
-    fontFamily: "Inter_400Regular",
-    fontSize: 11,
+  errorText: {
+    color: colors.light.destructiveForeground,
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
   },
   inputBar: {
     flexDirection: "row",
