@@ -58,6 +58,24 @@ export type Message = {
    * Cleared once the photo successfully arrives.
    */
   selfieVibe?: string | null;
+  /**
+   * When this message was sent as a reply to a specific earlier message,
+   * `replyTo` captures a snippet of that message so the bubble can show a
+   * quoted-reply header. We only store a small preview (not the full text
+   * or id of the original) — the original message stays where it is in the
+   * timeline and is not duplicated.
+   */
+  replyTo?: ReplyToRef | null;
+};
+
+/** Lightweight quote of an earlier message attached to a reply. */
+export type ReplyToRef = {
+  /** Original message id, used by the UI to scroll/highlight on tap (future). */
+  id: string;
+  /** Author of the quoted message. */
+  role: "user" | "ashley";
+  /** Trimmed preview of the original message (max ~140 chars). */
+  preview: string;
 };
 
 // Rolling narrative summary of an older chunk of messages.  Once the live

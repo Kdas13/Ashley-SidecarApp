@@ -14,6 +14,7 @@ import {
   type AshleyProfile,
   type ConversationSummary,
   type Message,
+  type ReplyToRef,
 } from "./storage";
 import {
   fetchAshleyReply,
@@ -77,12 +78,19 @@ export type SendMessageResult = {
 export function useSendMessage() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (content: string): Promise<SendMessageResult> => {
+    mutationFn: async (
+      arg: string | { content: string; replyTo?: ReplyToRef | null },
+    ): Promise<SendMessageResult> => {
+      // Accept either a bare string (no quote) or an object with replyTo.
+      const content = typeof arg === "string" ? arg : arg.content;
+      const replyTo = typeof arg === "string" ? null : arg.replyTo ?? null;
+
       const userMessage: Message = {
         id: newId(),
         role: "user",
         content,
         createdAt: new Date().toISOString(),
+        replyTo,
       };
       const afterUser = await appendMessage(userMessage);
       qc.setQueryData(MESSAGES_KEY, afterUser);
@@ -105,6 +113,7 @@ export function useSendMessage() {
           memories,
           summaries,
           history: afterUser.slice(0, -1),
+          replyTo,
         });
       } catch (err) {
         const message =

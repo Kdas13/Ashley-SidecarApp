@@ -3,6 +3,7 @@ import type {
   ConversationSummary,
   Memory,
   Message,
+  ReplyToRef,
 } from "./storage";
 
 const HISTORY_WINDOW = 30;
@@ -28,6 +29,8 @@ export type ChatReplyRequest = {
   memories: Memory[];
   summaries: ConversationSummary[];
   history: Message[];
+  /** When the user swiped-to-reply on an earlier message, surfaces it. */
+  replyTo?: ReplyToRef | null;
 };
 
 export type AshleyReply = {
@@ -78,6 +81,16 @@ export async function fetchAshleyReply(
       memories,
       summaries,
       history: trimmedHistory,
+      // Only send a quoted-reply ref when one is set; the server treats it
+      // as optional and will inject the quote into Claude's prompt.
+      ...(req.replyTo
+        ? {
+            replyTo: {
+              role: req.replyTo.role,
+              preview: req.replyTo.preview,
+            },
+          }
+        : {}),
     }),
   });
 

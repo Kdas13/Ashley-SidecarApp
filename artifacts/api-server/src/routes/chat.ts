@@ -116,6 +116,13 @@ const ReplySummarySchema = z.object({
   coveredThroughCreatedAt: z.string().optional().default(""),
 });
 
+const MAX_REPLY_PREVIEW_LEN = 280;
+
+const ReplyToSchema = z.object({
+  role: z.enum(["user", "ashley"]),
+  preview: z.string().min(1).max(MAX_REPLY_PREVIEW_LEN),
+});
+
 const ChatReplyBodySchema = z.object({
   content: z.string().min(1).max(MAX_CONTENT_LEN),
   profile: ReplyProfileSchema.optional(),
@@ -134,6 +141,13 @@ const ChatReplyBodySchema = z.object({
     .max(MAX_HISTORY_TURNS_INPUT)
     .optional()
     .default([]),
+  /**
+   * Set when the user is replying to a specific earlier message via the
+   * swipe-to-reply gesture. We don't echo this back to the client — it's
+   * used solely to inject a quoted-context line into the prompt so Ashley
+   * knows which past message the user is responding to.
+   */
+  replyTo: ReplyToSchema.optional(),
 });
 
 // Tiny in-memory per-IP token bucket. 30 requests / 5 minutes is plenty for a
@@ -315,11 +329,27 @@ router.post("/chat/reply", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const { content, profile, memories, summaries, history } = parsed.data;
+  const { content, profile, memories, summaries, history, replyTo } =
+    parsed.data;
   const userContent = content.trim();
   if (!userContent) {
     res.status(400).json({ error: "content is required" });
     return;
+  }
+
+  // If the user swiped-to-reply on a specific earlier message, prepend a
+  // short quoted-context line so Ashley knows which message is being
+  // responded to. We use a `>` prefix per markdown convention; Claude
+  // handles this naturally and won't echo it back as part of her own
+  // reply unless instructed to.
+  let userTurnText = userContent;
+  if (replyTo) {
+    const previewClean = replyTo.preview.replace(/\s+/g, " ").trim();
+    if (previewClean) {
+      const refersToOriginalAuthor =
+        replyTo.role === "ashley" ? "your earlier message" : "my earlier message";
+      userTurnText = `> Replying to ${refersToOriginalAuthor}: "${previewClean}"\n\n${userContent}`;
+    }
   }
 
   const systemPrompt = buildStatelessSystemPrompt(
@@ -343,8 +373,8 @@ router.post("/chat/reply", async (req, res): Promise<void> => {
   while (claudeMessages.length > 0 && claudeMessages[0]!.role !== "user") {
     claudeMessages.shift();
   }
-  // Append the new user turn.
-  claudeMessages.push({ role: "user", content: userContent });
+  // Append the new user turn (with reply quote prefixed when applicable).
+  claudeMessages.push({ role: "user", content: userTurnText });
 
   let assistantText = "";
   try {

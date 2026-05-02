@@ -22,12 +22,35 @@ import {
   useClearMessages,
   useRetrySelfie,
 } from "@/lib/useMessages";
-import type { Message } from "@/lib/storage";
+import type { Message, ReplyToRef } from "@/lib/storage";
 import colors from "@/constants/colors";
+import { SwipeToReply } from "@/components/SwipeToReply";
+
+// Maximum length of the quote preview we capture from a swiped message.
+// Keeps storage and the on-screen quote header from getting unwieldy.
+const REPLY_PREVIEW_MAX = 140;
+
+function buildReplyPreview(message: Message): ReplyToRef {
+  const raw = (message.content ?? "").trim();
+  // If the swiped message is a photo with no caption, surface a friendly
+  // placeholder so the quote bar isn't blank.
+  const text = raw.length > 0 ? raw : message.imageUrl ? "Photo" : "Message";
+  const collapsed = text.replace(/\s+/g, " ");
+  const preview =
+    collapsed.length > REPLY_PREVIEW_MAX
+      ? `${collapsed.slice(0, REPLY_PREVIEW_MAX - 1).trimEnd()}…`
+      : collapsed;
+  return { id: message.id, role: message.role, preview };
+}
 
 export default function ChatScreen(): React.JSX.Element {
   const insets = useSafeAreaInsets();
   const [draft, setDraft] = useState("");
+  // When the user swipes a bubble, we stash a quote reference here. The
+  // input bar grows to show the preview + an X to dismiss; sending the
+  // next message attaches the quote and clears this state.
+  const [replyingTo, setReplyingTo] = useState<ReplyToRef | null>(null);
+  const inputRef = useRef<TextInput>(null);
   const listRef = useRef<FlatList<Message>>(null);
 
   const messagesQuery = useMessages();
@@ -49,13 +72,28 @@ export default function ChatScreen(): React.JSX.Element {
     });
   }, [messages.length, sendMutation.isPending]);
 
+  // Triggered when SwipeToReply commits inside a bubble. Captures a quote
+  // preview, focuses the input so the keyboard stays up, and replaces any
+  // previous in-progress quote.
+  const handleStartReply = useCallback((message: Message) => {
+    setReplyingTo(buildReplyPreview(message));
+    // Slight delay so the keyboard doesn't fight the gesture's spring.
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, []);
+
+  const cancelReply = useCallback(() => {
+    setReplyingTo(null);
+  }, []);
+
   const send = useCallback(() => {
     const content = draft.trim();
     if (!content || sendMutation.isPending) return;
+    const replyToSnapshot = replyingTo;
     setDraft("");
+    setReplyingTo(null);
     sendMutation.reset();
-    sendMutation.mutate(content);
-  }, [draft, sendMutation]);
+    sendMutation.mutate({ content, replyTo: replyToSnapshot });
+  }, [draft, sendMutation, replyingTo]);
 
   const confirmClear = useCallback(() => {
     if (clearMutation.isPending) return;
@@ -74,8 +112,10 @@ export default function ChatScreen(): React.JSX.Element {
   }, [clearMutation]);
 
   const renderItem = useCallback(
-    ({ item }: { item: Message }) => <MessageBubble message={item} />,
-    [],
+    ({ item }: { item: Message }) => (
+      <MessageBubble message={item} onSwipeReply={handleStartReply} />
+    ),
+    [handleStartReply],
   );
 
   return (
@@ -161,11 +201,36 @@ export default function ChatScreen(): React.JSX.Element {
           </Pressable>
         ) : null}
 
+        {replyingTo ? (
+          <View style={styles.replyPreview}>
+            <View style={styles.replyAccent} />
+            <View style={styles.replyTextWrap}>
+              <Text style={styles.replyAuthor}>
+                Replying to {replyingTo.role === "ashley" ? "Ashley" : "you"}
+              </Text>
+              <Text style={styles.replyBody} numberOfLines={2}>
+                {replyingTo.preview}
+              </Text>
+            </View>
+            <Pressable
+              onPress={cancelReply}
+              style={styles.replyDismissBtn}
+              accessibilityLabel="Cancel reply"
+              hitSlop={8}
+            >
+              <Feather name="x" size={16} color={colors.light.mutedForeground} />
+            </Pressable>
+          </View>
+        ) : null}
+
         <View style={[styles.inputBar, { paddingBottom: insets.bottom + 8 }]}>
           <TextInput
+            ref={inputRef}
             value={draft}
             onChangeText={setDraft}
-            placeholder="message her..."
+            placeholder={
+              replyingTo ? "reply to her..." : "message her..."
+            }
             placeholderTextColor={colors.light.mutedForeground}
             style={styles.input}
             multiline
@@ -192,7 +257,13 @@ export default function ChatScreen(): React.JSX.Element {
   );
 }
 
-function MessageBubble({ message }: { message: Message }): React.JSX.Element {
+function MessageBubble({
+  message,
+  onSwipeReply,
+}: {
+  message: Message;
+  onSwipeReply: (m: Message) => void;
+}): React.JSX.Element {
   const isUser = message.role === "user";
   const hasImage = !!message.imageUrl;
   const hasText = !!message.content && message.content.trim().length > 0;
@@ -211,7 +282,16 @@ function MessageBubble({ message }: { message: Message }): React.JSX.Element {
     if (pendingSelfieVibe) void retry(message.id, pendingSelfieVibe);
   }, [retry, message.id, pendingSelfieVibe]);
 
-  return (
+  // User bubbles sit on the right and reveal the reply hint by being
+  // dragged left; Ashley bubbles do the opposite. Mirrors iMessage.
+  const swipeDirection: "left" | "right" = isUser ? "left" : "right";
+  const handleSwipe = useCallback(() => {
+    onSwipeReply(message);
+  }, [onSwipeReply, message]);
+
+  const quoted = message.replyTo;
+
+  const bubbleContent = (
     <View style={[styles.row, isUser ? styles.rowRight : styles.rowLeft]}>
       <View
         style={[
@@ -220,6 +300,44 @@ function MessageBubble({ message }: { message: Message }): React.JSX.Element {
           (showImage || pendingSelfieVibe) && styles.bubbleWithImage,
         ]}
       >
+        {quoted ? (
+          <View
+            style={[
+              styles.quotedHeader,
+              isUser ? styles.quotedHeaderUser : styles.quotedHeaderAshley,
+            ]}
+          >
+            <View
+              style={[
+                styles.quotedAccent,
+                isUser
+                  ? styles.quotedAccentUser
+                  : styles.quotedAccentAshley,
+              ]}
+            />
+            <View style={styles.quotedTextWrap}>
+              <Text
+                style={[
+                  styles.quotedAuthor,
+                  isUser
+                    ? styles.quotedAuthorUser
+                    : styles.quotedAuthorAshley,
+                ]}
+              >
+                {quoted.role === "ashley" ? "Ashley" : "You"}
+              </Text>
+              <Text
+                style={[
+                  styles.quotedBody,
+                  isUser ? styles.quotedBodyUser : styles.quotedBodyAshley,
+                ]}
+                numberOfLines={2}
+              >
+                {quoted.preview}
+              </Text>
+            </View>
+          </View>
+        ) : null}
         {showImage ? (
           <Image
             source={{ uri: message.imageUrl! }}
@@ -301,6 +419,12 @@ function MessageBubble({ message }: { message: Message }): React.JSX.Element {
         ) : null}
       </View>
     </View>
+  );
+
+  return (
+    <SwipeToReply direction={swipeDirection} onTrigger={handleSwipe}>
+      {bubbleContent}
+    </SwipeToReply>
   );
 }
 
@@ -423,6 +547,75 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontStyle: "italic",
   },
+  replyPreview: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: "rgba(122, 92, 255, 0.12)",
+    borderTopWidth: 1,
+    borderTopColor: colors.light.border,
+  },
+  replyAccent: {
+    width: 3,
+    alignSelf: "stretch",
+    borderRadius: 2,
+    backgroundColor: colors.light.accent,
+  },
+  replyTextWrap: { flex: 1, gap: 2 },
+  replyAuthor: {
+    color: colors.light.accent,
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 12,
+  },
+  replyBody: {
+    color: colors.light.text,
+    fontFamily: "Inter_400Regular",
+    fontSize: 13,
+    opacity: 0.85,
+  },
+  replyDismissBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  quotedHeader: {
+    flexDirection: "row",
+    gap: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    marginBottom: 6,
+  },
+  quotedHeaderUser: {
+    backgroundColor: "rgba(0,0,0,0.18)",
+  },
+  quotedHeaderAshley: {
+    backgroundColor: "rgba(122, 92, 255, 0.18)",
+  },
+  quotedAccent: {
+    width: 2,
+    alignSelf: "stretch",
+    borderRadius: 1,
+  },
+  quotedAccentUser: { backgroundColor: "rgba(26,19,37,0.6)" },
+  quotedAccentAshley: { backgroundColor: colors.light.accent },
+  quotedTextWrap: { flex: 1, gap: 2 },
+  quotedAuthor: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 11,
+  },
+  quotedAuthorUser: { color: "rgba(26,19,37,0.85)" },
+  quotedAuthorAshley: { color: colors.light.accent },
+  quotedBody: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 12,
+  },
+  quotedBodyUser: { color: "rgba(26,19,37,0.75)" },
+  quotedBodyAshley: { color: "rgba(245,232,216,0.85)" },
   emptyWrap: {
     flex: 1,
     alignItems: "center",
