@@ -289,12 +289,23 @@ function MessageBubble({
   // isn't reactive — that was the old bug where tapping looked dead.)
   const [retryingThis, setRetryingThis] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
+  // Guard against setting state after the bubble unmounts. The selfie
+  // poll can run for up to 2 minutes, and the user might clear the chat
+  // or navigate away mid-flight.
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
   const onRetrySelfie = useCallback(() => {
     if (!pendingSelfieVibe || retryingThis) return;
     setRetryingThis(true);
     setRetryError(null);
     retry(message.id, pendingSelfieVibe)
       .catch((err: unknown) => {
+        if (!isMountedRef.current) return;
         setRetryError(
           err instanceof Error && err.message
             ? err.message
@@ -302,6 +313,7 @@ function MessageBubble({
         );
       })
       .finally(() => {
+        if (!isMountedRef.current) return;
         setRetryingThis(false);
       });
   }, [retry, message.id, pendingSelfieVibe, retryingThis]);

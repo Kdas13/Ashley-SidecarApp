@@ -122,31 +122,85 @@ export async function fetchAshleyReply(
 
 /**
  * Stage-2 selfie fetch. Called after `fetchAshleyReply` returns a
- * `selfieVibe`. The server runs gpt-image-1 (10–60s) and uploads the
- * resulting PNG, then returns the absolute URL. Slow-by-design; kept on
- * its own request so it doesn't share a fetch timeout with the chat reply.
+ * `selfieVibe`. Uses a poll-based protocol because gpt-image-1 takes
+ * 30–60s — holding a single HTTP connection open that long blows past
+ * the Replit proxy / RN-fetch ~60s cap and causes spurious "Failed to
+ * fetch" errors.
+ *
+ * Protocol:
+ *   1. POST /chat/selfie         → returns {jobId} in <100ms
+ *   2. GET  /chat/selfie/:jobId  → returns {status: "pending"|"ready"|"failed"}
+ *      Poll every 2s until terminal. Each request is sub-second so the
+ *      proxy timeout never matters.
  */
+
+const SELFIE_POLL_INTERVAL_MS = 2000;
+const SELFIE_POLL_TIMEOUT_MS = 120_000; // 2 minutes — gpt-image-1 worst case
+
 export async function fetchAshleySelfie(
   vibe: string,
   profile: AshleyProfile,
 ): Promise<string> {
   const base = getApiBase();
-  const res = await fetch(`${base}/chat/selfie`, {
+
+  // 1. Kick off the job.
+  const startRes = await fetch(`${base}/chat/selfie`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ vibe, profile }),
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
+  if (!startRes.ok) {
+    const text = await startRes.text().catch(() => "");
     throw new Error(
-      `Selfie generation returned ${res.status}${text ? `: ${text}` : ""}`,
+      `Selfie generation returned ${startRes.status}${text ? `: ${text}` : ""}`,
     );
   }
-  const data = (await res.json()) as { imageUrl?: unknown };
-  if (typeof data.imageUrl !== "string" || !data.imageUrl.trim()) {
-    throw new Error("Selfie generation returned no image URL.");
+  const startData = (await startRes.json()) as { jobId?: unknown };
+  if (typeof startData.jobId !== "string" || !startData.jobId.trim()) {
+    throw new Error("Selfie generation didn't return a job id.");
   }
-  return data.imageUrl.trim();
+  const jobId = startData.jobId.trim();
+
+  // 2. Poll for completion.
+  const deadline = Date.now() + SELFIE_POLL_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) =>
+      setTimeout(resolve, SELFIE_POLL_INTERVAL_MS),
+    );
+    const pollRes = await fetch(
+      `${base}/chat/selfie/${encodeURIComponent(jobId)}`,
+      { method: "GET" },
+    );
+    if (!pollRes.ok) {
+      // 404 means the job was pruned (TTL expired) — treat as a fail and
+      // bail out. Other 5xx are likely transient; one bad poll shouldn't
+      // kill the loop, so just continue to the next interval.
+      if (pollRes.status === 404) {
+        throw new Error("Selfie job expired before it finished.");
+      }
+      continue;
+    }
+    const pollData = (await pollRes.json()) as {
+      status?: unknown;
+      imageUrl?: unknown;
+      error?: unknown;
+    };
+    if (pollData.status === "ready") {
+      if (typeof pollData.imageUrl !== "string" || !pollData.imageUrl.trim()) {
+        throw new Error("Selfie was ready but no image URL was returned.");
+      }
+      return pollData.imageUrl.trim();
+    }
+    if (pollData.status === "failed") {
+      const msg =
+        typeof pollData.error === "string" && pollData.error.trim()
+          ? pollData.error.trim()
+          : "Selfie generation failed.";
+      throw new Error(msg);
+    }
+    // status === "pending" → keep polling
+  }
+  throw new Error("Selfie took too long — try again.");
 }
 
 export type SummarizeChunkRequest = {

@@ -443,6 +443,40 @@ const ChatSelfieBodySchema = z.object({
   profile: ReplyProfileSchema.optional(),
 });
 
+// ---------------------------------------------------------------------------
+// Selfie job store — poll-based pattern.
+//
+// gpt-image-1 takes 30–60s to render a single image, which sits right at the
+// edge of the Replit proxy / RN-fetch ~60s connection cap. Holding the HTTP
+// connection open for the full duration means the mobile client sees random
+// "Failed to fetch" errors when the upstream is on the slower end.
+//
+// Instead, the client:
+//   1. POST /chat/selfie       → returns {jobId} in <100ms, kicks generation
+//                                 in the background.
+//   2. GET  /chat/selfie/:id   → returns the current status. The client polls
+//                                 every couple seconds until "ready" or
+//                                 "failed", and individual requests stay fast.
+//
+// Job state lives in-process. We keep entries for a short window after they
+// finish so a slow client can still pick up the result, then prune.
+// ---------------------------------------------------------------------------
+
+type SelfieJob =
+  | { status: "pending"; createdAt: number }
+  | { status: "ready"; imageUrl: string; createdAt: number }
+  | { status: "failed"; error: string; createdAt: number };
+
+const SELFIE_JOB_TTL_MS = 5 * 60 * 1000;
+const selfieJobs = new Map<string, SelfieJob>();
+
+function pruneSelfieJobs(): void {
+  const cutoff = Date.now() - SELFIE_JOB_TTL_MS;
+  for (const [id, job] of selfieJobs) {
+    if (job.createdAt < cutoff) selfieJobs.delete(id);
+  }
+}
+
 router.post("/chat/selfie", async (req, res): Promise<void> => {
   const ip = (req.ip || req.socket.remoteAddress || "unknown").toString();
   if (!checkRate(ip)) {
@@ -458,12 +492,66 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
   const vibe = parsed.data.vibe.trim();
   const profile = parsed.data.profile ?? ({} as ReplyProfile);
 
-  const imageUrl = await generateAshleySelfie(vibe, profile);
-  if (!imageUrl) {
-    res.status(502).json({ error: "Couldn't take that selfie — try again?" });
+  pruneSelfieJobs();
+  const jobId = randomUUID();
+  selfieJobs.set(jobId, { status: "pending", createdAt: Date.now() });
+
+  // Fire-and-forget the actual generation. Errors are captured into the job
+  // state so the polling client can surface them.
+  void (async () => {
+    try {
+      const imageUrl = await generateAshleySelfie(vibe, profile);
+      if (imageUrl) {
+        selfieJobs.set(jobId, {
+          status: "ready",
+          imageUrl,
+          createdAt: Date.now(),
+        });
+      } else {
+        selfieJobs.set(jobId, {
+          status: "failed",
+          error: "Couldn't take that selfie — try again?",
+          createdAt: Date.now(),
+        });
+      }
+    } catch (err) {
+      req.log.warn({ err, jobId }, "Background selfie generation crashed");
+      selfieJobs.set(jobId, {
+        status: "failed",
+        error:
+          err instanceof Error && err.message
+            ? err.message
+            : "Selfie generation crashed.",
+        createdAt: Date.now(),
+      });
+    }
+  })();
+
+  // Respond immediately. The client polls /chat/selfie/:jobId.
+  res.status(202).json({ jobId });
+});
+
+router.get("/chat/selfie/:jobId", async (req, res): Promise<void> => {
+  const jobId = (req.params["jobId"] ?? "").toString();
+  if (!jobId) {
+    res.status(400).json({ error: "jobId is required" });
     return;
   }
-  res.json({ imageUrl });
+  pruneSelfieJobs();
+  const job = selfieJobs.get(jobId);
+  if (!job) {
+    res.status(404).json({ error: "Selfie job not found or expired." });
+    return;
+  }
+  if (job.status === "ready") {
+    res.json({ status: "ready", imageUrl: job.imageUrl });
+    return;
+  }
+  if (job.status === "failed") {
+    res.json({ status: "failed", error: job.error });
+    return;
+  }
+  res.json({ status: "pending" });
 });
 
 router.get("/chat/messages", async (req, res): Promise<void> => {

@@ -22,13 +22,23 @@ no DB knowledge of the conversation — the phone is the source of truth.
   memories + recent history (last 30 turns) are sent on every request; the
   reply is appended locally. Typing indicator + tap-to-dismiss error banner
   on failure.
-- **Real selfies in chat.** When Ashley wants to send a photo she emits a
-  `[selfie: <visual vibe>]` marker. The `/api/chat/reply` endpoint detects
-  it, calls `gpt-image-1` with her appearance + the requested vibe, saves
-  the result to App Storage (or local disk in dev) via `saveSelfie`, and
-  returns `{reply, imageUrl}`. The mobile chat renders the image as part
-  of Ashley's bubble. If image generation fails we still return her text
-  reply (no broken bubble).
+- **Real selfies in chat (poll-based, two-call flow).** When Ashley wants
+  to send a photo she emits a `[selfie: <visual vibe>]` marker. The flow
+  is split across two endpoints so the chat bubble appears immediately
+  while the slow image generation runs in the background:
+    1. `POST /api/chat/reply` → returns `{reply, imageUrl: null, selfieVibe}`
+       in ~3 s. The mobile bubble renders the text plus a "taking a
+       selfie…" placeholder.
+    2. `POST /api/chat/selfie` → returns `{jobId}` in <100 ms (HTTP 202).
+       The server kicks off `gpt-image-1` in the background and stores
+       the job state in an in-memory Map (5-min TTL).
+    3. `GET /api/chat/selfie/:jobId` → mobile polls every 2 s (up to
+       120 s) for `{status: "pending" | "ready" | "failed", imageUrl?,
+       error?}`. Each individual request is sub-second so the Replit
+       proxy / RN-fetch ~60 s connection cap is sidestepped.
+  When `ready`, the imageUrl is patched into the existing bubble and the
+  placeholder disappears. On failure, the bubble shows a tap-to-retry
+  affordance with the actual error inline.
 - No emojis in UI chrome — Feather icons only (Ashley herself uses
   emoji sparingly in her texts, that's part of her voice)
 - No camera / phone-side image upload — image flow is one-way
