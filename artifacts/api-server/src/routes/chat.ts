@@ -368,8 +368,10 @@ router.post("/chat/reply", async (req, res): Promise<void> => {
   }
 
   // Selfie marker detection: if Ashley emitted [selfie: <vibe>], generate the
-  // real image and strip the marker from the visible text. We only honour the
-  // first marker per reply to keep latency bounded.
+  // real image and remove the marker (along with any blank lines around it,
+  // so the caption text doesn't end up with a giant whitespace hole). We
+  // only honour the first marker per reply to keep latency bounded; any
+  // additional markers are stripped without generating extra images.
   let imageUrl: string | null = null;
   const match = assistantText.match(SELFIE_MARKER_RE);
   if (match) {
@@ -380,9 +382,16 @@ router.post("/chat/reply", async (req, res): Promise<void> => {
         profile ?? ({} as ReplyProfile),
       );
     }
-    // Strip the marker either way; if generation failed, the user still gets
-    // the rest of Ashley's reply (no broken-image bubble).
-    assistantText = assistantText.replace(SELFIE_MARKER_RE, "").trim();
+    // Split around the marker and rejoin the surviving caption halves with a
+    // single paragraph break, dropping any leftover blank lines.
+    const before = assistantText.slice(0, match.index).trim();
+    const after = assistantText
+      .slice(match.index! + match[0].length)
+      // Strip any further markers in the tail.
+      .replace(/\[selfie:\s*[^\]]+\]/gi, "")
+      .trim();
+    const joined = [before, after].filter((s) => s.length > 0).join("\n\n");
+    assistantText = joined;
     if (!assistantText) {
       assistantText = imageUrl
         ? "*sends a photo*"

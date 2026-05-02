@@ -195,29 +195,62 @@ function MessageBubble({ message }: { message: Message }): React.JSX.Element {
   const isUser = message.role === "user";
   const hasImage = !!message.imageUrl;
   const hasText = !!message.content && message.content.trim().length > 0;
+  const [imageFailed, setImageFailed] = useState(false);
+  const showImage = hasImage && !imageFailed;
   return (
     <View style={[styles.row, isUser ? styles.rowRight : styles.rowLeft]}>
       <View
         style={[
           styles.bubble,
           isUser ? styles.bubbleUser : styles.bubbleAshley,
-          hasImage && styles.bubbleWithImage,
+          showImage && styles.bubbleWithImage,
         ]}
       >
-        {hasImage ? (
+        {showImage ? (
           <Image
             source={{ uri: message.imageUrl! }}
             style={styles.bubbleImage}
             resizeMode="cover"
             accessibilityLabel="Selfie from Ashley"
+            onError={(e) => {
+              console.warn(
+                "[chat] selfie image failed to load",
+                message.imageUrl,
+                e?.nativeEvent,
+              );
+              setImageFailed(true);
+            }}
           />
+        ) : null}
+        {imageFailed ? (
+          <View style={styles.imageError}>
+            <Feather
+              name="image"
+              size={18}
+              color={colors.light.mutedForeground}
+            />
+            <Text style={styles.imageErrorText}>
+              couldn't load her photo — tap to retry?
+            </Text>
+            <Pressable
+              onPress={() => setImageFailed(false)}
+              style={styles.imageRetryBtn}
+              accessibilityLabel="Retry loading photo"
+            >
+              <Feather
+                name="refresh-cw"
+                size={14}
+                color={colors.light.text}
+              />
+            </Pressable>
+          </View>
         ) : null}
         {hasText ? (
           <Text
             style={[
               styles.bubbleText,
               isUser ? styles.bubbleUserText : styles.bubbleAshleyText,
-              hasImage && styles.bubbleTextWithImage,
+              showImage && styles.bubbleTextWithImage,
             ]}
           >
             {message.content}
@@ -307,6 +340,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingTop: 8,
     paddingBottom: 2,
+  },
+  imageError: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  imageErrorText: {
+    flex: 1,
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_400Regular",
+    fontSize: 13,
+    fontStyle: "italic",
+  },
+  imageRetryBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.light.muted,
   },
   emptyWrap: {
     flex: 1,
