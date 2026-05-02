@@ -48,6 +48,16 @@ export type Message = {
    * fallback like "*sends a photo*").
    */
   imageUrl?: string | null;
+  /**
+   * The visual prompt Ashley emitted when she wanted to take a selfie. The
+   * UI uses this in two ways:
+   *   - while `imageUrl` is null and `selfieVibe` is set, render a "taking
+   *     a selfie…" pending state for the bubble
+   *   - if generation fails, the user can tap retry and we re-issue
+   *     `POST /chat/selfie` with the same vibe.
+   * Cleared once the photo successfully arrives.
+   */
+  selfieVibe?: string | null;
 };
 
 // Rolling narrative summary of an older chunk of messages.  Once the live
@@ -142,6 +152,30 @@ export async function loadMessages(): Promise<Message[]> {
 
 export async function saveMessages(m: Message[]): Promise<void> {
   await writeJSON(KEYS.messages, m);
+}
+
+/**
+ * Atomically patch a single message in storage by id. Returns the updated
+ * message list, or null if no message with that id exists. Used by the
+ * background selfie fetch to attach the imageUrl to an already-rendered
+ * Ashley bubble without disturbing the rest of the conversation.
+ */
+export async function patchMessage(
+  id: string,
+  patch: Partial<Omit<Message, "id">>,
+): Promise<Message[] | null> {
+  return withStorageLock(KEYS.messages, async () => {
+    const all = await readJSON<Message[]>(KEYS.messages, []);
+    let touched = false;
+    const next = all.map((m) => {
+      if (m.id !== id) return m;
+      touched = true;
+      return { ...m, ...patch };
+    });
+    if (!touched) return null;
+    await writeJSON(KEYS.messages, next);
+    return next;
+  });
 }
 
 export async function loadSummaries(): Promise<ConversationSummary[]> {

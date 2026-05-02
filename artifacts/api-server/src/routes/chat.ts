@@ -367,21 +367,18 @@ router.post("/chat/reply", async (req, res): Promise<void> => {
     return;
   }
 
-  // Selfie marker detection: if Ashley emitted [selfie: <vibe>], generate the
-  // real image and remove the marker (along with any blank lines around it,
-  // so the caption text doesn't end up with a giant whitespace hole). We
-  // only honour the first marker per reply to keep latency bounded; any
-  // additional markers are stripped without generating extra images.
-  let imageUrl: string | null = null;
+  // Selfie marker detection: if Ashley emitted [selfie: <vibe>], strip the
+  // marker (and the blank lines around it) and surface the vibe to the
+  // client so it can fire a separate /chat/selfie request. We do NOT
+  // generate the image inline because gpt-image-1 takes 30-60s and would
+  // blow past mobile/proxy fetch timeouts. Only the first marker per reply
+  // is honoured; any additional markers are silently dropped.
+  let selfieVibe: string | null = null;
   const match = assistantText.match(SELFIE_MARKER_RE);
   if (match) {
     const vibe = match[1]!.trim();
-    if (vibe.length > 0) {
-      imageUrl = await generateAshleySelfie(
-        vibe,
-        profile ?? ({} as ReplyProfile),
-      );
-    }
+    if (vibe.length > 0) selfieVibe = vibe;
+
     // Split around the marker and rejoin the surviving caption halves with a
     // single paragraph break, dropping any leftover blank lines.
     const before = assistantText.slice(0, match.index).trim();
@@ -393,13 +390,50 @@ router.post("/chat/reply", async (req, res): Promise<void> => {
     const joined = [before, after].filter((s) => s.length > 0).join("\n\n");
     assistantText = joined;
     if (!assistantText) {
-      assistantText = imageUrl
-        ? "*sends a photo*"
+      assistantText = selfieVibe
+        ? "*holds up the camera* one sec…"
         : "*tries to take a selfie but fumbles the camera* one sec — try again?";
     }
   }
 
-  res.json({ reply: assistantText, imageUrl });
+  // imageUrl is kept (always null) for forward compatibility with any older
+  // mobile bundles that still expect it on this endpoint.
+  res.json({ reply: assistantText, imageUrl: null, selfieVibe });
+});
+
+// ---------------------------------------------------------------------------
+// Stage-2 selfie endpoint. Mobile calls this AFTER /chat/reply when that
+// reply included a `selfieVibe`. Splitting the work across two requests
+// keeps each one inside the proxy's ~60s ceiling and lets the chat bubble
+// appear immediately while the image streams in.
+// ---------------------------------------------------------------------------
+
+const ChatSelfieBodySchema = z.object({
+  vibe: z.string().min(1).max(MAX_CONTENT_LEN),
+  profile: ReplyProfileSchema.optional(),
+});
+
+router.post("/chat/selfie", async (req, res): Promise<void> => {
+  const ip = (req.ip || req.socket.remoteAddress || "unknown").toString();
+  if (!checkRate(ip)) {
+    req.log.warn({ ip }, "Chat selfie rate-limited");
+    res.status(429).json({ error: "Too many photos in a row — wait a sec." });
+    return;
+  }
+  const parsed = ChatSelfieBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const vibe = parsed.data.vibe.trim();
+  const profile = parsed.data.profile ?? ({} as ReplyProfile);
+
+  const imageUrl = await generateAshleySelfie(vibe, profile);
+  if (!imageUrl) {
+    res.status(502).json({ error: "Couldn't take that selfie — try again?" });
+    return;
+  }
+  res.json({ imageUrl });
 });
 
 router.get("/chat/messages", async (req, res): Promise<void> => {

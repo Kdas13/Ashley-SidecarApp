@@ -6,14 +6,20 @@ import {
   loadMemories,
   loadProfile,
   loadSummaries,
+  patchMessage,
   saveMessages,
   saveSummaries,
   withStorageLock,
   newId,
+  type AshleyProfile,
   type ConversationSummary,
   type Message,
 } from "./storage";
-import { fetchAshleyReply, fetchSummaryForChunk } from "./aiClient";
+import {
+  fetchAshleyReply,
+  fetchAshleySelfie,
+  fetchSummaryForChunk,
+} from "./aiClient";
 
 const MESSAGES_KEY = ["messages"] as const;
 const SUMMARIES_KEY = ["summaries"] as const;
@@ -87,7 +93,11 @@ export function useSendMessage() {
         loadSummaries(),
       ]);
 
-      let reply: { reply: string; imageUrl: string | null };
+      let reply: {
+        reply: string;
+        imageUrl: string | null;
+        selfieVibe: string | null;
+      };
       try {
         reply = await fetchAshleyReply({
           content,
@@ -108,6 +118,7 @@ export function useSendMessage() {
         content: reply.reply,
         createdAt: new Date().toISOString(),
         imageUrl: reply.imageUrl,
+        selfieVibe: reply.selfieVibe,
       };
       // Abort if the conversation was cleared (or a newer turn was appended)
       // while we were waiting on Claude.
@@ -119,6 +130,13 @@ export function useSendMessage() {
       // Fire-and-forget: keep the rolling summary index up to date in the
       // background without blocking the chat UI.
       void maybeRollUpOlderMessages(qc);
+
+      // Fire-and-forget: if Ashley wanted to send a selfie, kick off the
+      // (slow) image-generation request in the background. The chat bubble
+      // is already on screen with a pending "taking a selfie…" indicator.
+      if (reply.selfieVibe) {
+        void fetchAndAttachSelfie(qc, ashleyMessage.id, reply.selfieVibe, profile);
+      }
 
       return { user: userMessage, ashley: ashleyMessage };
     },
@@ -149,6 +167,65 @@ export function useClearMessages() {
       qc.invalidateQueries({ queryKey: SUMMARIES_KEY });
     },
   });
+}
+
+/**
+ * Background helper that fetches a selfie image for an already-rendered
+ * Ashley message, then patches the imageUrl into local storage and the
+ * messages query cache. Called fire-and-forget from `useSendMessage` and
+ * from the chat bubble's manual retry button. Failures stay local — the
+ * bubble just keeps its retry affordance.
+ */
+export async function fetchAndAttachSelfie(
+  qc: ReturnType<typeof useQueryClient>,
+  messageId: string,
+  vibe: string,
+  profile: AshleyProfile,
+): Promise<void> {
+  try {
+    const imageUrl = await fetchAshleySelfie(vibe, profile);
+    // Clear selfieVibe so the bubble stops showing "taking a selfie…" — the
+    // imageUrl now drives the rendering.
+    const next = await patchMessage(messageId, { imageUrl, selfieVibe: null });
+    if (next) qc.setQueryData(MESSAGES_KEY, next);
+  } catch {
+    // Leave selfieVibe + null imageUrl in place; the chat bubble's retry
+    // button is the user-facing recovery path.
+  }
+}
+
+/**
+ * Track in-flight selfie fetches per messageId so the chat bubble can
+ * disable its retry button and show a spinner while a previous attempt is
+ * still running. Keyed by messageId; the value is true while a fetch is
+ * pending. We use a module-level set rather than React state because the
+ * fetch is fire-and-forget across renders.
+ */
+const inFlightSelfies = new Set<string>();
+
+/**
+ * React hook returning a `retry(messageId, vibe)` callback the chat bubble
+ * can call to re-attempt a failed selfie generation. Loads the current
+ * profile internally so the bubble doesn't have to.
+ */
+export function useRetrySelfie(): {
+  retry: (messageId: string, vibe: string) => Promise<void>;
+  isRetrying: (messageId: string) => boolean;
+} {
+  const qc = useQueryClient();
+  return {
+    retry: async (messageId: string, vibe: string) => {
+      if (inFlightSelfies.has(messageId)) return;
+      inFlightSelfies.add(messageId);
+      try {
+        const profile = await loadProfile();
+        await fetchAndAttachSelfie(qc, messageId, vibe, profile);
+      } finally {
+        inFlightSelfies.delete(messageId);
+      }
+    },
+    isRetrying: (messageId: string) => inFlightSelfies.has(messageId),
+  };
 }
 
 // One-at-a-time guard so multiple sends in quick succession can't fire

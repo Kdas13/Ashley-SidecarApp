@@ -32,7 +32,14 @@ export type ChatReplyRequest = {
 
 export type AshleyReply = {
   reply: string;
+  /**
+   * Always null on the new two-call flow — kept for backward compatibility
+   * with any older code paths. The image is fetched separately via
+   * `fetchAshleySelfie(vibe, profile)` when `selfieVibe` is set.
+   */
   imageUrl: string | null;
+  /** When set, Ashley wants to send a selfie with this visual prompt. */
+  selfieVibe: string | null;
 };
 
 export async function fetchAshleyReply(
@@ -84,6 +91,7 @@ export async function fetchAshleyReply(
   const data = (await res.json()) as {
     reply?: unknown;
     imageUrl?: unknown;
+    selfieVibe?: unknown;
   };
   if (typeof data.reply !== "string" || !data.reply.trim()) {
     throw new Error("Ashley's brain returned an empty reply.");
@@ -92,7 +100,40 @@ export async function fetchAshleyReply(
     typeof data.imageUrl === "string" && data.imageUrl.trim().length > 0
       ? data.imageUrl
       : null;
-  return { reply: data.reply.trim(), imageUrl };
+  const selfieVibe =
+    typeof data.selfieVibe === "string" && data.selfieVibe.trim().length > 0
+      ? data.selfieVibe.trim()
+      : null;
+  return { reply: data.reply.trim(), imageUrl, selfieVibe };
+}
+
+/**
+ * Stage-2 selfie fetch. Called after `fetchAshleyReply` returns a
+ * `selfieVibe`. The server runs gpt-image-1 (10–60s) and uploads the
+ * resulting PNG, then returns the absolute URL. Slow-by-design; kept on
+ * its own request so it doesn't share a fetch timeout with the chat reply.
+ */
+export async function fetchAshleySelfie(
+  vibe: string,
+  profile: AshleyProfile,
+): Promise<string> {
+  const base = getApiBase();
+  const res = await fetch(`${base}/chat/selfie`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ vibe, profile }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `Selfie generation returned ${res.status}${text ? `: ${text}` : ""}`,
+    );
+  }
+  const data = (await res.json()) as { imageUrl?: unknown };
+  if (typeof data.imageUrl !== "string" || !data.imageUrl.trim()) {
+    throw new Error("Selfie generation returned no image URL.");
+  }
+  return data.imageUrl.trim();
 }
 
 export type SummarizeChunkRequest = {

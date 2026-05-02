@@ -20,6 +20,7 @@ import {
   useMessages,
   useSendMessage,
   useClearMessages,
+  useRetrySelfie,
 } from "@/lib/useMessages";
 import type { Message } from "@/lib/storage";
 import colors from "@/constants/colors";
@@ -197,13 +198,26 @@ function MessageBubble({ message }: { message: Message }): React.JSX.Element {
   const hasText = !!message.content && message.content.trim().length > 0;
   const [imageFailed, setImageFailed] = useState(false);
   const showImage = hasImage && !imageFailed;
+
+  // selfieVibe is set by the server when Ashley wanted to send a photo.
+  // While the background generation is still running (or after it failed),
+  // imageUrl is null and selfieVibe is the prompt. We use this to drive
+  // either a "taking a selfie…" pending state or a retry button.
+  const pendingSelfieVibe =
+    !hasImage && message.selfieVibe ? message.selfieVibe : null;
+  const { retry, isRetrying } = useRetrySelfie();
+  const retryingThis = isRetrying(message.id);
+  const onRetrySelfie = useCallback(() => {
+    if (pendingSelfieVibe) void retry(message.id, pendingSelfieVibe);
+  }, [retry, message.id, pendingSelfieVibe]);
+
   return (
     <View style={[styles.row, isUser ? styles.rowRight : styles.rowLeft]}>
       <View
         style={[
           styles.bubble,
           isUser ? styles.bubbleUser : styles.bubbleAshley,
-          showImage && styles.bubbleWithImage,
+          (showImage || pendingSelfieVibe) && styles.bubbleWithImage,
         ]}
       >
         {showImage ? (
@@ -245,12 +259,41 @@ function MessageBubble({ message }: { message: Message }): React.JSX.Element {
             </Pressable>
           </View>
         ) : null}
+        {pendingSelfieVibe && !showImage && !imageFailed ? (
+          <Pressable
+            onPress={retryingThis ? undefined : onRetrySelfie}
+            style={styles.selfiePending}
+            accessibilityLabel={
+              retryingThis
+                ? "Taking a selfie"
+                : "Tap to retry sending photo"
+            }
+          >
+            {retryingThis ? (
+              <ActivityIndicator
+                size="small"
+                color={colors.light.mutedForeground}
+              />
+            ) : (
+              <Feather
+                name="camera"
+                size={18}
+                color={colors.light.mutedForeground}
+              />
+            )}
+            <Text style={styles.selfiePendingText} numberOfLines={2}>
+              {retryingThis
+                ? "taking a selfie…"
+                : "couldn't send the photo — tap to retry"}
+            </Text>
+          </Pressable>
+        ) : null}
         {hasText ? (
           <Text
             style={[
               styles.bubbleText,
               isUser ? styles.bubbleUserText : styles.bubbleAshleyText,
-              showImage && styles.bubbleTextWithImage,
+              (showImage || pendingSelfieVibe) && styles.bubbleTextWithImage,
             ]}
           >
             {message.content}
@@ -362,6 +405,23 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.light.muted,
+  },
+  selfiePending: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    width: 240,
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.04)",
+  },
+  selfiePendingText: {
+    flex: 1,
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_400Regular",
+    fontSize: 13,
+    fontStyle: "italic",
   },
   emptyWrap: {
     flex: 1,
