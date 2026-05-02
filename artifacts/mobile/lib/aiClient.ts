@@ -25,71 +25,46 @@ function getApiBase(): string {
 
 /**
  * In Replit's dev environment the api-server is recycled by the workflow
- * runner roughly every 8-12 minutes. The actual dead-window between the
- * old instance dying and the new one accepting connections has been
- * observed to last 30s+ in practice — much longer than the build itself
- * (~1.5s) because the workflow runner spins up a fresh shell each time.
+ * runner roughly every 8-12 minutes. During the dead-window between the
+ * old instance dying and the new one accepting connections, the public
+ * proxy returns its "Run this app to see the results here." placeholder
+ * HTML — typically with a 404 or 503 status.
  *
- * During that window the public proxy returns its "Run this app to see
- * the results here." placeholder HTML — typically with a 404 or 503.
+ * IMPORTANT: We empirically observed that during the dead-window
+ * /api/healthz GETs can return 200 while concurrent POSTs to the same
+ * server still get placeholder HTML — the Replit proxy seems to retry
+ * GETs internally and/or refresh its upstream connection pool faster
+ * for GETs than POSTs. So polling healthz as a "is the server back?"
+ * signal is unreliable for POSTs and was producing false-positives
+ * that triggered our friendly error even when the server was healthy.
  *
- * Strategy: when we see the placeholder, poll /api/healthz every second
- * until the server reports 200 (or we hit the deadline), then retry the
- * original request ONCE. This is much cleaner than blind backoff because
- * we wait exactly as long as the outage lasts and no longer. The total
- * deadline is ~30s — comfortably covering the observed dead-window
- * without making the user feel like the app is hung. Real 4xx/5xx JSON
- * errors from the api-server are returned untouched.
+ * Strategy: retry the actual request itself every 2s up to a 30s
+ * deadline. The api-server endpoints we wrap with this helper are all
+ * idempotent (stateless Claude calls; no DB writes), so re-issuing a
+ * POST that returned placeholder is safe — placeholder means the
+ * request never reached api-server. Real 4xx/5xx JSON errors are
+ * returned untouched so callers can surface the real error.
  */
 const PROXY_PLACEHOLDER_MARKER = "Run this app to see the results here";
-const HEALTH_POLL_INTERVAL_MS = 1000;
-const HEALTH_POLL_DEADLINE_MS = 30_000;
+const RETRY_INTERVAL_MS = 2000;
+const RETRY_DEADLINE_MS = 30_000;
 
 async function fetchWithProxyRetry(
   url: string,
   init: RequestInit,
 ): Promise<Response> {
-  const first = await fetch(url, init);
-  if (!(await looksLikeProxyPlaceholder(first))) return first;
-
-  // Server is in its restart dead-window. Wait for healthz to come back.
-  const healthUrl = healthzUrlFor(url);
-  const came_back = await waitForServerBack(healthUrl);
-  if (!came_back) {
-    throw new Error(
-      "Ashley's server is restarting — give it a few seconds and try again.",
-    );
-  }
-
-  // Server is back. Retry the original request once.
-  const second = await fetch(url, init);
-  if (await looksLikeProxyPlaceholder(second)) {
-    throw new Error(
-      "Ashley's server is restarting — give it a few seconds and try again.",
-    );
-  }
-  return second;
-}
-
-function healthzUrlFor(reqUrl: string): string {
-  // reqUrl is like https://<domain>/api/chat/reply — strip back to /api/healthz.
-  const idx = reqUrl.indexOf("/api/");
-  if (idx < 0) return reqUrl; // shouldn't happen; fall back, healthz will fail and we'll bail
-  return `${reqUrl.slice(0, idx)}/api/healthz`;
-}
-
-async function waitForServerBack(healthUrl: string): Promise<boolean> {
-  const deadline = Date.now() + HEALTH_POLL_DEADLINE_MS;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, HEALTH_POLL_INTERVAL_MS));
-    try {
-      const res = await fetch(healthUrl, { method: "GET" });
-      if (res.ok && !(await looksLikeProxyPlaceholder(res))) return true;
-    } catch {
-      // network blip during the restart — keep polling
+  const deadline = Date.now() + RETRY_DEADLINE_MS;
+  let res = await fetch(url, init);
+  while (await looksLikeProxyPlaceholder(res)) {
+    if (Date.now() >= deadline) {
+      throw new Error(
+        "Ashley's server is restarting — give it a few seconds and try again.",
+      );
     }
+    await new Promise((r) => setTimeout(r, RETRY_INTERVAL_MS));
+    res = await fetch(url, init);
   }
-  return false;
+  return res;
 }
 
 async function looksLikeProxyPlaceholder(res: Response): Promise<boolean> {
