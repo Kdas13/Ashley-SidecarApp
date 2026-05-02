@@ -24,32 +24,6 @@ SystemUI.setBackgroundColorAsync("#1a1325").catch(() => {
   /* ignore */
 });
 
-// Catch otherwise-uncaught JS errors so they show in the Metro logs with
-// a real stack trace, instead of silently rendering Expo Go's native
-// "Something went wrong" screen with no detail. Wrapped in a try so a
-// missing ErrorUtils (e.g. on web) never itself crashes module load.
-try {
-  // ErrorUtils is a React Native global without typings.
-  const eu = (globalThis as { ErrorUtils?: {
-    getGlobalHandler: () => (e: unknown, isFatal?: boolean) => void;
-    setGlobalHandler: (
-      h: (e: unknown, isFatal?: boolean) => void,
-    ) => void;
-  } }).ErrorUtils;
-  if (eu) {
-    const prev = eu.getGlobalHandler();
-    eu.setGlobalHandler((err, isFatal) => {
-      const e = err instanceof Error ? err : new Error(String(err));
-      console.error(
-        `[ashley:${isFatal ? "fatal" : "error"}] ${e.message}\n${e.stack ?? ""}`,
-      );
-      prev(err, isFatal);
-    });
-  }
-} catch {
-  /* never let error-handler setup itself crash boot */
-}
-
 function RootLayoutNav(): React.JSX.Element {
   return (
     <Stack
