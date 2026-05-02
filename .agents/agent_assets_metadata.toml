@@ -1,0 +1,8 @@
+uploads = []
+outputs = []
+
+[[generated]]
+id = "LVmns5F_AwdgVkUhMXDpD"
+uri = "file://artifacts/mobile/assets/images/icon.png"
+type = "image"
+title = "ashley sidecar icon"
