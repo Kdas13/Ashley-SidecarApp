@@ -216,10 +216,16 @@ const inFlightSelfies = new Set<string>();
  * React hook returning a `retry(messageId, vibe)` callback the chat bubble
  * can call to re-attempt a failed selfie generation. Loads the current
  * profile internally so the bubble doesn't have to.
+ *
+ * IMPORTANT: unlike the fire-and-forget `fetchAndAttachSelfie`, this
+ * promise REJECTS on failure so the calling bubble can show inline
+ * feedback. The bubble manages its own "retrying" state with React state
+ * (instead of the module-level `inFlightSelfies` Set, which isn't
+ * reactive) — that way the spinner actually appears when the user taps.
+ * We keep `inFlightSelfies` only as a cross-bubble dedup guard.
  */
 export function useRetrySelfie(): {
   retry: (messageId: string, vibe: string) => Promise<void>;
-  isRetrying: (messageId: string) => boolean;
 } {
   const qc = useQueryClient();
   return {
@@ -228,12 +234,19 @@ export function useRetrySelfie(): {
       inFlightSelfies.add(messageId);
       try {
         const profile = await loadProfile();
-        await fetchAndAttachSelfie(qc, messageId, vibe, profile);
+        // Inline the fetch so errors surface to the caller. (The
+        // fire-and-forget variant `fetchAndAttachSelfie` swallows them on
+        // purpose, since it has no UI to show feedback in.)
+        const imageUrl = await fetchAshleySelfie(vibe, profile);
+        const next = await patchMessage(messageId, {
+          imageUrl,
+          selfieVibe: null,
+        });
+        if (next) qc.setQueryData(MESSAGES_KEY, next);
       } finally {
         inFlightSelfies.delete(messageId);
       }
     },
-    isRetrying: (messageId: string) => inFlightSelfies.has(messageId),
   };
 }
 

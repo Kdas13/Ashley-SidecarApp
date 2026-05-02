@@ -283,11 +283,28 @@ function MessageBubble({
   // either a "taking a selfie…" pending state or a retry button.
   const pendingSelfieVibe =
     !hasImage && message.selfieVibe ? message.selfieVibe : null;
-  const { retry, isRetrying } = useRetrySelfie();
-  const retryingThis = isRetrying(message.id);
+  const { retry } = useRetrySelfie();
+  // Track retry state locally with React state so the spinner / error
+  // message actually trigger re-renders. (The hook's underlying dedup Set
+  // isn't reactive — that was the old bug where tapping looked dead.)
+  const [retryingThis, setRetryingThis] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
   const onRetrySelfie = useCallback(() => {
-    if (pendingSelfieVibe) void retry(message.id, pendingSelfieVibe);
-  }, [retry, message.id, pendingSelfieVibe]);
+    if (!pendingSelfieVibe || retryingThis) return;
+    setRetryingThis(true);
+    setRetryError(null);
+    retry(message.id, pendingSelfieVibe)
+      .catch((err: unknown) => {
+        setRetryError(
+          err instanceof Error && err.message
+            ? err.message
+            : "still couldn't reach her — tap again",
+        );
+      })
+      .finally(() => {
+        setRetryingThis(false);
+      });
+  }, [retry, message.id, pendingSelfieVibe, retryingThis]);
 
   // User bubbles sit on the right and reveal the reply hint by being
   // dragged left; Ashley bubbles do the opposite. Mirrors iMessage.
@@ -409,7 +426,9 @@ function MessageBubble({
             <Text style={styles.selfiePendingText} numberOfLines={2}>
               {retryingThis
                 ? "taking a selfie…"
-                : "couldn't send the photo — tap to retry"}
+                : retryError
+                  ? retryError
+                  : "couldn't send the photo — tap to retry"}
             </Text>
           </GHPressable>
         ) : null}
