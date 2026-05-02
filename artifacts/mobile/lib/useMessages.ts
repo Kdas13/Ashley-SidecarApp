@@ -181,26 +181,50 @@ export function useClearMessages() {
 /**
  * Background helper that fetches a selfie image for an already-rendered
  * Ashley message, then patches the imageUrl into local storage and the
- * messages query cache. Called fire-and-forget from `useSendMessage` and
- * from the chat bubble's manual retry button. Failures stay local — the
- * bubble just keeps its retry affordance.
+ * messages query cache. Called fire-and-forget from `useSendMessage`.
+ *
+ * We auto-retry the whole POST + poll flow up to SELFIE_AUTO_RETRY_ATTEMPTS
+ * times before giving up, because the most common dev-environment failure
+ * mode is the api-server being recycled by the Replit workflow runner
+ * (~every 8-12 min) WHILE a selfie is generating — that wipes the
+ * in-memory job store, makes subsequent polls 404 ("job expired"), and a
+ * fresh POST against the new instance just works. After all attempts fail
+ * we leave selfieVibe set so the chat bubble's manual retry button is
+ * available as the user-facing recovery path.
  */
+const SELFIE_AUTO_RETRY_ATTEMPTS = 3;
+const SELFIE_AUTO_RETRY_DELAY_MS = 4000;
+
 export async function fetchAndAttachSelfie(
   qc: ReturnType<typeof useQueryClient>,
   messageId: string,
   vibe: string,
   profile: AshleyProfile,
 ): Promise<void> {
-  try {
-    const imageUrl = await fetchAshleySelfie(vibe, profile);
-    // Clear selfieVibe so the bubble stops showing "taking a selfie…" — the
-    // imageUrl now drives the rendering.
-    const next = await patchMessage(messageId, { imageUrl, selfieVibe: null });
-    if (next) qc.setQueryData(MESSAGES_KEY, next);
-  } catch {
-    // Leave selfieVibe + null imageUrl in place; the chat bubble's retry
-    // button is the user-facing recovery path.
+  for (let attempt = 0; attempt < SELFIE_AUTO_RETRY_ATTEMPTS; attempt++) {
+    try {
+      const imageUrl = await fetchAshleySelfie(vibe, profile);
+      // Clear selfieVibe so the bubble stops showing "taking a selfie…" —
+      // the imageUrl now drives the rendering.
+      const next = await patchMessage(messageId, {
+        imageUrl,
+        selfieVibe: null,
+      });
+      if (next) qc.setQueryData(MESSAGES_KEY, next);
+      return;
+    } catch {
+      // Wait briefly and try the whole flow again. We don't bother
+      // distinguishing failure modes here — any failure on the wrapped
+      // network/poll loop is worth one more shot, since the most common
+      // cause is the api-server recycling mid-generation.
+      if (attempt < SELFIE_AUTO_RETRY_ATTEMPTS - 1) {
+        await new Promise((r) => setTimeout(r, SELFIE_AUTO_RETRY_DELAY_MS));
+      }
+    }
   }
+  // All attempts failed. Leave selfieVibe + null imageUrl in place so the
+  // chat bubble surfaces its manual retry affordance — the user can tap to
+  // try once more whenever they like.
 }
 
 /**
