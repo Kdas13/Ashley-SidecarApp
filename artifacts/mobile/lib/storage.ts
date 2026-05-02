@@ -75,6 +75,30 @@ async function writeJSON<T>(key: string, value: T): Promise<void> {
   await AsyncStorage.setItem(key, JSON.stringify(value));
 }
 
+const locks = new Map<string, Promise<unknown>>();
+
+/**
+ * Serializes async work per storage key so that concurrent
+ * read-modify-write mutations cannot lose updates.
+ */
+export async function withStorageLock<T>(
+  key: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const prev = locks.get(key) ?? Promise.resolve();
+  const run = prev.then(fn, fn);
+  locks.set(
+    key,
+    run.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return run;
+}
+
+export const STORAGE_KEYS = KEYS;
+
 export async function loadProfile(): Promise<AshleyProfile> {
   const stored = await readJSON<Partial<AshleyProfile> | null>(KEYS.profile, null);
   return { ...DEFAULT_PROFILE, ...(stored ?? {}) };

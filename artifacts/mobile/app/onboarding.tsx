@@ -116,7 +116,7 @@ export default function OnboardingScreen(): React.JSX.Element {
         importance: 5,
       });
     }
-    if (final.identity && final.identity.trim().length > 20) {
+    if (final.identity && final.identity.trim().length > 0) {
       seeds.push({
         content: `Who she is: ${truncate(final.identity.trim(), 200)}`,
         tag: "user_fact",
