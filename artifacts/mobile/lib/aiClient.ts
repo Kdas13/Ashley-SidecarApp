@@ -221,29 +221,51 @@ export async function fetchAshleySelfie(
   const jobId = startData.jobId.trim();
 
   // 2. Poll for completion.
+  //
+  // We're defensive here: gpt-image-1 takes 30-60s, the proxy/mobile network
+  // can be flaky, and individual polls failing (network errors, transient
+  // 5xx, even unexpectedly empty 304 bodies if any layer adds caching back)
+  // must NOT abort the whole flow. Only a 404 (job expired/lost) or an
+  // explicit terminal status from the server ends the loop early.
   const deadline = Date.now() + SELFIE_POLL_TIMEOUT_MS;
   while (Date.now() < deadline) {
     await new Promise((resolve) =>
       setTimeout(resolve, SELFIE_POLL_INTERVAL_MS),
     );
-    const pollRes = await fetch(
-      `${base}/chat/selfie/${encodeURIComponent(jobId)}`,
-      { method: "GET" },
-    );
-    if (!pollRes.ok) {
-      // 404 means the job was pruned (TTL expired) — treat as a fail and
-      // bail out. Other 5xx are likely transient; one bad poll shouldn't
-      // kill the loop, so just continue to the next interval.
-      if (pollRes.status === 404) {
-        throw new Error("Selfie job expired before it finished.");
-      }
+
+    let pollRes: Response;
+    try {
+      pollRes = await fetch(
+        `${base}/chat/selfie/${encodeURIComponent(jobId)}`,
+        {
+          method: "GET",
+          headers: {
+            // Belt-and-suspenders: tell every cache layer not to revalidate
+            // with conditional requests, so we always get a fresh body.
+            "Cache-Control": "no-cache",
+          },
+        },
+      );
+    } catch {
+      // Network blip — try again next interval.
       continue;
     }
-    const pollData = (await pollRes.json()) as {
-      status?: unknown;
-      imageUrl?: unknown;
-      error?: unknown;
-    };
+
+    // 404 = job lost (server restart, TTL prune). That's terminal.
+    if (pollRes.status === 404) {
+      throw new Error("Selfie job expired before it finished.");
+    }
+    // Any other non-2xx (502/503/504/304-with-empty-body/etc.) — keep polling.
+    if (!pollRes.ok) continue;
+
+    let pollData: { status?: unknown; imageUrl?: unknown; error?: unknown };
+    try {
+      pollData = (await pollRes.json()) as typeof pollData;
+    } catch {
+      // Empty or malformed body. Don't bail — try again.
+      continue;
+    }
+
     if (pollData.status === "ready") {
       if (typeof pollData.imageUrl !== "string" || !pollData.imageUrl.trim()) {
         throw new Error("Selfie was ready but no image URL was returned.");
