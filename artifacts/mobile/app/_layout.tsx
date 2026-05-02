@@ -4,6 +4,7 @@ import {
   Inter_600SemiBold,
   Inter_700Bold,
 } from "@expo-google-fonts/inter";
+import { Feather } from "@expo/vector-icons";
 import { useFonts } from "expo-font";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
@@ -41,6 +42,11 @@ export default function RootLayout(): React.JSX.Element | null {
     Inter_500Medium,
     Inter_600SemiBold,
     Inter_700Bold,
+    // Spread Feather's icon font in so glyphs render. @expo/vector-icons
+    // normally self-loads, but only when no other useFonts call is racing
+    // it on the same render — without this, Feather icons appear as [X]
+    // placeholders in Expo Go.
+    ...Feather.font,
   });
   const [splashTimedOut, setSplashTimedOut] = useState(false);
 
