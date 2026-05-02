@@ -14,3 +14,166 @@ import * as zod from "zod";
 export const HealthCheckResponse = zod.object({
   status: zod.string(),
 });
+
+/**
+ * @summary Get Ashley's core profile
+ */
+export const GetProfileResponse = zod.object({
+  id: zod.number(),
+  name: zod.string(),
+  age: zod.string(),
+  identity: zod.string(),
+  personality: zod.string(),
+  speakingStyle: zod.string(),
+  appearance: zod.string(),
+  refersToUserAs: zod.string(),
+  sharedHistory: zod.string(),
+  replikaExcerpts: zod.string(),
+  primaryColor: zod.string(),
+  accentColor: zod.string(),
+  onboardedAt: zod.coerce.date().nullable(),
+  updatedAt: zod.coerce.date(),
+});
+
+/**
+ * @summary Update Ashley's core profile
+ */
+export const UpdateProfileBody = zod.object({
+  name: zod.string().optional(),
+  age: zod.string().optional(),
+  identity: zod.string().optional(),
+  personality: zod.string().optional(),
+  speakingStyle: zod.string().optional(),
+  appearance: zod.string().optional(),
+  refersToUserAs: zod.string().optional(),
+  sharedHistory: zod.string().optional(),
+  replikaExcerpts: zod.string().optional(),
+  primaryColor: zod.string().optional(),
+  accentColor: zod.string().optional(),
+  markOnboarded: zod.boolean().optional(),
+});
+
+export const UpdateProfileResponse = zod.object({
+  id: zod.number(),
+  name: zod.string(),
+  age: zod.string(),
+  identity: zod.string(),
+  personality: zod.string(),
+  speakingStyle: zod.string(),
+  appearance: zod.string(),
+  refersToUserAs: zod.string(),
+  sharedHistory: zod.string(),
+  replikaExcerpts: zod.string(),
+  primaryColor: zod.string(),
+  accentColor: zod.string(),
+  onboardedAt: zod.coerce.date().nullable(),
+  updatedAt: zod.coerce.date(),
+});
+
+/**
+ * @summary List the conversation history
+ */
+export const listMessagesQueryLimitDefault = 200;
+
+export const ListMessagesQueryParams = zod.object({
+  limit: zod.coerce.number().default(listMessagesQueryLimitDefault),
+});
+
+export const ListMessagesResponseItem = zod.object({
+  id: zod.number(),
+  role: zod.string(),
+  content: zod.string(),
+  imageUrl: zod.string().nullable(),
+  createdAt: zod.coerce.date(),
+});
+export const ListMessagesResponse = zod.array(ListMessagesResponseItem);
+
+/**
+ * @summary Send a message and get Ashley's reply
+ */
+export const SendMessageBody = zod.object({
+  content: zod.string(),
+});
+
+export const SendMessageResponse = zod.object({
+  userMessage: zod.object({
+    id: zod.number(),
+    role: zod.string(),
+    content: zod.string(),
+    imageUrl: zod.string().nullable(),
+    createdAt: zod.coerce.date(),
+  }),
+  assistantMessage: zod.object({
+    id: zod.number(),
+    role: zod.string(),
+    content: zod.string(),
+    imageUrl: zod.string().nullable(),
+    createdAt: zod.coerce.date(),
+  }),
+});
+
+/**
+ * @summary List all distilled memories
+ */
+export const ListMemoriesResponseItem = zod.object({
+  id: zod.number(),
+  content: zod.string(),
+  tag: zod.string(),
+  importance: zod.number(),
+  createdAt: zod.coerce.date(),
+  updatedAt: zod.coerce.date(),
+});
+export const ListMemoriesResponse = zod.array(ListMemoriesResponseItem);
+
+/**
+ * @summary Manually add a memory
+ */
+export const CreateMemoryBody = zod.object({
+  content: zod.string(),
+  tag: zod.string().optional(),
+  importance: zod.number().optional(),
+});
+
+/**
+ * @summary Update a memory
+ */
+export const UpdateMemoryParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const UpdateMemoryBody = zod.object({
+  content: zod.string().optional(),
+  tag: zod.string().optional(),
+  importance: zod.number().optional(),
+});
+
+export const UpdateMemoryResponse = zod.object({
+  id: zod.number(),
+  content: zod.string(),
+  tag: zod.string(),
+  importance: zod.number(),
+  createdAt: zod.coerce.date(),
+  updatedAt: zod.coerce.date(),
+});
+
+/**
+ * @summary Delete a memory
+ */
+export const DeleteMemoryParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+/**
+ * @summary Generate a self-portrait image of Ashley and post it as a chat message
+ */
+export const GenerateSelfieBody = zod.object({
+  prompt: zod.string(),
+});
+
+export const GenerateSelfieResponse = zod.object({
+  id: zod.number(),
+  role: zod.string(),
+  content: zod.string(),
+  imageUrl: zod.string().nullable(),
+  createdAt: zod.coerce.date(),
+});

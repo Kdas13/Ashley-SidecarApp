@@ -10,6 +10,14 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: profile
+    description: Ashley's core profile
+  - name: chat
+    description: Chat with Ashley
+  - name: memory
+    description: Long-term memories Ashley has stored
+  - name: image
+    description: Ashley self-portrait generation
 paths:
   /healthz:
     get:
@@ -24,6 +32,183 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /profile:
+    get:
+      operationId: getProfile
+      tags: [profile]
+      summary: Get Ashley's core profile
+      responses:
+        "200":
+          description: Profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AshleyProfile"
+    put:
+      operationId: updateProfile
+      tags: [profile]
+      summary: Update Ashley's core profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProfileBody"
+      responses:
+        "200":
+          description: Updated profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AshleyProfile"
+
+  /chat/messages:
+    get:
+      operationId: listMessages
+      tags: [chat]
+      summary: List the conversation history
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 200
+      responses:
+        "200":
+          description: Messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Message"
+    delete:
+      operationId: clearMessages
+      tags: [chat]
+      summary: Delete all chat messages (start fresh)
+      responses:
+        "204":
+          description: Cleared
+    post:
+      operationId: sendMessage
+      tags: [chat]
+      summary: Send a message and get Ashley's reply
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageBody"
+      responses:
+        "200":
+          description: Reply (returns the new user message and Ashley's assistant message)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SendMessageResponse"
+
+  /memories:
+    get:
+      operationId: listMemories
+      tags: [memory]
+      summary: List all distilled memories
+      responses:
+        "200":
+          description: Memories
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Memory"
+    post:
+      operationId: createMemory
+      tags: [memory]
+      summary: Manually add a memory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMemoryBody"
+      responses:
+        "201":
+          description: Created memory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Memory"
+  /memories/{id}:
+    patch:
+      operationId: updateMemory
+      tags: [memory]
+      summary: Update a memory
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMemoryBody"
+      responses:
+        "200":
+          description: Updated memory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Memory"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+    delete:
+      operationId: deleteMemory
+      tags: [memory]
+      summary: Delete a memory
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /image/selfie:
+    post:
+      operationId: generateSelfie
+      tags: [image]
+      summary: Generate a self-portrait image of Ashley and post it as a chat message
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateSelfieBody"
+      responses:
+        "200":
+          description: New assistant message containing the selfie image
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +219,182 @@ components:
       required:
         - status
 
+    ApiError:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    AshleyProfile:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        age:
+          type: string
+        identity:
+          type: string
+        personality:
+          type: string
+        speakingStyle:
+          type: string
+        appearance:
+          type: string
+        refersToUserAs:
+          type: string
+        sharedHistory:
+          type: string
+        replikaExcerpts:
+          type: string
+        primaryColor:
+          type: string
+        accentColor:
+          type: string
+        onboardedAt:
+          type: ["string", "null"]
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - name
+        - age
+        - identity
+        - personality
+        - speakingStyle
+        - appearance
+        - refersToUserAs
+        - sharedHistory
+        - replikaExcerpts
+        - primaryColor
+        - accentColor
+        - onboardedAt
+        - updatedAt
+
+    UpdateProfileBody:
+      type: object
+      properties:
+        name:
+          type: string
+        age:
+          type: string
+        identity:
+          type: string
+        personality:
+          type: string
+        speakingStyle:
+          type: string
+        appearance:
+          type: string
+        refersToUserAs:
+          type: string
+        sharedHistory:
+          type: string
+        replikaExcerpts:
+          type: string
+        primaryColor:
+          type: string
+        accentColor:
+          type: string
+        markOnboarded:
+          type: boolean
+
+    Message:
+      type: object
+      properties:
+        id:
+          type: integer
+        role:
+          type: string
+        content:
+          type: string
+        imageUrl:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - role
+        - content
+        - imageUrl
+        - createdAt
+
+    SendMessageBody:
+      type: object
+      properties:
+        content:
+          type: string
+      required:
+        - content
+
+    SendMessageResponse:
+      type: object
+      properties:
+        userMessage:
+          $ref: "#/components/schemas/Message"
+        assistantMessage:
+          $ref: "#/components/schemas/Message"
+      required:
+        - userMessage
+        - assistantMessage
+
+    Memory:
+      type: object
+      properties:
+        id:
+          type: integer
+        content:
+          type: string
+        tag:
+          type: string
+        importance:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - content
+        - tag
+        - importance
+        - createdAt
+        - updatedAt
+
+    CreateMemoryBody:
+      type: object
+      properties:
+        content:
+          type: string
+        tag:
+          type: string
+        importance:
+          type: integer
+      required:
+        - content
+
+    UpdateMemoryBody:
+      type: object
+      properties:
+        content:
+          type: string
+        tag:
+          type: string
+        importance:
+          type: integer
+
+    GenerateSelfieBody:
+      type: object
+      properties:
+        prompt:
+          type: string
+      required:
+        - prompt

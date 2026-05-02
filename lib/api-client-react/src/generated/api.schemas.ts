@@ -8,3 +8,87 @@
 export interface HealthStatus {
   status: string;
 }
+
+export interface ApiError {
+  error: string;
+}
+
+export interface AshleyProfile {
+  id: number;
+  name: string;
+  age: string;
+  identity: string;
+  personality: string;
+  speakingStyle: string;
+  appearance: string;
+  refersToUserAs: string;
+  sharedHistory: string;
+  replikaExcerpts: string;
+  primaryColor: string;
+  accentColor: string;
+  /** @nullable */
+  onboardedAt: string | null;
+  updatedAt: string;
+}
+
+export interface UpdateProfileBody {
+  name?: string;
+  age?: string;
+  identity?: string;
+  personality?: string;
+  speakingStyle?: string;
+  appearance?: string;
+  refersToUserAs?: string;
+  sharedHistory?: string;
+  replikaExcerpts?: string;
+  primaryColor?: string;
+  accentColor?: string;
+  markOnboarded?: boolean;
+}
+
+export interface Message {
+  id: number;
+  role: string;
+  content: string;
+  /** @nullable */
+  imageUrl: string | null;
+  createdAt: string;
+}
+
+export interface SendMessageBody {
+  content: string;
+}
+
+export interface SendMessageResponse {
+  userMessage: Message;
+  assistantMessage: Message;
+}
+
+export interface Memory {
+  id: number;
+  content: string;
+  tag: string;
+  importance: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateMemoryBody {
+  content: string;
+  tag?: string;
+  importance?: number;
+}
+
+export interface UpdateMemoryBody {
+  content?: string;
+  tag?: string;
+  importance?: number;
+}
+
+export interface GenerateSelfieBody {
+  prompt: string;
+}
+
+export type ListMessagesParams = {
+  limit?: number;
+};

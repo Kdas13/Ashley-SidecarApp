@@ -5,4 +5,16 @@ outputs = []
 id = "LVmns5F_AwdgVkUhMXDpD"
 uri = "file://artifacts/mobile/assets/images/icon.png"
 type = "image"
-title = "ashley sidecar icon"
+title = "ashley app icon"
+
+[[generated]]
+id = "OLuksEZdcGiDM92o2IpZc"
+uri = "file://artifacts/mobile/assets/images/ashley_avatar.png"
+type = "image"
+title = "ashley avatar"
+
+[[generated]]
+id = "hOJdHb25wKVxgQH63Qh4g"
+uri = "file://artifacts/mobile/assets/images/ambient_bg.png"
+type = "image"
+title = "ambient background"

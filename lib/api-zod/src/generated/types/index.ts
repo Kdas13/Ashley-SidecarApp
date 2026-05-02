@@ -6,4 +6,15 @@
  * OpenAPI spec version: 0.1.0
  */
 
+export * from "./apiError";
+export * from "./ashleyProfile";
+export * from "./createMemoryBody";
+export * from "./generateSelfieBody";
 export * from "./healthStatus";
+export * from "./listMessagesParams";
+export * from "./memory";
+export * from "./message";
+export * from "./sendMessageBody";
+export * from "./sendMessageResponse";
+export * from "./updateMemoryBody";
+export * from "./updateProfileBody";
