@@ -14,68 +14,47 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useQueryClient } from "@tanstack/react-query";
 
 import {
-  useListMemories,
+  useMemories,
   useCreateMemory,
   useUpdateMemory,
   useDeleteMemory,
-  getListMemoriesQueryKey,
-  type Memory,
-} from "@workspace/api-client-react";
+} from "@/lib/useMemories";
+import type { Memory, MemoryTag } from "@/lib/storage";
 import colors from "@/constants/colors";
 
-const TAGS = [
+const TAGS: MemoryTag[] = [
   "general",
   "preference",
   "user_fact",
   "event",
   "relationship",
-] as const;
+];
 
 export default function MemoriesScreen(): React.JSX.Element {
   const insets = useSafeAreaInsets();
-  const qc = useQueryClient();
   const [content, setContent] = useState("");
-  const [tag, setTag] = useState<(typeof TAGS)[number]>("general");
-  const [editingId, setEditingId] = useState<number | null>(null);
+  const [tag, setTag] = useState<MemoryTag>("general");
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState("");
-  const [editTag, setEditTag] = useState<string>("general");
+  const [editTag, setEditTag] = useState<MemoryTag>("general");
   const [editImportance, setEditImportance] = useState<number>(3);
 
-  const memoriesQuery = useListMemories();
-
-  const create = useCreateMemory({
-    mutation: {
-      onSuccess: () => {
-        qc.invalidateQueries({ queryKey: getListMemoriesQueryKey() });
-        setContent("");
-      },
-    },
-  });
-
-  const update = useUpdateMemory({
-    mutation: {
-      onSuccess: () => {
-        qc.invalidateQueries({ queryKey: getListMemoriesQueryKey() });
-        setEditingId(null);
-      },
-    },
-  });
-
-  const remove = useDeleteMemory({
-    mutation: {
-      onSuccess: () => {
-        qc.invalidateQueries({ queryKey: getListMemoriesQueryKey() });
-      },
-    },
-  });
+  const memoriesQuery = useMemories();
+  const create = useCreateMemory();
+  const update = useUpdateMemory();
+  const remove = useDeleteMemory();
 
   const submit = () => {
     const c = content.trim();
     if (!c) return;
-    create.mutate({ data: { content: c, tag, importance: 4 } });
+    create.mutate(
+      { content: c, tag, importance: 4 },
+      {
+        onSuccess: () => setContent(""),
+      },
+    );
   };
 
   const startEdit = (m: Memory) => {
@@ -93,22 +72,29 @@ export default function MemoriesScreen(): React.JSX.Element {
     if (editingId === null) return;
     const c = editContent.trim();
     if (!c) return;
-    update.mutate({
-      id: editingId,
-      data: { content: c, tag: editTag, importance: editImportance },
-    });
+    update.mutate(
+      {
+        id: editingId,
+        content: c,
+        tag: editTag,
+        importance: editImportance,
+      },
+      {
+        onSuccess: () => setEditingId(null),
+      },
+    );
   };
 
   const confirmDelete = (m: Memory) => {
     Alert.alert(
       "Forget this?",
-      `"${m.content}" — Ashley will no longer remember this.`,
+      `"${m.content}" will be removed.`,
       [
         { text: "Keep", style: "cancel" },
         {
           text: "Forget",
           style: "destructive",
-          onPress: () => remove.mutate({ id: m.id }),
+          onPress: () => remove.mutate(m.id),
         },
       ],
     );
@@ -128,7 +114,7 @@ export default function MemoriesScreen(): React.JSX.Element {
           >
             <Feather name="chevron-left" size={22} color={colors.light.text} />
           </Pressable>
-          <Text style={styles.headerTitle}>What Ashley remembers</Text>
+          <Text style={styles.headerTitle}>What she remembers</Text>
           <View style={styles.iconBtn} />
         </View>
 
@@ -139,14 +125,14 @@ export default function MemoriesScreen(): React.JSX.Element {
         ) : (
           <FlatList
             data={memoriesQuery.data ?? []}
-            keyExtractor={(m) => String(m.id)}
+            keyExtractor={(m) => m.id}
             contentContainerStyle={styles.list}
             ListEmptyComponent={
               <View style={styles.empty}>
                 <Text style={styles.emptyTitle}>No memories yet</Text>
                 <Text style={styles.emptyText}>
-                  As you chat, Ashley will start remembering things about you.
-                  You can also add memories manually below.
+                  Add anything you want her to remember about you, your life,
+                  or the two of you.
                 </Text>
               </View>
             }
@@ -248,11 +234,22 @@ export default function MemoriesScreen(): React.JSX.Element {
                   <View style={{ flex: 1 }}>
                     <View style={styles.tagRow}>
                       <View style={styles.tagBadge}>
-                        <Text style={styles.tagText}>{item.tag}</Text>
+                        <Text style={styles.tagText}>{item.tag.replace("_", " ")}</Text>
                       </View>
-                      <Text style={styles.importance}>
-                        {"★".repeat(item.importance)}
-                      </Text>
+                      <View style={styles.starsRow}>
+                        {[1, 2, 3, 4, 5].map((n) => (
+                          <Feather
+                            key={n}
+                            name="star"
+                            size={11}
+                            color={
+                              n <= item.importance
+                                ? colors.light.primary
+                                : "rgba(245, 232, 216, 0.2)"
+                            }
+                          />
+                        ))}
+                      </View>
                       <View style={{ flex: 1 }} />
                       <Feather
                         name="edit-2"
@@ -356,7 +353,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  list: { padding: 14, paddingBottom: 24 },
+  list: { padding: 14, paddingBottom: 24, flexGrow: 1 },
   empty: { padding: 32, alignItems: "center" },
   emptyTitle: {
     color: colors.light.text,
@@ -407,11 +404,6 @@ const styles = StyleSheet.create({
   },
   tagText: {
     color: colors.light.accent,
-    fontFamily: "Inter_500Medium",
-    fontSize: 11,
-  },
-  importance: {
-    color: colors.light.primary,
     fontFamily: "Inter_500Medium",
     fontSize: 11,
   },

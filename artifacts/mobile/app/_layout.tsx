@@ -16,19 +16,12 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { setBaseUrl } from "@workspace/api-client-react";
 import { queryClient } from "@/lib/queryClient";
-import { getApiBaseUrl } from "@/lib/api";
 
 SplashScreen.preventAutoHideAsync();
 SystemUI.setBackgroundColorAsync("#1a1325").catch(() => {
   /* ignore */
 });
-
-const baseUrl = getApiBaseUrl();
-if (baseUrl) {
-  setBaseUrl(baseUrl);
-}
 
 function RootLayoutNav(): React.JSX.Element {
   return (

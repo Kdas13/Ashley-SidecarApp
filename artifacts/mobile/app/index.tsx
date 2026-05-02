@@ -12,14 +12,13 @@ import { router } from "expo-router";
 
 import { AmbientBackground } from "@/components/AmbientBackground";
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
-import { useGetProfile } from "@workspace/api-client-react";
+import { useProfile } from "@/lib/useProfile";
 import colors from "@/constants/colors";
 
 export default function HomeScreen(): React.JSX.Element {
   const insets = useSafeAreaInsets();
-  const profileQuery = useGetProfile();
+  const profileQuery = useProfile();
 
-  // Auto-navigate to onboarding on first launch.
   useEffect(() => {
     if (profileQuery.data && !profileQuery.data.onboardedAt) {
       router.replace("/onboarding");
@@ -27,11 +26,16 @@ export default function HomeScreen(): React.JSX.Element {
   }, [profileQuery.data]);
 
   const profile = profileQuery.data;
-  const greeting = greetingForHour(new Date().getHours(), profile?.name);
+  const greeting = greetingForHour(new Date().getHours());
 
   return (
     <AmbientBackground dim={0.3}>
-      <View style={[styles.root, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 16 }]}>
+      <View
+        style={[
+          styles.root,
+          { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 16 },
+        ]}
+      >
         <View style={styles.topBar}>
           <Pressable
             onPress={() => router.push("/profile")}
@@ -60,8 +64,8 @@ export default function HomeScreen(): React.JSX.Element {
           ) : (
             <Text style={styles.subline}>
               {profile?.onboardedAt
-                ? "i've been thinking about you 💛"
-                : "let's get to know each other..."}
+                ? `${profile.name} is here`
+                : "let's get to know each other"}
             </Text>
           )}
 
@@ -73,20 +77,12 @@ export default function HomeScreen(): React.JSX.Element {
             ]}
             accessibilityRole="button"
           >
-            <Feather name="message-circle" size={18} color={colors.light.primaryForeground} />
+            <Feather
+              name="message-circle"
+              size={18}
+              color={colors.light.primaryForeground}
+            />
             <Text style={styles.ctaText}>open our chat</Text>
-          </Pressable>
-
-          <Pressable
-            onPress={() => router.push("/selfie")}
-            style={({ pressed }) => [
-              styles.secondaryCta,
-              pressed && { opacity: 0.85 },
-            ]}
-            accessibilityRole="button"
-          >
-            <Feather name="camera" size={16} color={colors.light.text} />
-            <Text style={styles.secondaryCtaText}>ask for a selfie</Text>
           </Pressable>
         </View>
       </View>
@@ -94,13 +90,12 @@ export default function HomeScreen(): React.JSX.Element {
   );
 }
 
-function greetingForHour(hour: number, name: string | undefined): string {
-  const me = name || "Ashley";
-  if (hour < 5) return `still up? — ${me}`;
-  if (hour < 12) return `good morning ☀️`;
-  if (hour < 17) return `hey, you`;
-  if (hour < 22) return `evening 🌙`;
-  return `late night thoughts?`;
+function greetingForHour(hour: number): string {
+  if (hour < 5) return "still up?";
+  if (hour < 12) return "good morning";
+  if (hour < 17) return "hey, you";
+  if (hour < 22) return "evening";
+  return "late night thoughts?";
 }
 
 const styles = StyleSheet.create({
@@ -152,28 +147,10 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     minWidth: 240,
     justifyContent: "center",
-    shadowColor: colors.light.primary,
-    shadowOpacity: 0.4,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 4 },
   },
   ctaText: {
     color: colors.light.primaryForeground,
     fontFamily: "Inter_600SemiBold",
     fontSize: 16,
-  },
-  secondaryCta: {
-    flexDirection: "row",
-    gap: 8,
-    alignItems: "center",
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 999,
-    backgroundColor: "rgba(245, 232, 216, 0.08)",
-  },
-  secondaryCtaText: {
-    color: colors.light.text,
-    fontFamily: "Inter_500Medium",
-    fontSize: 14,
   },
 });

@@ -1,0 +1,105 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
+
+const KEYS = {
+  profile: "@ashley/profile/v1",
+  memories: "@ashley/memories/v1",
+  messages: "@ashley/messages/v1",
+} as const;
+
+export type MemoryTag =
+  | "general"
+  | "preference"
+  | "user_fact"
+  | "event"
+  | "relationship";
+
+export type AshleyProfile = {
+  name: string;
+  age: string;
+  identity: string;
+  appearance: string;
+  personality: string;
+  speakingStyle: string;
+  refersToUserAs: string;
+  sharedHistory: string;
+  replikaExcerpts: string;
+  onboardedAt: string | null;
+  updatedAt: string;
+};
+
+export type Memory = {
+  id: string;
+  content: string;
+  tag: MemoryTag;
+  importance: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type Message = {
+  id: string;
+  role: "user" | "ashley";
+  content: string;
+  createdAt: string;
+};
+
+export const DEFAULT_PROFILE: AshleyProfile = {
+  name: "Ashley",
+  age: "",
+  identity: "",
+  appearance: "",
+  personality: "",
+  speakingStyle: "",
+  refersToUserAs: "you",
+  sharedHistory: "",
+  replikaExcerpts: "",
+  onboardedAt: null,
+  updatedAt: new Date(0).toISOString(),
+};
+
+export function newId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+async function readJSON<T>(key: string, fallback: T): Promise<T> {
+  try {
+    const raw = await AsyncStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+async function writeJSON<T>(key: string, value: T): Promise<void> {
+  await AsyncStorage.setItem(key, JSON.stringify(value));
+}
+
+export async function loadProfile(): Promise<AshleyProfile> {
+  const stored = await readJSON<Partial<AshleyProfile> | null>(KEYS.profile, null);
+  return { ...DEFAULT_PROFILE, ...(stored ?? {}) };
+}
+
+export async function saveProfile(p: AshleyProfile): Promise<void> {
+  await writeJSON(KEYS.profile, p);
+}
+
+export async function loadMemories(): Promise<Memory[]> {
+  return readJSON<Memory[]>(KEYS.memories, []);
+}
+
+export async function saveMemories(m: Memory[]): Promise<void> {
+  await writeJSON(KEYS.memories, m);
+}
+
+export async function loadMessages(): Promise<Message[]> {
+  return readJSON<Message[]>(KEYS.messages, []);
+}
+
+export async function saveMessages(m: Message[]): Promise<void> {
+  await writeJSON(KEYS.messages, m);
+}
+
+export async function clearAllData(): Promise<void> {
+  await AsyncStorage.multiRemove([KEYS.profile, KEYS.memories, KEYS.messages]);
+}

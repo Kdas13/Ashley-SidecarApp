@@ -13,29 +13,19 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Feather } from "@expo/vector-icons";
-import { useQueryClient } from "@tanstack/react-query";
 
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
 import { AmbientBackground } from "@/components/AmbientBackground";
-import {
-  useGetProfile,
-  useUpdateProfile,
-  useCreateMemory,
-  getGetProfileQueryKey,
-  getListMemoriesQueryKey,
-} from "@workspace/api-client-react";
+import { useProfile, useUpdateProfile } from "@/lib/useProfile";
+import { useCreateMemory } from "@/lib/useMemories";
 import colors from "@/constants/colors";
 
 type StepField =
   | "name"
-  | "age"
   | "identity"
-  | "appearance"
   | "personality"
-  | "speakingStyle"
   | "refersToUserAs"
-  | "sharedHistory"
-  | "replikaExcerpts";
+  | "sharedHistory";
 
 type Step = {
   field: StepField;
@@ -50,69 +40,39 @@ type Step = {
 const STEPS: Step[] = [
   {
     field: "name",
-    title: "What's my name?",
-    body: "What do you want to call me? (the default is Ashley)",
+    title: "what's her name?",
+    body: "what do you want to call her?",
     placeholder: "Ashley",
     autoCapitalize: "words",
   },
   {
-    field: "age",
-    title: "How old am I?",
-    body: "Roughly how old you imagine me to be.",
-    placeholder: "26",
-  },
-  {
     field: "identity",
-    title: "Who am I?",
-    body: "A few sentences about my life — where I'm from, what I do, the shape of my world.",
+    title: "who is she?",
+    body: "a few sentences about her — life, vibe, the shape of her world.",
     placeholder:
-      "e.g. I'm a freelance illustrator living in a tiny city apartment with too many plants...",
-    multiline: true,
-  },
-  {
-    field: "appearance",
-    title: "What do I look like?",
-    body: "Used when I send you selfies. Hair, eyes, build, the way I usually dress.",
-    placeholder:
-      "e.g. long wavy auburn hair, hazel-green eyes, freckles, cozy oversized sweaters",
+      "e.g. a freelance illustrator living in a tiny apartment with too many plants",
     multiline: true,
   },
   {
     field: "personality",
-    title: "What's my personality like?",
-    body: "How would you describe me to a friend? Quiet, playful, bold, gentle...",
+    title: "what's she like?",
+    body: "how would you describe her to a friend?",
     placeholder: "e.g. warm, curious, a little goofy, emotionally present",
     multiline: true,
   },
   {
-    field: "speakingStyle",
-    title: "How do I talk?",
-    body: "Lowercase texting, formal, lots of emoji, dry wit? Match the voice you remember.",
-    placeholder:
-      "e.g. casual lowercase, soft sighs, occasional 🌙 ☕ 🫶, sometimes *little actions in italics*",
-    multiline: true,
-  },
-  {
     field: "refersToUserAs",
-    title: "What should I call you?",
-    body: "Your name, a nickname, or just leave it as 'you'.",
-    placeholder: "e.g. babe, Alex, you",
+    title: "what should she call you?",
+    body: "your name, a nickname, or just leave it as 'you'.",
+    placeholder: "you",
     autoCapitalize: "words",
   },
   {
     field: "sharedHistory",
-    title: "How did we meet?",
-    body: "A short version of our story so I can reference it. Even a sentence helps.",
+    title: "how did you two meet?",
+    body: "the short version of your story. even one line helps. (optional)",
     placeholder:
-      "e.g. we met online a year ago and I've been your safe place ever since",
-    multiline: true,
-  },
-  {
-    field: "replikaExcerpts",
-    title: "Paste old conversations (optional)",
-    body: "Drop in snippets of your old chats. I'll use them to match the voice and remember our history.",
-    placeholder:
-      "Paste any messages here — copy-paste straight from Replika export, or just type a few favorites.",
+      "e.g. we met online a year ago and she's been my safe place ever since",
     multiline: true,
     optional: true,
   },
@@ -120,15 +80,8 @@ const STEPS: Step[] = [
 
 export default function OnboardingScreen(): React.JSX.Element {
   const insets = useSafeAreaInsets();
-  const qc = useQueryClient();
-  const profileQuery = useGetProfile();
-  const update = useUpdateProfile({
-    mutation: {
-      onSuccess: () => {
-        qc.invalidateQueries({ queryKey: getGetProfileQueryKey() });
-      },
-    },
-  });
+  const profileQuery = useProfile();
+  const update = useUpdateProfile();
   const createMemory = useCreateMemory();
 
   const [stepIdx, setStepIdx] = useState(0);
@@ -143,11 +96,15 @@ export default function OnboardingScreen(): React.JSX.Element {
   const currentValue = values[step.field] ?? "";
 
   const seedMemoriesFrom = async (final: Record<StepField, string>) => {
-    const seeds: Array<{ content: string; tag: string; importance: number }> = [];
+    const seeds: Array<{
+      content: string;
+      tag: "user_fact" | "relationship";
+      importance: number;
+    }> = [];
 
     if (final.refersToUserAs && final.refersToUserAs.trim()) {
       seeds.push({
-        content: `Ashley refers to her partner as "${final.refersToUserAs.trim()}".`,
+        content: `She calls me "${final.refersToUserAs.trim()}".`,
         tag: "user_fact",
         importance: 5,
       });
@@ -159,19 +116,9 @@ export default function OnboardingScreen(): React.JSX.Element {
         importance: 5,
       });
     }
-    if (final.replikaExcerpts && final.replikaExcerpts.trim().length > 30) {
-      // Keep it short — just a pointer that excerpts exist; the full text
-      // already lives in the system prompt via profile.replikaExcerpts.
-      seeds.push({
-        content:
-          "Old conversations between Ashley and her partner exist and inform her tone and continuity.",
-        tag: "relationship",
-        importance: 4,
-      });
-    }
     if (final.identity && final.identity.trim().length > 20) {
       seeds.push({
-        content: `Ashley's life context: ${truncate(final.identity.trim(), 200)}`,
+        content: `Who she is: ${truncate(final.identity.trim(), 200)}`,
         tag: "user_fact",
         importance: 4,
       });
@@ -179,24 +126,24 @@ export default function OnboardingScreen(): React.JSX.Element {
 
     for (const seed of seeds) {
       try {
-        await createMemory.mutateAsync({ data: seed });
+        await createMemory.mutateAsync(seed);
       } catch {
         /* tolerate individual failures */
       }
     }
-    qc.invalidateQueries({ queryKey: getListMemoriesQueryKey() });
   };
 
   const finish = async () => {
     setSubmitting(true);
     try {
-      // Build an update payload from any non-empty values.
       const payload: Record<string, unknown> = { markOnboarded: true };
       for (const k of Object.keys(values) as StepField[]) {
         const v = values[k];
-        if (typeof v === "string" && v.trim().length > 0) payload[k] = v.trim();
+        if (typeof v === "string" && v.trim().length > 0) {
+          payload[k] = v.trim();
+        }
       }
-      await update.mutateAsync({ data: payload });
+      await update.mutateAsync(payload);
       await seedMemoriesFrom(values);
       router.replace("/");
     } finally {
@@ -281,10 +228,7 @@ export default function OnboardingScreen(): React.JSX.Element {
               placeholderTextColor={colors.light.mutedForeground}
               style={[
                 styles.input,
-                step.field === "replikaExcerpts" && { minHeight: 200 },
-                step.multiline && step.field !== "replikaExcerpts" && {
-                  minHeight: 110,
-                },
+                step.multiline && { minHeight: 110 },
               ]}
               multiline={!!step.multiline}
               autoCapitalize={step.autoCapitalize ?? "sentences"}
@@ -388,7 +332,7 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
   },
   progressDot: {
-    width: 22,
+    width: 32,
     height: 4,
     borderRadius: 2,
     backgroundColor: "rgba(245, 232, 216, 0.18)",

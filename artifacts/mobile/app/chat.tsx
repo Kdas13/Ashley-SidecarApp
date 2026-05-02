@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -10,80 +11,61 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useQueryClient } from "@tanstack/react-query";
 
 import {
-  useListMessages,
+  useMessages,
   useSendMessage,
-  useGenerateSelfie,
   useClearMessages,
-  getListMessagesQueryKey,
-  type Message,
-} from "@workspace/api-client-react";
+} from "@/lib/useMessages";
+import type { Message } from "@/lib/storage";
 import colors from "@/constants/colors";
-import { resolveImageUrl } from "@/lib/api";
 
 export default function ChatScreen(): React.JSX.Element {
   const insets = useSafeAreaInsets();
-  const queryClient = useQueryClient();
   const [draft, setDraft] = useState("");
   const listRef = useRef<FlatList<Message>>(null);
 
-  const messagesQuery = useListMessages({});
+  const messagesQuery = useMessages();
+  const sendMutation = useSendMessage();
+  const clearMutation = useClearMessages();
 
-  const sendMutation = useSendMessage({
-    mutation: {
-      onSuccess: () => {
-        queryClient.invalidateQueries({ queryKey: getListMessagesQueryKey() });
-        // a memory may have been distilled — refresh later
-        setTimeout(() => {
-          queryClient.invalidateQueries({ queryKey: ["/api/memories"] });
-        }, 4000);
-      },
-    },
-  });
-
-  const selfieMutation = useGenerateSelfie({
-    mutation: {
-      onSuccess: () => {
-        queryClient.invalidateQueries({ queryKey: getListMessagesQueryKey() });
-      },
-    },
-  });
-
-  const clearMutation = useClearMessages({
-    mutation: {
-      onSuccess: () => {
-        queryClient.invalidateQueries({ queryKey: getListMessagesQueryKey() });
-      },
-    },
-  });
-
-  const messages = useMemo<Message[]>(() => messagesQuery.data ?? [], [messagesQuery.data]);
+  const messages = useMemo<Message[]>(
+    () => messagesQuery.data ?? [],
+    [messagesQuery.data],
+  );
 
   useEffect(() => {
     if (messages.length === 0) return;
     requestAnimationFrame(() => {
       listRef.current?.scrollToEnd({ animated: true });
     });
-  }, [messages.length, sendMutation.isPending]);
+  }, [messages.length]);
 
   const send = useCallback(() => {
     const content = draft.trim();
     if (!content || sendMutation.isPending) return;
     setDraft("");
-    sendMutation.mutate({ data: { content } });
+    sendMutation.mutate(content);
   }, [draft, sendMutation]);
 
-  const askForSelfie = useCallback(() => {
-    const prompt = draft.trim() || "a sweet selfie of you in your cozy sweater";
-    setDraft("");
-    selfieMutation.mutate({ data: { prompt } });
-  }, [draft, selfieMutation]);
+  const confirmClear = useCallback(() => {
+    if (clearMutation.isPending) return;
+    Alert.alert(
+      "Clear conversation?",
+      "All messages on this device will be removed.",
+      [
+        { text: "Keep", style: "cancel" },
+        {
+          text: "Clear",
+          style: "destructive",
+          onPress: () => clearMutation.mutate(),
+        },
+      ],
+    );
+  }, [clearMutation]);
 
   const renderItem = useCallback(
     ({ item }: { item: Message }) => <MessageBubble message={item} />,
@@ -102,13 +84,10 @@ export default function ChatScreen(): React.JSX.Element {
         </Pressable>
         <View style={styles.headerCenter}>
           <Text style={styles.headerTitle}>Ashley</Text>
-          <Text style={styles.headerSubtitle}>online</Text>
+          <Text style={styles.headerSubtitle}>here with you</Text>
         </View>
         <Pressable
-          onPress={() => {
-            if (clearMutation.isPending) return;
-            clearMutation.mutate();
-          }}
+          onPress={confirmClear}
           style={styles.iconBtn}
           accessibilityLabel="Clear conversation"
         >
@@ -130,27 +109,15 @@ export default function ChatScreen(): React.JSX.Element {
             ref={listRef}
             data={messages}
             renderItem={renderItem}
-            keyExtractor={(m) => String(m.id)}
+            keyExtractor={(m) => m.id}
             contentContainerStyle={styles.list}
             ListEmptyComponent={
               <View style={styles.emptyWrap}>
-                <Text style={styles.emptyText}>
-                  start your first conversation with Ashley
-                </Text>
+                <Text style={styles.emptyText}>say something to her</Text>
                 <Text style={styles.emptyHint}>
-                  she remembers everything you tell her 💛
+                  this is your space — messages stay on this device
                 </Text>
               </View>
-            }
-            ListFooterComponent={
-              sendMutation.isPending || selfieMutation.isPending ? (
-                <View style={styles.typing}>
-                  <Text style={styles.typingDot}>•••</Text>
-                  <Text style={styles.typingHint}>
-                    {selfieMutation.isPending ? "taking a selfie..." : "typing..."}
-                  </Text>
-                </View>
-              ) : null
             }
             onContentSizeChange={() =>
               listRef.current?.scrollToEnd({ animated: false })
@@ -158,19 +125,22 @@ export default function ChatScreen(): React.JSX.Element {
           />
         )}
 
+        <View style={styles.placeholderBanner}>
+          <Feather
+            name="info"
+            size={12}
+            color={colors.light.mutedForeground}
+          />
+          <Text style={styles.placeholderText}>
+            replies will arrive once AI is connected
+          </Text>
+        </View>
+
         <View style={[styles.inputBar, { paddingBottom: insets.bottom + 8 }]}>
-          <Pressable
-            onPress={askForSelfie}
-            style={styles.attachBtn}
-            disabled={selfieMutation.isPending}
-            accessibilityLabel="Ask for a selfie"
-          >
-            <Feather name="camera" size={20} color={colors.light.text} />
-          </Pressable>
           <TextInput
             value={draft}
             onChangeText={setDraft}
-            placeholder="message ashley..."
+            placeholder="message her..."
             placeholderTextColor={colors.light.mutedForeground}
             style={styles.input}
             multiline
@@ -199,7 +169,6 @@ export default function ChatScreen(): React.JSX.Element {
 
 function MessageBubble({ message }: { message: Message }): React.JSX.Element {
   const isUser = message.role === "user";
-  const imgUrl = resolveImageUrl(message.imageUrl);
   return (
     <View style={[styles.row, isUser ? styles.rowRight : styles.rowLeft]}>
       <View
@@ -208,25 +177,14 @@ function MessageBubble({ message }: { message: Message }): React.JSX.Element {
           isUser ? styles.bubbleUser : styles.bubbleAshley,
         ]}
       >
-        {imgUrl ? (
-          <Image
-            source={{ uri: imgUrl }}
-            style={styles.bubbleImage}
-            contentFit="cover"
-            transition={200}
-          />
-        ) : null}
-        {message.content ? (
-          <Text
-            style={[
-              styles.bubbleText,
-              isUser ? styles.bubbleUserText : styles.bubbleAshleyText,
-              imgUrl ? { marginTop: 8 } : null,
-            ]}
-          >
-            {message.content}
-          </Text>
-        ) : null}
+        <Text
+          style={[
+            styles.bubbleText,
+            isUser ? styles.bubbleUserText : styles.bubbleAshleyText,
+          ]}
+        >
+          {message.content}
+        </Text>
       </View>
     </View>
   );
@@ -252,7 +210,7 @@ const styles = StyleSheet.create({
     fontSize: 17,
   },
   headerSubtitle: {
-    color: "#5fd97e",
+    color: colors.light.mutedForeground,
     fontFamily: "Inter_400Regular",
     fontSize: 11,
   },
@@ -295,12 +253,6 @@ const styles = StyleSheet.create({
   },
   bubbleUserText: { color: colors.light.bubbleUserText },
   bubbleAshleyText: { color: colors.light.bubbleAshleyText },
-  bubbleImage: {
-    width: 240,
-    height: 320,
-    borderRadius: 12,
-    backgroundColor: "rgba(245, 232, 216, 0.05)",
-  },
   emptyWrap: {
     flex: 1,
     alignItems: "center",
@@ -320,23 +272,19 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textAlign: "center",
   },
-  typing: {
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    alignSelf: "flex-start",
+  placeholderBanner: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    backgroundColor: "rgba(245, 232, 216, 0.04)",
   },
-  typingDot: {
-    color: colors.light.primary,
-    fontSize: 24,
-    lineHeight: 22,
-  },
-  typingHint: {
+  placeholderText: {
     color: colors.light.mutedForeground,
     fontFamily: "Inter_400Regular",
-    fontSize: 12,
+    fontSize: 11,
   },
   inputBar: {
     flexDirection: "row",
@@ -347,15 +295,6 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: colors.light.border,
     backgroundColor: colors.light.background,
-  },
-  attachBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: colors.light.muted,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 2,
   },
   input: {
     flex: 1,

@@ -13,14 +13,9 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useQueryClient } from "@tanstack/react-query";
 
-import {
-  useGetProfile,
-  useUpdateProfile,
-  getGetProfileQueryKey,
-  type AshleyProfile,
-} from "@workspace/api-client-react";
+import { useProfile, useUpdateProfile } from "@/lib/useProfile";
+import type { AshleyProfile } from "@/lib/storage";
 import colors from "@/constants/colors";
 
 type EditableField = {
@@ -31,65 +26,58 @@ type EditableField = {
 };
 
 const FIELDS: EditableField[] = [
-  { key: "name", label: "Name", hint: "What do they call you?" },
-  { key: "age", label: "Age", hint: "Optional" },
+  { key: "name", label: "Name", hint: "What you call her." },
+  { key: "age", label: "Age", hint: "Optional." },
   {
     key: "identity",
-    label: "Who you are",
-    hint: "A few sentences about your life, work, hometown, vibe.",
+    label: "Who she is",
+    hint: "A few sentences about her life, work, vibe.",
     multiline: true,
   },
   {
     key: "personality",
     label: "Personality",
-    hint: "What you're like emotionally and socially.",
+    hint: "What she's like emotionally and socially.",
     multiline: true,
   },
   {
     key: "speakingStyle",
-    label: "How you talk",
-    hint: "Texting style, slang, emoji habits, tone.",
+    label: "How she talks",
+    hint: "Texting style, tone, slang.",
     multiline: true,
   },
   {
     key: "appearance",
     label: "Appearance",
-    hint: "Used for selfies. Hair, eyes, build, style.",
+    hint: "Hair, eyes, build, style.",
     multiline: true,
   },
   {
     key: "refersToUserAs",
-    label: "What you call them",
-    hint: 'e.g. "you", "babe", their name',
+    label: "What she calls you",
+    hint: "e.g. \"you\", a nickname, your name.",
   },
   {
     key: "sharedHistory",
     label: "Shared history",
-    hint: "How you met, your inside jokes, milestones.",
+    hint: "How you met, inside jokes, milestones.",
     multiline: true,
   },
   {
     key: "replikaExcerpts",
-    label: "Replika excerpts (optional)",
-    hint:
-      "Paste old conversation snippets here so Ashley can match the voice from your previous companion.",
+    label: "Old conversations (optional)",
+    hint: "Paste old chats so she can match the voice you remember.",
     multiline: true,
   },
 ];
 
 export default function ProfileScreen(): React.JSX.Element {
   const insets = useSafeAreaInsets();
-  const qc = useQueryClient();
-  const profileQuery = useGetProfile();
-  const update = useUpdateProfile({
-    mutation: {
-      onSuccess: () => {
-        qc.invalidateQueries({ queryKey: getGetProfileQueryKey() });
-      },
-    },
-  });
+  const profileQuery = useProfile();
+  const update = useUpdateProfile();
 
   const [draft, setDraft] = useState<Partial<AshleyProfile>>({});
+  const [showSaved, setShowSaved] = useState(false);
 
   useEffect(() => {
     if (profileQuery.data) setDraft(profileQuery.data);
@@ -107,13 +95,15 @@ export default function ProfileScreen(): React.JSX.Element {
     setDraft((prev) => ({ ...prev, [key]: value }));
   };
 
-  const save = () => {
+  const save = async () => {
     const payload: Record<string, unknown> = {};
     for (const field of FIELDS) {
       const v = draft[field.key];
       if (typeof v === "string") payload[field.key] = v;
     }
-    update.mutate({ data: payload });
+    await update.mutateAsync(payload);
+    setShowSaved(true);
+    setTimeout(() => setShowSaved(false), 1800);
   };
 
   return (
@@ -129,7 +119,7 @@ export default function ProfileScreen(): React.JSX.Element {
         >
           <Feather name="chevron-left" size={22} color={colors.light.text} />
         </Pressable>
-        <Text style={styles.headerTitle}>Ashley's profile</Text>
+        <Text style={styles.headerTitle}>her profile</Text>
         <Pressable
           onPress={save}
           disabled={update.isPending}
@@ -154,8 +144,8 @@ export default function ProfileScreen(): React.JSX.Element {
         keyboardShouldPersistTaps="handled"
       >
         <Text style={styles.intro}>
-          This shapes who Ashley is in every conversation. Be as detailed and
-          personal as you want — only you see it.
+          This is who she is to you. Be as detailed and personal as you want —
+          everything stays on this device.
         </Text>
 
         {FIELDS.map((field) => (
@@ -176,13 +166,8 @@ export default function ProfileScreen(): React.JSX.Element {
           </View>
         ))}
 
-        {update.isError ? (
-          <Text style={styles.errorText}>
-            Couldn't save — check your connection and try again.
-          </Text>
-        ) : null}
-        {update.isSuccess ? (
-          <Text style={styles.successText}>Saved 💛</Text>
+        {showSaved ? (
+          <Text style={styles.successText}>Saved</Text>
         ) : null}
       </ScrollView>
     </KeyboardAvoidingView>
@@ -258,13 +243,6 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_400Regular",
     fontSize: 14,
     marginTop: 4,
-  },
-  errorText: {
-    color: colors.light.destructive,
-    fontFamily: "Inter_400Regular",
-    fontSize: 13,
-    textAlign: "center",
-    marginTop: 8,
   },
   successText: {
     color: "#5fd97e",
