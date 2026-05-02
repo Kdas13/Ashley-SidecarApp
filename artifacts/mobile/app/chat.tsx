@@ -202,8 +202,12 @@ export default function ChatScreen(): React.JSX.Element {
               size={12}
               color={colors.light.destructiveForeground}
             />
-            <Text style={styles.errorText} numberOfLines={2}>
-              couldn't reach Ashley — tap to dismiss
+            <Text style={styles.errorText} numberOfLines={6}>
+              {sendError}
+              {"\n"}
+              <Text style={styles.errorSubtext}>
+                api: {process.env.EXPO_PUBLIC_DOMAIN || "(unset!)"} · tap to dismiss
+              </Text>
             </Text>
           </Pressable>
         ) : null}
@@ -697,6 +701,13 @@ const styles = StyleSheet.create({
     color: colors.light.destructiveForeground,
     fontFamily: "Inter_500Medium",
     fontSize: 12,
+    flex: 1,
+  },
+  errorSubtext: {
+    color: colors.light.destructiveForeground,
+    fontFamily: "Inter_400Regular",
+    fontSize: 10,
+    opacity: 0.85,
   },
   inputBar: {
     flexDirection: "row",

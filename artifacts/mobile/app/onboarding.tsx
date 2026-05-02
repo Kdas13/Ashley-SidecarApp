@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -10,6 +11,8 @@ import {
   TextInput,
   View,
 } from "react-native";
+
+import { loadProfile } from "@/lib/storage";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { Feather } from "@expo/vector-icons";
@@ -144,8 +147,24 @@ export default function OnboardingScreen(): React.JSX.Element {
         }
       }
       await update.mutateAsync(payload);
+
+      // Sanity check: re-read from storage to confirm the write actually
+      // persisted. If AsyncStorage silently dropped the write (which is
+      // what makes onboarding repeat on every reload), surface it now
+      // instead of bouncing the user to chat with nothing saved.
+      const verified = await loadProfile();
+      if (!verified.onboardedAt) {
+        throw new Error(
+          "Couldn't save your settings to this device. (storage write didn't stick)",
+        );
+      }
+
       await seedMemoriesFrom(values);
       router.replace("/");
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Something went wrong saving.";
+      Alert.alert("Couldn't save", msg, [{ text: "OK" }]);
     } finally {
       setSubmitting(false);
     }
