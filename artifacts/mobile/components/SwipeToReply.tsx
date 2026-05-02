@@ -68,10 +68,16 @@ export function SwipeToReply({
   const sign = direction === "right" ? 1 : -1;
 
   const pan = Gesture.Pan()
-    // Require ~10px of horizontal movement before the gesture activates,
-    // so vertical scrolling on the FlatList still wins for small drags.
-    .activeOffsetX(direction === "right" ? [10, 999] : [-999, -10])
-    .failOffsetY([-12, 12])
+    // Require ~14px of horizontal movement in the configured direction
+    // before the gesture activates. CRITICAL: pass a single number, not a
+    // [min,max] tuple — the tuple form means "activate when X is OUTSIDE
+    // the range," which fires immediately at X=0 and steals every touch
+    // from the FlatList (broke vertical scrolling). With a single signed
+    // number the gesture only wakes up after intentional horizontal drag.
+    .activeOffsetX(direction === "right" ? 14 : -14)
+    // If the finger moves more than 10px vertically before we activate,
+    // give up so the FlatList can take over and scroll normally.
+    .failOffsetY([-10, 10])
     .onUpdate((e) => {
       // Only allow movement in the configured direction. Movement in the
       // wrong direction is clamped to 0 so the bubble can't jitter.
