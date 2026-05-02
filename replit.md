@@ -45,7 +45,10 @@ but are not contacted by the mobile app.
 - `storage.ts` — typed AsyncStorage wrapper. Exports types
   `AshleyProfile`, `Memory`, `Message`, the storage keys
   (`@ashley/profile/v1`, `@ashley/memories/v1`, `@ashley/messages/v1`),
-  a `newId()` helper for string IDs, and load/save/clear helpers.
+  a `newId()` helper for string IDs, load/save/clear helpers, and
+  `withStorageLock(key, fn)` — a per-key promise-chain mutex that
+  serializes read-modify-write mutations so concurrent writes
+  cannot lose updates.
 - `useProfile.ts` — `useProfile()` + `useUpdateProfile()` React Query
   hooks backed by the profile key. Default profile has `onboardedAt: null`,
   which the home screen uses to gate the redirect to onboarding.
