@@ -24,39 +24,39 @@ function getApiBase(): string {
 }
 
 /**
- * In Replit's dev environment the api-server is occasionally restarted
- * (workflow recycle, file edits, idle timer). During the ~3-5s rebuild
+ * In Replit's dev environment the api-server is recycled every ~10 min
+ * (workflow auto-restart). The cold restart takes ~3-5s of build + ~1-2s
+ * of node bootstrap, so a request landing at exactly the wrong moment
+ * needs to wait up to ~7s for the server to come back. During that
  * window the public proxy returns its "Run this app to see the results
- * here." placeholder HTML — typically with a 404 or 503 status. The phone
- * has no idea this just means "wait a moment", so the user sees a
- * confusing error.
+ * here." placeholder HTML — typically with a 404 or 503 status.
  *
- * This helper recognises that placeholder by inspecting the response
- * status + body, and if it looks like a transient proxy gap, retries the
- * request once after a short delay. Real 4xx/5xx responses (with JSON
- * bodies) are returned untouched so callers can surface the real error.
+ * This helper detects that placeholder and quietly retries with
+ * exponential-ish backoff (3s, then another 5s — so ~8s total) before
+ * giving up. Real 4xx/5xx JSON errors are returned untouched so callers
+ * can surface the real error. If we still see the placeholder after the
+ * full backoff window, we throw a clean, user-friendly Error instead of
+ * letting the caller dump HTML into the chat error banner.
  */
 const PROXY_PLACEHOLDER_MARKER = "Run this app to see the results here";
-const PROXY_RETRY_DELAY_MS = 4000;
+const PROXY_RETRY_DELAYS_MS = [3000, 5000];
 
 async function fetchWithProxyRetry(
   url: string,
   init: RequestInit,
 ): Promise<Response> {
-  const first = await fetch(url, init);
-  if (!(await looksLikeProxyPlaceholder(first))) return first;
-
-  await new Promise((r) => setTimeout(r, PROXY_RETRY_DELAY_MS));
-  const second = await fetch(url, init);
-  if (await looksLikeProxyPlaceholder(second)) {
-    // Rebuild is still in progress past our wait window. Surface a clean,
-    // actionable error instead of letting the caller dump raw "Run this
-    // app to see the results here." HTML into the chat error banner.
+  let res = await fetch(url, init);
+  for (const delay of PROXY_RETRY_DELAYS_MS) {
+    if (!(await looksLikeProxyPlaceholder(res))) return res;
+    await new Promise((r) => setTimeout(r, delay));
+    res = await fetch(url, init);
+  }
+  if (await looksLikeProxyPlaceholder(res)) {
     throw new Error(
       "Ashley's server is restarting — give it a few seconds and try again.",
     );
   }
-  return second;
+  return res;
 }
 
 async function looksLikeProxyPlaceholder(res: Response): Promise<boolean> {
