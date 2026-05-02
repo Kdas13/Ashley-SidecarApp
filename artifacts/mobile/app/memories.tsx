@@ -21,7 +21,12 @@ import {
   useUpdateMemory,
   useDeleteMemory,
 } from "@/lib/useMemories";
-import type { Memory, MemoryTag } from "@/lib/storage";
+import {
+  useSummaries,
+  useUpdateSummary,
+  useDeleteSummary,
+} from "@/lib/useSummaries";
+import type { ConversationSummary, Memory, MemoryTag } from "@/lib/storage";
 import colors from "@/constants/colors";
 
 const TAGS: MemoryTag[] = [
@@ -40,11 +45,62 @@ export default function MemoriesScreen(): React.JSX.Element {
   const [editContent, setEditContent] = useState("");
   const [editTag, setEditTag] = useState<MemoryTag>("general");
   const [editImportance, setEditImportance] = useState<number>(3);
+  const [editingSummaryId, setEditingSummaryId] = useState<string | null>(null);
+  const [editSummaryText, setEditSummaryText] = useState("");
 
   const memoriesQuery = useMemories();
   const create = useCreateMemory();
   const update = useUpdateMemory();
   const remove = useDeleteMemory();
+
+  const summariesQuery = useSummaries();
+  const updateSummary = useUpdateSummary();
+  const deleteSummary = useDeleteSummary();
+
+  const orderedSummaries = React.useMemo<ConversationSummary[]>(() => {
+    const list = summariesQuery.data ?? [];
+    return list
+      .slice()
+      .sort(
+        (a, b) =>
+          Date.parse(a.coveredThroughCreatedAt) -
+          Date.parse(b.coveredThroughCreatedAt),
+      );
+  }, [summariesQuery.data]);
+
+  const startEditSummary = (s: ConversationSummary) => {
+    setEditingSummaryId(s.id);
+    setEditSummaryText(s.summary);
+  };
+
+  const cancelEditSummary = () => {
+    setEditingSummaryId(null);
+  };
+
+  const saveEditSummary = () => {
+    if (editingSummaryId === null) return;
+    const s = editSummaryText.trim();
+    if (!s) return;
+    updateSummary.mutate(
+      { id: editingSummaryId, summary: s },
+      { onSuccess: () => setEditingSummaryId(null) },
+    );
+  };
+
+  const confirmDeleteSummary = (s: ConversationSummary) => {
+    Alert.alert(
+      "Forget this chapter?",
+      "This summary covers a stretch of older messages — Ashley will stop referencing it.",
+      [
+        { text: "Keep", style: "cancel" },
+        {
+          text: "Forget",
+          style: "destructive",
+          onPress: () => deleteSummary.mutate(s.id),
+        },
+      ],
+    );
+  };
 
   const submit = () => {
     const c = content.trim();
@@ -127,6 +183,19 @@ export default function MemoriesScreen(): React.JSX.Element {
             data={memoriesQuery.data ?? []}
             keyExtractor={(m) => m.id}
             contentContainerStyle={styles.list}
+            ListHeaderComponent={
+              <SummariesSection
+                summaries={orderedSummaries}
+                editingId={editingSummaryId}
+                editText={editSummaryText}
+                setEditText={setEditSummaryText}
+                onStartEdit={startEditSummary}
+                onCancelEdit={cancelEditSummary}
+                onSaveEdit={saveEditSummary}
+                onDelete={confirmDeleteSummary}
+                isSaving={updateSummary.isPending}
+              />
+            }
             ListEmptyComponent={
               <View style={styles.empty}>
                 <Text style={styles.emptyTitle}>No memories yet</Text>
@@ -330,8 +399,195 @@ export default function MemoriesScreen(): React.JSX.Element {
   );
 }
 
+type SummariesSectionProps = {
+  summaries: ConversationSummary[];
+  editingId: string | null;
+  editText: string;
+  setEditText: (s: string) => void;
+  onStartEdit: (s: ConversationSummary) => void;
+  onCancelEdit: () => void;
+  onSaveEdit: () => void;
+  onDelete: (s: ConversationSummary) => void;
+  isSaving: boolean;
+};
+
+function SummariesSection({
+  summaries,
+  editingId,
+  editText,
+  setEditText,
+  onStartEdit,
+  onCancelEdit,
+  onSaveEdit,
+  onDelete,
+  isSaving,
+}: SummariesSectionProps): React.JSX.Element | null {
+  if (summaries.length === 0) return null;
+  return (
+    <View style={styles.summarySection}>
+      <Text style={styles.summarySectionTitle}>The story so far</Text>
+      <Text style={styles.summarySectionSubtitle}>
+        Older chapters of your conversation, distilled so Ashley keeps the
+        thread.
+      </Text>
+      {summaries.map((s) => {
+        const isEditing = editingId === s.id;
+        const covered = new Date(s.coveredThroughCreatedAt);
+        const dateLabel = isNaN(covered.getTime())
+          ? ""
+          : covered.toLocaleDateString(undefined, {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+            });
+        if (isEditing) {
+          return (
+            <View key={s.id} style={[styles.summaryCard, styles.summaryEditing]}>
+              <Text style={styles.summaryMeta}>
+                {`${s.messageCount} messages${dateLabel ? ` · through ${dateLabel}` : ""}`}
+              </Text>
+              <TextInput
+                value={editText}
+                onChangeText={setEditText}
+                style={styles.editInput}
+                multiline
+                maxLength={2000}
+                accessibilityLabel="Edit summary text"
+              />
+              <View style={styles.editActions}>
+                <Pressable
+                  onPress={onCancelEdit}
+                  style={[styles.editBtn, styles.cancelBtn]}
+                  accessibilityLabel="Cancel summary edit"
+                >
+                  <Text style={styles.cancelText}>cancel</Text>
+                </Pressable>
+                <Pressable
+                  onPress={onSaveEdit}
+                  disabled={isSaving || !editText.trim()}
+                  style={[
+                    styles.editBtn,
+                    styles.saveBtn,
+                    (isSaving || !editText.trim()) && { opacity: 0.5 },
+                  ]}
+                  accessibilityLabel="Save summary edit"
+                >
+                  {isSaving ? (
+                    <ActivityIndicator
+                      size="small"
+                      color={colors.light.primaryForeground}
+                    />
+                  ) : (
+                    <Text style={styles.saveText}>save</Text>
+                  )}
+                </Pressable>
+              </View>
+            </View>
+          );
+        }
+        return (
+          <Pressable
+            key={s.id}
+            onPress={() => onStartEdit(s)}
+            style={({ pressed }) => [
+              styles.summaryCard,
+              pressed && { opacity: 0.85 },
+            ]}
+            accessibilityLabel="Edit summary"
+          >
+            <View style={{ flex: 1 }}>
+              <View style={styles.summaryMetaRow}>
+                <Text style={styles.summaryMeta}>
+                  {`${s.messageCount} messages${dateLabel ? ` · through ${dateLabel}` : ""}`}
+                </Text>
+                <Feather
+                  name="edit-2"
+                  size={13}
+                  color={colors.light.mutedForeground}
+                />
+              </View>
+              <Text style={styles.summaryText}>{s.summary}</Text>
+            </View>
+            <Pressable
+              onPress={() => onDelete(s)}
+              style={styles.deleteBtn}
+              accessibilityLabel="Forget summary"
+              hitSlop={8}
+            >
+              <Feather
+                name="x"
+                size={16}
+                color={colors.light.mutedForeground}
+              />
+            </Pressable>
+          </Pressable>
+        );
+      })}
+      <View style={styles.summaryDivider} />
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   root: { flex: 1 },
+  summarySection: { marginBottom: 12 },
+  summarySectionTitle: {
+    color: colors.light.text,
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 14,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    marginBottom: 4,
+  },
+  summarySectionSubtitle: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_400Regular",
+    fontSize: 12,
+    lineHeight: 16,
+    marginBottom: 10,
+  },
+  summaryCard: {
+    flexDirection: "row",
+    backgroundColor: colors.light.card,
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    alignItems: "flex-start",
+    gap: 10,
+  },
+  summaryEditing: {
+    flexDirection: "column",
+    borderColor: colors.light.primary,
+    gap: 12,
+  },
+  summaryMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 6,
+  },
+  summaryMeta: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_500Medium",
+    fontSize: 11,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  summaryText: {
+    color: colors.light.text,
+    fontFamily: "Inter_400Regular",
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  summaryDivider: {
+    height: 1,
+    backgroundColor: colors.light.border,
+    marginTop: 4,
+    marginBottom: 14,
+    opacity: 0.6,
+  },
   header: {
     flexDirection: "row",
     alignItems: "center",

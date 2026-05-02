@@ -164,6 +164,77 @@ export const DeleteMemoryParams = zod.object({
 });
 
 /**
+ * Stateless endpoint. Takes an ordered chunk of messages and returns a single narrative summary written from Ashley's POV.
+ * @summary Summarize a chunk of older messages into a narrative summary
+ */
+export const SummarizeChunkBody = zod.object({
+  messages: zod.array(
+    zod.object({
+      role: zod.string(),
+      content: zod.string(),
+    }),
+  ),
+  priorSummary: zod.string().optional(),
+});
+
+export const SummarizeChunkResponse = zod.object({
+  summary: zod.string(),
+});
+
+/**
+ * @summary List all conversation summaries (oldest first)
+ */
+export const ListConversationSummariesResponseItem = zod.object({
+  id: zod.number(),
+  summary: zod.string(),
+  messageCount: zod.number(),
+  coveredThroughCreatedAt: zod.coerce.date(),
+  createdAt: zod.coerce.date(),
+  updatedAt: zod.coerce.date(),
+});
+export const ListConversationSummariesResponse = zod.array(
+  ListConversationSummariesResponseItem,
+);
+
+/**
+ * @summary Manually add a conversation summary
+ */
+export const CreateConversationSummaryBody = zod.object({
+  summary: zod.string(),
+  messageCount: zod.number().optional(),
+  coveredThroughCreatedAt: zod.coerce.date(),
+});
+
+/**
+ * @summary Update a conversation summary
+ */
+export const UpdateConversationSummaryParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+export const UpdateConversationSummaryBody = zod.object({
+  summary: zod.string().optional(),
+  messageCount: zod.number().optional(),
+  coveredThroughCreatedAt: zod.coerce.date().optional(),
+});
+
+export const UpdateConversationSummaryResponse = zod.object({
+  id: zod.number(),
+  summary: zod.string(),
+  messageCount: zod.number(),
+  coveredThroughCreatedAt: zod.coerce.date(),
+  createdAt: zod.coerce.date(),
+  updatedAt: zod.coerce.date(),
+});
+
+/**
+ * @summary Delete a conversation summary
+ */
+export const DeleteConversationSummaryParams = zod.object({
+  id: zod.coerce.number(),
+});
+
+/**
  * @summary Generate a self-portrait image of Ashley and post it as a chat message
  */
 export const GenerateSelfieBody = zod.object({

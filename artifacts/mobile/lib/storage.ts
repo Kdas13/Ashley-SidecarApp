@@ -4,6 +4,7 @@ const KEYS = {
   profile: "@ashley/profile/v1",
   memories: "@ashley/memories/v1",
   messages: "@ashley/messages/v1",
+  summaries: "@ashley/summaries/v1",
 } as const;
 
 export type MemoryTag =
@@ -47,6 +48,19 @@ export type Message = {
    * fallback like "*sends a photo*").
    */
   imageUrl?: string | null;
+};
+
+// Rolling narrative summary of an older chunk of messages.  Once the live
+// chat grows past the in-prompt window, the oldest unsummarized chunk is
+// distilled into one of these so Ashley keeps remembering the long tail.
+export type ConversationSummary = {
+  id: string;
+  summary: string;
+  messageCount: number;
+  // Cursor: messages with createdAt <= this are considered summarized.
+  coveredThroughCreatedAt: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export const DEFAULT_PROFILE: AshleyProfile = {
@@ -130,6 +144,19 @@ export async function saveMessages(m: Message[]): Promise<void> {
   await writeJSON(KEYS.messages, m);
 }
 
+export async function loadSummaries(): Promise<ConversationSummary[]> {
+  return readJSON<ConversationSummary[]>(KEYS.summaries, []);
+}
+
+export async function saveSummaries(s: ConversationSummary[]): Promise<void> {
+  await writeJSON(KEYS.summaries, s);
+}
+
 export async function clearAllData(): Promise<void> {
-  await AsyncStorage.multiRemove([KEYS.profile, KEYS.memories, KEYS.messages]);
+  await AsyncStorage.multiRemove([
+    KEYS.profile,
+    KEYS.memories,
+    KEYS.messages,
+    KEYS.summaries,
+  ]);
 }

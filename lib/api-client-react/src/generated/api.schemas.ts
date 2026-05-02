@@ -89,6 +89,41 @@ export interface GenerateSelfieBody {
   prompt: string;
 }
 
+export interface SummarizeChunkMessage {
+  role: string;
+  content: string;
+}
+
+export interface SummarizeChunkBody {
+  messages: SummarizeChunkMessage[];
+  priorSummary?: string;
+}
+
+export interface SummarizeChunkResponse {
+  summary: string;
+}
+
+export interface ConversationSummary {
+  id: number;
+  summary: string;
+  messageCount: number;
+  coveredThroughCreatedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateConversationSummaryBody {
+  summary: string;
+  messageCount?: number;
+  coveredThroughCreatedAt: string;
+}
+
+export interface UpdateConversationSummaryBody {
+  summary?: string;
+  messageCount?: number;
+  coveredThroughCreatedAt?: string;
+}
+
 export type ListMessagesParams = {
   limit?: number;
 };

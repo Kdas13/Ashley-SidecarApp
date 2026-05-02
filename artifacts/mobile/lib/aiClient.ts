@@ -1,6 +1,12 @@
-import type { AshleyProfile, Memory, Message } from "./storage";
+import type {
+  AshleyProfile,
+  ConversationSummary,
+  Memory,
+  Message,
+} from "./storage";
 
 const HISTORY_WINDOW = 30;
+const MAX_SUMMARIES_IN_PROMPT = 8;
 
 function getApiBase(): string {
   const domain = process.env.EXPO_PUBLIC_DOMAIN;
@@ -20,6 +26,7 @@ export type ChatReplyRequest = {
   content: string;
   profile: AshleyProfile;
   memories: Memory[];
+  summaries: ConversationSummary[];
   history: Message[];
 };
 
@@ -41,6 +48,19 @@ export async function fetchAshleyReply(
     tag: m.tag,
     importance: m.importance,
   }));
+  // Send oldest-first, capped, so the prompt has chronological narrative.
+  const summaries = req.summaries
+    .slice()
+    .sort(
+      (a, b) =>
+        Date.parse(a.coveredThroughCreatedAt) -
+        Date.parse(b.coveredThroughCreatedAt),
+    )
+    .slice(-MAX_SUMMARIES_IN_PROMPT)
+    .map((s) => ({
+      summary: s.summary,
+      coveredThroughCreatedAt: s.coveredThroughCreatedAt,
+    }));
 
   const res = await fetch(`${base}/chat/reply`, {
     method: "POST",
@@ -49,6 +69,7 @@ export async function fetchAshleyReply(
       content: req.content,
       profile: req.profile,
       memories,
+      summaries,
       history: trimmedHistory,
     }),
   });
@@ -72,4 +93,44 @@ export async function fetchAshleyReply(
       ? data.imageUrl
       : null;
   return { reply: data.reply.trim(), imageUrl };
+}
+
+export type SummarizeChunkRequest = {
+  messages: Message[];
+  priorSummary?: string;
+};
+
+/**
+ * Ask the server to condense a chunk of older messages into one
+ * narrative paragraph. Returns the summary text.
+ */
+export async function fetchSummaryForChunk(
+  req: SummarizeChunkRequest,
+): Promise<string> {
+  const base = getApiBase();
+  const messages = req.messages.map((m) => ({
+    role: m.role,
+    content: m.content,
+  }));
+  const res = await fetch(`${base}/chat/summarize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messages,
+      ...(req.priorSummary ? { priorSummary: req.priorSummary } : {}),
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `Summarizer returned ${res.status}${text ? `: ${text}` : ""}`,
+    );
+  }
+
+  const data = (await res.json()) as { summary?: unknown };
+  if (typeof data.summary !== "string" || !data.summary.trim()) {
+    throw new Error("Summarizer returned empty text.");
+  }
+  return data.summary.trim();
 }

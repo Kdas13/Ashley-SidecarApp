@@ -14,4 +14,11 @@ export {
   UpdateMemoryParams,
   DeleteMemoryParams,
   GenerateSelfieBody as GenerateSelfieBodySchema,
+  SummarizeChunkBody as SummarizeChunkBodySchema,
+  SummarizeChunkResponse as SummarizeChunkResponseSchema,
+  ListConversationSummariesResponse,
+  CreateConversationSummaryBody as CreateConversationSummaryBodySchema,
+  UpdateConversationSummaryBody as UpdateConversationSummaryBodySchema,
+  UpdateConversationSummaryParams,
+  DeleteConversationSummaryParams,
 } from "./generated/api";

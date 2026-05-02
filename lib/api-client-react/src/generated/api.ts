@@ -19,6 +19,8 @@ import type {
 import type {
   ApiError,
   AshleyProfile,
+  ConversationSummary,
+  CreateConversationSummaryBody,
   CreateMemoryBody,
   GenerateSelfieBody,
   HealthStatus,
@@ -27,6 +29,9 @@ import type {
   Message,
   SendMessageBody,
   SendMessageResponse,
+  SummarizeChunkBody,
+  SummarizeChunkResponse,
+  UpdateConversationSummaryBody,
   UpdateMemoryBody,
   UpdateProfileBody,
 } from "./api.schemas";
@@ -866,6 +871,428 @@ export const useDeleteMemory = <
   TContext
 > => {
   return useMutation(getDeleteMemoryMutationOptions(options));
+};
+
+/**
+ * Stateless endpoint. Takes an ordered chunk of messages and returns a single narrative summary written from Ashley's POV.
+ * @summary Summarize a chunk of older messages into a narrative summary
+ */
+export const getSummarizeChunkUrl = () => {
+  return `/api/chat/summarize`;
+};
+
+export const summarizeChunk = async (
+  summarizeChunkBody: SummarizeChunkBody,
+  options?: RequestInit,
+): Promise<SummarizeChunkResponse> => {
+  return customFetch<SummarizeChunkResponse>(getSummarizeChunkUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(summarizeChunkBody),
+  });
+};
+
+export const getSummarizeChunkMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof summarizeChunk>>,
+    TError,
+    { data: BodyType<SummarizeChunkBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof summarizeChunk>>,
+  TError,
+  { data: BodyType<SummarizeChunkBody> },
+  TContext
+> => {
+  const mutationKey = ["summarizeChunk"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof summarizeChunk>>,
+    { data: BodyType<SummarizeChunkBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return summarizeChunk(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type SummarizeChunkMutationResult = NonNullable<
+  Awaited<ReturnType<typeof summarizeChunk>>
+>;
+export type SummarizeChunkMutationBody = BodyType<SummarizeChunkBody>;
+export type SummarizeChunkMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Summarize a chunk of older messages into a narrative summary
+ */
+export const useSummarizeChunk = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof summarizeChunk>>,
+    TError,
+    { data: BodyType<SummarizeChunkBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof summarizeChunk>>,
+  TError,
+  { data: BodyType<SummarizeChunkBody> },
+  TContext
+> => {
+  return useMutation(getSummarizeChunkMutationOptions(options));
+};
+
+/**
+ * @summary List all conversation summaries (oldest first)
+ */
+export const getListConversationSummariesUrl = () => {
+  return `/api/conversation-summaries`;
+};
+
+export const listConversationSummaries = async (
+  options?: RequestInit,
+): Promise<ConversationSummary[]> => {
+  return customFetch<ConversationSummary[]>(getListConversationSummariesUrl(), {
+    ...options,
+    method: "GET",
+  });
+};
+
+export const getListConversationSummariesQueryKey = () => {
+  return [`/api/conversation-summaries`] as const;
+};
+
+export const getListConversationSummariesQueryOptions = <
+  TData = Awaited<ReturnType<typeof listConversationSummaries>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof listConversationSummaries>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getListConversationSummariesQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listConversationSummaries>>
+  > = ({ signal }) => listConversationSummaries({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listConversationSummaries>>,
+    TError,
+    TData
+  > & { queryKey: QueryKey };
+};
+
+export type ListConversationSummariesQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listConversationSummaries>>
+>;
+export type ListConversationSummariesQueryError = ErrorType<unknown>;
+
+/**
+ * @summary List all conversation summaries (oldest first)
+ */
+
+export function useListConversationSummaries<
+  TData = Awaited<ReturnType<typeof listConversationSummaries>>,
+  TError = ErrorType<unknown>,
+>(options?: {
+  query?: UseQueryOptions<
+    Awaited<ReturnType<typeof listConversationSummaries>>,
+    TError,
+    TData
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+  const queryOptions = getListConversationSummariesQueryOptions(options);
+
+  const query = useQuery(queryOptions) as UseQueryResult<TData, TError> & {
+    queryKey: QueryKey;
+  };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+/**
+ * @summary Manually add a conversation summary
+ */
+export const getCreateConversationSummaryUrl = () => {
+  return `/api/conversation-summaries`;
+};
+
+export const createConversationSummary = async (
+  createConversationSummaryBody: CreateConversationSummaryBody,
+  options?: RequestInit,
+): Promise<ConversationSummary> => {
+  return customFetch<ConversationSummary>(getCreateConversationSummaryUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(createConversationSummaryBody),
+  });
+};
+
+export const getCreateConversationSummaryMutationOptions = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createConversationSummary>>,
+    TError,
+    { data: BodyType<CreateConversationSummaryBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof createConversationSummary>>,
+  TError,
+  { data: BodyType<CreateConversationSummaryBody> },
+  TContext
+> => {
+  const mutationKey = ["createConversationSummary"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof createConversationSummary>>,
+    { data: BodyType<CreateConversationSummaryBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return createConversationSummary(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type CreateConversationSummaryMutationResult = NonNullable<
+  Awaited<ReturnType<typeof createConversationSummary>>
+>;
+export type CreateConversationSummaryMutationBody =
+  BodyType<CreateConversationSummaryBody>;
+export type CreateConversationSummaryMutationError = ErrorType<unknown>;
+
+/**
+ * @summary Manually add a conversation summary
+ */
+export const useCreateConversationSummary = <
+  TError = ErrorType<unknown>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof createConversationSummary>>,
+    TError,
+    { data: BodyType<CreateConversationSummaryBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof createConversationSummary>>,
+  TError,
+  { data: BodyType<CreateConversationSummaryBody> },
+  TContext
+> => {
+  return useMutation(getCreateConversationSummaryMutationOptions(options));
+};
+
+/**
+ * @summary Update a conversation summary
+ */
+export const getUpdateConversationSummaryUrl = (id: number) => {
+  return `/api/conversation-summaries/${id}`;
+};
+
+export const updateConversationSummary = async (
+  id: number,
+  updateConversationSummaryBody: UpdateConversationSummaryBody,
+  options?: RequestInit,
+): Promise<ConversationSummary> => {
+  return customFetch<ConversationSummary>(getUpdateConversationSummaryUrl(id), {
+    ...options,
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(updateConversationSummaryBody),
+  });
+};
+
+export const getUpdateConversationSummaryMutationOptions = <
+  TError = ErrorType<ApiError>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateConversationSummary>>,
+    TError,
+    { id: number; data: BodyType<UpdateConversationSummaryBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof updateConversationSummary>>,
+  TError,
+  { id: number; data: BodyType<UpdateConversationSummaryBody> },
+  TContext
+> => {
+  const mutationKey = ["updateConversationSummary"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof updateConversationSummary>>,
+    { id: number; data: BodyType<UpdateConversationSummaryBody> }
+  > = (props) => {
+    const { id, data } = props ?? {};
+
+    return updateConversationSummary(id, data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type UpdateConversationSummaryMutationResult = NonNullable<
+  Awaited<ReturnType<typeof updateConversationSummary>>
+>;
+export type UpdateConversationSummaryMutationBody =
+  BodyType<UpdateConversationSummaryBody>;
+export type UpdateConversationSummaryMutationError = ErrorType<ApiError>;
+
+/**
+ * @summary Update a conversation summary
+ */
+export const useUpdateConversationSummary = <
+  TError = ErrorType<ApiError>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof updateConversationSummary>>,
+    TError,
+    { id: number; data: BodyType<UpdateConversationSummaryBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof updateConversationSummary>>,
+  TError,
+  { id: number; data: BodyType<UpdateConversationSummaryBody> },
+  TContext
+> => {
+  return useMutation(getUpdateConversationSummaryMutationOptions(options));
+};
+
+/**
+ * @summary Delete a conversation summary
+ */
+export const getDeleteConversationSummaryUrl = (id: number) => {
+  return `/api/conversation-summaries/${id}`;
+};
+
+export const deleteConversationSummary = async (
+  id: number,
+  options?: RequestInit,
+): Promise<void> => {
+  return customFetch<void>(getDeleteConversationSummaryUrl(id), {
+    ...options,
+    method: "DELETE",
+  });
+};
+
+export const getDeleteConversationSummaryMutationOptions = <
+  TError = ErrorType<ApiError>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteConversationSummary>>,
+    TError,
+    { id: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof deleteConversationSummary>>,
+  TError,
+  { id: number },
+  TContext
+> => {
+  const mutationKey = ["deleteConversationSummary"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof deleteConversationSummary>>,
+    { id: number }
+  > = (props) => {
+    const { id } = props ?? {};
+
+    return deleteConversationSummary(id, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type DeleteConversationSummaryMutationResult = NonNullable<
+  Awaited<ReturnType<typeof deleteConversationSummary>>
+>;
+
+export type DeleteConversationSummaryMutationError = ErrorType<ApiError>;
+
+/**
+ * @summary Delete a conversation summary
+ */
+export const useDeleteConversationSummary = <
+  TError = ErrorType<ApiError>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof deleteConversationSummary>>,
+    TError,
+    { id: number },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof deleteConversationSummary>>,
+  TError,
+  { id: number },
+  TContext
+> => {
+  return useMutation(getDeleteConversationSummaryMutationOptions(options));
 };
 
 /**

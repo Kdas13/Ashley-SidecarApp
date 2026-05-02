@@ -73,3 +73,33 @@ export const insertMemorySchema = createInsertSchema(memoriesTable).omit({
 });
 export type InsertMemory = z.infer<typeof insertMemorySchema>;
 export type Memory = typeof memoriesTable.$inferSelect;
+
+// Rolling narrative summaries of older message chunks. Once the live
+// conversation grows beyond the chat window, the oldest unsummarized chunk
+// is condensed into one of these records so Ashley can keep referencing the
+// long tail of the relationship without sending every old message to Claude.
+export const conversationSummariesTable = pgTable("conversation_summaries", {
+  id: serial("id").primaryKey(),
+  summary: text("summary").notNull(),
+  messageCount: integer("message_count").notNull().default(0),
+  // Cursor: messages with createdAt <= this are considered already covered.
+  coveredThroughCreatedAt: timestamp("covered_through_created_at", {
+    withTimezone: true,
+  }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date()),
+});
+
+export const insertConversationSummarySchema = createInsertSchema(
+  conversationSummariesTable,
+).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertConversationSummary = z.infer<
+  typeof insertConversationSummarySchema
+>;
+export type ConversationSummary =
+  typeof conversationSummariesTable.$inferSelect;

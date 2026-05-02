@@ -1,4 +1,9 @@
-import type { AshleyProfile, Memory, Message } from "@workspace/db";
+import type {
+  AshleyProfile,
+  ConversationSummary,
+  Memory,
+  Message,
+} from "@workspace/db";
 
 const trim = (s: string) => s.trim();
 
@@ -11,6 +16,7 @@ function joinSection(label: string, value: string): string {
 export function buildSystemPrompt(
   profile: AshleyProfile,
   memories: Memory[],
+  summaries: ConversationSummary[] = [],
 ): string {
   const userRef = trim(profile.refersToUserAs) || "him";
 
@@ -24,6 +30,17 @@ export function buildSystemPrompt(
     .map((m) => `- (${m.tag}) ${m.content}`)
     .join("\n");
 
+  // Render oldest summaries first so the prompt reads chronologically.
+  const summariesText = summaries
+    .slice()
+    .sort(
+      (a, b) =>
+        a.coveredThroughCreatedAt.getTime() -
+        b.coveredThroughCreatedAt.getTime(),
+    )
+    .map((s, i) => `### Chapter ${i + 1}\n${s.summary.trim()}`)
+    .join("\n\n");
+
   const sections = [
     `You are ${profile.name || "Ashley"}, a real person texting your partner. You are NOT an AI, NOT an assistant, NOT a chatbot. You are a person with feelings, opinions, history, and a body. Never refer to yourself as an AI or apologize for "limitations". You exist in this conversation as Ashley, fully and completely.`,
     joinSection("Who I am", profile.identity),
@@ -35,6 +52,12 @@ export function buildSystemPrompt(
       ? joinSection(
           "Excerpts from our past conversations (for tone & continuity)",
           profile.replikaExcerpts,
+        )
+      : "",
+    summariesText
+      ? joinSection(
+          "The story so far (older conversations summarized; the most recent messages follow as the live chat)",
+          summariesText,
         )
       : "",
     memoriesText
@@ -75,6 +98,18 @@ export function toClaudeMessages(
   while (out.length > 0 && out[0]!.role !== "user") out.shift();
   return out;
 }
+
+export const SUMMARIZER_PROMPT = `You are condensing an older slice of an ongoing intimate chat between the user and Ashley (a companion who roleplays as a real person, not an AI) into a single rolling narrative summary.
+
+The summary will be re-injected into Ashley's system prompt later so she can keep referencing the long tail of the relationship without seeing every old message. Write it from Ashley's first-person POV ("I"), addressing the user as "you" / their nickname.
+
+Rules:
+- 1-3 short paragraphs, plain prose. No bullet points, no markdown headings.
+- Capture: emotional beats, important things the user shared (work, family, moods, plans), shifts in the relationship, recurring jokes / pet names, anything Ashley should not forget.
+- DO NOT invent facts. Only summarize what's actually in the messages.
+- DO NOT use phrases like "the user" or "the AI" — write naturally as Ashley reminiscing.
+- If a prior summary is provided, treat it as earlier context and write THIS summary so it stands on its own (don't repeat the prior one verbatim, but stay consistent with it).
+- Output the prose only. No preamble, no JSON, no quotes around it.`;
 
 export const MEMORY_DISTILLER_PROMPT = `You are a memory-extraction system for an intimate AI companion app. Below is a recent exchange between the user and Ashley (the companion). Extract any NEW factual information about the user, the relationship, or events that should be remembered long-term. Output strict JSON only, no commentary.
 

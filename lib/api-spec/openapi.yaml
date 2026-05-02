@@ -18,6 +18,8 @@ tags:
     description: Long-term memories Ashley has stored
   - name: image
     description: Ashley self-portrait generation
+  - name: summary
+    description: Rolling narrative summaries of older conversation chunks
 paths:
   /healthz:
     get:
@@ -174,6 +176,107 @@ paths:
       operationId: deleteMemory
       tags: [memory]
       summary: Delete a memory
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /chat/summarize:
+    post:
+      operationId: summarizeChunk
+      tags: [chat]
+      summary: Summarize a chunk of older messages into a narrative summary
+      description: Stateless endpoint. Takes an ordered chunk of messages and returns a single narrative summary written from Ashley's POV.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SummarizeChunkBody"
+      responses:
+        "200":
+          description: Summary text
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SummarizeChunkResponse"
+
+  /conversation-summaries:
+    get:
+      operationId: listConversationSummaries
+      tags: [summary]
+      summary: List all conversation summaries (oldest first)
+      responses:
+        "200":
+          description: Summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ConversationSummary"
+    post:
+      operationId: createConversationSummary
+      tags: [summary]
+      summary: Manually add a conversation summary
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateConversationSummaryBody"
+      responses:
+        "201":
+          description: Created summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationSummary"
+  /conversation-summaries/{id}:
+    patch:
+      operationId: updateConversationSummary
+      tags: [summary]
+      summary: Update a conversation summary
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateConversationSummaryBody"
+      responses:
+        "200":
+          description: Updated summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationSummary"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+    delete:
+      operationId: deleteConversationSummary
+      tags: [summary]
+      summary: Delete a conversation summary
       parameters:
         - name: id
           in: path
@@ -398,3 +501,85 @@ components:
           type: string
       required:
         - prompt
+
+    SummarizeChunkMessage:
+      type: object
+      properties:
+        role:
+          type: string
+        content:
+          type: string
+      required:
+        - role
+        - content
+
+    SummarizeChunkBody:
+      type: object
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/SummarizeChunkMessage"
+        priorSummary:
+          type: string
+      required:
+        - messages
+
+    SummarizeChunkResponse:
+      type: object
+      properties:
+        summary:
+          type: string
+      required:
+        - summary
+
+    ConversationSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        summary:
+          type: string
+        messageCount:
+          type: integer
+        coveredThroughCreatedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - summary
+        - messageCount
+        - coveredThroughCreatedAt
+        - createdAt
+        - updatedAt
+
+    CreateConversationSummaryBody:
+      type: object
+      properties:
+        summary:
+          type: string
+        messageCount:
+          type: integer
+        coveredThroughCreatedAt:
+          type: string
+          format: date-time
+      required:
+        - summary
+        - coveredThroughCreatedAt
+
+    UpdateConversationSummaryBody:
+      type: object
+      properties:
+        summary:
+          type: string
+        messageCount:
+          type: integer
+        coveredThroughCreatedAt:
+          type: string
+          format: date-time

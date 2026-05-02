@@ -8,6 +8,8 @@
 
 export * from "./apiError";
 export * from "./ashleyProfile";
+export * from "./conversationSummary";
+export * from "./createConversationSummaryBody";
 export * from "./createMemoryBody";
 export * from "./generateSelfieBody";
 export * from "./healthStatus";
@@ -16,5 +18,9 @@ export * from "./memory";
 export * from "./message";
 export * from "./sendMessageBody";
 export * from "./sendMessageResponse";
+export * from "./summarizeChunkBody";
+export * from "./summarizeChunkMessage";
+export * from "./summarizeChunkResponse";
+export * from "./updateConversationSummaryBody";
 export * from "./updateMemoryBody";
 export * from "./updateProfileBody";

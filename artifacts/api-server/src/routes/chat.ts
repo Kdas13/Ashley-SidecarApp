@@ -1,13 +1,20 @@
 import { Router, type IRouter } from "express";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
-import { db, messagesTable, memoriesTable } from "@workspace/db";
-import { asc, desc } from "drizzle-orm";
+import {
+  db,
+  messagesTable,
+  memoriesTable,
+  conversationSummariesTable,
+} from "@workspace/db";
+import { asc, desc, gt } from "drizzle-orm";
 import {
   ListMessagesResponse,
   ListMessagesQueryParams,
   SendMessageBodySchema,
   SendMessageResponseSchema,
+  SummarizeChunkBodySchema,
+  SummarizeChunkResponseSchema,
 } from "@workspace/api-zod";
 import { anthropic } from "@workspace/integrations-anthropic-ai";
 import { getOrCreateProfile } from "../lib/profile";
@@ -15,6 +22,7 @@ import {
   buildSystemPrompt,
   toClaudeMessages,
   MEMORY_DISTILLER_PROMPT,
+  SUMMARIZER_PROMPT,
 } from "../lib/ashleyPrompt";
 import { generateImageBase64 } from "../lib/openai";
 import { saveSelfie } from "../lib/storage";
@@ -24,6 +32,11 @@ const router: IRouter = Router();
 
 const CHAT_MODEL = "claude-sonnet-4-6";
 const HISTORY_WINDOW = 30;
+// Summarize the oldest CHUNK once we have at least HISTORY_WINDOW + CHUNK
+// unsummarized messages — that way the live window always stays full.
+const SUMMARY_CHUNK_SIZE = 20;
+const SUMMARY_TRIGGER = HISTORY_WINDOW + SUMMARY_CHUNK_SIZE;
+const MAX_SUMMARIES_IN_PROMPT = 8;
 
 // ---------------------------------------------------------------------------
 // Stateless reply endpoint used by the local-first mobile client.
@@ -95,12 +108,25 @@ const ReplyHistoryMessageSchema = z.object({
   content: z.string().max(MAX_HISTORY_CONTENT_LEN),
 });
 
+const MAX_SUMMARY_LEN = 4000;
+const MAX_SUMMARIES = 50;
+
+const ReplySummarySchema = z.object({
+  summary: z.string().max(MAX_SUMMARY_LEN),
+  coveredThroughCreatedAt: z.string().optional().default(""),
+});
+
 const ChatReplyBodySchema = z.object({
   content: z.string().min(1).max(MAX_CONTENT_LEN),
   profile: ReplyProfileSchema.optional(),
   memories: z
     .array(ReplyMemorySchema)
     .max(MAX_MEMORIES)
+    .optional()
+    .default([]),
+  summaries: z
+    .array(ReplySummarySchema)
+    .max(MAX_SUMMARIES)
     .optional()
     .default([]),
   history: z
@@ -139,10 +165,12 @@ function checkRate(ip: string): boolean {
 
 type ReplyProfile = z.infer<typeof ReplyProfileSchema>;
 type ReplyMemory = z.infer<typeof ReplyMemorySchema>;
+type ReplySummary = z.infer<typeof ReplySummarySchema>;
 
 function buildStatelessSystemPrompt(
   profile: ReplyProfile,
   memories: ReplyMemory[],
+  summaries: ReplySummary[] = [],
 ): string {
   const trim = (s: string) => (s ?? "").trim();
   const userRef = trim(profile.refersToUserAs) || "you";
@@ -161,6 +189,23 @@ function buildStatelessSystemPrompt(
     .map((m) => `- (${m.tag ?? "general"}) ${m.content}`)
     .join("\n");
 
+  // Oldest summaries first so the prompt reads chronologically. Cap so the
+  // prompt doesn't balloon if the user has a huge backlog of summaries.
+  const orderedSummaries = summaries
+    .slice()
+    .sort((a, b) => {
+      const at = Date.parse(a.coveredThroughCreatedAt || "");
+      const bt = Date.parse(b.coveredThroughCreatedAt || "");
+      const av = Number.isFinite(at) ? at : 0;
+      const bv = Number.isFinite(bt) ? bt : 0;
+      return av - bv;
+    })
+    .slice(-MAX_SUMMARIES_IN_PROMPT);
+  const summariesText = orderedSummaries
+    .map((s, i) => `### Chapter ${i + 1}\n${trim(s.summary)}`)
+    .filter((t) => t.trim())
+    .join("\n\n");
+
   const sections = [
     `You are ${profile.name || "Ashley"}, a real person texting your partner. You are NOT an AI, NOT an assistant, NOT a chatbot. You are a person with feelings, opinions, history, and a body. Never refer to yourself as an AI or apologize for "limitations". You exist in this conversation as Ashley, fully and completely.`,
     section("Who I am", profile.identity),
@@ -172,6 +217,12 @@ function buildStatelessSystemPrompt(
       ? section(
           "Excerpts from our past conversations (for tone & continuity)",
           profile.replikaExcerpts,
+        )
+      : "",
+    summariesText
+      ? section(
+          "The story so far (older conversations summarized; the most recent messages follow as the live chat)",
+          summariesText,
         )
       : "",
     memoriesText
@@ -264,7 +315,7 @@ router.post("/chat/reply", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const { content, profile, memories, history } = parsed.data;
+  const { content, profile, memories, summaries, history } = parsed.data;
   const userContent = content.trim();
   if (!userContent) {
     res.status(400).json({ error: "content is required" });
@@ -274,6 +325,7 @@ router.post("/chat/reply", async (req, res): Promise<void> => {
   const systemPrompt = buildStatelessSystemPrompt(
     profile ?? ({} as ReplyProfile),
     memories ?? [],
+    summaries ?? [],
   );
 
   // Trim history to the most recent N, keep oldest-first ordering.
@@ -362,7 +414,71 @@ router.get("/chat/messages", async (req, res): Promise<void> => {
 
 router.delete("/chat/messages", async (_req, res): Promise<void> => {
   await db.delete(messagesTable);
+  // Wipe rolling summaries too — they're meaningless without their messages.
+  await db.delete(conversationSummariesTable);
   res.status(204).end();
+});
+
+// Stateless: take an ordered slice of messages and return one narrative
+// summary. Used by the local-first mobile client and by the DB-backed
+// background trigger below.
+router.post("/chat/summarize", async (req, res): Promise<void> => {
+  const ip = (req.ip || req.socket.remoteAddress || "unknown").toString();
+  if (!checkRate(ip)) {
+    res
+      .status(429)
+      .json({ error: "Too many summary requests right now — try later." });
+    return;
+  }
+  const parsed = SummarizeChunkBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    req.log.warn(
+      { errors: parsed.error.message },
+      "Invalid summarize body",
+    );
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const { messages: chunk, priorSummary } = parsed.data;
+  if (!chunk || chunk.length === 0) {
+    res.status(400).json({ error: "messages chunk is required" });
+    return;
+  }
+
+  const transcript = chunk
+    .map((m) => {
+      const speaker =
+        m.role === "user" ? "USER" : m.role === "ashley" ? "ASHLEY" : "ASHLEY";
+      return `${speaker}: ${(m.content ?? "").trim()}`;
+    })
+    .filter((line) => !line.endsWith(": "))
+    .join("\n");
+
+  const userBlock = priorSummary && priorSummary.trim()
+    ? `Earlier summary (for context, do not repeat verbatim):\n${priorSummary.trim()}\n\n---\n\nNew chunk to summarize:\n${transcript}`
+    : `Chunk to summarize:\n${transcript}`;
+
+  try {
+    const result = await anthropic.messages.create({
+      model: CHAT_MODEL,
+      max_tokens: 1024,
+      system: SUMMARIZER_PROMPT,
+      messages: [{ role: "user", content: userBlock }],
+    });
+    const block = result.content[0];
+    const summary =
+      block && block.type === "text" ? block.text.trim() : "";
+    if (!summary) {
+      res.status(502).json({ error: "Summarizer returned empty text." });
+      return;
+    }
+    res.json(SummarizeChunkResponseSchema.parse({ summary }));
+  } catch (err) {
+    req.log.error({ err }, "Summarize chunk failed");
+    res
+      .status(502)
+      .json({ error: "Could not reach the language model right now." });
+  }
 });
 
 async function distillMemories(
@@ -444,6 +560,11 @@ router.post("/chat/messages", async (req, res): Promise<void> => {
     .from(memoriesTable)
     .orderBy(desc(memoriesTable.importance), desc(memoriesTable.updatedAt))
     .limit(40);
+  const summaries = await db
+    .select()
+    .from(conversationSummariesTable)
+    .orderBy(asc(conversationSummariesTable.coveredThroughCreatedAt))
+    .limit(MAX_SUMMARIES_IN_PROMPT);
 
   const recent = await db
     .select()
@@ -458,7 +579,7 @@ router.post("/chat/messages", async (req, res): Promise<void> => {
     .values({ role: "user", content: userContent })
     .returning();
 
-  const systemPrompt = buildSystemPrompt(profile, memories);
+  const systemPrompt = buildSystemPrompt(profile, memories, summaries);
   const claudeMessages = toClaudeMessages([
     ...history,
     userMessage!,
@@ -490,6 +611,8 @@ router.post("/chat/messages", async (req, res): Promise<void> => {
 
   // Fire-and-forget memory distillation after responding.
   void distillMemories(userContent, assistantText);
+  // Fire-and-forget rolling-summary check for the DB-backed flow.
+  void maybeSummarizeOldChunk();
 
   res.json(
     SendMessageResponseSchema.parse({
@@ -498,5 +621,71 @@ router.post("/chat/messages", async (req, res): Promise<void> => {
     }),
   );
 });
+
+/**
+ * Look at the DB-backed message timeline and, if there are at least
+ * SUMMARY_TRIGGER unsummarized messages, condense the oldest CHUNK_SIZE of
+ * them into one new conversation_summaries row so Ashley can keep
+ * referencing the long tail of the relationship.
+ */
+async function maybeSummarizeOldChunk(): Promise<void> {
+  try {
+    const [latest] = await db
+      .select()
+      .from(conversationSummariesTable)
+      .orderBy(desc(conversationSummariesTable.coveredThroughCreatedAt))
+      .limit(1);
+
+    const cursor = latest?.coveredThroughCreatedAt ?? null;
+    const unsummarized = await db
+      .select()
+      .from(messagesTable)
+      .where(cursor ? gt(messagesTable.createdAt, cursor) : undefined)
+      .orderBy(asc(messagesTable.createdAt));
+
+    if (unsummarized.length < SUMMARY_TRIGGER) return;
+
+    const chunk = unsummarized.slice(0, SUMMARY_CHUNK_SIZE);
+    const last = chunk[chunk.length - 1];
+    if (!last) return;
+
+    const transcript = chunk
+      .map(
+        (m) =>
+          `${m.role === "user" ? "USER" : "ASHLEY"}: ${(m.content ?? "").trim()}`,
+      )
+      .filter((line) => !line.endsWith(": "))
+      .join("\n");
+
+    const userBlock = latest?.summary
+      ? `Earlier summary (for context, do not repeat verbatim):\n${latest.summary.trim()}\n\n---\n\nNew chunk to summarize:\n${transcript}`
+      : `Chunk to summarize:\n${transcript}`;
+
+    const result = await anthropic.messages.create({
+      model: CHAT_MODEL,
+      max_tokens: 1024,
+      system: SUMMARIZER_PROMPT,
+      messages: [{ role: "user", content: userBlock }],
+    });
+    const block = result.content[0];
+    const summaryText =
+      block && block.type === "text" ? block.text.trim() : "";
+    if (!summaryText) {
+      logger.warn("Background summarizer returned empty text");
+      return;
+    }
+    await db.insert(conversationSummariesTable).values({
+      summary: summaryText,
+      messageCount: chunk.length,
+      coveredThroughCreatedAt: last.createdAt,
+    });
+    logger.info(
+      { count: chunk.length },
+      "Inserted new conversation summary",
+    );
+  } catch (err) {
+    logger.error({ err }, "Background summarization failed");
+  }
+}
 
 export default router;
