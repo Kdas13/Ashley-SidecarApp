@@ -1,27 +1,29 @@
-import React, { useCallback } from "react";
-import { StyleSheet, View } from "react-native";
+import React, { useCallback, useRef } from "react";
+import { StyleSheet } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import ReanimatedSwipeable, {
+  type SwipeableMethods,
+} from "react-native-gesture-handler/ReanimatedSwipeable";
 import Animated, {
   Extrapolation,
   interpolate,
-  runOnJS,
   useAnimatedStyle,
-  useSharedValue,
-  withSpring,
+  type SharedValue,
 } from "react-native-reanimated";
 
 import colors from "@/constants/colors";
 
-// Distance the bubble must travel (in px) before releasing commits a reply.
-// Below this threshold the bubble springs back without firing onTrigger.
+// Drag distance at which release commits a reply. Picked to match iMessage
+// feel — short enough that one-handed flicks land it, long enough that an
+// accidental jiggle never triggers.
 const TRIGGER_THRESHOLD_PX = 56;
 
-// Hard cap on how far the bubble can be dragged regardless of finger
-// movement. Past the threshold we apply rubber-banding so the gesture
-// still feels responsive but doesn't fly across the screen.
-const MAX_DRAG_PX = 92;
+// Minimum horizontal travel before the underlying pan gesture activates.
+// CRITICAL: this is what lets the FlatList own short vertical scrolls. The
+// gesture stays asleep until the finger moves >=14px sideways, so vertical
+// flicks pass straight through to the list.
+const DRAG_OFFSET_PX = 14;
 
 export type SwipeToReplyDirection = "left" | "right";
 
@@ -29,161 +31,154 @@ type Props = {
   /** Which way the user must swipe to commit a reply on this bubble. */
   direction: SwipeToReplyDirection;
   /**
-   * Fired exactly once per gesture when the drag passes the threshold and
-   * the user releases. Triggers a haptic on the JS thread.
+   * Fired exactly once per gesture when the drag passes the threshold.
+   * The bubble snaps back automatically after firing.
    */
   onTrigger: () => void;
   children: React.ReactNode;
 };
 
 /**
- * Wraps a chat bubble row with a horizontal pan gesture. Dragging the
- * bubble in the configured direction reveals a reply icon underneath; if
- * the user releases past the threshold we fire `onTrigger` and a soft
- * haptic. Otherwise the bubble springs back into place.
+ * Hint icon shown underneath the bubble while it's being dragged. Lives in
+ * its own component so we can call `useAnimatedStyle` at the top level
+ * (Swipeable's render-action prop is invoked imperatively, so calling
+ * hooks inside the render function would violate the rules of hooks).
+ */
+function ReplyHint({
+  translation,
+  side,
+}: {
+  translation: SharedValue<number>;
+  side: SwipeToReplyDirection;
+}): React.JSX.Element {
+  const style = useAnimatedStyle(() => {
+    // Swipeable gives us signed translation: positive = bubble moved right,
+    // negative = bubble moved left. We only care about magnitude here.
+    const dist = Math.abs(translation.value);
+    const opacity = interpolate(
+      dist,
+      [DRAG_OFFSET_PX, TRIGGER_THRESHOLD_PX],
+      [0, 1],
+      Extrapolation.CLAMP,
+    );
+    const scale = interpolate(
+      dist,
+      [DRAG_OFFSET_PX, TRIGGER_THRESHOLD_PX, TRIGGER_THRESHOLD_PX * 1.4],
+      [0.5, 1, 1.15],
+      Extrapolation.CLAMP,
+    );
+    return { opacity, transform: [{ scale }] };
+  });
+  return (
+    <Animated.View
+      style={[
+        styles.action,
+        side === "right" ? styles.actionLeft : styles.actionRight,
+        style,
+      ]}
+      pointerEvents="none"
+    >
+      <Feather
+        name="corner-up-left"
+        size={18}
+        color={colors.light.mutedForeground}
+      />
+    </Animated.View>
+  );
+}
+
+/**
+ * Wraps a chat bubble row with horizontal swipe-to-reply behaviour. Uses
+ * `ReanimatedSwipeable` from gesture-handler under the hood — the canonical
+ * primitive for this pattern. It plays nicely with the FlatList's vertical
+ * scroll (because of `dragOffsetFromLeftEdge`/`dragOffsetFromRightEdge`),
+ * and lets nested Pressables (like the selfie-retry button) receive taps
+ * normally because the underlying pan gesture only activates on a real
+ * horizontal drag.
  *
  * Implementation notes:
- *  - We use Reanimated's `useSharedValue` so the bubble follows the finger
- *    on the UI thread (60fps) even while the JS thread is busy.
- *  - The `triggered` shared value latches across the gesture so we only
- *    fire the haptic + JS callback once per pass over the threshold.
- *  - Vertical scrolling needs to win over this gesture, so we use
- *    `activeOffsetX` to give the FlatList first claim on small movements.
+ *  - We listen to `onSwipeableWillOpen` to fire the trigger + a medium
+ *    haptic the moment the user passes the threshold. We then immediately
+ *    call `close()` on the swipeable so the bubble springs back rather
+ *    than latching open — same UX as iMessage.
+ *  - `firedRef` guards against multiple triggers per gesture if both
+ *    `willOpen` and `open` end up firing.
  */
 export function SwipeToReply({
   direction,
   onTrigger,
   children,
 }: Props): React.JSX.Element {
-  const translateX = useSharedValue(0);
-  const triggered = useSharedValue(false);
+  const swipeableRef = useRef<SwipeableMethods>(null);
+  const firedRef = useRef(false);
 
-  const fireTrigger = useCallback(() => {
+  const handleWillOpen = useCallback(() => {
+    if (firedRef.current) return;
+    firedRef.current = true;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {
-      /* haptics may not be available on web/preview; ignore */
+      /* haptics may be unavailable in web preview; ignore */
     });
     onTrigger();
+    // Snap back rather than latching open — we don't want the action panel
+    // to stay revealed since the reply UI lives in the input bar.
+    requestAnimationFrame(() => swipeableRef.current?.close());
   }, [onTrigger]);
 
-  const sign = direction === "right" ? 1 : -1;
+  const handleClose = useCallback(() => {
+    firedRef.current = false;
+  }, []);
 
-  const pan = Gesture.Pan()
-    // Require ~14px of horizontal movement in the configured direction
-    // before the gesture activates. CRITICAL: pass a single number, not a
-    // [min,max] tuple — the tuple form means "activate when X is OUTSIDE
-    // the range," which fires immediately at X=0 and steals every touch
-    // from the FlatList (broke vertical scrolling). With a single signed
-    // number the gesture only wakes up after intentional horizontal drag.
-    .activeOffsetX(direction === "right" ? 14 : -14)
-    // If the finger moves more than 10px vertically before we activate,
-    // give up so the FlatList can take over and scroll normally.
-    .failOffsetY([-10, 10])
-    .onUpdate((e) => {
-      // Only allow movement in the configured direction. Movement in the
-      // wrong direction is clamped to 0 so the bubble can't jitter.
-      const raw = e.translationX * sign;
-      if (raw <= 0) {
-        translateX.value = 0;
-        return;
-      }
-      // Past the threshold we add resistance so the bubble drifts but
-      // doesn't follow 1:1 — cushions the visual cap at MAX_DRAG_PX.
-      let next: number;
-      if (raw <= TRIGGER_THRESHOLD_PX) {
-        next = raw;
-      } else {
-        const overshoot = raw - TRIGGER_THRESHOLD_PX;
-        next = TRIGGER_THRESHOLD_PX + overshoot * 0.4;
-      }
-      next = Math.min(next, MAX_DRAG_PX);
-      translateX.value = next * sign;
+  // direction "right": bubble drags right → action panel revealed on left
+  // direction "left":  bubble drags left  → action panel revealed on right
+  const renderHint = useCallback(
+    (
+      _progress: SharedValue<number>,
+      translation: SharedValue<number>,
+    ) => <ReplyHint translation={translation} side={direction} />,
+    [direction],
+  );
 
-      // Latch a single haptic + commit when crossing the threshold so the
-      // user feels exactly when the reply will fire.
-      if (!triggered.value && raw >= TRIGGER_THRESHOLD_PX) {
-        triggered.value = true;
-        runOnJS(fireTrigger)();
-      } else if (triggered.value && raw < TRIGGER_THRESHOLD_PX * 0.85) {
-        // Allow undoing if the user pulls back before releasing.
-        triggered.value = false;
-      }
-    })
-    .onEnd(() => {
-      translateX.value = withSpring(0, {
-        damping: 18,
-        stiffness: 220,
-        mass: 0.6,
-      });
-      triggered.value = false;
-    })
-    .onFinalize(() => {
-      translateX.value = withSpring(0, {
-        damping: 18,
-        stiffness: 220,
-        mass: 0.6,
-      });
-      triggered.value = false;
-    });
-
-  const bubbleStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: translateX.value }],
-  }));
-
-  // Reply hint icon fades in as the user drags past ~30% of the threshold,
-  // and rotates slightly past the trigger as a subtle commit cue.
-  const hintStyle = useAnimatedStyle(() => {
-    const progress = Math.abs(translateX.value) / TRIGGER_THRESHOLD_PX;
-    const opacity = interpolate(
-      progress,
-      [0.2, 1],
-      [0, 1],
-      Extrapolation.CLAMP,
-    );
-    const scale = interpolate(
-      progress,
-      [0, 1, 1.4],
-      [0.6, 1, 1.15],
-      Extrapolation.CLAMP,
-    );
-    return { opacity, transform: [{ scale }] };
-  });
+  const swipeProps =
+    direction === "right"
+      ? {
+          renderLeftActions: renderHint,
+          leftThreshold: TRIGGER_THRESHOLD_PX,
+          dragOffsetFromLeftEdge: DRAG_OFFSET_PX,
+          overshootLeft: false,
+        }
+      : {
+          renderRightActions: renderHint,
+          rightThreshold: TRIGGER_THRESHOLD_PX,
+          dragOffsetFromRightEdge: DRAG_OFFSET_PX,
+          overshootRight: false,
+        };
 
   return (
-    <View style={styles.wrap}>
-      <Animated.View
-        style={[
-          styles.hint,
-          direction === "right" ? styles.hintLeft : styles.hintRight,
-          hintStyle,
-        ]}
-        pointerEvents="none"
-      >
-        <Feather
-          name="corner-up-left"
-          size={18}
-          color={colors.light.mutedForeground}
-        />
-      </Animated.View>
-      <GestureDetector gesture={pan}>
-        <Animated.View style={bubbleStyle}>{children}</Animated.View>
-      </GestureDetector>
-    </View>
+    <ReanimatedSwipeable
+      ref={swipeableRef}
+      friction={2}
+      onSwipeableWillOpen={handleWillOpen}
+      onSwipeableClose={handleClose}
+      containerStyle={styles.container}
+      {...swipeProps}
+    >
+      {children}
+    </ReanimatedSwipeable>
   );
 }
 
 const styles = StyleSheet.create({
-  wrap: {
-    position: "relative",
-    width: "100%",
+  container: {
+    // Allow the bubble's normal layout to flow; no clipping so the hint
+    // icon can sit just outside the bubble visually.
+    overflow: "visible",
   },
-  hint: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    width: 40,
+  action: {
+    width: 56,
+    height: "100%",
     alignItems: "center",
     justifyContent: "center",
   },
-  hintLeft: { left: 4 },
-  hintRight: { right: 4 },
+  actionLeft: { paddingLeft: 8 },
+  actionRight: { paddingRight: 8 },
 });
