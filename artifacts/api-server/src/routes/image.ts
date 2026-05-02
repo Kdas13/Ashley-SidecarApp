@@ -1,13 +1,11 @@
 import { Router, type IRouter } from "express";
-import fs from "node:fs/promises";
-import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { db, messagesTable, memoriesTable } from "@workspace/db";
 import { GenerateSelfieBodySchema } from "@workspace/api-zod";
 import { anthropic } from "@workspace/integrations-anthropic-ai";
 import { generateImageBase64 } from "../lib/openai";
 import { getOrCreateProfile } from "../lib/profile";
-import { selfieDir } from "../lib/storage";
+import { saveSelfie, openSelfie } from "../lib/storage";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -85,10 +83,14 @@ router.post("/image/selfie", async (req, res): Promise<void> => {
   }
 
   const id = randomUUID();
-  const filePath = path.join(selfieDir, `${id}.png`);
-  await fs.writeFile(filePath, Buffer.from(b64, "base64"));
-
-  const imageUrl = `/api/selfies/${id}.png`;
+  let imageUrl: string;
+  try {
+    imageUrl = await saveSelfie(id, Buffer.from(b64, "base64"));
+  } catch (err) {
+    req.log.error({ err }, "Failed to persist selfie");
+    res.status(500).json({ error: "Failed to persist selfie" });
+    return;
+  }
 
   const description = await describeSelfie(b64, profile.name, userPrompt);
   const caption = description
@@ -122,6 +124,50 @@ router.post("/image/selfie", async (req, res): Promise<void> => {
   }
 
   res.json(message);
+});
+
+const SELFIE_ID_RE = /^[a-zA-Z0-9-]+$/;
+
+router.get("/selfies/:filename", async (req, res): Promise<void> => {
+  const filename = req.params.filename;
+  if (!filename.endsWith(".png")) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  const id = filename.slice(0, -".png".length);
+  if (!SELFIE_ID_RE.test(id)) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+
+  let result;
+  try {
+    result = await openSelfie(id);
+  } catch (err) {
+    req.log.error({ err, id }, "Failed to open selfie");
+    res.status(500).json({ error: "Failed to read selfie" });
+    return;
+  }
+  if (!result) {
+    res.status(404).json({ error: "Selfie not found" });
+    return;
+  }
+
+  res.setHeader("Content-Type", result.contentType);
+  res.setHeader("Cache-Control", "public, max-age=2592000, immutable");
+  if (result.contentLength !== undefined) {
+    res.setHeader("Content-Length", String(result.contentLength));
+  }
+
+  result.stream.on("error", (err) => {
+    req.log.error({ err, id }, "Selfie stream error");
+    if (!res.headersSent) {
+      res.status(500).end();
+    } else {
+      res.destroy(err);
+    }
+  });
+  result.stream.pipe(res);
 });
 
 export default router;

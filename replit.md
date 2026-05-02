@@ -117,7 +117,8 @@ The legacy stateful routes are still mounted and remain functional but
 are not used by mobile in V1.1:
 
 - `GET/PUT /api/profile`, `GET/POST/DELETE /api/chat/messages`,
-  `GET/POST/PATCH/DELETE /api/memories`, `POST /api/image/selfie`.
+  `GET/POST/PATCH/DELETE /api/memories`, `POST /api/image/selfie`,
+  `GET /api/selfies/<id>.png`.
 - Schema: `lib/db/src/schema/ashley.ts` (`ashley_profile`, `messages`,
   `memories`).
 - Spec: `lib/api-spec/openapi.yaml`. The new `/chat/reply` endpoint is
@@ -125,6 +126,12 @@ are not used by mobile in V1.1:
   helper, not part of the public API contract. Add it to the spec if/when
   a non-mobile client needs it. Codegen:
   `pnpm --filter @workspace/api-spec run codegen`.
+- Selfie image bytes are persisted via `artifacts/api-server/src/lib/storage.ts`,
+  which writes to Replit Object Storage (App Storage) when
+  `PRIVATE_OBJECT_DIR` is set and falls back to local disk
+  (`artifacts/api-server/storage/selfies/`) for dev / unconfigured
+  environments. The `/api/selfies/<id>.png` route reads from object
+  storage first and falls back to disk so legacy local files keep working.
 
 ## Environment
 
