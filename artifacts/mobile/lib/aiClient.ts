@@ -196,13 +196,11 @@ export async function fetchAshleyReply(
 const SELFIE_POLL_INTERVAL_MS = 2000;
 const SELFIE_POLL_TIMEOUT_MS = 120_000; // 2 minutes — gpt-image-1 worst case
 
-export async function fetchAshleySelfie(
+async function startSelfieJob(
+  base: string,
   vibe: string,
   profile: AshleyProfile,
 ): Promise<string> {
-  const base = getApiBase();
-
-  // 1. Kick off the job.
   const startRes = await fetchWithProxyRetry(`${base}/chat/selfie`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -218,15 +216,31 @@ export async function fetchAshleySelfie(
   if (typeof startData.jobId !== "string" || !startData.jobId.trim()) {
     throw new Error("Selfie generation didn't return a job id.");
   }
-  const jobId = startData.jobId.trim();
+  return startData.jobId.trim();
+}
+
+export async function fetchAshleySelfie(
+  vibe: string,
+  profile: AshleyProfile,
+): Promise<string> {
+  const base = getApiBase();
+
+  // 1. Kick off the job.
+  let jobId = await startSelfieJob(base, vibe, profile);
+  // The original POST might have landed on a server that died milliseconds
+  // later (Replit dev cycles), in which case our jobId is unknown to the
+  // restarted server and the first poll comes back 404. Re-POST once before
+  // surfacing an "expired" error to the user. Capped to avoid loops if the
+  // server is genuinely broken.
+  let restartsLeft = 1;
 
   // 2. Poll for completion.
   //
   // We're defensive here: gpt-image-1 takes 30-60s, the proxy/mobile network
   // can be flaky, and individual polls failing (network errors, transient
   // 5xx, even unexpectedly empty 304 bodies if any layer adds caching back)
-  // must NOT abort the whole flow. Only a 404 (job expired/lost) or an
-  // explicit terminal status from the server ends the loop early.
+  // must NOT abort the whole flow. Only an explicit terminal status from the
+  // server (or a second 404 after a re-POST) ends the loop early.
   const deadline = Date.now() + SELFIE_POLL_TIMEOUT_MS;
   while (Date.now() < deadline) {
     await new Promise((resolve) =>
@@ -251,8 +265,21 @@ export async function fetchAshleySelfie(
       continue;
     }
 
-    // 404 = job lost (server restart, TTL prune). That's terminal.
+    // 404 = job lost (server restart between POST and GET, or TTL prune).
+    // Re-issue the POST once with a fresh jobId; only fail terminally if it
+    // happens twice in a row.
     if (pollRes.status === 404) {
+      if (restartsLeft > 0) {
+        restartsLeft -= 1;
+        try {
+          jobId = await startSelfieJob(base, vibe, profile);
+          continue;
+        } catch {
+          // POST itself failed — treat as transient and let the deadline
+          // ultimately bail.
+          continue;
+        }
+      }
       throw new Error("Selfie job expired before it finished.");
     }
     // Any other non-2xx (502/503/504/304-with-empty-body/etc.) — keep polling.
