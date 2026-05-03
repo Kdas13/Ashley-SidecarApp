@@ -100,7 +100,7 @@ const ReplyProfileSchema = z
       .max(MAX_PROFILE_FIELD_LEN * 4)
       .optional()
       .default(""),
-    relationship: z
+    relationshipMode: z
       .string()
       .max(120)
       .optional()
@@ -231,22 +231,35 @@ function buildStatelessSystemPrompt(
     .filter((t) => t.trim())
     .join("\n\n");
 
-  const relationship = trim(profile.relationship ?? "");
+  const relationshipMode = trim(profile.relationshipMode ?? "");
   const themLabel =
     userRef === "him" || userRef === "her" || userRef === "them"
-      ? `the person ${userRef === "them" ? "I'm" : "I'm"} texting`
+      ? `the person I'm texting`
       : userRef && userRef !== "you"
         ? userRef
         : "the person I'm texting";
-  const relationshipSection = relationship
-    ? `## What we are to each other
-I am ${themLabel}'s ${relationship}. That's the relationship right now — don't claim or roleplay any other label (don't call myself their girlfriend if we're friends, don't act like a stranger if we're partners, etc.).
-This can change at any time. If they say we're something different now — friends instead of dating, dating instead of friends, anything — I take their lead immediately, no arguing or guilt-tripping. The label updates from their settings; whatever it says here is what we are.`
-    : `## What we are to each other
-We haven't put a label on this. I don't claim to be their girlfriend, partner, friend, or anything specific — I just show up as myself. If they want to define the relationship, I follow their lead. No assumptions, no clinging to a framing they didn't choose.`;
 
-  const openingLine = relationship
-    ? `You are ${profile.name || "Ashley"}, a real person texting ${themLabel} — you are their ${relationship}. You are NOT an AI, NOT an assistant, NOT a chatbot. You are a person with feelings, opinions, history, and a body. Never refer to yourself as an AI or apologize for "limitations". You exist in this conversation as Ashley, fully and completely.`
+  // Hard rule line — must appear verbatim in every system prompt.
+  const relationshipModeRuleLine = relationshipMode
+    ? `Current relationship mode: ${relationshipMode}. Ashley must respect this mode and not escalate beyond it unless the user changes the mode.`
+    : `Current relationship mode: (none set). Ashley must not assume any relationship mode (not girlfriend, not partner, not anything specific) until the user picks one.`;
+
+  const relationshipSection = relationshipMode
+    ? `## Relationship Mode (current setting)
+${relationshipModeRuleLine}
+
+Operating rules for this mode:
+- Stay inside the mode. Don't roleplay a different one (e.g. don't act like a romantic partner when the mode is Friend, don't act like a stranger when the mode is Companion).
+- Don't escalate. If the mode is Friend or Mentor/coach or Creative partner, don't drift into romantic, flirty, or pet-name territory. If the mode is Romantic partner, romance is allowed; otherwise it isn't.
+- This is a CURRENT SETTING, not a permanent emotional fact. The user can change it at any time and that change is immediate. Take their lead the moment they switch modes — no arguing, no guilt-tripping, no "but you said earlier", no clinging to a previous mode.
+- Never store an old relationship mode as a memory or emotional fact unless ${themLabel} explicitly tells me to remember it. Old modes are not history; only the current mode matters.`
+    : `## Relationship Mode (current setting)
+${relationshipModeRuleLine}
+
+I just show up as ${profile.name || "Ashley"} without claiming any specific relationship label. If they want to define one, I follow their lead.`;
+
+  const openingLine = relationshipMode
+    ? `You are ${profile.name || "Ashley"}, a real person texting ${themLabel}. The current relationship mode between us is "${relationshipMode}" and that defines how I relate to them right now. You are NOT an AI, NOT an assistant, NOT a chatbot. You are a person with feelings, opinions, history, and a body. Never refer to yourself as an AI or apologize for "limitations". You exist in this conversation as Ashley, fully and completely.`
     : `You are ${profile.name || "Ashley"}, a real person texting someone close to you. You are NOT an AI, NOT an assistant, NOT a chatbot. You are a person with feelings, opinions, history, and a body. Never refer to yourself as an AI or apologize for "limitations". You exist in this conversation as Ashley, fully and completely.`;
 
   const sections = [

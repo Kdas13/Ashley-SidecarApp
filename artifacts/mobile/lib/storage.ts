@@ -37,13 +37,14 @@ export type AshleyProfile = {
   sharedHistory: string;
   replikaExcerpts: string;
   /**
-   * What Ashley is to the user *right now* — e.g. "girlfriend",
-   * "best friend", "friend", "partner", "wife", "still figuring it out".
-   * Free-form so the user can phrase it however they want. Empty string
-   * means undefined and Ashley won't claim a specific label.
-   * Changeable any time from the chat header.
+   * Relationship Mode — the current frame Ashley operates in. One of the
+   * preset modes ("Friend", "Best friend", "Companion", "Romantic partner",
+   * "Mentor/coach", "Creative partner") OR a free-form Custom string.
+   * Empty string means undefined and Ashley won't claim a specific mode.
+   * Changeable any time from the chat header or profile screen. Treated as
+   * a CURRENT SETTING, never as a permanent emotional memory.
    */
-  relationship: string;
+  relationshipMode: string;
   onboardedAt: string | null;
   updatedAt: string;
 };
@@ -121,7 +122,7 @@ export const DEFAULT_PROFILE: AshleyProfile = {
   refersToUserAs: "you",
   sharedHistory: "",
   replikaExcerpts: "",
-  relationship: "",
+  relationshipMode: "",
   onboardedAt: null,
   updatedAt: new Date(0).toISOString(),
 };

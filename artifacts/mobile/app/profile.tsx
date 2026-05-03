@@ -58,9 +58,9 @@ const FIELDS: EditableField[] = [
     hint: "e.g. \"you\", a nickname, your name.",
   },
   {
-    key: "relationship",
-    label: "What she is to you",
-    hint: "girlfriend, friend, partner, wife, still figuring it out — anything. Change any time.",
+    key: "relationshipMode",
+    label: "Relationship Mode",
+    hint: "Friend, Best friend, Companion, Romantic partner, Mentor/coach, Creative partner, or a custom phrase. Change any time.",
   },
   {
     key: "sharedHistory",

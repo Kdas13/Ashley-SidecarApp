@@ -29,16 +29,13 @@ import type { Message, ReplyToRef } from "@/lib/storage";
 import colors from "@/constants/colors";
 import { SwipeToReply } from "@/components/SwipeToReply";
 
-const RELATIONSHIP_PRESETS = [
-  "girlfriend",
-  "boyfriend",
-  "partner",
-  "wife",
-  "husband",
-  "best friend",
-  "friend",
-  "just talking",
-  "still figuring it out",
+const RELATIONSHIP_MODE_PRESETS = [
+  "Friend",
+  "Best friend",
+  "Companion",
+  "Romantic partner",
+  "Mentor/coach",
+  "Creative partner",
 ];
 
 // Maximum length of the quote preview we capture from a swiped message.
@@ -75,21 +72,24 @@ export default function ChatScreen(): React.JSX.Element {
 
   const profileQuery = useProfile();
   const updateProfile = useUpdateProfile();
-  const relationship = (profileQuery.data?.relationship ?? "").trim();
+  const relationshipMode = (profileQuery.data?.relationshipMode ?? "").trim();
   const ashleyName = (profileQuery.data?.name ?? "Ashley").trim() || "Ashley";
   const [relPickerOpen, setRelPickerOpen] = useState(false);
-  const [relCustom, setRelCustom] = useState("");
-  const subtitleLabel = relationship
-    ? `your ${relationship}`
-    : "tap to set what she is to you";
+  const [customMode, setCustomMode] = useState("");
+  const [showCustomInput, setShowCustomInput] = useState(false);
+  const isPresetMode = RELATIONSHIP_MODE_PRESETS.includes(relationshipMode);
+  const subtitleLabel = relationshipMode
+    ? `${relationshipMode} mode`
+    : "tap to set relationship mode";
 
-  const applyRelationship = useCallback(
+  const applyMode = useCallback(
     async (value: string) => {
       const next = value.trim().slice(0, 80);
       try {
-        await updateProfile.mutateAsync({ relationship: next });
+        await updateProfile.mutateAsync({ relationshipMode: next });
         setRelPickerOpen(false);
-        setRelCustom("");
+        setShowCustomInput(false);
+        setCustomMode("");
       } catch (e) {
         Alert.alert("Couldn't save", e instanceof Error ? e.message : "Try again.");
       }
@@ -217,17 +217,18 @@ export default function ChatScreen(): React.JSX.Element {
         <Pressable
           style={styles.headerCenter}
           onPress={() => {
-            setRelCustom(relationship);
+            setCustomMode(isPresetMode ? "" : relationshipMode);
+            setShowCustomInput(!!relationshipMode && !isPresetMode);
             setRelPickerOpen(true);
           }}
-          accessibilityLabel="Change what she is to you"
+          accessibilityLabel="Change relationship mode"
         >
           <Text style={styles.headerTitle}>{ashleyName}</Text>
           <View style={styles.headerSubtitleRow}>
             <Text
               style={[
                 styles.headerSubtitle,
-                !relationship && styles.headerSubtitleHint,
+                !relationshipMode && styles.headerSubtitleHint,
               ]}
               numberOfLines={1}
             >
@@ -380,17 +381,17 @@ export default function ChatScreen(): React.JSX.Element {
           onPress={() => setRelPickerOpen(false)}
         >
           <Pressable style={styles.modalCard} onPress={() => {}}>
-            <Text style={styles.modalTitle}>What is she to you?</Text>
+            <Text style={styles.modalTitle}>Relationship Mode</Text>
             <Text style={styles.modalHint}>
-              Pick anything — change it any time. She follows your lead.
+              How Ashley relates to you right now. Change any time — she adapts, no guilt-trips.
             </Text>
             <View style={styles.chipsWrap}>
-              {RELATIONSHIP_PRESETS.map((opt) => {
-                const active = opt === relationship;
+              {RELATIONSHIP_MODE_PRESETS.map((opt) => {
+                const active = opt === relationshipMode;
                 return (
                   <Pressable
                     key={opt}
-                    onPress={() => applyRelationship(opt)}
+                    onPress={() => applyMode(opt)}
                     style={[styles.chip, active && styles.chipActive]}
                   >
                     <Text
@@ -404,42 +405,65 @@ export default function ChatScreen(): React.JSX.Element {
                   </Pressable>
                 );
               })}
-            </View>
-            <Text style={styles.modalLabel}>or write your own</Text>
-            <View style={styles.customRow}>
-              <TextInput
-                value={relCustom}
-                onChangeText={setRelCustom}
-                placeholder="e.g. roommate, ex, complicated…"
-                placeholderTextColor={colors.light.mutedForeground}
-                style={styles.customInput}
-                maxLength={80}
-                returnKeyType="done"
-                onSubmitEditing={() => {
-                  if (relCustom.trim()) applyRelationship(relCustom);
-                }}
-              />
               <Pressable
-                onPress={() => {
-                  if (relCustom.trim()) applyRelationship(relCustom);
-                }}
-                disabled={!relCustom.trim() || updateProfile.isPending}
+                onPress={() => setShowCustomInput(true)}
                 style={[
-                  styles.customSaveBtn,
-                  (!relCustom.trim() || updateProfile.isPending) && {
-                    opacity: 0.4,
-                  },
+                  styles.chip,
+                  (showCustomInput || (relationshipMode && !isPresetMode)) &&
+                    styles.chipActive,
                 ]}
               >
-                <Text style={styles.customSaveText}>Save</Text>
+                <Text
+                  style={[
+                    styles.chipText,
+                    (showCustomInput || (relationshipMode && !isPresetMode)) &&
+                      styles.chipTextActive,
+                  ]}
+                >
+                  Custom
+                </Text>
               </Pressable>
             </View>
-            {relationship ? (
+            {showCustomInput || (relationshipMode && !isPresetMode) ? (
+              <>
+                <Text style={styles.modalLabel}>your own description</Text>
+                <View style={styles.customRow}>
+                  <TextInput
+                    value={customMode}
+                    onChangeText={setCustomMode}
+                    placeholder="describe the relationship in your own words"
+                    placeholderTextColor={colors.light.mutedForeground}
+                    style={styles.customInput}
+                    maxLength={80}
+                    autoFocus={showCustomInput}
+                    returnKeyType="done"
+                    onSubmitEditing={() => {
+                      if (customMode.trim()) applyMode(customMode);
+                    }}
+                  />
+                  <Pressable
+                    onPress={() => {
+                      if (customMode.trim()) applyMode(customMode);
+                    }}
+                    disabled={!customMode.trim() || updateProfile.isPending}
+                    style={[
+                      styles.customSaveBtn,
+                      (!customMode.trim() || updateProfile.isPending) && {
+                        opacity: 0.4,
+                      },
+                    ]}
+                  >
+                    <Text style={styles.customSaveText}>Save</Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : null}
+            {relationshipMode ? (
               <Pressable
-                onPress={() => applyRelationship("")}
+                onPress={() => applyMode("")}
                 style={styles.clearRelBtn}
               >
-                <Text style={styles.clearRelText}>clear — leave it undefined</Text>
+                <Text style={styles.clearRelText}>clear — no mode set</Text>
               </Pressable>
             ) : null}
           </Pressable>
