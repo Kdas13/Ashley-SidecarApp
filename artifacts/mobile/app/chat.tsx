@@ -379,6 +379,7 @@ function MessageBubble({
           styles.bubble,
           isUser ? styles.bubbleUser : styles.bubbleAshley,
           (showImage || pendingSelfieVibe) && styles.bubbleWithImage,
+          quoted && styles.bubbleWithQuote,
         ]}
       >
         {quoted ? (
@@ -560,6 +561,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: 18,
+  },
+  bubbleWithQuote: {
+    // Quoted reply previews need horizontal room or the inner Text wraps
+    // character-by-character when the user's own message is very short
+    // (e.g. just "?"), producing a bizarre tall narrow bubble. Force a
+    // sensible floor; maxWidth still caps the upper bound.
+    minWidth: 220,
   },
   bubbleUser: {
     backgroundColor: colors.light.bubbleUser,

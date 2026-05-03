@@ -478,7 +478,7 @@ type SelfieJob =
   | { status: "ready"; imageUrl: string; createdAt: number }
   | { status: "failed"; error: string; createdAt: number };
 
-const SELFIE_JOB_TTL_MS = 5 * 60 * 1000;
+const SELFIE_JOB_TTL_MS = 30 * 60 * 1000;
 const selfieJobs = new Map<string, SelfieJob>();
 
 // On-disk shadow of `selfieJobs`. Lives next to the saved selfie images so
