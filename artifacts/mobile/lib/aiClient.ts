@@ -10,17 +10,25 @@ const HISTORY_WINDOW = 30;
 const MAX_SUMMARIES_IN_PROMPT = 8;
 
 function getApiBase(): string {
-  const domain = process.env.EXPO_PUBLIC_DOMAIN;
-  if (!domain) {
+  // Prefer an explicit override so we can point the Expo Go app at the
+  // deployed (production) api-server instead of the ephemeral dev workflow,
+  // without changing any other code. Accepts either a full URL with scheme
+  // or a bare hostname.
+  const override = process.env.EXPO_PUBLIC_API_BASE;
+  const raw = override && override.trim() ? override : process.env.EXPO_PUBLIC_DOMAIN;
+  if (!raw) {
     throw new Error(
-      "EXPO_PUBLIC_DOMAIN is not set; cannot reach Ashley's brain.",
+      "EXPO_PUBLIC_API_BASE / EXPO_PUBLIC_DOMAIN is not set; cannot reach Ashley's brain.",
     );
   }
-  const cleaned = domain.replace(/\/+$/, "");
-  if (cleaned.startsWith("http://") || cleaned.startsWith("https://")) {
-    return `${cleaned}/api`;
-  }
-  return `https://${cleaned}/api`;
+  const cleaned = raw.replace(/\/+$/, "");
+  // If the override already ends with /api, don't double-suffix.
+  const hasApiSuffix = /\/api$/.test(cleaned);
+  const withScheme =
+    cleaned.startsWith("http://") || cleaned.startsWith("https://")
+      ? cleaned
+      : `https://${cleaned}`;
+  return hasApiSuffix ? withScheme : `${withScheme}/api`;
 }
 
 /**
