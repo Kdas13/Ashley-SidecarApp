@@ -26,12 +26,15 @@ const MESSAGES_KEY = ["messages"] as const;
 const SUMMARIES_KEY = ["summaries"] as const;
 
 // Mirrors the server constants. Once the live conversation grows past
-// HISTORY_WINDOW + SUMMARY_CHUNK_SIZE unsummarized messages, the oldest
-// SUMMARY_CHUNK_SIZE get distilled into one rolling summary record so the
-// long tail of the relationship doesn't disappear from Ashley's prompt.
-const HISTORY_WINDOW = 30;
+// HISTORY_WINDOW unsummarized messages, the oldest SUMMARY_CHUNK_SIZE get
+// distilled into one rolling summary record so the long tail of the
+// relationship doesn't disappear from Ashley's prompt. We trigger AT the
+// window boundary (not past it) so no message ever falls into a dead zone
+// where it's neither in the verbatim history slice nor covered by a
+// summary.
+const HISTORY_WINDOW = 80;
 const SUMMARY_CHUNK_SIZE = 20;
-const SUMMARY_TRIGGER = HISTORY_WINDOW + SUMMARY_CHUNK_SIZE;
+const SUMMARY_TRIGGER = HISTORY_WINDOW;
 
 export function useMessages() {
   return useQuery({

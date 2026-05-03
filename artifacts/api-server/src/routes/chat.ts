@@ -33,11 +33,15 @@ import { logger } from "../lib/logger";
 const router: IRouter = Router();
 
 const CHAT_MODEL = "claude-sonnet-4-6";
-const HISTORY_WINDOW = 30;
-// Summarize the oldest CHUNK once we have at least HISTORY_WINDOW + CHUNK
+const HISTORY_WINDOW = 80;
+// Summarize the oldest CHUNK once we have at least HISTORY_WINDOW
 // unsummarized messages — that way the live window always stays full.
 const SUMMARY_CHUNK_SIZE = 20;
-const SUMMARY_TRIGGER = HISTORY_WINDOW + SUMMARY_CHUNK_SIZE;
+// Trigger summarization at the window boundary so messages get rolled into
+// a summary BEFORE they'd fall off the verbatim history slice — otherwise
+// there's a dead zone where old turns are neither in the prompt nor in any
+// summary, and Ashley forgets them entirely.
+const SUMMARY_TRIGGER = HISTORY_WINDOW;
 const MAX_SUMMARIES_IN_PROMPT = 8;
 
 // ---------------------------------------------------------------------------
