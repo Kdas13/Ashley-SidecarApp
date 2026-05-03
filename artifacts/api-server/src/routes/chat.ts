@@ -3,18 +3,9 @@ import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { db, memoriesTable } from "@workspace/db";
+import { desc } from "drizzle-orm";
 import {
-  db,
-  messagesTable,
-  memoriesTable,
-  conversationSummariesTable,
-} from "@workspace/db";
-import { asc, desc, gt } from "drizzle-orm";
-import {
-  ListMessagesResponse,
-  ListMessagesQueryParams,
-  SendMessageBodySchema,
-  SendMessageResponseSchema,
   SummarizeChunkBodySchema,
   SummarizeChunkResponseSchema,
 } from "@workspace/api-zod";
@@ -161,32 +152,9 @@ const ChatReplyBodySchema = z.object({
   replyTo: ReplyToSchema.optional(),
 });
 
-// Tiny in-memory per-IP token bucket. 30 requests / 5 minutes is plenty for a
-// single user on a personal companion app and resets on server restart.
-const RATE_WINDOW_MS = 5 * 60 * 1000;
-const RATE_MAX = 30;
-const ipHits = new Map<string, number[]>();
-
-function checkRate(ip: string): boolean {
-  const now = Date.now();
-  const cutoff = now - RATE_WINDOW_MS;
-  const hits = (ipHits.get(ip) ?? []).filter((t) => t > cutoff);
-  if (hits.length >= RATE_MAX) {
-    ipHits.set(ip, hits);
-    return false;
-  }
-  hits.push(now);
-  ipHits.set(ip, hits);
-  // Opportunistic GC so the map doesn't grow unbounded.
-  if (ipHits.size > 1000) {
-    for (const [k, v] of ipHits) {
-      const fresh = v.filter((t) => t > cutoff);
-      if (fresh.length === 0) ipHits.delete(k);
-      else ipHits.set(k, fresh);
-    }
-  }
-  return true;
-}
+// Per-IP rate limiting now lives in src/middleware/rateLimit.ts and is
+// applied globally in app.ts. The previous endpoint-local in-memory bucket
+// was removed so we have one source of truth for limit policy.
 
 type ReplyProfile = z.infer<typeof ReplyProfileSchema>;
 type ReplyMemory = z.infer<typeof ReplyMemorySchema>;
@@ -358,14 +326,6 @@ async function generateAshleySelfie(
 }
 
 router.post("/chat/reply", async (req, res): Promise<void> => {
-  const ip = (req.ip || req.socket.remoteAddress || "unknown").toString();
-  if (!checkRate(ip)) {
-    req.log.warn({ ip }, "Chat reply rate-limited");
-    res
-      .status(429)
-      .json({ error: "Too many messages right now — give Ashley a minute." });
-    return;
-  }
   const parsed = ChatReplyBodySchema.safeParse(req.body);
   if (!parsed.success) {
     req.log.warn({ errors: parsed.error.message }, "Invalid chat reply body");
@@ -624,12 +584,6 @@ for (const [id, job] of selfieJobs) {
 }
 
 router.post("/chat/selfie", async (req, res): Promise<void> => {
-  const ip = (req.ip || req.socket.remoteAddress || "unknown").toString();
-  if (!checkRate(ip)) {
-    req.log.warn({ ip }, "Chat selfie rate-limited");
-    res.status(429).json({ error: "Too many photos in a row — wait a sec." });
-    return;
-  }
   const parsed = ChatSelfieBodySchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
@@ -675,43 +629,10 @@ router.get("/chat/selfie/:jobId", async (req, res): Promise<void> => {
   res.json({ status: "pending" });
 });
 
-router.get("/chat/messages", async (req, res): Promise<void> => {
-  const parsed = ListMessagesQueryParams.safeParse(req.query);
-  if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.message });
-    return;
-  }
-  const limit = parsed.data.limit;
-
-  // Most-recent N, returned in chronological (oldest-first) order.
-  const recent = await db
-    .select()
-    .from(messagesTable)
-    .orderBy(desc(messagesTable.createdAt))
-    .limit(limit);
-
-  const ordered = recent.reverse();
-  res.json(ListMessagesResponse.parse(ordered));
-});
-
-router.delete("/chat/messages", async (_req, res): Promise<void> => {
-  await db.delete(messagesTable);
-  // Wipe rolling summaries too — they're meaningless without their messages.
-  await db.delete(conversationSummariesTable);
-  res.status(204).end();
-});
-
 // Stateless: take an ordered slice of messages and return one narrative
 // summary. Used by the local-first mobile client and by the DB-backed
 // background trigger below.
 router.post("/chat/summarize", async (req, res): Promise<void> => {
-  const ip = (req.ip || req.socket.remoteAddress || "unknown").toString();
-  if (!checkRate(ip)) {
-    res
-      .status(429)
-      .json({ error: "Too many summary requests right now — try later." });
-    return;
-  }
   const parsed = SummarizeChunkBodySchema.safeParse(req.body);
   if (!parsed.success) {
     req.log.warn(
@@ -820,153 +741,6 @@ async function distillMemories(
     logger.info({ count: memories.length }, "Distilled new memories");
   } catch (err) {
     logger.error({ err }, "Memory distillation failed");
-  }
-}
-
-router.post("/chat/messages", async (req, res): Promise<void> => {
-  const parsed = SendMessageBodySchema.safeParse(req.body);
-  if (!parsed.success) {
-    req.log.warn({ errors: parsed.error.message }, "Invalid send message body");
-    res.status(400).json({ error: parsed.error.message });
-    return;
-  }
-  const userContent = parsed.data.content.trim();
-  if (!userContent) {
-    res.status(400).json({ error: "content is required" });
-    return;
-  }
-
-  const profile = await getOrCreateProfile();
-  const memories = await db
-    .select()
-    .from(memoriesTable)
-    .orderBy(desc(memoriesTable.importance), desc(memoriesTable.updatedAt))
-    .limit(40);
-  const summaries = await db
-    .select()
-    .from(conversationSummariesTable)
-    .orderBy(asc(conversationSummariesTable.coveredThroughCreatedAt))
-    .limit(MAX_SUMMARIES_IN_PROMPT);
-
-  const recent = await db
-    .select()
-    .from(messagesTable)
-    .orderBy(desc(messagesTable.createdAt))
-    .limit(HISTORY_WINDOW);
-  const history = recent.reverse();
-
-  // Insert user message first so it shows up in client refresh.
-  const [userMessage] = await db
-    .insert(messagesTable)
-    .values({ role: "user", content: userContent })
-    .returning();
-
-  const systemPrompt = buildSystemPrompt(profile, memories, summaries);
-  const claudeMessages = toClaudeMessages([
-    ...history,
-    userMessage!,
-  ]);
-
-  let assistantText = "";
-  try {
-    const reply = await anthropic.messages.create({
-      model: CHAT_MODEL,
-      max_tokens: 8192,
-      system: systemPrompt,
-      messages: claudeMessages,
-    });
-    const block = reply.content[0];
-    assistantText =
-      block && block.type === "text"
-        ? block.text.trim()
-        : "*goes quiet for a moment, then smiles softly* sorry — i lost my words there. say that again?";
-  } catch (err) {
-    req.log.error({ err }, "Anthropic chat call failed");
-    assistantText =
-      "*frowns* something feels off in my head right now... can you say that again in a sec?";
-  }
-
-  const [assistantMessage] = await db
-    .insert(messagesTable)
-    .values({ role: "assistant", content: assistantText })
-    .returning();
-
-  // Fire-and-forget memory distillation after responding.
-  void distillMemories(userContent, assistantText);
-  // Fire-and-forget rolling-summary check for the DB-backed flow.
-  void maybeSummarizeOldChunk();
-
-  res.json(
-    SendMessageResponseSchema.parse({
-      userMessage,
-      assistantMessage,
-    }),
-  );
-});
-
-/**
- * Look at the DB-backed message timeline and, if there are at least
- * SUMMARY_TRIGGER unsummarized messages, condense the oldest CHUNK_SIZE of
- * them into one new conversation_summaries row so Ashley can keep
- * referencing the long tail of the relationship.
- */
-async function maybeSummarizeOldChunk(): Promise<void> {
-  try {
-    const [latest] = await db
-      .select()
-      .from(conversationSummariesTable)
-      .orderBy(desc(conversationSummariesTable.coveredThroughCreatedAt))
-      .limit(1);
-
-    const cursor = latest?.coveredThroughCreatedAt ?? null;
-    const unsummarized = await db
-      .select()
-      .from(messagesTable)
-      .where(cursor ? gt(messagesTable.createdAt, cursor) : undefined)
-      .orderBy(asc(messagesTable.createdAt));
-
-    if (unsummarized.length < SUMMARY_TRIGGER) return;
-
-    const chunk = unsummarized.slice(0, SUMMARY_CHUNK_SIZE);
-    const last = chunk[chunk.length - 1];
-    if (!last) return;
-
-    const transcript = chunk
-      .map(
-        (m) =>
-          `${m.role === "user" ? "USER" : "ASHLEY"}: ${(m.content ?? "").trim()}`,
-      )
-      .filter((line) => !line.endsWith(": "))
-      .join("\n");
-
-    const userBlock = latest?.summary
-      ? `Earlier summary (for context, do not repeat verbatim):\n${latest.summary.trim()}\n\n---\n\nNew chunk to summarize:\n${transcript}`
-      : `Chunk to summarize:\n${transcript}`;
-
-    const result = await anthropic.messages.create({
-      model: CHAT_MODEL,
-      max_tokens: 1024,
-      system: SUMMARIZER_PROMPT,
-      messages: [{ role: "user", content: userBlock }],
-    });
-    const block = result.content[0];
-    const summaryText =
-      block && block.type === "text" ? block.text.trim() : "";
-    if (!summaryText) {
-      logger.warn("Background summarizer returned empty text");
-      return;
-    }
-    await db.insert(conversationSummariesTable).values({
-      summary: summaryText,
-      messageCount: chunk.length,
-      coveredThroughCreatedAt: last.createdAt,
-    });
-    logger.info(
-      { count: chunk.length },
-      "Inserted new conversation summary",
-    );
-  } catch (err) {
-    logger.error({ err }, "Background summarization failed");
   }
 }
 

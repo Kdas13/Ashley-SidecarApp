@@ -57,12 +57,39 @@ const PROXY_PLACEHOLDER_MARKER = "Run this app to see the results here";
 const RETRY_INTERVAL_MS = 2000;
 const RETRY_DEADLINE_MS = 60_000;
 
+/**
+ * Build the headers our api-server requires on every authenticated route.
+ * The key is shipped in the Expo bundle (EXPO_PUBLIC_API_KEY) — it's a basic
+ * gate against random scrapers/abuse, not a true secret. Without a valid
+ * Bearer the server returns 401.
+ */
+function authHeaders(): Record<string, string> {
+  const key = process.env.EXPO_PUBLIC_API_KEY;
+  if (!key) {
+    throw new Error(
+      "EXPO_PUBLIC_API_KEY is not set; the app can't talk to Ashley's server.",
+    );
+  }
+  return { Authorization: `Bearer ${key}` };
+}
+
+function withAuth(init: RequestInit): RequestInit {
+  return {
+    ...init,
+    headers: {
+      ...authHeaders(),
+      ...(init.headers as Record<string, string> | undefined),
+    },
+  };
+}
+
 async function fetchWithProxyRetry(
   url: string,
   init: RequestInit,
 ): Promise<Response> {
+  const finalInit = withAuth(init);
   const deadline = Date.now() + RETRY_DEADLINE_MS;
-  let res = await fetch(url, init);
+  let res = await fetch(url, finalInit);
   while (await looksLikeProxyPlaceholder(res)) {
     if (Date.now() >= deadline) {
       throw new Error(
@@ -70,7 +97,7 @@ async function fetchWithProxyRetry(
       );
     }
     await new Promise((r) => setTimeout(r, RETRY_INTERVAL_MS));
-    res = await fetch(url, init);
+    res = await fetch(url, finalInit);
   }
   return res;
 }
@@ -270,6 +297,7 @@ export async function fetchAshleySelfie(
         {
           method: "GET",
           headers: {
+            ...authHeaders(),
             // Belt-and-suspenders: tell every cache layer not to revalidate
             // with conditional requests, so we always get a fresh body.
             "Cache-Control": "no-cache",

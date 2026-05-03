@@ -42,3 +42,9 @@ externalPort = 3001
 [[ports]]
 localPort = 18116
 externalPort = 3002
+
+[userenv]
+
+[userenv.shared]
+API_AUTH_KEY = "66f8c2aa1ae8cbcc8f886023fffd4c776d561e2d799c716ea99237fbe39d7a87"
+EXPO_PUBLIC_API_KEY = "66f8c2aa1ae8cbcc8f886023fffd4c776d561e2d799c716ea99237fbe39d7a87"

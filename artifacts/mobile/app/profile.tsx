@@ -149,8 +149,9 @@ export default function ProfileScreen(): React.JSX.Element {
         keyboardShouldPersistTaps="handled"
       >
         <Text style={styles.intro}>
-          This is who she is to you. Be as detailed and personal as you want —
-          everything stays on this device.
+          This is who she is to you. Be as detailed and personal as you want.
+          Your profile is stored on this device and sent to our backend with
+          each message so the AI provider can stay in character.
         </Text>
 
         {FIELDS.map((field) => (

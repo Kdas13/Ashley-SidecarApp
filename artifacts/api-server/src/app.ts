@@ -1,8 +1,10 @@
-import express, { type Express } from "express";
+import express, { type Express, type RequestHandler } from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { requireApiKey } from "./middleware/auth";
+import { apiRateLimit } from "./middleware/rateLimit";
 
 const app: Express = express();
 
@@ -14,6 +16,10 @@ const app: Express = express();
 // bubble to flip to "couldn't send the photo" while the image is actually
 // still rendering.
 app.set("etag", false);
+
+// Trust the Replit proxy so req.ip reflects the real client IP for rate
+// limiting. Single hop in front of us.
+app.set("trust proxy", 1);
 
 app.use(
   pinoHttp({
@@ -38,6 +44,29 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-app.use("/api", router);
+// Public paths that bypass auth + rate limiting:
+//   /api/healthz                → liveness probe (used by Replit deploy)
+//   /api/selfies/:filename      → static image serving for <Image> tags
+//                                  (selfie URLs already use unguessable UUIDs;
+//                                  RN <Image> can't attach Authorization)
+const isPublicApiPath = (path: string): boolean => {
+  return path === "/healthz" || path.startsWith("/selfies/");
+};
+
+const gate: RequestHandler = (req, res, next) => {
+  if (isPublicApiPath(req.path)) {
+    next();
+    return;
+  }
+  apiRateLimit(req, res, (err) => {
+    if (err) {
+      next(err);
+      return;
+    }
+    requireApiKey(req, res, next);
+  });
+};
+
+app.use("/api", gate, router);
 
 export default app;
