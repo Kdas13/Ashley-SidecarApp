@@ -109,18 +109,75 @@ export function newId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+// Tracks the last successfully-parsed value per key. Used to gate writes:
+// if we ever read raw bytes and fail to parse them, we MUST NOT
+// overwrite — that would silently destroy history. Instead we surface an
+// error to the caller and back up the corrupt blob.
+const lastReadOk = new Map<string, true>();
+const readFailureMarker = new Map<string, string>(); // key → backup key used
+
 async function readJSON<T>(key: string, fallback: T): Promise<T> {
+  let raw: string | null;
   try {
-    const raw = await AsyncStorage.getItem(key);
-    if (!raw) return fallback;
-    return JSON.parse(raw) as T;
-  } catch {
+    raw = await AsyncStorage.getItem(key);
+  } catch (err) {
+    // Native getItem itself failed — extremely rare (storage corruption).
+    // Treat as "unknown state" so writes are blocked downstream.
+    readFailureMarker.set(key, "<getItem-failed>");
+    // eslint-disable-next-line no-console
+    console.warn(`[storage] getItem failed for ${key}`, err);
+    return fallback;
+  }
+  if (raw === null || raw === undefined) {
+    // Truly absent — safe to treat as fallback and allow future writes.
+    lastReadOk.set(key, true);
+    return fallback;
+  }
+  if (raw === "") {
+    // Empty string is a corrupt write artifact, NOT an intentional value.
+    // Block writes so we don't compound the problem.
+    readFailureMarker.set(key, "<empty-string>");
+    // eslint-disable-next-line no-console
+    console.warn(`[storage] empty raw for ${key} — blocking writes`);
+    return fallback;
+  }
+  try {
+    const parsed = JSON.parse(raw) as T;
+    lastReadOk.set(key, true);
+    readFailureMarker.delete(key);
+    return parsed;
+  } catch (err) {
+    // Parse failure — back the raw bytes up to a timestamped key so they
+    // can be recovered manually, then refuse to overwrite this key.
+    const backupKey = `${key}::corrupt::${Date.now()}`;
+    try {
+      await AsyncStorage.setItem(backupKey, raw);
+    } catch {
+      // If even the backup write fails, there's nothing more we can do
+      // beyond logging. We still refuse to overwrite the original key.
+    }
+    readFailureMarker.set(key, backupKey);
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[storage] parse failed for ${key}; corrupt blob saved to ${backupKey}`,
+      err,
+    );
     return fallback;
   }
 }
 
 async function writeJSON<T>(key: string, value: T): Promise<void> {
+  // Refuse the write if the last read for this key failed. Otherwise we'd
+  // silently overwrite recoverable user data with whatever the in-memory
+  // fallback was.
+  const blocker = readFailureMarker.get(key);
+  if (blocker) {
+    throw new Error(
+      `Refusing to write ${key}: previous read failed (raw blob backed up to ${blocker}). Restart the app or clear storage to recover.`,
+    );
+  }
   await AsyncStorage.setItem(key, JSON.stringify(value));
+  lastReadOk.set(key, true);
 }
 
 const locks = new Map<string, Promise<unknown>>();
@@ -211,4 +268,11 @@ export async function clearAllData(): Promise<void> {
     KEYS.messages,
     KEYS.summaries,
   ]);
+  // Reset the in-memory read-failure markers so subsequent writes are
+  // unblocked — the keys are gone, so a fresh read will see `raw === null`
+  // and mark them OK.
+  for (const k of Object.values(KEYS)) {
+    readFailureMarker.delete(k);
+    lastReadOk.set(k, true);
+  }
 }
