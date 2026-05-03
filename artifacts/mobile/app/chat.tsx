@@ -16,6 +16,9 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { router } from "expo-router";
+import * as Clipboard from "expo-clipboard";
+import * as FileSystem from "expo-file-system/legacy";
+import * as MediaLibrary from "expo-media-library";
 
 import {
   useMessages,
@@ -509,6 +512,43 @@ function MessageBubble({
       isMountedRef.current = false;
     };
   }, []);
+  const onCopyText = useCallback(async () => {
+    if (!hasText) return;
+    try {
+      await Clipboard.setStringAsync(message.content);
+      Alert.alert("Copied", "Message copied to clipboard.");
+    } catch {
+      Alert.alert("Couldn't copy", "Try again in a moment.");
+    }
+  }, [hasText, message.content]);
+
+  const onSaveImage = useCallback(async () => {
+    if (!message.imageUrl) return;
+    try {
+      const perm = await MediaLibrary.requestPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert(
+          "Permission needed",
+          "Allow photo library access to save Ashley's selfies.",
+        );
+        return;
+      }
+      const target =
+        (FileSystem.cacheDirectory ?? "") +
+        `ashley-${message.id}.jpg`;
+      const dl = await FileSystem.downloadAsync(message.imageUrl, target);
+      await MediaLibrary.saveToLibraryAsync(dl.uri);
+      Alert.alert("Saved", "Photo saved to your library.");
+    } catch (err) {
+      Alert.alert(
+        "Couldn't save",
+        err instanceof Error && err.message
+          ? err.message
+          : "Something went wrong saving the photo.",
+      );
+    }
+  }, [message.id, message.imageUrl]);
+
   const onRetrySelfie = useCallback(() => {
     if (!pendingSelfieVibe || retryingThis) return;
     setRetryingThis(true);
@@ -586,20 +626,26 @@ function MessageBubble({
           </View>
         ) : null}
         {showImage ? (
-          <Image
-            source={{ uri: message.imageUrl! }}
-            style={styles.bubbleImage}
-            resizeMode="cover"
-            accessibilityLabel="Selfie from Ashley"
-            onError={(e) => {
-              console.warn(
-                "[chat] selfie image failed to load",
-                message.imageUrl,
-                e?.nativeEvent,
-              );
-              setImageFailed(true);
-            }}
-          />
+          <Pressable
+            onLongPress={onSaveImage}
+            delayLongPress={350}
+            accessibilityLabel="Long-press to save photo"
+          >
+            <Image
+              source={{ uri: message.imageUrl! }}
+              style={styles.bubbleImage}
+              resizeMode="cover"
+              accessibilityLabel="Selfie from Ashley"
+              onError={(e) => {
+                console.warn(
+                  "[chat] selfie image failed to load",
+                  message.imageUrl,
+                  e?.nativeEvent,
+                );
+                setImageFailed(true);
+              }}
+            />
+          </Pressable>
         ) : null}
         {imageFailed ? (
           <View style={styles.imageError}>
@@ -659,6 +705,8 @@ function MessageBubble({
         ) : null}
         {hasText ? (
           <Text
+            selectable
+            onLongPress={onCopyText}
             style={[
               styles.bubbleText,
               isUser ? styles.bubbleUserText : styles.bubbleAshleyText,
