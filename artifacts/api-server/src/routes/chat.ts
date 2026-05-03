@@ -1,6 +1,8 @@
 import { Router, type IRouter } from "express";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import {
   db,
   messagesTable,
@@ -25,7 +27,7 @@ import {
   SUMMARIZER_PROMPT,
 } from "../lib/ashleyPrompt";
 import { generateImageBase64 } from "../lib/openai";
-import { saveSelfie } from "../lib/storage";
+import { saveSelfie, localSelfieDir } from "../lib/storage";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -462,18 +464,121 @@ const ChatSelfieBodySchema = z.object({
 // finish so a slow client can still pick up the result, then prune.
 // ---------------------------------------------------------------------------
 
+// Pending jobs carry the vibe + profile so that, if the server is recycled
+// mid-generation (the dev-environment workflow runner kills us every ~10
+// minutes), the next boot can pick them back up and re-issue the OpenAI
+// call instead of leaving the client polling a job that no longer exists.
 type SelfieJob =
-  | { status: "pending"; createdAt: number }
+  | {
+      status: "pending";
+      vibe: string;
+      profile: ReplyProfile;
+      createdAt: number;
+    }
   | { status: "ready"; imageUrl: string; createdAt: number }
   | { status: "failed"; error: string; createdAt: number };
 
 const SELFIE_JOB_TTL_MS = 5 * 60 * 1000;
 const selfieJobs = new Map<string, SelfieJob>();
 
+// On-disk shadow of `selfieJobs`. Lives next to the saved selfie images so
+// it survives api-server restarts but doesn't pollute the project root.
+// We write atomically (tmp + rename) so a kill mid-write can't corrupt it.
+const SELFIE_JOBS_FILE = path.join(
+  path.dirname(localSelfieDir),
+  "selfie-jobs.json",
+);
+
+function persistSelfieJobs(): void {
+  try {
+    const obj: Record<string, SelfieJob> = {};
+    for (const [id, job] of selfieJobs) obj[id] = job;
+    const tmp = `${SELFIE_JOBS_FILE}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(obj), "utf8");
+    fs.renameSync(tmp, SELFIE_JOBS_FILE);
+  } catch (err) {
+    logger.warn({ err }, "Failed to persist selfie jobs to disk");
+  }
+}
+
+function loadSelfieJobs(): void {
+  try {
+    if (!fs.existsSync(SELFIE_JOBS_FILE)) return;
+    const raw = fs.readFileSync(SELFIE_JOBS_FILE, "utf8");
+    if (!raw.trim()) return;
+    const parsed = JSON.parse(raw) as Record<string, SelfieJob>;
+    const cutoff = Date.now() - SELFIE_JOB_TTL_MS;
+    for (const [id, job] of Object.entries(parsed)) {
+      if (job && typeof job.createdAt === "number" && job.createdAt >= cutoff) {
+        selfieJobs.set(id, job);
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, "Failed to load persisted selfie jobs");
+  }
+}
+
+function setSelfieJob(jobId: string, job: SelfieJob): void {
+  selfieJobs.set(jobId, job);
+  persistSelfieJobs();
+}
+
 function pruneSelfieJobs(): void {
   const cutoff = Date.now() - SELFIE_JOB_TTL_MS;
+  let pruned = false;
   for (const [id, job] of selfieJobs) {
-    if (job.createdAt < cutoff) selfieJobs.delete(id);
+    if (job.createdAt < cutoff) {
+      selfieJobs.delete(id);
+      pruned = true;
+    }
+  }
+  if (pruned) persistSelfieJobs();
+}
+
+function startSelfieGeneration(
+  jobId: string,
+  vibe: string,
+  profile: ReplyProfile,
+): void {
+  void (async () => {
+    try {
+      const imageUrl = await generateAshleySelfie(vibe, profile);
+      if (imageUrl) {
+        setSelfieJob(jobId, {
+          status: "ready",
+          imageUrl,
+          createdAt: Date.now(),
+        });
+      } else {
+        setSelfieJob(jobId, {
+          status: "failed",
+          error: "Couldn't take that selfie — try again?",
+          createdAt: Date.now(),
+        });
+      }
+    } catch (err) {
+      logger.warn({ err, jobId }, "Background selfie generation crashed");
+      setSelfieJob(jobId, {
+        status: "failed",
+        error:
+          err instanceof Error && err.message
+            ? err.message
+            : "Selfie generation crashed.",
+        createdAt: Date.now(),
+      });
+    }
+  })();
+}
+
+// Boot recovery: load any persisted jobs and re-issue the OpenAI call for
+// anything that was still pending when we died. The client's polling jobId
+// stays the same, so from its perspective the selfie just takes a little
+// longer instead of failing.
+loadSelfieJobs();
+for (const [id, job] of selfieJobs) {
+  if (job.status === "pending") {
+    logger.info({ jobId: id }, "Resuming selfie job after server restart");
+    startSelfieGeneration(id, job.vibe, job.profile);
   }
 }
 
@@ -494,38 +599,13 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
 
   pruneSelfieJobs();
   const jobId = randomUUID();
-  selfieJobs.set(jobId, { status: "pending", createdAt: Date.now() });
-
-  // Fire-and-forget the actual generation. Errors are captured into the job
-  // state so the polling client can surface them.
-  void (async () => {
-    try {
-      const imageUrl = await generateAshleySelfie(vibe, profile);
-      if (imageUrl) {
-        selfieJobs.set(jobId, {
-          status: "ready",
-          imageUrl,
-          createdAt: Date.now(),
-        });
-      } else {
-        selfieJobs.set(jobId, {
-          status: "failed",
-          error: "Couldn't take that selfie — try again?",
-          createdAt: Date.now(),
-        });
-      }
-    } catch (err) {
-      req.log.warn({ err, jobId }, "Background selfie generation crashed");
-      selfieJobs.set(jobId, {
-        status: "failed",
-        error:
-          err instanceof Error && err.message
-            ? err.message
-            : "Selfie generation crashed.",
-        createdAt: Date.now(),
-      });
-    }
-  })();
+  setSelfieJob(jobId, {
+    status: "pending",
+    vibe,
+    profile,
+    createdAt: Date.now(),
+  });
+  startSelfieGeneration(jobId, vibe, profile);
 
   // Respond immediately. The client polls /chat/selfie/:jobId.
   res.status(202).json({ jobId });
