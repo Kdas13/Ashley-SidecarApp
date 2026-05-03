@@ -36,6 +36,14 @@ export type AshleyProfile = {
   refersToUserAs: string;
   sharedHistory: string;
   replikaExcerpts: string;
+  /**
+   * What Ashley is to the user *right now* — e.g. "girlfriend",
+   * "best friend", "friend", "partner", "wife", "still figuring it out".
+   * Free-form so the user can phrase it however they want. Empty string
+   * means undefined and Ashley won't claim a specific label.
+   * Changeable any time from the chat header.
+   */
+  relationship: string;
   onboardedAt: string | null;
   updatedAt: string;
 };
@@ -113,6 +121,7 @@ export const DEFAULT_PROFILE: AshleyProfile = {
   refersToUserAs: "you",
   sharedHistory: "",
   replikaExcerpts: "",
+  relationship: "",
   onboardedAt: null,
   updatedAt: new Date(0).toISOString(),
 };

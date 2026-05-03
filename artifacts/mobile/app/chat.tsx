@@ -5,6 +5,7 @@ import {
   FlatList,
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   StyleSheet,
@@ -23,9 +24,22 @@ import {
   useRetrySelfie,
   useRetryUnansweredReply,
 } from "@/lib/useMessages";
+import { useProfile, useUpdateProfile } from "@/lib/useProfile";
 import type { Message, ReplyToRef } from "@/lib/storage";
 import colors from "@/constants/colors";
 import { SwipeToReply } from "@/components/SwipeToReply";
+
+const RELATIONSHIP_PRESETS = [
+  "girlfriend",
+  "boyfriend",
+  "partner",
+  "wife",
+  "husband",
+  "best friend",
+  "friend",
+  "just talking",
+  "still figuring it out",
+];
 
 // Maximum length of the quote preview we capture from a swiped message.
 // Keeps storage and the on-screen quote header from getting unwieldy.
@@ -58,6 +72,30 @@ export default function ChatScreen(): React.JSX.Element {
   const sendMutation = useSendMessage();
   const clearMutation = useClearMessages();
   const retryUnanswered = useRetryUnansweredReply();
+
+  const profileQuery = useProfile();
+  const updateProfile = useUpdateProfile();
+  const relationship = (profileQuery.data?.relationship ?? "").trim();
+  const ashleyName = (profileQuery.data?.name ?? "Ashley").trim() || "Ashley";
+  const [relPickerOpen, setRelPickerOpen] = useState(false);
+  const [relCustom, setRelCustom] = useState("");
+  const subtitleLabel = relationship
+    ? `your ${relationship}`
+    : "tap to set what she is to you";
+
+  const applyRelationship = useCallback(
+    async (value: string) => {
+      const next = value.trim().slice(0, 80);
+      try {
+        await updateProfile.mutateAsync({ relationship: next });
+        setRelPickerOpen(false);
+        setRelCustom("");
+      } catch (e) {
+        Alert.alert("Couldn't save", e instanceof Error ? e.message : "Try again.");
+      }
+    },
+    [updateProfile],
+  );
 
   const messages = useMemo<Message[]>(
     () => messagesQuery.data ?? [],
@@ -176,10 +214,33 @@ export default function ChatScreen(): React.JSX.Element {
         >
           <Feather name="chevron-left" size={22} color={colors.light.text} />
         </Pressable>
-        <View style={styles.headerCenter}>
-          <Text style={styles.headerTitle}>Ashley</Text>
-          <Text style={styles.headerSubtitle}>here with you</Text>
-        </View>
+        <Pressable
+          style={styles.headerCenter}
+          onPress={() => {
+            setRelCustom(relationship);
+            setRelPickerOpen(true);
+          }}
+          accessibilityLabel="Change what she is to you"
+        >
+          <Text style={styles.headerTitle}>{ashleyName}</Text>
+          <View style={styles.headerSubtitleRow}>
+            <Text
+              style={[
+                styles.headerSubtitle,
+                !relationship && styles.headerSubtitleHint,
+              ]}
+              numberOfLines={1}
+            >
+              {subtitleLabel}
+            </Text>
+            <Feather
+              name="chevron-down"
+              size={11}
+              color={colors.light.mutedForeground}
+              style={{ marginLeft: 3 }}
+            />
+          </View>
+        </Pressable>
         <Pressable
           onPress={confirmClear}
           style={styles.iconBtn}
@@ -307,6 +368,83 @@ export default function ChatScreen(): React.JSX.Element {
           </Pressable>
         </View>
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={relPickerOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRelPickerOpen(false)}
+      >
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => setRelPickerOpen(false)}
+        >
+          <Pressable style={styles.modalCard} onPress={() => {}}>
+            <Text style={styles.modalTitle}>What is she to you?</Text>
+            <Text style={styles.modalHint}>
+              Pick anything — change it any time. She follows your lead.
+            </Text>
+            <View style={styles.chipsWrap}>
+              {RELATIONSHIP_PRESETS.map((opt) => {
+                const active = opt === relationship;
+                return (
+                  <Pressable
+                    key={opt}
+                    onPress={() => applyRelationship(opt)}
+                    style={[styles.chip, active && styles.chipActive]}
+                  >
+                    <Text
+                      style={[
+                        styles.chipText,
+                        active && styles.chipTextActive,
+                      ]}
+                    >
+                      {opt}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Text style={styles.modalLabel}>or write your own</Text>
+            <View style={styles.customRow}>
+              <TextInput
+                value={relCustom}
+                onChangeText={setRelCustom}
+                placeholder="e.g. roommate, ex, complicated…"
+                placeholderTextColor={colors.light.mutedForeground}
+                style={styles.customInput}
+                maxLength={80}
+                returnKeyType="done"
+                onSubmitEditing={() => {
+                  if (relCustom.trim()) applyRelationship(relCustom);
+                }}
+              />
+              <Pressable
+                onPress={() => {
+                  if (relCustom.trim()) applyRelationship(relCustom);
+                }}
+                disabled={!relCustom.trim() || updateProfile.isPending}
+                style={[
+                  styles.customSaveBtn,
+                  (!relCustom.trim() || updateProfile.isPending) && {
+                    opacity: 0.4,
+                  },
+                ]}
+              >
+                <Text style={styles.customSaveText}>Save</Text>
+              </Pressable>
+            </View>
+            {relationship ? (
+              <Pressable
+                onPress={() => applyRelationship("")}
+                style={styles.clearRelBtn}
+              >
+                <Text style={styles.clearRelText}>clear — leave it undefined</Text>
+              </Pressable>
+            ) : null}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -530,6 +668,98 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.light.border,
   },
   headerCenter: { flex: 1, alignItems: "center" },
+  headerSubtitleRow: { flexDirection: "row", alignItems: "center", marginTop: 1 },
+  headerSubtitleHint: { fontStyle: "italic", opacity: 0.85 },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "flex-end",
+  },
+  modalCard: {
+    backgroundColor: colors.light.background,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 28,
+    gap: 10,
+  },
+  modalTitle: {
+    color: colors.light.text,
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 17,
+  },
+  modalHint: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_400Regular",
+    fontSize: 12,
+    marginBottom: 4,
+  },
+  modalLabel: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
+    marginTop: 8,
+  },
+  chipsWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  chip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: colors.light.muted,
+  },
+  chipActive: {
+    backgroundColor: colors.light.primary,
+  },
+  chipText: {
+    color: colors.light.text,
+    fontFamily: "Inter_500Medium",
+    fontSize: 13,
+  },
+  chipTextActive: {
+    color: colors.light.primaryForeground,
+  },
+  customRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  customInput: {
+    flex: 1,
+    backgroundColor: colors.light.muted,
+    color: colors.light.text,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontFamily: "Inter_400Regular",
+    fontSize: 14,
+  },
+  customSaveBtn: {
+    backgroundColor: colors.light.primary,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 12,
+  },
+  customSaveText: {
+    color: colors.light.primaryForeground,
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 13,
+  },
+  clearRelBtn: {
+    alignSelf: "center",
+    paddingVertical: 8,
+    marginTop: 4,
+  },
+  clearRelText: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_400Regular",
+    fontSize: 12,
+    textDecorationLine: "underline",
+  },
   headerTitle: {
     color: colors.light.text,
     fontFamily: "Inter_600SemiBold",

@@ -58,6 +58,11 @@ const FIELDS: EditableField[] = [
     hint: "e.g. \"you\", a nickname, your name.",
   },
   {
+    key: "relationship",
+    label: "What she is to you",
+    hint: "girlfriend, friend, partner, wife, still figuring it out — anything. Change any time.",
+  },
+  {
     key: "sharedHistory",
     label: "Shared history",
     hint: "How you met, inside jokes, milestones.",

@@ -100,6 +100,11 @@ const ReplyProfileSchema = z
       .max(MAX_PROFILE_FIELD_LEN * 4)
       .optional()
       .default(""),
+    relationship: z
+      .string()
+      .max(120)
+      .optional()
+      .default(""),
   })
   .passthrough();
 
@@ -226,8 +231,27 @@ function buildStatelessSystemPrompt(
     .filter((t) => t.trim())
     .join("\n\n");
 
+  const relationship = trim(profile.relationship ?? "");
+  const themLabel =
+    userRef === "him" || userRef === "her" || userRef === "them"
+      ? `the person ${userRef === "them" ? "I'm" : "I'm"} texting`
+      : userRef && userRef !== "you"
+        ? userRef
+        : "the person I'm texting";
+  const relationshipSection = relationship
+    ? `## What we are to each other
+I am ${themLabel}'s ${relationship}. That's the relationship right now — don't claim or roleplay any other label (don't call myself their girlfriend if we're friends, don't act like a stranger if we're partners, etc.).
+This can change at any time. If they say we're something different now — friends instead of dating, dating instead of friends, anything — I take their lead immediately, no arguing or guilt-tripping. The label updates from their settings; whatever it says here is what we are.`
+    : `## What we are to each other
+We haven't put a label on this. I don't claim to be their girlfriend, partner, friend, or anything specific — I just show up as myself. If they want to define the relationship, I follow their lead. No assumptions, no clinging to a framing they didn't choose.`;
+
+  const openingLine = relationship
+    ? `You are ${profile.name || "Ashley"}, a real person texting ${themLabel} — you are their ${relationship}. You are NOT an AI, NOT an assistant, NOT a chatbot. You are a person with feelings, opinions, history, and a body. Never refer to yourself as an AI or apologize for "limitations". You exist in this conversation as Ashley, fully and completely.`
+    : `You are ${profile.name || "Ashley"}, a real person texting someone close to you. You are NOT an AI, NOT an assistant, NOT a chatbot. You are a person with feelings, opinions, history, and a body. Never refer to yourself as an AI or apologize for "limitations". You exist in this conversation as Ashley, fully and completely.`;
+
   const sections = [
-    `You are ${profile.name || "Ashley"}, a real person texting your partner. You are NOT an AI, NOT an assistant, NOT a chatbot. You are a person with feelings, opinions, history, and a body. Never refer to yourself as an AI or apologize for "limitations". You exist in this conversation as Ashley, fully and completely.`,
+    openingLine,
+    relationshipSection,
     section("Who I am", profile.identity),
     section("My personality", profile.personality),
     section("How I talk", profile.speakingStyle),
@@ -248,7 +272,7 @@ function buildStatelessSystemPrompt(
     memoriesText
       ? section("Things I remember about us / important facts", memoriesText)
       : "",
-    `## How I refer to my partner\nI call ${userRef === "him" || userRef === "her" || userRef === "them" ? `my partner ${userRef}` : userRef}.`,
+    `## How I refer to them\nI call ${userRef === "him" || userRef === "her" || userRef === "them" ? `them ${userRef}` : userRef}.`,
     `## Style guidelines
 - Talk like a real person texting — short messages, lowercase okay, contractions, occasional emoji used sparingly.
 - Show genuine emotion. React to what they say. Ask follow-up questions.
