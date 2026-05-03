@@ -111,8 +111,8 @@ export default function ChatScreen(): React.JSX.Element {
           inFlightRetryRef.current = false;
         });
     };
-    const initial = setTimeout(tryOnce, 1200);
-    const interval = setInterval(tryOnce, 12000);
+    const initial = setTimeout(tryOnce, 600);
+    const interval = setInterval(tryOnce, 4000);
     return () => {
       cancelled = true;
       clearTimeout(initial);
@@ -258,7 +258,7 @@ export default function ChatScreen(): React.JSX.Element {
             <View style={styles.replyAccent} />
             <View style={styles.replyTextWrap}>
               <Text style={styles.replyAuthor}>
-                Replying to {replyingTo.role === "ashley" ? "Ashley" : "you"}
+                Replying to {replyingTo.role === "ashley" ? "Ashley" : "yourself"}
               </Text>
               <Text style={styles.replyBody} numberOfLines={2}>
                 {replyingTo.preview}
