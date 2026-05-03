@@ -229,10 +229,11 @@ export async function fetchAshleySelfie(
   let jobId = await startSelfieJob(base, vibe, profile);
   // The original POST might have landed on a server that died milliseconds
   // later (Replit dev cycles), in which case our jobId is unknown to the
-  // restarted server and the first poll comes back 404. Re-POST once before
-  // surfacing an "expired" error to the user. Capped to avoid loops if the
-  // server is genuinely broken.
-  let restartsLeft = 1;
+  // restarted server and the first poll comes back 404. Re-POST up to twice
+  // before surfacing an "expired" error to the user — covers the case
+  // where the server cycles twice in quick succession during a single
+  // generation. Capped to avoid loops if the server is genuinely broken.
+  let restartsLeft = 2;
 
   // 2. Poll for completion.
   //

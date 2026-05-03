@@ -7,6 +7,18 @@ const KEYS = {
   summaries: "@ashley/summaries/v1",
 } as const;
 
+// Shadow keys: every write to one of the keys above is mirrored to its
+// shadow. On load, if the primary key is missing or empty but the shadow
+// has data, we restore from the shadow. Defends against single-key
+// AsyncStorage wipes (which we've observed in Expo Go) without the
+// complexity of a full second store.
+const SHADOW_KEYS = {
+  profile: "@ashley/profile/v1.shadow",
+  memories: "@ashley/memories/v1.shadow",
+  messages: "@ashley/messages/v1.shadow",
+  summaries: "@ashley/summaries/v1.shadow",
+} as const;
+
 export type MemoryTag =
   | "general"
   | "preference"
@@ -116,45 +128,38 @@ export function newId(): string {
 const lastReadOk = new Map<string, true>();
 const readFailureMarker = new Map<string, string>(); // key → backup key used
 
-async function readJSON<T>(key: string, fallback: T): Promise<T> {
+/**
+ * Read a single key's raw bytes and parse them. On parse failure backs up
+ * the raw blob to a timestamped key and marks `key` as read-failed so the
+ * caller knows not to overwrite it. Returns `undefined` when the key is
+ * absent (caller can then try the shadow), or the parsed value, or
+ * `undefined` if parsing failed.
+ */
+async function readOneJSON<T>(key: string): Promise<T | undefined> {
   let raw: string | null;
   try {
     raw = await AsyncStorage.getItem(key);
   } catch (err) {
-    // Native getItem itself failed — extremely rare (storage corruption).
-    // Treat as "unknown state" so writes are blocked downstream.
     readFailureMarker.set(key, "<getItem-failed>");
     // eslint-disable-next-line no-console
     console.warn(`[storage] getItem failed for ${key}`, err);
-    return fallback;
+    return undefined;
   }
-  if (raw === null || raw === undefined) {
-    // Truly absent — safe to treat as fallback and allow future writes.
-    lastReadOk.set(key, true);
-    return fallback;
-  }
+  if (raw === null || raw === undefined) return undefined;
   if (raw === "") {
-    // Empty string is a corrupt write artifact, NOT an intentional value.
-    // Block writes so we don't compound the problem.
     readFailureMarker.set(key, "<empty-string>");
     // eslint-disable-next-line no-console
     console.warn(`[storage] empty raw for ${key} — blocking writes`);
-    return fallback;
+    return undefined;
   }
   try {
-    const parsed = JSON.parse(raw) as T;
-    lastReadOk.set(key, true);
-    readFailureMarker.delete(key);
-    return parsed;
+    return JSON.parse(raw) as T;
   } catch (err) {
-    // Parse failure — back the raw bytes up to a timestamped key so they
-    // can be recovered manually, then refuse to overwrite this key.
     const backupKey = `${key}::corrupt::${Date.now()}`;
     try {
       await AsyncStorage.setItem(backupKey, raw);
     } catch {
-      // If even the backup write fails, there's nothing more we can do
-      // beyond logging. We still refuse to overwrite the original key.
+      // best-effort
     }
     readFailureMarker.set(key, backupKey);
     // eslint-disable-next-line no-console
@@ -162,8 +167,71 @@ async function readJSON<T>(key: string, fallback: T): Promise<T> {
       `[storage] parse failed for ${key}; corrupt blob saved to ${backupKey}`,
       err,
     );
-    return fallback;
+    return undefined;
   }
+}
+
+function isMeaningfullyPresent(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value as object).length > 0;
+  return true;
+}
+
+/**
+ * Read with a shadow fallback: if the primary key is missing or returns
+ * an empty list/object, try the shadow key. If the shadow has real data,
+ * restore the primary from it. This is the line of defense against a
+ * single-key AsyncStorage wipe.
+ */
+async function readJSON<T>(key: string, fallback: T): Promise<T> {
+  const shadow = SHADOW_KEYS[key as keyof typeof SHADOW_KEYS];
+
+  const primary = await readOneJSON<T>(key);
+  if (isMeaningfullyPresent(primary)) {
+    lastReadOk.set(key, true);
+    readFailureMarker.delete(key);
+    // Make sure the shadow is in sync so it's useful next time.
+    if (shadow) {
+      try {
+        await AsyncStorage.setItem(shadow, JSON.stringify(primary));
+      } catch {
+        // best-effort
+      }
+    }
+    return primary as T;
+  }
+
+  // Primary is missing/empty (or parse-failed). Try the shadow.
+  if (shadow) {
+    const shadowValue = await readOneJSON<T>(shadow);
+    if (isMeaningfullyPresent(shadowValue)) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[storage] primary ${key} was empty; restored from shadow ${shadow}`,
+      );
+      // Restore the primary, but only if the primary read didn't fail —
+      // if it failed, we're still blocked from writing it.
+      if (!readFailureMarker.has(key)) {
+        try {
+          await AsyncStorage.setItem(key, JSON.stringify(shadowValue));
+          lastReadOk.set(key, true);
+        } catch {
+          // best-effort
+        }
+      }
+      return shadowValue as T;
+    }
+  }
+
+  // Both empty (or both failed). Allow writes if the primary itself was
+  // genuinely absent (no failure marker set above).
+  if (!readFailureMarker.has(key)) {
+    lastReadOk.set(key, true);
+  }
+  // If we got a parsed-but-empty primary (e.g. []), preserve that exact
+  // shape; otherwise fall back to the caller's default.
+  return primary !== undefined ? (primary as T) : fallback;
 }
 
 async function writeJSON<T>(key: string, value: T): Promise<void> {
@@ -176,8 +244,19 @@ async function writeJSON<T>(key: string, value: T): Promise<void> {
       `Refusing to write ${key}: previous read failed (raw blob backed up to ${blocker}). Restart the app or clear storage to recover.`,
     );
   }
-  await AsyncStorage.setItem(key, JSON.stringify(value));
+  const serialized = JSON.stringify(value);
+  await AsyncStorage.setItem(key, serialized);
   lastReadOk.set(key, true);
+  // Mirror to shadow. Best-effort: if the shadow write fails the primary
+  // is still saved, so we don't escalate the error.
+  const shadow = SHADOW_KEYS[key as keyof typeof SHADOW_KEYS];
+  if (shadow) {
+    try {
+      await AsyncStorage.setItem(shadow, serialized);
+    } catch {
+      // best-effort — primary write already succeeded
+    }
+  }
 }
 
 const locks = new Map<string, Promise<unknown>>();
@@ -263,10 +342,8 @@ export async function saveSummaries(s: ConversationSummary[]): Promise<void> {
 
 export async function clearAllData(): Promise<void> {
   await AsyncStorage.multiRemove([
-    KEYS.profile,
-    KEYS.memories,
-    KEYS.messages,
-    KEYS.summaries,
+    ...Object.values(KEYS),
+    ...Object.values(SHADOW_KEYS),
   ]);
   // Reset the in-memory read-failure markers so subsequent writes are
   // unblocked — the keys are gone, so a fresh read will see `raw === null`
