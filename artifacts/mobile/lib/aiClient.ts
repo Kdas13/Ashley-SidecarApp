@@ -202,7 +202,15 @@ export async function fetchAshleyReply(
  */
 
 const SELFIE_POLL_INTERVAL_MS = 2000;
-const SELFIE_POLL_TIMEOUT_MS = 120_000; // 2 minutes — gpt-image-1 worst case
+// We count actual poll attempts instead of using a wall-clock deadline.
+// On Android, when the user locks the phone or backgrounds the app while
+// waiting for a selfie, JS setTimeouts stop firing but `Date.now()` keeps
+// advancing. A wall-clock deadline therefore expires silently with zero
+// polls executed, and the user comes back to a "couldn't send the photo"
+// error even though the server has the image ready. Counting attempts
+// makes the loop survive arbitrary background pauses — when the JS thread
+// resumes, we still have all our polling budget left.
+const SELFIE_POLL_MAX_ATTEMPTS = 90; // ~3 min of foregrounded polling
 
 async function startSelfieJob(
   base: string,
@@ -250,8 +258,7 @@ export async function fetchAshleySelfie(
   // 5xx, even unexpectedly empty 304 bodies if any layer adds caching back)
   // must NOT abort the whole flow. Only an explicit terminal status from the
   // server (or a second 404 after a re-POST) ends the loop early.
-  const deadline = Date.now() + SELFIE_POLL_TIMEOUT_MS;
-  while (Date.now() < deadline) {
+  for (let attempt = 0; attempt < SELFIE_POLL_MAX_ATTEMPTS; attempt++) {
     await new Promise((resolve) =>
       setTimeout(resolve, SELFIE_POLL_INTERVAL_MS),
     );
