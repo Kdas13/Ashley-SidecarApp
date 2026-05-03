@@ -1,22 +1,40 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
-  STORAGE_KEYS,
   loadSummaries,
   saveSummaries,
-  withStorageLock,
-  newId,
   type ConversationSummary,
 } from "./storage";
+import {
+  deleteSummaryOnServer,
+  fetchState,
+  updateSummaryOnServer,
+} from "./aiClient";
 
 const SUMMARIES_KEY = ["summaries"] as const;
 
 export function useSummaries() {
   return useQuery({
     queryKey: SUMMARIES_KEY,
-    queryFn: loadSummaries,
+    queryFn: async (): Promise<ConversationSummary[]> => {
+      try {
+        const state = await fetchState();
+        await saveSummaries(state.summaries);
+        return state.summaries;
+      } catch (err) {
+        const cached = await loadSummaries();
+        if (cached.length > 0) return cached;
+        throw err;
+      }
+    },
   });
 }
+
+// Summaries are AUTHORED by the server (rolled up automatically after every
+// chat turn once the live history exceeds the prompt window). The client
+// can edit the prose or delete a chapter, but cannot create new ones — the
+// CreateSummary hook below is intentionally a no-op so legacy screens that
+// import it don't crash.
 
 export type CreateSummaryInput = {
   summary: string;
@@ -25,36 +43,18 @@ export type CreateSummaryInput = {
 };
 
 export function useCreateSummary() {
-  const qc = useQueryClient();
   return useMutation({
     mutationFn: async (
-      input: CreateSummaryInput,
-    ): Promise<ConversationSummary> => {
-      return withStorageLock(STORAGE_KEYS.summaries, async () => {
-        const all = await loadSummaries();
-        const now = new Date().toISOString();
-        const summary: ConversationSummary = {
-          id: newId(),
-          summary: input.summary,
-          messageCount: input.messageCount,
-          coveredThroughCreatedAt: input.coveredThroughCreatedAt,
-          createdAt: now,
-          updatedAt: now,
-        };
-        await saveSummaries([...all, summary]);
-        return summary;
-      });
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: SUMMARIES_KEY });
+      _input: CreateSummaryInput,
+    ): Promise<ConversationSummary | null> => {
+      // No-op: summaries are server-authored. Returning null keeps any
+      // existing UI from blowing up if it triggers this code path.
+      return null;
     },
   });
 }
 
-export type UpdateSummaryInput = {
-  id: string;
-  summary: string;
-};
+export type UpdateSummaryInput = { id: string; summary: string };
 
 export function useUpdateSummary() {
   const qc = useQueryClient();
@@ -62,20 +62,13 @@ export function useUpdateSummary() {
     mutationFn: async (
       input: UpdateSummaryInput,
     ): Promise<ConversationSummary | null> => {
-      return withStorageLock(STORAGE_KEYS.summaries, async () => {
-        const all = await loadSummaries();
-        const idx = all.findIndex((s) => s.id === input.id);
-        if (idx === -1) return null;
-        const updated: ConversationSummary = {
-          ...all[idx]!,
-          summary: input.summary,
-          updatedAt: new Date().toISOString(),
-        };
-        const next = [...all];
-        next[idx] = updated;
-        await saveSummaries(next);
-        return updated;
-      });
+      const updated = await updateSummaryOnServer(input.id, input.summary);
+      const previous =
+        qc.getQueryData<ConversationSummary[]>(SUMMARIES_KEY) ?? [];
+      const next = previous.map((s) => (s.id === updated.id ? updated : s));
+      qc.setQueryData(SUMMARIES_KEY, next);
+      await saveSummaries(next);
+      return updated;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: SUMMARIES_KEY });
@@ -87,10 +80,12 @@ export function useDeleteSummary() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (id: string): Promise<void> => {
-      await withStorageLock(STORAGE_KEYS.summaries, async () => {
-        const all = await loadSummaries();
-        await saveSummaries(all.filter((s) => s.id !== id));
-      });
+      await deleteSummaryOnServer(id);
+      const previous =
+        qc.getQueryData<ConversationSummary[]>(SUMMARIES_KEY) ?? [];
+      const next = previous.filter((s) => s.id !== id);
+      qc.setQueryData(SUMMARIES_KEY, next);
+      await saveSummaries(next);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: SUMMARIES_KEY });

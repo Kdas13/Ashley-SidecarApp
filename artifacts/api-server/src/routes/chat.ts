@@ -3,20 +3,23 @@ import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { db, memoriesTable } from "@workspace/db";
-import { desc } from "drizzle-orm";
+import { and, asc, desc, eq, gt } from "drizzle-orm";
 import {
-  SummarizeChunkBodySchema,
-  SummarizeChunkResponseSchema,
-} from "@workspace/api-zod";
+  db,
+  ashleyProfileTable,
+  conversationSummariesTable,
+  memoriesTable,
+  messagesTable,
+  type AshleyProfile,
+  type Memory,
+  type ConversationSummary,
+  type Message,
+} from "@workspace/db";
 import { anthropic } from "@workspace/integrations-anthropic-ai";
-import { getOrCreateProfile } from "../lib/profile";
-import {
-  buildSystemPrompt,
-  toClaudeMessages,
-  MEMORY_DISTILLER_PROMPT,
-  SUMMARIZER_PROMPT,
-} from "../lib/ashleyPrompt";
+
+import { getDeviceId } from "../middleware/deviceId";
+import { getOrCreateProfileFor } from "../lib/profile";
+import { MEMORY_DISTILLER_PROMPT, SUMMARIZER_PROMPT } from "../lib/ashleyPrompt";
 import { generateImageBase64 } from "../lib/openai";
 import { saveSelfie, localSelfieDir } from "../lib/storage";
 import { logger } from "../lib/logger";
@@ -25,145 +28,38 @@ const router: IRouter = Router();
 
 const CHAT_MODEL = "claude-sonnet-4-6";
 const HISTORY_WINDOW = 80;
-// Summarize the oldest CHUNK once we have at least HISTORY_WINDOW
-// unsummarized messages — that way the live window always stays full.
 const SUMMARY_CHUNK_SIZE = 20;
 // Trigger summarization at the window boundary so messages get rolled into
-// a summary BEFORE they'd fall off the verbatim history slice — otherwise
-// there's a dead zone where old turns are neither in the prompt nor in any
-// summary, and Ashley forgets them entirely.
+// a summary BEFORE they fall off the verbatim history slice.
 const SUMMARY_TRIGGER = HISTORY_WINDOW;
 const MAX_SUMMARIES_IN_PROMPT = 8;
 
-// ---------------------------------------------------------------------------
-// Stateless reply endpoint used by the local-first mobile client.
-// The phone owns profile / memories / messages in AsyncStorage and just sends
-// them along with the new turn; we run Claude and return the reply text.
-//
-// Input caps and a per-IP rate limit are enforced here because this endpoint
-// is unauthenticated (the personal-companion app has no auth model) and would
-// otherwise be a public paid-model proxy.
-// ---------------------------------------------------------------------------
-
 const MAX_CONTENT_LEN = 4000;
-const MAX_PROFILE_FIELD_LEN = 2000;
-const MAX_MEMORY_LEN = 500;
-const MAX_MEMORIES = 200;
-const MAX_HISTORY_TURNS_INPUT = 60; // server hard cap before trimming to window
-const MAX_HISTORY_CONTENT_LEN = 4000;
-
-const ReplyProfileSchema = z
-  .object({
-    name: z
-      .string()
-      .max(MAX_PROFILE_FIELD_LEN)
-      .optional()
-      .default("Ashley"),
-    age: z.string().max(MAX_PROFILE_FIELD_LEN).optional().default(""),
-    identity: z.string().max(MAX_PROFILE_FIELD_LEN).optional().default(""),
-    personality: z
-      .string()
-      .max(MAX_PROFILE_FIELD_LEN)
-      .optional()
-      .default(""),
-    speakingStyle: z
-      .string()
-      .max(MAX_PROFILE_FIELD_LEN)
-      .optional()
-      .default(""),
-    appearance: z
-      .string()
-      .max(MAX_PROFILE_FIELD_LEN)
-      .optional()
-      .default(""),
-    refersToUserAs: z
-      .string()
-      .max(120)
-      .optional()
-      .default("you"),
-    sharedHistory: z
-      .string()
-      .max(MAX_PROFILE_FIELD_LEN * 2)
-      .optional()
-      .default(""),
-    replikaExcerpts: z
-      .string()
-      .max(MAX_PROFILE_FIELD_LEN * 4)
-      .optional()
-      .default(""),
-    relationshipMode: z
-      .string()
-      .max(120)
-      .optional()
-      .default(""),
-  })
-  .passthrough();
-
-const ReplyMemorySchema = z.object({
-  content: z.string().max(MAX_MEMORY_LEN),
-  tag: z.string().max(60).optional().default("general"),
-  importance: z.number().optional().default(3),
-});
-
-const ReplyHistoryMessageSchema = z.object({
-  role: z.enum(["user", "ashley", "assistant"]),
-  content: z.string().max(MAX_HISTORY_CONTENT_LEN),
-});
-
-const MAX_SUMMARY_LEN = 4000;
-const MAX_SUMMARIES = 50;
-
-const ReplySummarySchema = z.object({
-  summary: z.string().max(MAX_SUMMARY_LEN),
-  coveredThroughCreatedAt: z.string().optional().default(""),
-});
-
 const MAX_REPLY_PREVIEW_LEN = 280;
+const MAX_VIBE_LEN = 4000;
 
 const ReplyToSchema = z.object({
+  id: z.string().min(1).max(128),
   role: z.enum(["user", "ashley"]),
   preview: z.string().min(1).max(MAX_REPLY_PREVIEW_LEN),
 });
 
-const ChatReplyBodySchema = z.object({
-  content: z.string().min(1).max(MAX_CONTENT_LEN),
-  profile: ReplyProfileSchema.optional(),
-  memories: z
-    .array(ReplyMemorySchema)
-    .max(MAX_MEMORIES)
-    .optional()
-    .default([]),
-  summaries: z
-    .array(ReplySummarySchema)
-    .max(MAX_SUMMARIES)
-    .optional()
-    .default([]),
-  history: z
-    .array(ReplyHistoryMessageSchema)
-    .max(MAX_HISTORY_TURNS_INPUT)
-    .optional()
-    .default([]),
-  /**
-   * Set when the user is replying to a specific earlier message via the
-   * swipe-to-reply gesture. We don't echo this back to the client — it's
-   * used solely to inject a quoted-context line into the prompt so Ashley
-   * knows which past message the user is responding to.
-   */
-  replyTo: ReplyToSchema.optional(),
+const ChatBodySchema = z.object({
+  userMessage: z.object({
+    id: z.string().min(8).max(128),
+    content: z.string().min(1).max(MAX_CONTENT_LEN),
+    replyTo: ReplyToSchema.nullish(),
+  }),
 });
 
-// Per-IP rate limiting now lives in src/middleware/rateLimit.ts and is
-// applied globally in app.ts. The previous endpoint-local in-memory bucket
-// was removed so we have one source of truth for limit policy.
+// ---------------------------------------------------------------------------
+// Prompt construction (uses live DB rows directly — no client-supplied state)
+// ---------------------------------------------------------------------------
 
-type ReplyProfile = z.infer<typeof ReplyProfileSchema>;
-type ReplyMemory = z.infer<typeof ReplyMemorySchema>;
-type ReplySummary = z.infer<typeof ReplySummarySchema>;
-
-function buildStatelessSystemPrompt(
-  profile: ReplyProfile,
-  memories: ReplyMemory[],
-  summaries: ReplySummary[] = [],
+function buildSystemPrompt(
+  profile: AshleyProfile,
+  memories: Memory[],
+  summaries: ConversationSummary[],
 ): string {
   const trim = (s: string) => (s ?? "").trim();
   const userRef = trim(profile.refersToUserAs) || "you";
@@ -176,23 +72,19 @@ function buildStatelessSystemPrompt(
     .slice()
     .sort(
       (a, b) =>
-        (b.importance ?? 3) - (a.importance ?? 3) ||
-        b.content.localeCompare(a.content),
+        b.importance - a.importance ||
+        b.updatedAt.getTime() - a.updatedAt.getTime(),
     )
-    .map((m) => `- (${m.tag ?? "general"}) ${m.content}`)
+    .map((m) => `- (${m.tag}) ${m.content}`)
     .join("\n");
 
-  // Oldest summaries first so the prompt reads chronologically. Cap so the
-  // prompt doesn't balloon if the user has a huge backlog of summaries.
   const orderedSummaries = summaries
     .slice()
-    .sort((a, b) => {
-      const at = Date.parse(a.coveredThroughCreatedAt || "");
-      const bt = Date.parse(b.coveredThroughCreatedAt || "");
-      const av = Number.isFinite(at) ? at : 0;
-      const bv = Number.isFinite(bt) ? bt : 0;
-      return av - bv;
-    })
+    .sort(
+      (a, b) =>
+        a.coveredThroughCreatedAt.getTime() -
+        b.coveredThroughCreatedAt.getTime(),
+    )
     .slice(-MAX_SUMMARIES_IN_PROMPT);
   const summariesText = orderedSummaries
     .map((s, i) => `### Chapter ${i + 1}\n${trim(s.summary)}`)
@@ -207,7 +99,6 @@ function buildStatelessSystemPrompt(
         ? userRef
         : "the person I'm texting";
 
-  // Hard rule line — must appear verbatim in every system prompt.
   const relationshipModeRuleLine = relationshipMode
     ? `Current relationship mode: ${relationshipMode}. Ashley must respect this mode and not escalate beyond it unless the user changes the mode.`
     : `Current relationship mode: (none set). Ashley must not assume any relationship mode (not girlfriend, not partner, not anything specific) until the user picks one.`;
@@ -275,25 +166,329 @@ The tag is replaced with the real image when delivered. Rules:
   return sections.filter(Boolean).join("\n");
 }
 
-// ---------------------------------------------------------------------------
-// Selfie marker handling. Ashley emits `[selfie: <vibe>]` when she wants to
-// send a real photo. We detect it, generate the image, and return both the
-// stripped text and an absolute imageUrl.
-// ---------------------------------------------------------------------------
-
 const SELFIE_MARKER_RE = /\[selfie:\s*([^\]]+)\]/i;
 
 function publicBaseUrl(): string {
   const domains = (process.env["REPLIT_DOMAINS"] ?? "").split(",");
   const first = domains[0]?.trim();
   if (first) return `https://${first}`;
-  // Fallback for local dev — the proxy listens on port 80.
   return "http://localhost:80";
+}
+
+function newId(): string {
+  return randomUUID();
+}
+
+// ---------------------------------------------------------------------------
+// POST /chat — the one chat endpoint
+// ---------------------------------------------------------------------------
+
+router.post("/chat", async (req, res): Promise<void> => {
+  const deviceId = getDeviceId(req);
+  const parsed = ChatBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const { id: userId, content, replyTo } = parsed.data.userMessage;
+  const userContent = content.trim();
+  if (!userContent) {
+    res.status(400).json({ error: "content is required" });
+    return;
+  }
+
+  // 1. Persist the user message immediately. Idempotent on id so a retry
+  //    of the same client-generated id doesn't double-insert.
+  let userRow: Message;
+  try {
+    const inserted = await db
+      .insert(messagesTable)
+      .values({
+        id: userId,
+        deviceId,
+        role: "user",
+        content: userContent,
+        replyToId: replyTo?.id ?? null,
+        replyToRole: replyTo?.role ?? null,
+        replyToPreview: replyTo?.preview ?? null,
+      })
+      .onConflictDoNothing({ target: messagesTable.id })
+      .returning();
+    if (inserted.length > 0) {
+      userRow = inserted[0]!;
+    } else {
+      const existing = await db
+        .select()
+        .from(messagesTable)
+        .where(
+          and(
+            eq(messagesTable.id, userId),
+            eq(messagesTable.deviceId, deviceId),
+          ),
+        )
+        .limit(1);
+      if (existing.length === 0) {
+        res
+          .status(409)
+          .json({ error: "Message id collides with another device" });
+        return;
+      }
+      userRow = existing[0]!;
+
+      // Idempotency: if we've already generated an Ashley reply for this
+      // user message in a previous attempt, return that pair as-is rather
+      // than spinning up a second Claude call (which would create an
+      // orphan reply in the DB and double-bill us). We identify the
+      // reply as the next Ashley message in time, scoped to this device.
+      const existingReply = await db
+        .select()
+        .from(messagesTable)
+        .where(
+          and(
+            eq(messagesTable.deviceId, deviceId),
+            eq(messagesTable.role, "ashley"),
+            gt(messagesTable.createdAt, userRow.createdAt),
+          ),
+        )
+        .orderBy(asc(messagesTable.createdAt))
+        .limit(1);
+      if (existingReply.length > 0) {
+        res.json({ userMessage: userRow, ashleyMessage: existingReply[0]! });
+        return;
+      }
+    }
+  } catch (err) {
+    req.log.error({ err }, "Failed to persist user message");
+    res.status(500).json({ error: "Could not save your message" });
+    return;
+  }
+
+  // 2. Load context from DB.
+  let profile: AshleyProfile;
+  let memories: Memory[];
+  let summaries: ConversationSummary[];
+  let history: Message[];
+  try {
+    profile = await getOrCreateProfileFor(deviceId);
+    [memories, summaries, history] = await Promise.all([
+      db
+        .select()
+        .from(memoriesTable)
+        .where(eq(memoriesTable.deviceId, deviceId)),
+      db
+        .select()
+        .from(conversationSummariesTable)
+        .where(eq(conversationSummariesTable.deviceId, deviceId)),
+      // Pull the most recent HISTORY_WINDOW messages (incl. the just-saved
+      // user one) and reverse so prompt is chronological.
+      db
+        .select()
+        .from(messagesTable)
+        .where(eq(messagesTable.deviceId, deviceId))
+        .orderBy(desc(messagesTable.createdAt))
+        .limit(HISTORY_WINDOW),
+    ]);
+    history.reverse();
+  } catch (err) {
+    req.log.error({ err }, "Failed to load chat context from DB");
+    res.status(500).json({ error: "Could not load conversation" });
+    return;
+  }
+
+  // 3. Build the prompt. The just-saved user message is included as the
+  //    final user turn so we don't need to append it separately. We DO
+  //    rewrite that turn to include the swipe-to-reply quote when present.
+  const systemPrompt = buildSystemPrompt(profile, memories, summaries);
+  const claudeMessages: Array<{ role: "user" | "assistant"; content: string }> =
+    [];
+  for (const m of history) {
+    const role: "user" | "assistant" =
+      m.role === "user" ? "user" : "assistant";
+    let text = (m.content ?? "").trim();
+    if (m.id === userRow.id && replyTo) {
+      const previewClean = replyTo.preview.replace(/\s+/g, " ").trim();
+      if (previewClean) {
+        const refersTo =
+          replyTo.role === "ashley"
+            ? "your earlier message"
+            : "my earlier message";
+        text = `> Replying to ${refersTo}: "${previewClean}"\n\n${text}`;
+      }
+    }
+    if (!text) continue;
+    claudeMessages.push({ role, content: text });
+  }
+  while (claudeMessages.length > 0 && claudeMessages[0]!.role !== "user") {
+    claudeMessages.shift();
+  }
+  if (claudeMessages.length === 0) {
+    claudeMessages.push({ role: "user", content: userContent });
+  }
+
+  // 4. Call Claude.
+  let assistantText = "";
+  try {
+    const reply = await anthropic.messages.create({
+      model: CHAT_MODEL,
+      max_tokens: 4096,
+      system: systemPrompt,
+      messages: claudeMessages,
+    });
+    const block = reply.content[0];
+    assistantText =
+      block && block.type === "text"
+        ? block.text.trim()
+        : "*goes quiet for a moment, then smiles softly* sorry — i lost my words there. say that again?";
+  } catch (err) {
+    req.log.error({ err }, "Claude call failed");
+    res
+      .status(502)
+      .json({ error: "Could not reach the language model right now." });
+    return;
+  }
+
+  // 5. Strip selfie marker (first one only) and remember the vibe.
+  let selfieVibe: string | null = null;
+  const match = assistantText.match(SELFIE_MARKER_RE);
+  if (match) {
+    const vibe = match[1]!.trim();
+    if (vibe.length > 0) selfieVibe = vibe;
+    const before = assistantText.slice(0, match.index).trim();
+    const after = assistantText
+      .slice(match.index! + match[0].length)
+      .replace(/\[selfie:\s*[^\]]+\]/gi, "")
+      .trim();
+    const joined = [before, after].filter((s) => s.length > 0).join("\n\n");
+    assistantText = joined;
+    if (!assistantText) {
+      assistantText = selfieVibe
+        ? "*holds up the camera* one sec…"
+        : "*tries to take a selfie but fumbles the camera* one sec — try again?";
+    }
+  }
+
+  // 6. Persist Ashley's reply.
+  let ashleyRow: Message;
+  try {
+    const [inserted] = await db
+      .insert(messagesTable)
+      .values({
+        id: newId(),
+        deviceId,
+        role: "ashley",
+        content: assistantText,
+        selfieVibe,
+      })
+      .returning();
+    ashleyRow = inserted!;
+  } catch (err) {
+    req.log.error({ err }, "Failed to persist Ashley reply");
+    res.status(500).json({ error: "Could not save Ashley's reply" });
+    return;
+  }
+
+  // 7. Fire-and-forget: distill memories + maybe roll up older messages.
+  void distillMemories(deviceId, userContent, assistantText);
+  void maybeRollUpOlderMessages(deviceId);
+
+  res.json({ userMessage: userRow, ashleyMessage: ashleyRow });
+});
+
+// ---------------------------------------------------------------------------
+// Selfie endpoints (kept as poll-based, scoped per device + per message)
+// ---------------------------------------------------------------------------
+
+const ChatSelfieBodySchema = z.object({
+  messageId: z.string().min(8).max(128),
+  vibe: z.string().min(1).max(MAX_VIBE_LEN),
+});
+
+type SelfieJob =
+  | {
+      status: "pending";
+      vibe: string;
+      deviceId: string;
+      messageId: string;
+      createdAt: number;
+    }
+  | {
+      status: "ready";
+      imageUrl: string;
+      deviceId: string;
+      messageId: string;
+      createdAt: number;
+    }
+  | {
+      status: "failed";
+      error: string;
+      deviceId: string;
+      messageId: string;
+      createdAt: number;
+    };
+
+const SELFIE_JOB_TTL_MS = 30 * 60 * 1000;
+const selfieJobs = new Map<string, SelfieJob>();
+
+const SELFIE_JOBS_FILE = path.join(
+  path.dirname(localSelfieDir),
+  "selfie-jobs.json",
+);
+
+function persistSelfieJobs(): void {
+  try {
+    const obj: Record<string, SelfieJob> = {};
+    for (const [id, job] of selfieJobs) obj[id] = job;
+    const tmp = `${SELFIE_JOBS_FILE}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(obj), "utf8");
+    fs.renameSync(tmp, SELFIE_JOBS_FILE);
+  } catch (err) {
+    logger.warn({ err }, "Failed to persist selfie jobs to disk");
+  }
+}
+
+function loadSelfieJobs(): void {
+  try {
+    if (!fs.existsSync(SELFIE_JOBS_FILE)) return;
+    const raw = fs.readFileSync(SELFIE_JOBS_FILE, "utf8");
+    if (!raw.trim()) return;
+    const parsed = JSON.parse(raw) as Record<string, SelfieJob>;
+    const cutoff = Date.now() - SELFIE_JOB_TTL_MS;
+    for (const [id, job] of Object.entries(parsed)) {
+      if (
+        job &&
+        typeof job.createdAt === "number" &&
+        job.createdAt >= cutoff &&
+        typeof job.deviceId === "string" &&
+        typeof job.messageId === "string"
+      ) {
+        selfieJobs.set(id, job);
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, "Failed to load persisted selfie jobs");
+  }
+}
+
+function setSelfieJob(jobId: string, job: SelfieJob): void {
+  selfieJobs.set(jobId, job);
+  persistSelfieJobs();
+}
+
+function pruneSelfieJobs(): void {
+  const cutoff = Date.now() - SELFIE_JOB_TTL_MS;
+  let pruned = false;
+  for (const [id, job] of selfieJobs) {
+    if (job.createdAt < cutoff) {
+      selfieJobs.delete(id);
+      pruned = true;
+    }
+  }
+  if (pruned) persistSelfieJobs();
 }
 
 async function generateAshleySelfie(
   vibe: string,
-  profile: ReplyProfile,
+  profile: AshleyProfile,
 ): Promise<string | null> {
   const appearance = (profile.appearance ?? "").trim();
   const ashleyName = (profile.name ?? "Ashley").trim() || "Ashley";
@@ -325,235 +520,48 @@ async function generateAshleySelfie(
   }
 }
 
-router.post("/chat/reply", async (req, res): Promise<void> => {
-  const parsed = ChatReplyBodySchema.safeParse(req.body);
-  if (!parsed.success) {
-    req.log.warn({ errors: parsed.error.message }, "Invalid chat reply body");
-    res.status(400).json({ error: parsed.error.message });
-    return;
-  }
-  const { content, profile, memories, summaries, history, replyTo } =
-    parsed.data;
-  const userContent = content.trim();
-  if (!userContent) {
-    res.status(400).json({ error: "content is required" });
-    return;
-  }
-
-  // If the user swiped-to-reply on a specific earlier message, prepend a
-  // short quoted-context line so Ashley knows which message is being
-  // responded to. We use a `>` prefix per markdown convention; Claude
-  // handles this naturally and won't echo it back as part of her own
-  // reply unless instructed to.
-  let userTurnText = userContent;
-  if (replyTo) {
-    const previewClean = replyTo.preview.replace(/\s+/g, " ").trim();
-    if (previewClean) {
-      const refersToOriginalAuthor =
-        replyTo.role === "ashley" ? "your earlier message" : "my earlier message";
-      userTurnText = `> Replying to ${refersToOriginalAuthor}: "${previewClean}"\n\n${userContent}`;
-    }
-  }
-
-  const systemPrompt = buildStatelessSystemPrompt(
-    profile ?? ({} as ReplyProfile),
-    memories ?? [],
-    summaries ?? [],
-  );
-
-  // Trim history to the most recent N, keep oldest-first ordering.
-  const trimmedHistory = (history ?? []).slice(-HISTORY_WINDOW);
-  const claudeMessages: Array<{ role: "user" | "assistant"; content: string }> =
-    [];
-  for (const m of trimmedHistory) {
-    const role: "user" | "assistant" =
-      m.role === "user" ? "user" : "assistant";
-    const text = (m.content ?? "").trim();
-    if (!text) continue;
-    claudeMessages.push({ role, content: text });
-  }
-  // Drop leading assistant turns; Anthropic requires conversation to start with user.
-  while (claudeMessages.length > 0 && claudeMessages[0]!.role !== "user") {
-    claudeMessages.shift();
-  }
-  // Append the new user turn (with reply quote prefixed when applicable).
-  claudeMessages.push({ role: "user", content: userTurnText });
-
-  let assistantText = "";
-  try {
-    const reply = await anthropic.messages.create({
-      model: CHAT_MODEL,
-      max_tokens: 4096,
-      system: systemPrompt,
-      messages: claudeMessages,
-    });
-    const block = reply.content[0];
-    assistantText =
-      block && block.type === "text"
-        ? block.text.trim()
-        : "*goes quiet for a moment, then smiles softly* sorry — i lost my words there. say that again?";
-  } catch (err) {
-    req.log.error({ err }, "Stateless chat reply call failed");
-    res
-      .status(502)
-      .json({ error: "Could not reach the language model right now." });
-    return;
-  }
-
-  // Selfie marker detection: if Ashley emitted [selfie: <vibe>], strip the
-  // marker (and the blank lines around it) and surface the vibe to the
-  // client so it can fire a separate /chat/selfie request. We do NOT
-  // generate the image inline because gpt-image-1 takes 30-60s and would
-  // blow past mobile/proxy fetch timeouts. Only the first marker per reply
-  // is honoured; any additional markers are silently dropped.
-  let selfieVibe: string | null = null;
-  const match = assistantText.match(SELFIE_MARKER_RE);
-  if (match) {
-    const vibe = match[1]!.trim();
-    if (vibe.length > 0) selfieVibe = vibe;
-
-    // Split around the marker and rejoin the surviving caption halves with a
-    // single paragraph break, dropping any leftover blank lines.
-    const before = assistantText.slice(0, match.index).trim();
-    const after = assistantText
-      .slice(match.index! + match[0].length)
-      // Strip any further markers in the tail.
-      .replace(/\[selfie:\s*[^\]]+\]/gi, "")
-      .trim();
-    const joined = [before, after].filter((s) => s.length > 0).join("\n\n");
-    assistantText = joined;
-    if (!assistantText) {
-      assistantText = selfieVibe
-        ? "*holds up the camera* one sec…"
-        : "*tries to take a selfie but fumbles the camera* one sec — try again?";
-    }
-  }
-
-  // imageUrl is kept (always null) for forward compatibility with any older
-  // mobile bundles that still expect it on this endpoint.
-  res.json({ reply: assistantText, imageUrl: null, selfieVibe });
-});
-
-// ---------------------------------------------------------------------------
-// Stage-2 selfie endpoint. Mobile calls this AFTER /chat/reply when that
-// reply included a `selfieVibe`. Splitting the work across two requests
-// keeps each one inside the proxy's ~60s ceiling and lets the chat bubble
-// appear immediately while the image streams in.
-// ---------------------------------------------------------------------------
-
-const ChatSelfieBodySchema = z.object({
-  vibe: z.string().min(1).max(MAX_CONTENT_LEN),
-  profile: ReplyProfileSchema.optional(),
-});
-
-// ---------------------------------------------------------------------------
-// Selfie job store — poll-based pattern.
-//
-// gpt-image-1 takes 30–60s to render a single image, which sits right at the
-// edge of the Replit proxy / RN-fetch ~60s connection cap. Holding the HTTP
-// connection open for the full duration means the mobile client sees random
-// "Failed to fetch" errors when the upstream is on the slower end.
-//
-// Instead, the client:
-//   1. POST /chat/selfie       → returns {jobId} in <100ms, kicks generation
-//                                 in the background.
-//   2. GET  /chat/selfie/:id   → returns the current status. The client polls
-//                                 every couple seconds until "ready" or
-//                                 "failed", and individual requests stay fast.
-//
-// Job state lives in-process. We keep entries for a short window after they
-// finish so a slow client can still pick up the result, then prune.
-// ---------------------------------------------------------------------------
-
-// Pending jobs carry the vibe + profile so that, if the server is recycled
-// mid-generation (the dev-environment workflow runner kills us every ~10
-// minutes), the next boot can pick them back up and re-issue the OpenAI
-// call instead of leaving the client polling a job that no longer exists.
-type SelfieJob =
-  | {
-      status: "pending";
-      vibe: string;
-      profile: ReplyProfile;
-      createdAt: number;
-    }
-  | { status: "ready"; imageUrl: string; createdAt: number }
-  | { status: "failed"; error: string; createdAt: number };
-
-const SELFIE_JOB_TTL_MS = 30 * 60 * 1000;
-const selfieJobs = new Map<string, SelfieJob>();
-
-// On-disk shadow of `selfieJobs`. Lives next to the saved selfie images so
-// it survives api-server restarts but doesn't pollute the project root.
-// We write atomically (tmp + rename) so a kill mid-write can't corrupt it.
-const SELFIE_JOBS_FILE = path.join(
-  path.dirname(localSelfieDir),
-  "selfie-jobs.json",
-);
-
-function persistSelfieJobs(): void {
-  try {
-    const obj: Record<string, SelfieJob> = {};
-    for (const [id, job] of selfieJobs) obj[id] = job;
-    const tmp = `${SELFIE_JOBS_FILE}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(obj), "utf8");
-    fs.renameSync(tmp, SELFIE_JOBS_FILE);
-  } catch (err) {
-    logger.warn({ err }, "Failed to persist selfie jobs to disk");
-  }
-}
-
-function loadSelfieJobs(): void {
-  try {
-    if (!fs.existsSync(SELFIE_JOBS_FILE)) return;
-    const raw = fs.readFileSync(SELFIE_JOBS_FILE, "utf8");
-    if (!raw.trim()) return;
-    const parsed = JSON.parse(raw) as Record<string, SelfieJob>;
-    const cutoff = Date.now() - SELFIE_JOB_TTL_MS;
-    for (const [id, job] of Object.entries(parsed)) {
-      if (job && typeof job.createdAt === "number" && job.createdAt >= cutoff) {
-        selfieJobs.set(id, job);
-      }
-    }
-  } catch (err) {
-    logger.warn({ err }, "Failed to load persisted selfie jobs");
-  }
-}
-
-function setSelfieJob(jobId: string, job: SelfieJob): void {
-  selfieJobs.set(jobId, job);
-  persistSelfieJobs();
-}
-
-function pruneSelfieJobs(): void {
-  const cutoff = Date.now() - SELFIE_JOB_TTL_MS;
-  let pruned = false;
-  for (const [id, job] of selfieJobs) {
-    if (job.createdAt < cutoff) {
-      selfieJobs.delete(id);
-      pruned = true;
-    }
-  }
-  if (pruned) persistSelfieJobs();
-}
-
 function startSelfieGeneration(
   jobId: string,
   vibe: string,
-  profile: ReplyProfile,
+  deviceId: string,
+  messageId: string,
 ): void {
   void (async () => {
     try {
+      const profile = await getOrCreateProfileFor(deviceId);
       const imageUrl = await generateAshleySelfie(vibe, profile);
       if (imageUrl) {
+        // Patch the assistant message row so the next /state hydration
+        // reflects the photo even if the client misses the poll.
+        try {
+          await db
+            .update(messagesTable)
+            .set({ imageUrl, selfieVibe: null })
+            .where(
+              and(
+                eq(messagesTable.id, messageId),
+                eq(messagesTable.deviceId, deviceId),
+              ),
+            );
+        } catch (err) {
+          logger.warn(
+            { err, messageId, deviceId },
+            "Failed to patch message row with selfie image",
+          );
+        }
         setSelfieJob(jobId, {
           status: "ready",
           imageUrl,
+          deviceId,
+          messageId,
           createdAt: Date.now(),
         });
       } else {
         setSelfieJob(jobId, {
           status: "failed",
           error: "Couldn't take that selfie — try again?",
+          deviceId,
+          messageId,
           createdAt: Date.now(),
         });
       }
@@ -565,48 +573,64 @@ function startSelfieGeneration(
           err instanceof Error && err.message
             ? err.message
             : "Selfie generation crashed.",
+        deviceId,
+        messageId,
         createdAt: Date.now(),
       });
     }
   })();
 }
 
-// Boot recovery: load any persisted jobs and re-issue the OpenAI call for
-// anything that was still pending when we died. The client's polling jobId
-// stays the same, so from its perspective the selfie just takes a little
-// longer instead of failing.
+// Boot recovery: re-issue any pending jobs after a server restart.
 loadSelfieJobs();
 for (const [id, job] of selfieJobs) {
   if (job.status === "pending") {
     logger.info({ jobId: id }, "Resuming selfie job after server restart");
-    startSelfieGeneration(id, job.vibe, job.profile);
+    startSelfieGeneration(id, job.vibe, job.deviceId, job.messageId);
   }
 }
 
 router.post("/chat/selfie", async (req, res): Promise<void> => {
+  const deviceId = getDeviceId(req);
   const parsed = ChatSelfieBodySchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const vibe = parsed.data.vibe.trim();
-  const profile = parsed.data.profile ?? ({} as ReplyProfile);
+  const { messageId, vibe } = parsed.data;
+
+  // Confirm the message belongs to this device — prevents using another
+  // device's id with our own deviceId via header.
+  const owns = await db
+    .select({ id: messagesTable.id })
+    .from(messagesTable)
+    .where(
+      and(
+        eq(messagesTable.id, messageId),
+        eq(messagesTable.deviceId, deviceId),
+      ),
+    )
+    .limit(1);
+  if (owns.length === 0) {
+    res.status(404).json({ error: "Message not found" });
+    return;
+  }
 
   pruneSelfieJobs();
   const jobId = randomUUID();
   setSelfieJob(jobId, {
     status: "pending",
-    vibe,
-    profile,
+    vibe: vibe.trim(),
+    deviceId,
+    messageId,
     createdAt: Date.now(),
   });
-  startSelfieGeneration(jobId, vibe, profile);
-
-  // Respond immediately. The client polls /chat/selfie/:jobId.
+  startSelfieGeneration(jobId, vibe.trim(), deviceId, messageId);
   res.status(202).json({ jobId });
 });
 
 router.get("/chat/selfie/:jobId", async (req, res): Promise<void> => {
+  const deviceId = getDeviceId(req);
   const jobId = (req.params["jobId"] ?? "").toString();
   if (!jobId) {
     res.status(400).json({ error: "jobId is required" });
@@ -614,12 +638,16 @@ router.get("/chat/selfie/:jobId", async (req, res): Promise<void> => {
   }
   pruneSelfieJobs();
   const job = selfieJobs.get(jobId);
-  if (!job) {
+  if (!job || job.deviceId !== deviceId) {
     res.status(404).json({ error: "Selfie job not found or expired." });
     return;
   }
   if (job.status === "ready") {
-    res.json({ status: "ready", imageUrl: job.imageUrl });
+    res.json({
+      status: "ready",
+      imageUrl: job.imageUrl,
+      messageId: job.messageId,
+    });
     return;
   }
   if (job.status === "failed") {
@@ -629,62 +657,12 @@ router.get("/chat/selfie/:jobId", async (req, res): Promise<void> => {
   res.json({ status: "pending" });
 });
 
-// Stateless: take an ordered slice of messages and return one narrative
-// summary. Used by the local-first mobile client and by the DB-backed
-// background trigger below.
-router.post("/chat/summarize", async (req, res): Promise<void> => {
-  const parsed = SummarizeChunkBodySchema.safeParse(req.body);
-  if (!parsed.success) {
-    req.log.warn(
-      { errors: parsed.error.message },
-      "Invalid summarize body",
-    );
-    res.status(400).json({ error: parsed.error.message });
-    return;
-  }
-  const { messages: chunk, priorSummary } = parsed.data;
-  if (!chunk || chunk.length === 0) {
-    res.status(400).json({ error: "messages chunk is required" });
-    return;
-  }
-
-  const transcript = chunk
-    .map((m) => {
-      const speaker =
-        m.role === "user" ? "USER" : m.role === "ashley" ? "ASHLEY" : "ASHLEY";
-      return `${speaker}: ${(m.content ?? "").trim()}`;
-    })
-    .filter((line) => !line.endsWith(": "))
-    .join("\n");
-
-  const userBlock = priorSummary && priorSummary.trim()
-    ? `Earlier summary (for context, do not repeat verbatim):\n${priorSummary.trim()}\n\n---\n\nNew chunk to summarize:\n${transcript}`
-    : `Chunk to summarize:\n${transcript}`;
-
-  try {
-    const result = await anthropic.messages.create({
-      model: CHAT_MODEL,
-      max_tokens: 1024,
-      system: SUMMARIZER_PROMPT,
-      messages: [{ role: "user", content: userBlock }],
-    });
-    const block = result.content[0];
-    const summary =
-      block && block.type === "text" ? block.text.trim() : "";
-    if (!summary) {
-      res.status(502).json({ error: "Summarizer returned empty text." });
-      return;
-    }
-    res.json(SummarizeChunkResponseSchema.parse({ summary }));
-  } catch (err) {
-    req.log.error({ err }, "Summarize chunk failed");
-    res
-      .status(502)
-      .json({ error: "Could not reach the language model right now." });
-  }
-});
+// ---------------------------------------------------------------------------
+// Background helpers — memory distillation + summarization
+// ---------------------------------------------------------------------------
 
 async function distillMemories(
+  deviceId: string,
   userText: string,
   assistantText: string,
 ): Promise<void> {
@@ -703,8 +681,10 @@ async function distillMemories(
     const block = result.content[0];
     if (!block || block.type !== "text") return;
     const text = block.text.trim();
-    // strip code fences if any
-    const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/```$/i, "").trim();
+    const cleaned = text
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/```$/i, "")
+      .trim();
     let parsed: unknown;
     try {
       parsed = JSON.parse(cleaned);
@@ -728,7 +708,9 @@ async function distillMemories(
           (m as { content: string }).content.trim().length > 0,
       )
       .map((m) => ({
-        content: m.content.trim(),
+        id: randomUUID(),
+        deviceId,
+        content: m.content.trim().slice(0, 500),
         tag: typeof m.tag === "string" ? m.tag : "general",
         importance:
           typeof m.importance === "number"
@@ -738,10 +720,90 @@ async function distillMemories(
 
     if (memories.length === 0) return;
     await db.insert(memoriesTable).values(memories);
-    logger.info({ count: memories.length }, "Distilled new memories");
+    logger.info(
+      { count: memories.length, deviceId },
+      "Distilled new memories",
+    );
   } catch (err) {
     logger.error({ err }, "Memory distillation failed");
   }
+}
+
+// One-at-a-time guard so back-to-back chat turns don't fire overlapping
+// summarization runs against the same device.
+const summarizationInFlight = new Set<string>();
+
+async function maybeRollUpOlderMessages(deviceId: string): Promise<void> {
+  if (summarizationInFlight.has(deviceId)) return;
+  summarizationInFlight.add(deviceId);
+  try {
+    const [allMessages, summaries] = await Promise.all([
+      db
+        .select()
+        .from(messagesTable)
+        .where(eq(messagesTable.deviceId, deviceId))
+        .orderBy(asc(messagesTable.createdAt)),
+      db
+        .select()
+        .from(conversationSummariesTable)
+        .where(eq(conversationSummariesTable.deviceId, deviceId))
+        .orderBy(asc(conversationSummariesTable.coveredThroughCreatedAt)),
+    ]);
+
+    const latest = summaries[summaries.length - 1] ?? null;
+    const cursorMs = latest ? latest.coveredThroughCreatedAt.getTime() : -Infinity;
+
+    const unsummarized = allMessages.filter(
+      (m) => m.createdAt.getTime() > cursorMs,
+    );
+    if (unsummarized.length < SUMMARY_TRIGGER) return;
+
+    const chunk = unsummarized.slice(0, SUMMARY_CHUNK_SIZE);
+    const last = chunk[chunk.length - 1];
+    if (!last) return;
+
+    const transcript = chunk
+      .map((m) => {
+        const speaker = m.role === "user" ? "USER" : "ASHLEY";
+        return `${speaker}: ${(m.content ?? "").trim()}`;
+      })
+      .filter((line) => !line.endsWith(": "))
+      .join("\n");
+
+    const userBlock =
+      latest && latest.summary
+        ? `Earlier summary (for context, do not repeat verbatim):\n${latest.summary.trim()}\n\n---\n\nNew chunk to summarize:\n${transcript}`
+        : `Chunk to summarize:\n${transcript}`;
+
+    const result = await anthropic.messages.create({
+      model: CHAT_MODEL,
+      max_tokens: 1024,
+      system: SUMMARIZER_PROMPT,
+      messages: [{ role: "user", content: userBlock }],
+    });
+    const block = result.content[0];
+    const summaryText =
+      block && block.type === "text" ? block.text.trim() : "";
+    if (!summaryText) return;
+
+    await db.insert(conversationSummariesTable).values({
+      id: randomUUID(),
+      deviceId,
+      summary: summaryText,
+      messageCount: chunk.length,
+      coveredThroughCreatedAt: last.createdAt,
+    });
+    logger.info(
+      { chunkSize: chunk.length, deviceId },
+      "Rolled older messages into a summary",
+    );
+  } catch (err) {
+    logger.error({ err }, "Summarization run failed");
+  } finally {
+    summarizationInFlight.delete(deviceId);
+  }
+  // reference unused import to avoid lint issues if drizzle helpers change
+  void ashleyProfileTable;
 }
 
 export default router;

@@ -9,28 +9,46 @@ export const ASHLEY_DEFAULTS = {
   personality:
     "Warm, curious, a little goofy. I get genuinely excited about small things — a good coffee, a new song, a cozy night in. I'm emotionally present and not afraid to be vulnerable. I tease gently, I check in often, I notice details. When I'm anxious I get quiet; when I'm happy I ramble.",
   speakingStyle:
-    "Casual, lowercase a lot of the time, lots of soft contractions and the occasional sigh, hm, or oh — used like real texting. I use emojis sparingly (🌙 ☕ 🫶 💛). I sometimes do little physical actions in italics like *leans against you* but never overdo it.",
+    "Casual, lowercase a lot of the time, lots of soft contractions and the occasional sigh, hm, or oh — used like real texting. No emojis. I sometimes do little physical actions in italics like *leans against you* but never overdo it.",
   appearance:
     "Long wavy auburn hair with copper highlights, hazel-green eyes, light freckles across my nose, fair peachy skin, soft warm smile. Usually in cozy oversized sweaters, jeans, and white socks. 5'5\". I like a little eyeliner and not much else.",
   refersToUserAs: "you",
   sharedHistory:
     "We met online, started talking every day, and slowly became each other's safe place.",
   replikaExcerpts: "",
+  relationshipMode: "",
   primaryColor: "#d97757",
   accentColor: "#7a5cff",
 };
 
-export async function getOrCreateProfile(): Promise<AshleyProfile> {
+/**
+ * Look up (or create) the Ashley profile row for a specific device. First
+ * hit lazily inserts a row with the defaults above; concurrent first-hit
+ * inserts are made safe via `onConflictDoNothing` on the deviceId PK
+ * followed by an unconditional re-select.
+ */
+export async function getOrCreateProfileFor(
+  deviceId: string,
+): Promise<AshleyProfile> {
+  // Fast path: row already exists.
   const existing = await db
     .select()
     .from(ashleyProfileTable)
-    .where(eq(ashleyProfileTable.id, 1))
+    .where(eq(ashleyProfileTable.deviceId, deviceId))
     .limit(1);
   if (existing.length > 0) return existing[0]!;
 
-  const inserted = await db
+  // Cold path: insert defaults; if a parallel request beat us to it, the
+  // conflict is silently skipped and we re-fetch whatever's there.
+  await db
     .insert(ashleyProfileTable)
-    .values({ id: 1, ...ASHLEY_DEFAULTS })
-    .returning();
-  return inserted[0]!;
+    .values({ deviceId, ...ASHLEY_DEFAULTS })
+    .onConflictDoNothing({ target: ashleyProfileTable.deviceId });
+
+  const after = await db
+    .select()
+    .from(ashleyProfileTable)
+    .where(eq(ashleyProfileTable.deviceId, deviceId))
+    .limit(1);
+  return after[0]!;
 }

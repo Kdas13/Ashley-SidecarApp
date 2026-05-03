@@ -18,6 +18,17 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { queryClient } from "@/lib/queryClient";
+import { getOrCreateDeviceId } from "@/lib/deviceId";
+import {
+  fetchState,
+  type ServerState,
+} from "@/lib/aiClient";
+import {
+  saveMemories,
+  saveMessages,
+  saveProfile,
+  saveSummaries,
+} from "@/lib/storage";
 
 SplashScreen.preventAutoHideAsync();
 SystemUI.setBackgroundColorAsync("#1a1325").catch(() => {
@@ -36,45 +47,70 @@ function RootLayoutNav(): React.JSX.Element {
   );
 }
 
+/**
+ * On boot we (a) resolve the device id and (b) hydrate React Query with
+ * the latest /state from the server. Both happen in parallel with font
+ * loading so we don't double the splash time. The chat / profile /
+ * memories hooks each have their own useQuery — seeding the caches up
+ * front means the first frame of those screens renders with real data,
+ * not a spinner-on-empty-list.
+ */
+async function bootstrap(): Promise<void> {
+  await getOrCreateDeviceId();
+  let state: ServerState;
+  try {
+    state = await fetchState();
+  } catch {
+    // Offline / server unavailable on cold start — let the per-screen
+    // hooks fall back to their AsyncStorage cache.
+    return;
+  }
+  queryClient.setQueryData(["profile"], state.profile);
+  queryClient.setQueryData(["messages"], state.messages);
+  queryClient.setQueryData(["memories"], state.memories);
+  queryClient.setQueryData(["summaries"], state.summaries);
+  await Promise.all([
+    saveProfile(state.profile).catch(() => undefined),
+    saveMessages(state.messages).catch(() => undefined),
+    saveMemories(state.memories).catch(() => undefined),
+    saveSummaries(state.summaries).catch(() => undefined),
+  ]);
+}
+
 export default function RootLayout(): React.JSX.Element | null {
   const [fontsLoaded, fontError] = useFonts({
     Inter_400Regular,
     Inter_500Medium,
     Inter_600SemiBold,
     Inter_700Bold,
-    // Spread Feather's icon font in so glyphs render. @expo/vector-icons
-    // normally self-loads, but only when no other useFonts call is racing
-    // it on the same render — without this, Feather icons appear as [X]
-    // placeholders in Expo Go.
     ...Feather.font,
   });
   const [splashTimedOut, setSplashTimedOut] = useState(false);
+  const [bootDone, setBootDone] = useState(false);
 
   useEffect(() => {
-    if (fontsLoaded || fontError) {
-      SplashScreen.hideAsync();
+    bootstrap()
+      .catch(() => undefined)
+      .finally(() => setBootDone(true));
+  }, []);
+
+  useEffect(() => {
+    if ((fontsLoaded || fontError) && bootDone) {
+      SplashScreen.hideAsync().catch(() => undefined);
     }
-  }, [fontsLoaded, fontError]);
+  }, [fontsLoaded, fontError, bootDone]);
 
   useEffect(() => {
     // Don't block forever if fonts can't load (e.g. blocked CDN in proxied web preview).
     const t = setTimeout(() => {
       setSplashTimedOut(true);
-      SplashScreen.hideAsync().catch(() => {
-        /* ignore */
-      });
-    }, 1500);
+      SplashScreen.hideAsync().catch(() => undefined);
+    }, 2000);
     return () => clearTimeout(t);
   }, []);
 
   if (!fontsLoaded && !fontError && !splashTimedOut) return null;
 
-  // SafeAreaProvider stays outermost because ErrorFallback uses
-  // useSafeAreaInsets and would itself crash without that context. The
-  // ErrorBoundary then sits OUTSIDE QueryClient / GestureHandlerRootView /
-  // KeyboardProvider so a crash inside any of those (or any screen) is
-  // caught by our nice fallback instead of falling through to Expo Go's
-  // native blue "Something went wrong" screen.
   return (
     <SafeAreaProvider>
       <ErrorBoundary>

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -13,9 +14,11 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { router } from "expo-router";
+import * as Clipboard from "expo-clipboard";
 
 import { useProfile, useUpdateProfile } from "@/lib/useProfile";
 import type { AshleyProfile } from "@/lib/storage";
+import { getDeviceIdSync, hasDeviceId } from "@/lib/deviceId";
 import colors from "@/constants/colors";
 
 type EditableField = {
@@ -175,8 +178,89 @@ export default function ProfileScreen(): React.JSX.Element {
         {showSaved ? (
           <Text style={styles.successText}>Saved</Text>
         ) : null}
+
+        <DeviceAndBackupSection />
       </ScrollView>
     </KeyboardAvoidingView>
+  );
+}
+
+function DeviceAndBackupSection(): React.JSX.Element {
+  const [copied, setCopied] = useState(false);
+  const deviceId = hasDeviceId() ? getDeviceIdSync() : "";
+
+  const onCopy = async () => {
+    if (!deviceId) return;
+    try {
+      await Clipboard.setStringAsync(deviceId);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // best-effort
+    }
+  };
+
+  const showPlaceholder = (label: string) => {
+    Alert.alert(
+      `${label} (coming soon)`,
+      "Backup and restore will be available in a future update. For now, your conversation lives on the server tied to this Device ID — keep a copy somewhere safe if you ever reinstall.",
+    );
+  };
+
+  return (
+    <View style={styles.settingsSection}>
+      <Text style={styles.sectionTitle}>Device & backup</Text>
+
+      <View style={styles.fieldGroup}>
+        <Text style={styles.label}>Device ID</Text>
+        <Text style={styles.hint}>
+          Identifies your conversation on the server. Keep a copy if you ever
+          want to reinstall and reach the same Ashley again.
+        </Text>
+        <View style={styles.deviceIdRow}>
+          <Text
+            style={styles.deviceIdText}
+            numberOfLines={1}
+            ellipsizeMode="middle"
+            selectable
+          >
+            {deviceId || "—"}
+          </Text>
+          <Pressable
+            onPress={onCopy}
+            disabled={!deviceId}
+            style={[styles.copyBtn, !deviceId && { opacity: 0.4 }]}
+            accessibilityLabel="Copy device id"
+          >
+            <Feather
+              name={copied ? "check" : "copy"}
+              size={14}
+              color={colors.light.primaryForeground}
+            />
+            <Text style={styles.copyBtnText}>{copied ? "Copied" : "Copy"}</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <View style={styles.backupRow}>
+        <Pressable
+          onPress={() => showPlaceholder("Export backup")}
+          style={styles.backupBtn}
+        >
+          <Feather name="download" size={14} color={colors.light.text} />
+          <Text style={styles.backupBtnText}>Export backup</Text>
+          <Text style={styles.comingSoonPill}>Soon</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => showPlaceholder("Import backup")}
+          style={styles.backupBtn}
+        >
+          <Feather name="upload" size={14} color={colors.light.text} />
+          <Text style={styles.backupBtnText}>Import backup</Text>
+          <Text style={styles.comingSoonPill}>Soon</Text>
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
@@ -256,5 +340,78 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textAlign: "center",
     marginTop: 8,
+  },
+  settingsSection: {
+    marginTop: 24,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: colors.light.border,
+    gap: 14,
+  },
+  sectionTitle: {
+    color: colors.light.text,
+    fontFamily: "Inter_700Bold",
+    fontSize: 15,
+    marginBottom: 2,
+  },
+  deviceIdRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: colors.light.muted,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginTop: 4,
+    gap: 10,
+  },
+  deviceIdText: {
+    flex: 1,
+    color: colors.light.text,
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
+  },
+  copyBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: colors.light.primary,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+  },
+  copyBtnText: {
+    color: colors.light.primaryForeground,
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 12,
+  },
+  backupRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  backupBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    backgroundColor: colors.light.muted,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  backupBtnText: {
+    color: colors.light.text,
+    fontFamily: "Inter_500Medium",
+    fontSize: 13,
+  },
+  comingSoonPill: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_500Medium",
+    fontSize: 10,
+    backgroundColor: colors.light.background,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    overflow: "hidden",
   },
 });

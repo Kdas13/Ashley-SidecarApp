@@ -1,21 +1,35 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
-  STORAGE_KEYS,
   loadMemories,
   saveMemories,
-  withStorageLock,
   newId,
   type Memory,
   type MemoryTag,
 } from "./storage";
+import {
+  createMemoryOnServer,
+  deleteMemoryOnServer,
+  fetchState,
+  updateMemoryOnServer,
+} from "./aiClient";
 
 const MEMORIES_KEY = ["memories"] as const;
 
 export function useMemories() {
   return useQuery({
     queryKey: MEMORIES_KEY,
-    queryFn: loadMemories,
+    queryFn: async (): Promise<Memory[]> => {
+      try {
+        const state = await fetchState();
+        await saveMemories(state.memories);
+        return state.memories;
+      } catch (err) {
+        const cached = await loadMemories();
+        if (cached.length > 0) return cached;
+        throw err;
+      }
+    },
   });
 }
 
@@ -29,21 +43,21 @@ export function useCreateMemory() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (input: CreateMemoryInput): Promise<Memory> => {
-      return withStorageLock(STORAGE_KEYS.memories, async () => {
-        const all = await loadMemories();
-        const now = new Date().toISOString();
-        const memory: Memory = {
-          id: newId(),
-          content: input.content,
-          tag: input.tag,
-          importance: input.importance,
-          createdAt: now,
-          updatedAt: now,
-        };
-        const next = [memory, ...all];
-        await saveMemories(next);
-        return memory;
+      const id = newId();
+      const created = await createMemoryOnServer({
+        id,
+        content: input.content,
+        tag: input.tag,
+        importance: input.importance,
       });
+      if (!created) {
+        throw new Error("Server did not return the new memory.");
+      }
+      const previous = qc.getQueryData<Memory[]>(MEMORIES_KEY) ?? [];
+      const next = [created, ...previous.filter((m) => m.id !== created.id)];
+      qc.setQueryData(MEMORIES_KEY, next);
+      await saveMemories(next);
+      return created;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: MEMORIES_KEY });
@@ -62,22 +76,16 @@ export function useUpdateMemory() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (input: UpdateMemoryInput): Promise<Memory | null> => {
-      return withStorageLock(STORAGE_KEYS.memories, async () => {
-        const all = await loadMemories();
-        const idx = all.findIndex((m) => m.id === input.id);
-        if (idx === -1) return null;
-        const updated: Memory = {
-          ...all[idx]!,
-          content: input.content,
-          tag: input.tag,
-          importance: input.importance,
-          updatedAt: new Date().toISOString(),
-        };
-        const next = [...all];
-        next[idx] = updated;
-        await saveMemories(next);
-        return updated;
+      const updated = await updateMemoryOnServer(input.id, {
+        content: input.content,
+        tag: input.tag,
+        importance: input.importance,
       });
+      const previous = qc.getQueryData<Memory[]>(MEMORIES_KEY) ?? [];
+      const next = previous.map((m) => (m.id === updated.id ? updated : m));
+      qc.setQueryData(MEMORIES_KEY, next);
+      await saveMemories(next);
+      return updated;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: MEMORIES_KEY });
@@ -89,13 +97,16 @@ export function useDeleteMemory() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (id: string): Promise<void> => {
-      await withStorageLock(STORAGE_KEYS.memories, async () => {
-        const all = await loadMemories();
-        await saveMemories(all.filter((m) => m.id !== id));
-      });
+      await deleteMemoryOnServer(id);
+      const previous = qc.getQueryData<Memory[]>(MEMORIES_KEY) ?? [];
+      const next = previous.filter((m) => m.id !== id);
+      qc.setQueryData(MEMORIES_KEY, next);
+      await saveMemories(next);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: MEMORIES_KEY });
     },
   });
 }
+
+export const memoriesQueryKey = MEMORIES_KEY;

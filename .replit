@@ -1,4 +1,4 @@
-modules = ["nodejs-24"]
+modules = ["nodejs-24", "postgresql-16"]
 
 [deployment]
 router = "application"
@@ -48,3 +48,6 @@ externalPort = 3002
 [userenv.shared]
 API_AUTH_KEY = "66f8c2aa1ae8cbcc8f886023fffd4c776d561e2d799c716ea99237fbe39d7a87"
 EXPO_PUBLIC_API_KEY = "66f8c2aa1ae8cbcc8f886023fffd4c776d561e2d799c716ea99237fbe39d7a87"
+
+[nix]
+channel = "stable-25_05"
