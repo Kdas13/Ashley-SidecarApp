@@ -185,7 +185,7 @@ export default function ChatScreen(): React.JSX.Element {
     if (clearMutation.isPending) return;
     Alert.alert(
       "Clear conversation?",
-      "All messages will be cleared from this device. Older messages may have already been processed by the backend and the AI provider in order to generate replies.",
+      "This will delete the conversation from both this device and our server. Older messages may have already been processed by the AI provider to generate replies and cannot be recalled from there.",
       [
         { text: "Keep", style: "cancel" },
         {
@@ -271,8 +271,8 @@ export default function ChatScreen(): React.JSX.Element {
               <View style={styles.emptyWrap}>
                 <Text style={styles.emptyText}>say something to her</Text>
                 <Text style={styles.emptyHint}>
-                  messages are stored on this device and sent to our backend
-                  and an AI provider so she can reply
+                  messages are saved on our server (tied to your Device ID)
+                  and sent to an AI provider so she can reply
                 </Text>
               </View>
             }

@@ -153,8 +153,10 @@ export default function ProfileScreen(): React.JSX.Element {
       >
         <Text style={styles.intro}>
           This is who she is to you. Be as detailed and personal as you want.
-          Your profile is stored on this device and sent to our backend with
-          each message so the AI provider can stay in character.
+          Your profile is saved on our server (tied to your Device ID) and
+          sent to the AI provider with each message so she can stay in
+          character. Clearing the conversation or resetting the profile
+          deletes it from the server too.
         </Text>
 
         {FIELDS.map((field) => (
