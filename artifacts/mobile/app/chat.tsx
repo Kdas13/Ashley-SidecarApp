@@ -214,7 +214,9 @@ export default function ChatScreen(): React.JSX.Element {
               </View>
             }
             ListFooterComponent={
-              sendMutation.isPending || retryUnanswered.isPending ? (
+              sendMutation.isPending ||
+              retryUnanswered.isPending ||
+              hasUnansweredTail ? (
                 <View style={[styles.row, styles.rowLeft]}>
                   <View style={[styles.bubble, styles.bubbleAshley, styles.typingBubble]}>
                     <ActivityIndicator
@@ -232,7 +234,7 @@ export default function ChatScreen(): React.JSX.Element {
           />
         )}
 
-        {sendError ? (
+        {sendError && !hasUnansweredTail ? (
           <Pressable
             onPress={() => sendMutation.reset()}
             style={styles.errorBanner}
