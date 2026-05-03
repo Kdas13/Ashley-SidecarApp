@@ -26,6 +26,7 @@ import {
   useClearMessages,
   useRetrySelfie,
   useRetryUnansweredReply,
+  useSelfieInFlight,
 } from "@/lib/useMessages";
 import { useProfile, useUpdateProfile } from "@/lib/useProfile";
 import type { Message, ReplyToRef } from "@/lib/storage";
@@ -497,6 +498,7 @@ function MessageBubble({
   const pendingSelfieVibe =
     !hasImage && message.selfieVibe ? message.selfieVibe : null;
   const { retry } = useRetrySelfie();
+  const autoInFlight = useSelfieInFlight(message.id);
   // Track retry state locally with React state so the spinner / error
   // message actually trigger re-renders. (The hook's underlying dedup Set
   // isn't reactive — that was the old bug where tapping looked dead.)
@@ -671,37 +673,40 @@ function MessageBubble({
           </View>
         ) : null}
         {pendingSelfieVibe && !showImage && !imageFailed ? (
-          <Pressable
-            onPress={retryingThis ? undefined : onRetrySelfie}
-            disabled={retryingThis}
-            hitSlop={8}
-            style={styles.selfiePending}
-            accessibilityLabel={
-              retryingThis
-                ? "Taking a selfie"
-                : "Tap to retry sending photo"
-            }
-          >
-            {retryingThis ? (
-              <ActivityIndicator
-                size="small"
-                color={colors.light.mutedForeground}
-              />
-            ) : (
-              <Feather
-                name="camera"
-                size={18}
-                color={colors.light.mutedForeground}
-              />
-            )}
-            <Text style={styles.selfiePendingText} numberOfLines={2}>
-              {retryingThis
-                ? "taking a selfie…"
-                : retryError
-                  ? retryError
-                  : "couldn't send the photo — tap to retry"}
-            </Text>
-          </Pressable>
+          (() => {
+            const generating = retryingThis || autoInFlight;
+            return (
+              <Pressable
+                onPress={generating ? undefined : onRetrySelfie}
+                disabled={generating}
+                hitSlop={8}
+                style={styles.selfiePending}
+                accessibilityLabel={
+                  generating ? "Taking a selfie" : "Tap to retry sending photo"
+                }
+              >
+                {generating ? (
+                  <ActivityIndicator
+                    size="small"
+                    color={colors.light.mutedForeground}
+                  />
+                ) : (
+                  <Feather
+                    name="camera"
+                    size={18}
+                    color={colors.light.mutedForeground}
+                  />
+                )}
+                <Text style={styles.selfiePendingText} numberOfLines={2}>
+                  {generating
+                    ? "taking a selfie…"
+                    : retryError
+                      ? retryError
+                      : "couldn't send the photo — tap to retry"}
+                </Text>
+              </Pressable>
+            );
+          })()
         ) : null}
         {hasText ? (
           <Text

@@ -504,7 +504,7 @@ async function generateAshleySelfie(
 
   let b64: string;
   try {
-    b64 = await generateImageBase64(fullPrompt, "1024x1536");
+    b64 = await generateImageBase64(fullPrompt, "1024x1024");
   } catch (err) {
     logger.warn({ err }, "Selfie image generation failed");
     return null;

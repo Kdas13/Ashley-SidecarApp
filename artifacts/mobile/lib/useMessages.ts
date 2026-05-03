@@ -1,3 +1,4 @@
+import { useEffect, useReducer } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -197,26 +198,57 @@ export function useClearMessages() {
 const SELFIE_AUTO_RETRY_ATTEMPTS = 3;
 const SELFIE_AUTO_RETRY_DELAY_MS = 4000;
 
+// Module-level registry of messageIds whose selfie is currently being
+// generated/polled. Shared by BOTH the auto-attach (fired right after
+// /chat returns a selfieVibe) and the manual retry button so they
+// (a) dedup against each other and (b) drive a "taking a selfie…"
+// indicator in the bubble while in flight. Components subscribe via
+// useSelfieInFlight().
+const inFlightSelfies = new Set<string>();
+const inFlightListeners = new Set<() => void>();
+
+function setInFlight(messageId: string, value: boolean): void {
+  if (value) inFlightSelfies.add(messageId);
+  else inFlightSelfies.delete(messageId);
+  for (const l of inFlightListeners) l();
+}
+
+export function useSelfieInFlight(messageId: string): boolean {
+  const [, force] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    const listener = () => force();
+    inFlightListeners.add(listener);
+    return () => {
+      inFlightListeners.delete(listener);
+    };
+  }, []);
+  return inFlightSelfies.has(messageId);
+}
+
 export async function fetchAndAttachSelfie(
   qc: ReturnType<typeof useQueryClient>,
   messageId: string,
   vibe: string,
 ): Promise<void> {
-  for (let attempt = 0; attempt < SELFIE_AUTO_RETRY_ATTEMPTS; attempt++) {
-    try {
-      const imageUrl = await fetchSelfieForMessage(messageId, vibe);
-      await patchInCache(qc, messageId, { imageUrl, selfieVibe: null });
-      return;
-    } catch {
-      if (attempt < SELFIE_AUTO_RETRY_ATTEMPTS - 1) {
-        await new Promise((r) => setTimeout(r, SELFIE_AUTO_RETRY_DELAY_MS));
+  if (inFlightSelfies.has(messageId)) return;
+  setInFlight(messageId, true);
+  try {
+    for (let attempt = 0; attempt < SELFIE_AUTO_RETRY_ATTEMPTS; attempt++) {
+      try {
+        const imageUrl = await fetchSelfieForMessage(messageId, vibe);
+        await patchInCache(qc, messageId, { imageUrl, selfieVibe: null });
+        return;
+      } catch {
+        if (attempt < SELFIE_AUTO_RETRY_ATTEMPTS - 1) {
+          await new Promise((r) => setTimeout(r, SELFIE_AUTO_RETRY_DELAY_MS));
+        }
       }
     }
+    // Leave selfieVibe in place so the bubble surfaces a manual retry button.
+  } finally {
+    setInFlight(messageId, false);
   }
-  // Leave selfieVibe in place so the bubble surfaces a manual retry button.
 }
-
-const inFlightSelfies = new Set<string>();
 
 export function useRetrySelfie(): {
   retry: (messageId: string, vibe: string) => Promise<void>;
@@ -225,12 +257,12 @@ export function useRetrySelfie(): {
   return {
     retry: async (messageId: string, vibe: string) => {
       if (inFlightSelfies.has(messageId)) return;
-      inFlightSelfies.add(messageId);
+      setInFlight(messageId, true);
       try {
         const imageUrl = await fetchSelfieForMessage(messageId, vibe);
         await patchInCache(qc, messageId, { imageUrl, selfieVibe: null });
       } finally {
-        inFlightSelfies.delete(messageId);
+        setInFlight(messageId, false);
       }
     },
   };
