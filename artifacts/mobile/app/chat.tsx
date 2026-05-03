@@ -21,6 +21,7 @@ import {
   useSendMessage,
   useClearMessages,
   useRetrySelfie,
+  useRetryUnansweredReply,
 } from "@/lib/useMessages";
 import type { Message, ReplyToRef } from "@/lib/storage";
 import colors from "@/constants/colors";
@@ -56,6 +57,7 @@ export default function ChatScreen(): React.JSX.Element {
   const messagesQuery = useMessages();
   const sendMutation = useSendMessage();
   const clearMutation = useClearMessages();
+  const retryUnanswered = useRetryUnansweredReply();
 
   const messages = useMemo<Message[]>(
     () => messagesQuery.data ?? [],
@@ -71,6 +73,52 @@ export default function ChatScreen(): React.JSX.Element {
       listRef.current?.scrollToEnd({ animated: true });
     });
   }, [messages.length, sendMutation.isPending]);
+
+  // Auto-retry: if the latest message is from the user (Ashley never
+  // replied — common when the api-server gets recycled mid-request) keep
+  // poking the server every ~12s until her reply lands. The retry
+  // mutation handles the no-op case internally, and `appendIfStillCurrent`
+  // makes sure we don't double-up if the user types something new while a
+  // retry is in flight. We also dismiss the stale send-error banner once a
+  // retry succeeds so the green path looks clean.
+  const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+  const hasUnansweredTail = lastMessage?.role === "user";
+  const retryMutateRef = useRef(retryUnanswered.mutateAsync);
+  retryMutateRef.current = retryUnanswered.mutateAsync;
+  const sendResetRef = useRef(sendMutation.reset);
+  sendResetRef.current = sendMutation.reset;
+  const inFlightRetryRef = useRef(false);
+  useEffect(() => {
+    if (!hasUnansweredTail) return;
+    if (sendMutation.isPending) return;
+    let cancelled = false;
+    const tryOnce = () => {
+      if (cancelled || inFlightRetryRef.current) return;
+      inFlightRetryRef.current = true;
+      retryMutateRef
+        .current()
+        .then((result) => {
+          if (result) {
+            // The retry landed Ashley's reply — clear any stale error
+            // banner from the original failed send.
+            sendResetRef.current();
+          }
+        })
+        .catch(() => {
+          // Silent — the next tick will try again.
+        })
+        .finally(() => {
+          inFlightRetryRef.current = false;
+        });
+    };
+    const initial = setTimeout(tryOnce, 1200);
+    const interval = setInterval(tryOnce, 12000);
+    return () => {
+      cancelled = true;
+      clearTimeout(initial);
+      clearInterval(interval);
+    };
+  }, [hasUnansweredTail, sendMutation.isPending]);
 
   // Triggered when SwipeToReply commits inside a bubble. Captures a quote
   // preview, focuses the input so the keyboard stays up, and replaces any
@@ -166,7 +214,7 @@ export default function ChatScreen(): React.JSX.Element {
               </View>
             }
             ListFooterComponent={
-              sendMutation.isPending ? (
+              sendMutation.isPending || retryUnanswered.isPending ? (
                 <View style={[styles.row, styles.rowLeft]}>
                   <View style={[styles.bubble, styles.bubbleAshley, styles.typingBubble]}>
                     <ActivityIndicator

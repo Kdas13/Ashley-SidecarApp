@@ -159,6 +159,74 @@ export function useSendMessage() {
   });
 }
 
+/**
+ * Re-fetch Ashley's reply for the most recent user message that never got
+ * one. Used by the chat screen's auto-retry loop: when a send mutation
+ * fails (server cycling, transient network) the optimistic user bubble
+ * stays in storage with no Ashley reply after it. As soon as the server
+ * is reachable again, this picks up exactly where things stalled — no
+ * duplicate user message, just the missing assistant turn.
+ *
+ * Returns null when there is nothing to retry (latest message is already
+ * Ashley's, or the chat is empty).
+ */
+export function useRetryUnansweredReply() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (): Promise<Message | null> => {
+      const all = await loadMessages();
+      if (all.length === 0) return null;
+      const tail = all[all.length - 1]!;
+      // Only the trailing user message (with no Ashley reply after it) is
+      // a candidate. Anything older is already settled.
+      if (tail.role !== "user") return null;
+      const userMessage = tail;
+
+      const [profile, memories, summaries] = await Promise.all([
+        loadProfile(),
+        loadMemories(),
+        loadSummaries(),
+      ]);
+
+      const reply = await fetchAshleyReply({
+        content: userMessage.content,
+        profile,
+        memories,
+        summaries,
+        history: all.slice(0, -1),
+        replyTo: userMessage.replyTo ?? null,
+      });
+
+      const ashleyMessage: Message = {
+        id: newId(),
+        role: "ashley",
+        content: reply.reply,
+        createdAt: new Date().toISOString(),
+        imageUrl: reply.imageUrl,
+        selfieVibe: reply.selfieVibe,
+      };
+      // Only commit if the user hasn't typed something new in the
+      // meantime — otherwise the normal send mutation owns the next turn
+      // and our reply would land out of order.
+      const next = await appendIfStillCurrent(userMessage.id, ashleyMessage);
+      if (!next) return null;
+      qc.setQueryData(MESSAGES_KEY, next);
+
+      void maybeRollUpOlderMessages(qc);
+
+      if (reply.selfieVibe) {
+        void fetchAndAttachSelfie(
+          qc,
+          ashleyMessage.id,
+          reply.selfieVibe,
+          profile,
+        );
+      }
+      return ashleyMessage;
+    },
+  });
+}
+
 export function useClearMessages() {
   const qc = useQueryClient();
   return useMutation({
