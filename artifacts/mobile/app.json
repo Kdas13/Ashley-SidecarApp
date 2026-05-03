@@ -16,7 +16,9 @@
     "ios": {
       "supportsTablet": false
     },
-    "android": {},
+    "android": {
+      "softwareKeyboardLayoutMode": "pan"
+    },
     "web": {
       "favicon": "./assets/images/icon.png"
     },

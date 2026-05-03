@@ -190,8 +190,8 @@ export default function ChatScreen(): React.JSX.Element {
       </View>
 
       <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 8 : 0}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={Platform.OS === "ios" ? 8 : insets.top + 56}
         style={{ flex: 1 }}
       >
         {messagesQuery.isLoading ? (
