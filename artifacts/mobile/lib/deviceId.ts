@@ -1,6 +1,14 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as FileSystem from "expo-file-system/legacy";
 
 const DEVICE_ID_KEY = "@ashley/device-id/v1";
+const DEVICE_ID_FILENAME = "ashley-device-id.v1.txt";
+
+function deviceIdFileUri(): string | null {
+  const dir = FileSystem.documentDirectory;
+  if (!dir) return null;
+  return dir + DEVICE_ID_FILENAME;
+}
 
 /**
  * UUID-v4-ish device id. We don't have a crypto-strength RNG in Expo Go
@@ -16,8 +24,55 @@ function uuidv4(): string {
   });
 }
 
+const DEVICE_ID_RE = /^[A-Za-z0-9-]+$/;
+function isValidDeviceId(raw: string | null | undefined): raw is string {
+  if (!raw) return false;
+  const id = raw.trim();
+  return id.length >= 8 && id.length <= 128 && DEVICE_ID_RE.test(id);
+}
+
 let cached: string | null = null;
 let inflight: Promise<string> | null = null;
+
+async function readFromFile(): Promise<string | null> {
+  const uri = deviceIdFileUri();
+  if (!uri) return null;
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    if (!info.exists) return null;
+    const txt = await FileSystem.readAsStringAsync(uri);
+    const trimmed = txt.trim();
+    return isValidDeviceId(trimmed) ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readFromAsyncStorage(): Promise<string | null> {
+  try {
+    const v = await AsyncStorage.getItem(DEVICE_ID_KEY);
+    const trimmed = v?.trim();
+    return isValidDeviceId(trimmed) ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function persistEverywhere(id: string): Promise<void> {
+  // Best-effort dual-write. AsyncStorage is fast/normal; the file in
+  // documentDirectory is the durable backup that survives Expo Go
+  // wiping its app-private storage between sessions (which is what
+  // bit the user repeatedly — every reload generated a brand-new id
+  // and orphaned the previous server-side conversation).
+  await Promise.allSettled([
+    AsyncStorage.setItem(DEVICE_ID_KEY, id),
+    (async () => {
+      const uri = deviceIdFileUri();
+      if (!uri) return;
+      await FileSystem.writeAsStringAsync(uri, id);
+    })(),
+  ]);
+}
 
 /**
  * Return the per-install device id, generating + persisting one on first
@@ -25,30 +80,45 @@ let inflight: Promise<string> | null = null;
  *
  * The id is the user — every authenticated request to api-server carries
  * it as `X-Device-Id` and the server keys all profile / message / memory
- * rows by it. Wiping AsyncStorage therefore creates a fresh "user" on
- * the server side; the old data stays orphaned (no auth, so we can't
- * recover it without the original id).
+ * rows by it. We persist to BOTH AsyncStorage and a file in the document
+ * directory; whichever one survives wins. This matters because Expo Go
+ * occasionally clears AsyncStorage between launches, which would
+ * otherwise generate a fresh id and orphan the user's data on every
+ * reload.
  */
 export async function getOrCreateDeviceId(): Promise<string> {
   if (cached) return cached;
   if (inflight) return inflight;
   inflight = (async () => {
-    try {
-      const existing = await AsyncStorage.getItem(DEVICE_ID_KEY);
-      if (existing && existing.trim().length >= 8) {
-        cached = existing.trim();
-        return cached;
+    // Prefer the file (most durable in Expo Go), then AsyncStorage,
+    // then generate fresh.
+    const fromFile = await readFromFile();
+    if (fromFile) {
+      cached = fromFile;
+      // Heal AsyncStorage if it was the one that got wiped.
+      try {
+        await AsyncStorage.setItem(DEVICE_ID_KEY, fromFile);
+      } catch {
+        // ignore
       }
-    } catch {
-      // fall through to generate a fresh id
+      return fromFile;
+    }
+    const fromAS = await readFromAsyncStorage();
+    if (fromAS) {
+      cached = fromAS;
+      // Heal the file backup.
+      const uri = deviceIdFileUri();
+      if (uri) {
+        try {
+          await FileSystem.writeAsStringAsync(uri, fromAS);
+        } catch {
+          // ignore
+        }
+      }
+      return fromAS;
     }
     const fresh = uuidv4();
-    try {
-      await AsyncStorage.setItem(DEVICE_ID_KEY, fresh);
-    } catch {
-      // best-effort — even if persisting fails this session, the cached
-      // value will keep this run consistent.
-    }
+    await persistEverywhere(fresh);
     cached = fresh;
     return fresh;
   })();
@@ -74,8 +144,6 @@ export function hasDeviceId(): boolean {
   return cached !== null;
 }
 
-const DEVICE_ID_RE = /^[A-Za-z0-9-]+$/;
-
 /**
  * Override the persisted device id with a user-supplied one. Used by the
  * "Restore from Device ID" flow on the profile screen so a user whose
@@ -89,12 +157,12 @@ const DEVICE_ID_RE = /^[A-Za-z0-9-]+$/;
  */
 export async function setDeviceId(rawId: string): Promise<string> {
   const id = rawId.trim();
-  if (id.length < 8 || id.length > 128 || !DEVICE_ID_RE.test(id)) {
+  if (!isValidDeviceId(id)) {
     throw new Error(
       "That doesn't look like a valid Device ID. Paste the full id you copied earlier.",
     );
   }
-  await AsyncStorage.setItem(DEVICE_ID_KEY, id);
+  await persistEverywhere(id);
   cached = id;
   return id;
 }
