@@ -338,34 +338,15 @@ export async function transcribeAudioStream(
   callbacks: { onDelta?: (chunk: string) => void } = {},
 ): Promise<{ transcript: string }> {
   const base = getApiBase();
-  const res = await fetch(`${base}/chat/transcribe/stream`, {
-    method: "POST",
-    headers: {
-      ...authHeaders(),
-      "Content-Type": "application/json",
-      Accept: "text/event-stream",
-    },
-    body: JSON.stringify(input),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(
-      `POST /chat/transcribe/stream returned ${res.status}${
-        text ? `: ${text.slice(0, 240)}` : ""
-      }`,
-    );
-  }
+  const url = `${base}/chat/transcribe/stream`;
 
-  // React Native fetch on Hermes (RN 0.74+) exposes a streaming body.
-  // If it's missing in this runtime, surface a sentinel so the caller
-  // can fall back to /chat/transcribe instead of hanging.
-  const body = res.body as ReadableStream<Uint8Array> | null | undefined;
-  const reader = body?.getReader?.();
-  if (!reader) {
-    throw new Error(STREAMING_UNSUPPORTED);
-  }
-
-  const decoder = new TextDecoder("utf-8");
+  // React Native's fetch (Hermes, even on RN 0.81) does NOT expose
+  // response.body as a ReadableStream — it buffers the whole body and
+  // returns it after the request finishes, defeating the live-partial
+  // purpose. The standard RN-native way to get incremental bytes off
+  // an HTTP response is XMLHttpRequest's onprogress event, where
+  // responseText is cumulative. This is exactly how react-native-sse
+  // and similar libraries work under the hood.
   let buffer = "";
   let finalTranscript = "";
   let streamError: string | null = null;
@@ -428,11 +409,12 @@ export async function transcribeAudioStream(
     return rnrn < nn ? { idx: rnrn, len: 4 } : { idx: nn, len: 2 };
   };
 
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  // Drain whatever new bytes have arrived since the last call. Newly
+  // arrived characters get appended to `buffer`, then we extract every
+  // complete SSE message we can find and feed it to handleMessage.
+  const drain = (added: string): void => {
+    if (added.length === 0) return;
+    buffer += added;
     let boundary = findBoundary(buffer);
     while (boundary !== null) {
       const raw = buffer.slice(0, boundary.idx);
@@ -440,15 +422,115 @@ export async function transcribeAudioStream(
       if (raw.length > 0) handleMessage(raw);
       boundary = findBoundary(buffer);
     }
-  }
-  // Flush any trailing partial (in practice the server always closes
-  // on a blank-line-terminated message, but be defensive).
-  if (buffer.replace(/\s/g, "").length > 0) handleMessage(buffer);
+  };
 
-  if (streamError) {
-    throw new Error(streamError);
-  }
-  return { transcript: finalTranscript };
+  return new Promise<{ transcript: string }>((resolve, reject) => {
+    let xhr: XMLHttpRequest;
+    try {
+      xhr = new XMLHttpRequest();
+    } catch {
+      reject(new Error(STREAMING_UNSUPPORTED));
+      return;
+    }
+    let processedIndex = 0;
+    let settled = false;
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
+
+    try {
+      xhr.open("POST", url, true);
+    } catch (err) {
+      finish(() =>
+        reject(
+          err instanceof Error
+            ? err
+            : new Error("Failed to open streaming request"),
+        ),
+      );
+      return;
+    }
+    // Default responseType ("") gives us responseText as cumulative
+    // text during onprogress, which is what we need.
+    xhr.responseType = "text";
+    const headers = {
+      ...authHeaders(),
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    };
+    for (const [name, value] of Object.entries(headers)) {
+      if (typeof value === "string") xhr.setRequestHeader(name, value);
+    }
+
+    xhr.onprogress = (): void => {
+      // responseText is cumulative; only feed the parser the suffix
+      // we haven't seen yet. In some RN builds responseText can be
+      // briefly null between chunks — guard against that.
+      const text = typeof xhr.responseText === "string" ? xhr.responseText : "";
+      if (text.length > processedIndex) {
+        const chunk = text.slice(processedIndex);
+        processedIndex = text.length;
+        drain(chunk);
+      }
+    };
+
+    xhr.onerror = (): void => {
+      finish(() =>
+        reject(new Error("Network error during streaming transcription")),
+      );
+    };
+    xhr.ontimeout = (): void => {
+      finish(() => reject(new Error("Streaming transcription timed out")));
+    };
+    xhr.onabort = (): void => {
+      finish(() => reject(new Error("Streaming transcription aborted")));
+    };
+
+    xhr.onload = (): void => {
+      // Final drain in case the last bytes arrived between onprogress
+      // and onload (some RN versions only fire onprogress for chunk
+      // boundaries, not the trailing tail).
+      const text = typeof xhr.responseText === "string" ? xhr.responseText : "";
+      if (text.length > processedIndex) {
+        drain(text.slice(processedIndex));
+      }
+      // Flush any trailing partial (in practice the server always
+      // closes on a blank-line-terminated message, but be defensive).
+      if (buffer.replace(/\s/g, "").length > 0) handleMessage(buffer);
+
+      if (xhr.status < 200 || xhr.status >= 300) {
+        finish(() =>
+          reject(
+            new Error(
+              `POST /chat/transcribe/stream returned ${xhr.status}${
+                text ? `: ${text.slice(0, 240)}` : ""
+              }`,
+            ),
+          ),
+        );
+        return;
+      }
+      if (streamError) {
+        finish(() => reject(new Error(streamError as string)));
+        return;
+      }
+      finish(() => resolve({ transcript: finalTranscript }));
+    };
+
+    try {
+      xhr.send(JSON.stringify(input));
+    } catch (err) {
+      finish(() =>
+        reject(
+          err instanceof Error
+            ? err
+            : new Error("Failed to send streaming request"),
+        ),
+      );
+    }
+  });
 }
 
 // 18+ age gate. Recording the confirmation is the ONLY thing that lets a
