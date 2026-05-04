@@ -47,8 +47,34 @@ export type AshleyProfile = {
    * a literal human body / flat / job.
    */
   builderAwareMode: boolean;
+  /**
+   * 18+ / Mature scaffolding. Stays "standard" until BOTH the server-side
+   * operator switch is on AND the user has confirmed their age via
+   * /profile/confirm-adult AND the user explicitly chose "mature".
+   */
+  contentMode: "standard" | "mature";
+  /** ISO timestamp of the user's affirmative 18+ self-confirmation, or null. */
+  adultConfirmedAt: string | null;
+  /** 0..5 intimacy ladder. Capped per mode by the server (standard ≤ 3, mature ≤ 5). */
+  intimacyLevel: number;
   onboardedAt: string | null;
   updatedAt: string;
+};
+
+/**
+ * Server-resolved content policy snapshot — separate from the profile
+ * because it carries the EFFECTIVE mode after gating, not just whatever
+ * the profile column says. The 18+ UI uses this to decide what to show.
+ */
+export type ServerPolicy = {
+  effectiveMode: "standard" | "mature";
+  intimacyLevel: number;
+  intimacyCeiling: number;
+  adultConfirmed: boolean;
+  /** True iff operator switch is on AND user has confirmed 18+. */
+  matureModeAvailable: boolean;
+  /** True iff operator switch is on (independent of age confirmation). */
+  operatorMatureModeAvailable: boolean;
 };
 
 export type Memory = {
@@ -135,6 +161,9 @@ export const DEFAULT_PROFILE: AshleyProfile = {
   replikaCarryoverSummary: "",
   relationshipMode: "",
   builderAwareMode: true,
+  contentMode: "standard",
+  adultConfirmedAt: null,
+  intimacyLevel: 0,
   onboardedAt: null,
   updatedAt: new Date(0).toISOString(),
 };

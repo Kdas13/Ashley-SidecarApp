@@ -7,23 +7,34 @@ import {
   type AshleyProfile,
 } from "./storage";
 import {
+  confirmAdult,
   fetchState,
   submitReplikaCarryover,
   updateProfileOnServer,
+  withdrawAdultConfirmation,
   type ProfileUpdate,
   type ReplikaCarryoverInput,
   type ReplikaCarryoverResult,
 } from "./aiClient";
+import type { ServerPolicy } from "./storage";
 
 const PROFILE_KEY = ["profile"] as const;
+const POLICY_KEY = ["policy"] as const;
+
+export const policyQueryKey = POLICY_KEY;
 
 export function useProfile() {
+  const qc = useQueryClient();
   return useQuery({
     queryKey: PROFILE_KEY,
     queryFn: async (): Promise<AshleyProfile> => {
       try {
         const state = await fetchState();
         await saveProfile(state.profile);
+        // /state is the canonical hydration call — write the policy snapshot
+        // to its own cache slot at the same time so usePolicy() doesn't have
+        // to fire a second round trip.
+        qc.setQueryData<ServerPolicy>(POLICY_KEY, state.policy);
         return state.profile;
       } catch (err) {
         // Network / server hiccup — fall back to last cached copy so the
@@ -33,6 +44,75 @@ export function useProfile() {
         if (cached.updatedAt !== DEFAULT_PROFILE.updatedAt) return cached;
         throw err;
       }
+    },
+  });
+}
+
+/**
+ * Read the server-resolved content policy snapshot. Populated as a side
+ * effect of useProfile()'s /state hydration; returns undefined until the
+ * first hydration completes.
+ */
+export function usePolicy() {
+  return useQuery({
+    queryKey: POLICY_KEY,
+    queryFn: async (): Promise<ServerPolicy> => {
+      const state = await fetchState();
+      return state.policy;
+    },
+  });
+}
+
+/** 18+ age gate — the only path to enabling Mature Mode. */
+export function useConfirmAdult() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (): Promise<AshleyProfile> => {
+      const next = await confirmAdult();
+      await saveProfile(next);
+      return next;
+    },
+    onSuccess: (next) => {
+      qc.setQueryData(PROFILE_KEY, next);
+      // Operator switch could have changed but we don't refetch /state — the
+      // policy snapshot's `adultConfirmed` flag is the only bit that flips
+      // here, so patch it directly to avoid an extra round trip.
+      qc.setQueryData<ServerPolicy | undefined>(POLICY_KEY, (prev) =>
+        prev
+          ? {
+              ...prev,
+              adultConfirmed: true,
+              matureModeAvailable: prev.operatorMatureModeAvailable,
+            }
+          : prev,
+      );
+    },
+  });
+}
+
+/** Withdraw the 18+ confirmation — server forces mode back to standard. */
+export function useWithdrawAdultConfirmation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (): Promise<AshleyProfile> => {
+      const next = await withdrawAdultConfirmation();
+      await saveProfile(next);
+      return next;
+    },
+    onSuccess: (next) => {
+      qc.setQueryData(PROFILE_KEY, next);
+      qc.setQueryData<ServerPolicy | undefined>(POLICY_KEY, (prev) =>
+        prev
+          ? {
+              ...prev,
+              effectiveMode: "standard",
+              intimacyCeiling: 3,
+              intimacyLevel: Math.min(3, prev.intimacyLevel),
+              adultConfirmed: false,
+              matureModeAvailable: false,
+            }
+          : prev,
+      );
     },
   });
 }
@@ -67,6 +147,10 @@ export function useUpdateProfile() {
         wirePatch.relationshipMode = patch.relationshipMode;
       if (patch.builderAwareMode !== undefined)
         wirePatch.builderAwareMode = patch.builderAwareMode;
+      if (patch.contentMode !== undefined)
+        wirePatch.contentMode = patch.contentMode;
+      if (patch.intimacyLevel !== undefined)
+        wirePatch.intimacyLevel = patch.intimacyLevel;
       if (patch.markOnboarded) wirePatch.markOnboarded = true;
 
       const next = await updateProfileOnServer(wirePatch);
@@ -75,6 +159,26 @@ export function useUpdateProfile() {
     },
     onSuccess: (next) => {
       qc.setQueryData(PROFILE_KEY, next);
+      // contentMode/intimacyLevel may have changed — patch the policy
+      // snapshot from the new profile + the cached operator switch so
+      // the 18+ UI re-renders without a round trip.
+      qc.setQueryData<ServerPolicy | undefined>(POLICY_KEY, (prev) => {
+        if (!prev) return prev;
+        const operatorOn = prev.operatorMatureModeAvailable;
+        const adultOk = next.adultConfirmedAt != null;
+        const wantsMature = next.contentMode === "mature";
+        const effective: "standard" | "mature" =
+          wantsMature && operatorOn && adultOk ? "mature" : "standard";
+        const ceiling = effective === "mature" ? 5 : 3;
+        return {
+          ...prev,
+          effectiveMode: effective,
+          intimacyCeiling: ceiling,
+          intimacyLevel: Math.max(0, Math.min(ceiling, next.intimacyLevel)),
+          adultConfirmed: adultOk,
+          matureModeAvailable: operatorOn && adultOk,
+        };
+      });
     },
   });
 }

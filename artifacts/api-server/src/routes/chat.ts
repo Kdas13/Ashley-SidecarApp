@@ -21,6 +21,7 @@ import { getDeviceId } from "../middleware/deviceId";
 import { getOrCreateProfileFor } from "../lib/profile";
 import { MEMORY_DISTILLER_PROMPT, SUMMARIZER_PROMPT } from "../lib/ashleyPrompt";
 import { buildSystemPrompt } from "../lib/ashleyCoreSpec";
+import { buildSelfiePromptSafetyPrefix } from "../lib/contentPolicy";
 import { generateImageBase64 } from "../lib/openai";
 import {
   saveSelfie,
@@ -527,6 +528,12 @@ async function generateAshleySelfie(
   const appearance = (profile.appearance ?? "").trim();
   const ashleyName = (profile.name ?? "Ashley").trim() || "Ashley";
   const fullPrompt = [
+    // Provider Floor for the IMAGE generator. Always first, never overridden
+    // by mode/intimacy — see lib/contentPolicy.ts. The downstream image
+    // provider has its own safety filter; this prefix keeps requests well
+    // inside it so we degrade by Ashley saying "couldn't get the shot —
+    // try a different vibe" rather than by hitting a hard provider error.
+    buildSelfiePromptSafetyPrefix(),
     `Photograph (selfie) of ${ashleyName}, a young woman.`,
     appearance ? `Appearance: ${appearance}` : "",
     `Style: warm intimate phone-camera selfie, natural lighting, slightly soft focus, no text or watermarks.`,

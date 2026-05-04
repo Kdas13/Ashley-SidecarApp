@@ -20,6 +20,11 @@ export const ASHLEY_DEFAULTS = {
   replikaCarryoverSummary: "",
   relationshipMode: "",
   builderAwareMode: true,
+  // 18+ / Mature scaffolding defaults — OFF by design. See
+  // lib/contentPolicy.ts for the rules that gate ever moving off these.
+  contentMode: "standard",
+  adultConfirmedAt: null,
+  intimacyLevel: 0,
   primaryColor: "#d97757",
   accentColor: "#7a5cff",
 };

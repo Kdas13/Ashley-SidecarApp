@@ -11,6 +11,13 @@ import {
 
 import { getDeviceId } from "../middleware/deviceId";
 import { getOrCreateProfileFor } from "../lib/profile";
+import {
+  getPolicyFor,
+  isMatureModeAvailable,
+  validatePolicyPatch,
+  INTIMACY_MIN,
+  INTIMACY_MAX,
+} from "../lib/contentPolicy";
 
 const router: IRouter = Router();
 
@@ -34,6 +41,17 @@ const ProfileUpdateSchema = z
     replikaCarryoverSummary: z.string().max(MAX_LARGE_FIELD_LEN).optional(),
     relationshipMode: z.string().max(120).optional(),
     builderAwareMode: z.boolean().optional(),
+    // 18+ / Mature scaffolding. These pass through validatePolicyPatch
+    // (lib/contentPolicy.ts) before hitting the database — the zod shape
+    // here only enforces the wire types, the policy module enforces the
+    // gating (server flag, age confirmation, intimacy ceiling).
+    contentMode: z.enum(["standard", "mature"]).optional(),
+    intimacyLevel: z
+      .number()
+      .int()
+      .min(INTIMACY_MIN)
+      .max(INTIMACY_MAX)
+      .optional(),
     primaryColor: z.string().max(32).optional(),
     accentColor: z.string().max(32).optional(),
     markOnboarded: z.boolean().optional(),
@@ -48,6 +66,7 @@ router.get("/state", async (req, res): Promise<void> => {
   const deviceId = getDeviceId(req);
   try {
     const profile = await getOrCreateProfileFor(deviceId);
+    const policy = getPolicyFor(profile);
     const [messages, memories, summaries] = await Promise.all([
       db
         .select()
@@ -65,7 +84,24 @@ router.get("/state", async (req, res): Promise<void> => {
         .where(eq(conversationSummariesTable.deviceId, deviceId))
         .orderBy(asc(conversationSummariesTable.coveredThroughCreatedAt)),
     ]);
-    res.json({ profile, messages, memories, summaries });
+    // Surface the resolved policy + the operator switch alongside the raw
+    // profile. The mobile app uses these to decide whether to show the
+    // 18+ section at all and what its current state is, without re-running
+    // the gating rules client-side.
+    res.json({
+      profile,
+      messages,
+      memories,
+      summaries,
+      policy: {
+        effectiveMode: policy.effectiveMode,
+        intimacyLevel: policy.intimacyLevel,
+        intimacyCeiling: policy.intimacyCeiling,
+        adultConfirmed: policy.adultConfirmed,
+        matureModeAvailable: policy.matureModeAvailable,
+        operatorMatureModeAvailable: isMatureModeAvailable(),
+      },
+    });
   } catch (err) {
     req.log.error({ err }, "GET /state failed");
     res.status(500).json({ error: "Could not load state" });
@@ -79,12 +115,28 @@ router.put("/profile", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const { markOnboarded, ...fields } = parsed.data;
+  const { markOnboarded, contentMode, intimacyLevel, ...fields } = parsed.data;
 
   try {
-    // Make sure the row exists so the update has something to hit.
-    await getOrCreateProfileFor(deviceId);
-    const updates: Record<string, unknown> = { ...fields };
+    // Make sure the row exists so the update has something to hit, and
+    // so the policy guard sees the actual current state (esp. whether
+    // adultConfirmedAt is set).
+    const current = await getOrCreateProfileFor(deviceId);
+
+    // Run the policy chokepoint BEFORE building the SQL update. This
+    // rejects mature-mode requests that don't meet the operator-flag +
+    // age-gate requirements, and clamps intimacyLevel to the per-mode
+    // ceiling.
+    const guard = validatePolicyPatch({
+      current,
+      patch: { contentMode, intimacyLevel },
+    });
+    if (!guard.ok) {
+      res.status(guard.status).json({ error: guard.error });
+      return;
+    }
+
+    const updates: Record<string, unknown> = { ...fields, ...guard.sanitised };
     if (markOnboarded) {
       updates["onboardedAt"] = new Date();
     }
@@ -102,6 +154,59 @@ router.put("/profile", async (req, res): Promise<void> => {
   } catch (err) {
     req.log.error({ err }, "PUT /profile failed");
     res.status(500).json({ error: "Could not update profile" });
+  }
+});
+
+// Age gate. The ONLY way adultConfirmedAt ever becomes non-null. Body must
+// carry an explicit affirmative payload — no implicit confirmation through
+// other endpoints. Idempotent: re-confirming is a no-op (timestamp stays).
+const AdultConfirmSchema = z
+  .object({ confirm: z.literal(true) })
+  .strict();
+
+router.post("/profile/confirm-adult", async (req, res): Promise<void> => {
+  const deviceId = getDeviceId(req);
+  const parsed = AdultConfirmSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error:
+        "Body must be { confirm: true }. The age gate requires an explicit affirmative payload.",
+    });
+    return;
+  }
+  try {
+    const current = await getOrCreateProfileFor(deviceId);
+    if (current.adultConfirmedAt != null) {
+      res.json({ profile: current, alreadyConfirmed: true });
+      return;
+    }
+    const [profile] = await db
+      .update(ashleyProfileTable)
+      .set({ adultConfirmedAt: new Date() })
+      .where(eq(ashleyProfileTable.deviceId, deviceId))
+      .returning();
+    res.json({ profile, alreadyConfirmed: false });
+  } catch (err) {
+    req.log.error({ err }, "POST /profile/confirm-adult failed");
+    res.status(500).json({ error: "Could not record age confirmation" });
+  }
+});
+
+// Withdraw the 18+ confirmation. Forces effective mode back to standard
+// on next prompt build (the policy module gates mature on this timestamp).
+router.delete("/profile/confirm-adult", async (req, res): Promise<void> => {
+  const deviceId = getDeviceId(req);
+  try {
+    await getOrCreateProfileFor(deviceId);
+    const [profile] = await db
+      .update(ashleyProfileTable)
+      .set({ adultConfirmedAt: null, contentMode: "standard" })
+      .where(eq(ashleyProfileTable.deviceId, deviceId))
+      .returning();
+    res.json({ profile });
+  } catch (err) {
+    req.log.error({ err }, "DELETE /profile/confirm-adult failed");
+    res.status(500).json({ error: "Could not withdraw age confirmation" });
   }
 });
 

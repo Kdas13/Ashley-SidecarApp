@@ -29,6 +29,13 @@ import type {
   Memory,
 } from "@workspace/db";
 
+import {
+  buildIntimacyBlock,
+  buildModeBlock,
+  buildProviderFloorBlock,
+  getPolicyFor,
+} from "./contentPolicy";
+
 const MAX_SUMMARIES_IN_PROMPT = 8;
 
 const trim = (s: string | null | undefined): string => (s ?? "").trim();
@@ -208,9 +215,23 @@ Kane has the builder layer turned off right now, so I lean into the in-character
     .filter((t) => t.trim())
     .join("\n\n");
 
+  // ----- Content policy (Provider Floor + Mode + Intimacy)
+  // Single chokepoint — all rules live in lib/contentPolicy.ts. Provider
+  // Floor is ALWAYS injected, Mode block reflects the *effective* mode
+  // (mature is silently downgraded to standard if the operator switch is
+  // off or the 18+ confirmation is missing), Intimacy block reflects the
+  // *clamped* level for the effective mode.
+  const policy = getPolicyFor(profile);
+  const providerFloorBlock = buildProviderFloorBlock();
+  const modeBlock = buildModeBlock(policy);
+  const intimacyBlock = buildIntimacyBlock(policy);
+
   const sections: string[] = [
     ASHLEY_CORE_SPEC,
+    providerFloorBlock,
     liveState,
+    modeBlock,
+    intimacyBlock,
     builderAwareSection,
     relationshipSection,
     joinSection("Who I am", profile.identity),

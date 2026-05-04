@@ -47,6 +47,25 @@ export const ashleyProfileTable = pgTable("ashley_profile", {
   // Calibration in the prompt still prevents her from claiming a literal
   // human body / flat / job).
   builderAwareMode: boolean("builder_aware_mode").notNull().default(true),
+  // ----- 18+ / Mature Mode scaffolding (designed for the future, OFF by default).
+  // Three independent signals stack — see lib/contentPolicy.ts on the server
+  // for the single source of truth. Schema only persists the per-device state.
+  //
+  // contentMode: "standard" (default) or "mature". Switching to "mature"
+  //   requires (1) the server-side ASHLEY_MATURE_MODE_AVAILABLE env flag to
+  //   be on AND (2) adultConfirmedAt to be non-null AND (3) explicit user
+  //   selection. The contentPolicy module enforces this; routes do not
+  //   inline the check.
+  contentMode: text("content_mode").notNull().default("standard"),
+  // Timestamp of the user's affirmative 18+ self-confirmation. Never set
+  // implicitly — only by POST /profile/confirm-adult after an explicit
+  // affirmative tap in the age-gate modal. Null = not confirmed.
+  adultConfirmedAt: timestamp("adult_confirmed_at", { withTimezone: true }),
+  // 0..5 intimacy ladder. Drives tone/closeness organically. The
+  // contentPolicy module caps the *effective* level by mode (standard ≤ 3,
+  // mature ≤ 5) and the prompt always honours the active Relationship
+  // Mode and Provider Floor on top of intimacy.
+  intimacyLevel: integer("intimacy_level").notNull().default(0),
   primaryColor: text("primary_color").notNull().default("#d97757"),
   accentColor: text("accent_color").notNull().default("#7a5cff"),
   onboardedAt: timestamp("onboarded_at", { withTimezone: true }),

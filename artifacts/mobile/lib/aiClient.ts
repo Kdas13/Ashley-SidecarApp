@@ -7,6 +7,7 @@ import type {
   Message,
   MemoryTag,
   ReplyToRef,
+  ServerPolicy,
 } from "./storage";
 import { getDeviceIdSync, getOrCreateDeviceId } from "./deviceId";
 
@@ -130,6 +131,9 @@ type WireProfile = {
   replikaCarryoverSummary: string;
   relationshipMode: string;
   builderAwareMode: boolean;
+  contentMode: "standard" | "mature";
+  adultConfirmedAt: string | null;
+  intimacyLevel: number;
   primaryColor: string;
   accentColor: string;
   onboardedAt: string | null;
@@ -189,6 +193,12 @@ function profileFromWire(p: WireProfile): AshleyProfile {
     replikaCarryoverSummary: p.replikaCarryoverSummary ?? "",
     relationshipMode: p.relationshipMode,
     builderAwareMode: p.builderAwareMode ?? true,
+    contentMode: p.contentMode === "mature" ? "mature" : "standard",
+    adultConfirmedAt: p.adultConfirmedAt ?? null,
+    intimacyLevel:
+      typeof p.intimacyLevel === "number" && Number.isFinite(p.intimacyLevel)
+        ? p.intimacyLevel
+        : 0,
     onboardedAt: p.onboardedAt,
     updatedAt: p.updatedAt,
   };
@@ -247,6 +257,16 @@ export type ServerState = {
   messages: Message[];
   memories: Memory[];
   summaries: ConversationSummary[];
+  policy: ServerPolicy;
+};
+
+const DEFAULT_POLICY: ServerPolicy = {
+  effectiveMode: "standard",
+  intimacyLevel: 0,
+  intimacyCeiling: 3,
+  adultConfirmed: false,
+  matureModeAvailable: false,
+  operatorMatureModeAvailable: false,
 };
 
 /** Hydrate everything for the current device in a single round trip. */
@@ -257,13 +277,38 @@ export async function fetchState(): Promise<ServerState> {
     messages: WireMessage[];
     memories: WireMemory[];
     summaries: WireSummary[];
+    policy?: ServerPolicy;
   }>("/state");
   return {
     profile: profileFromWire(data.profile),
     messages: data.messages.map(messageFromWire),
     memories: data.memories.map(memoryFromWire),
     summaries: data.summaries.map(summaryFromWire),
+    // Server is authoritative; if an older deploy doesn't return a policy
+    // block we fall back to the safe defaults (standard mode, no mature).
+    policy: data.policy ?? DEFAULT_POLICY,
   };
+}
+
+// 18+ age gate. Recording the confirmation is the ONLY thing that lets a
+// subsequent PUT /profile { contentMode: "mature" } succeed. The body
+// shape mirrors the server's strict zod check.
+export async function confirmAdult(): Promise<AshleyProfile> {
+  const data = await fetchJSON<{ profile: WireProfile }>(
+    "/profile/confirm-adult",
+    { method: "POST", body: JSON.stringify({ confirm: true }) },
+  );
+  return profileFromWire(data.profile);
+}
+
+// Withdraw the 18+ confirmation. Server forces contentMode back to standard
+// in the same write so the user can never be left "mature with no age gate".
+export async function withdrawAdultConfirmation(): Promise<AshleyProfile> {
+  const data = await fetchJSON<{ profile: WireProfile }>(
+    "/profile/confirm-adult",
+    { method: "DELETE" },
+  );
+  return profileFromWire(data.profile);
 }
 
 export type ProfileUpdate = Partial<{
@@ -280,6 +325,8 @@ export type ProfileUpdate = Partial<{
   replikaCarryoverSummary: string;
   relationshipMode: string;
   builderAwareMode: boolean;
+  contentMode: "standard" | "mature";
+  intimacyLevel: number;
   primaryColor: string;
   accentColor: string;
   markOnboarded: boolean;

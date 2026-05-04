@@ -19,12 +19,16 @@ import * as Clipboard from "expo-clipboard";
 import { useQueryClient } from "@tanstack/react-query";
 
 import {
+  useConfirmAdult,
+  usePolicy,
   useProfile,
   useReplikaCarryover,
   useUpdateProfile,
+  useWithdrawAdultConfirmation,
 } from "@/lib/useProfile";
 import type { ReplikaCarryoverInput } from "@/lib/aiClient";
 import type { AshleyProfile } from "@/lib/storage";
+import { intimacyRung } from "@/lib/policy";
 import { getDeviceIdSync, hasDeviceId, setDeviceId } from "@/lib/deviceId";
 import colors from "@/constants/colors";
 
@@ -320,6 +324,8 @@ export default function ProfileScreen(): React.JSX.Element {
           existingSummary={profileQuery.data.replikaCarryoverSummary}
         />
 
+        <AdultModeSection />
+
         <DeviceAndBackupSection />
       </ScrollView>
     </KeyboardAvoidingView>
@@ -592,6 +598,329 @@ function CarryoverSection({
           {savedSummary ? (
             <Text style={styles.successText}>Saved</Text>
           ) : null}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+// =============================================================================
+// 18+ Mature Mode section.
+//
+// Three independent gates (mirroring the server, see lib/policy.ts and
+// the server's lib/contentPolicy.ts):
+//
+//   1. operatorMatureModeAvailable — server kill switch (env var). When
+//      OFF, this whole section renders nothing.
+//   2. adultConfirmed — the user has affirmatively tapped through the
+//      age-gate modal. Without this, the mode toggle is locked.
+//   3. contentMode === "mature" — the user explicitly picked it.
+//
+// The intimacy slider is independent of mode but its ceiling is set by
+// the resolved mode (3 in standard, 5 in mature). The server clamps on
+// write, so the slider can't ship an out-of-range value even if the UI
+// is stale.
+// =============================================================================
+
+function AdultModeSection(): React.JSX.Element | null {
+  const profileQuery = useProfile();
+  const policyQuery = usePolicy();
+  const update = useUpdateProfile();
+  const confirmAdultMut = useConfirmAdult();
+  const withdrawMut = useWithdrawAdultConfirmation();
+
+  const [showGate, setShowGate] = useState(false);
+  const [pendingIntimacy, setPendingIntimacy] = useState<number | null>(null);
+
+  const profile = profileQuery.data;
+  const policy = policyQuery.data;
+
+  // Operator switch off → feature is dark, no UI at all.
+  if (!profile || !policy?.operatorMatureModeAvailable) return null;
+
+  const adultConfirmed = policy.adultConfirmed;
+  const ceiling = policy.intimacyCeiling;
+  const intimacyLevel = pendingIntimacy ?? policy.intimacyLevel;
+  const rung = intimacyRung(intimacyLevel);
+  const effectiveMode = policy.effectiveMode;
+
+  const onPickMode = async (mode: "standard" | "mature") => {
+    if (mode === effectiveMode) return;
+    if (mode === "mature" && !adultConfirmed) {
+      // The age gate is the ONLY path to mature. Open the modal instead
+      // of optimistically toggling.
+      setShowGate(true);
+      return;
+    }
+    try {
+      await update.mutateAsync({ contentMode: mode });
+    } catch (err) {
+      Alert.alert(
+        "Couldn't change mode",
+        err instanceof Error ? err.message : "Something went wrong.",
+      );
+    }
+  };
+
+  const commitIntimacy = async (next: number) => {
+    const clamped = Math.max(0, Math.min(ceiling, next));
+    setPendingIntimacy(clamped);
+    try {
+      await update.mutateAsync({ intimacyLevel: clamped });
+      setPendingIntimacy(null);
+    } catch (err) {
+      setPendingIntimacy(null);
+      Alert.alert(
+        "Couldn't update intimacy",
+        err instanceof Error ? err.message : "Something went wrong.",
+      );
+    }
+  };
+
+  const onConfirmAdult = async () => {
+    try {
+      await confirmAdultMut.mutateAsync();
+      setShowGate(false);
+    } catch (err) {
+      Alert.alert(
+        "Couldn't record confirmation",
+        err instanceof Error ? err.message : "Something went wrong.",
+      );
+    }
+  };
+
+  const onWithdrawAdult = () => {
+    Alert.alert(
+      "Withdraw 18+ confirmation?",
+      "Mature Mode will turn off and your intimacy level may be capped lower. You can re-confirm any time.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Withdraw",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await withdrawMut.mutateAsync();
+            } catch (err) {
+              Alert.alert(
+                "Couldn't withdraw",
+                err instanceof Error
+                  ? err.message
+                  : "Something went wrong.",
+              );
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  return (
+    <View style={styles.settingsSection}>
+      <Text style={styles.sectionTitle}>Adult mode (18+)</Text>
+      <Text style={styles.hint}>
+        How adult Ashley&apos;s tone is allowed to be — and how close she
+        and Kane have grown. None of this overrides the model
+        provider&apos;s usage policy: explicit sexual content, content
+        involving minors, and non-consensual scenarios are never permitted
+        in any mode, at any intimacy level. Mature Mode is about adult
+        emotional honesty, not explicit content.
+      </Text>
+
+      {/* ---- Mode picker ---- */}
+      <View style={styles.fieldGroup}>
+        <Text style={styles.label}>Content mode</Text>
+        <View style={styles.modeRow}>
+          <Pressable
+            onPress={() => onPickMode("standard")}
+            style={[
+              styles.modeChip,
+              effectiveMode === "standard" && styles.modeChipActive,
+            ]}
+          >
+            <Text
+              style={[
+                styles.modeChipText,
+                effectiveMode === "standard" && styles.modeChipTextActive,
+              ]}
+            >
+              Standard
+            </Text>
+            <Text style={styles.modeChipHint}>
+              Warm, PG/PG-13, no sexual content.
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => onPickMode("mature")}
+            style={[
+              styles.modeChip,
+              effectiveMode === "mature" && styles.modeChipActive,
+              !adultConfirmed && styles.modeChipLocked,
+            ]}
+          >
+            <Text
+              style={[
+                styles.modeChipText,
+                effectiveMode === "mature" && styles.modeChipTextActive,
+              ]}
+            >
+              Mature {adultConfirmed ? "" : "🔒"}
+            </Text>
+            <Text style={styles.modeChipHint}>
+              Adult tone within the provider floor. Requires 18+.
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+
+      {/* ---- Age gate state ---- */}
+      <View style={styles.fieldGroup}>
+        <Text style={styles.label}>18+ confirmation</Text>
+        {adultConfirmed ? (
+          <>
+            <Text style={styles.hint}>
+              You&apos;ve confirmed you are 18+. Mature Mode is unlockable.
+            </Text>
+            <Pressable
+              onPress={onWithdrawAdult}
+              disabled={withdrawMut.isPending}
+              style={[styles.backupBtn, { marginTop: 6 }]}
+            >
+              <Feather name="x" size={14} color={colors.light.text} />
+              <Text style={styles.backupBtnText}>
+                {withdrawMut.isPending ? "Withdrawing…" : "Withdraw confirmation"}
+              </Text>
+            </Pressable>
+          </>
+        ) : (
+          <>
+            <Text style={styles.hint}>
+              Mature Mode requires confirming you are 18+. The provider floor
+              still applies — no explicit sexual content.
+            </Text>
+            <Pressable
+              onPress={() => setShowGate(true)}
+              style={[styles.copyBtn, styles.ageGateCta]}
+            >
+              <Feather
+                name="check-circle"
+                size={14}
+                color={colors.light.primaryForeground}
+              />
+              <Text style={styles.copyBtnText}>I am 18 or older</Text>
+            </Pressable>
+          </>
+        )}
+      </View>
+
+      {/* ---- Intimacy ladder ---- */}
+      <View style={styles.fieldGroup}>
+        <Text style={styles.label}>
+          Intimacy level — {intimacyLevel}/{ceiling} · {rung.label}
+        </Text>
+        <Text style={styles.hint}>{rung.blurb}</Text>
+        <Text style={styles.hint}>
+          Ceiling is set by the active mode (
+          {effectiveMode === "mature" ? "Mature: 5" : "Standard: 3"}). The
+          relationship mode also constrains tone — high intimacy in a
+          friend/mentor mode stays platonic.
+        </Text>
+        <View style={styles.intimacyRow}>
+          <Pressable
+            onPress={() =>
+              intimacyLevel > 0 && commitIntimacy(intimacyLevel - 1)
+            }
+            disabled={intimacyLevel <= 0 || update.isPending}
+            style={[
+              styles.intimacyStep,
+              (intimacyLevel <= 0 || update.isPending) && { opacity: 0.4 },
+            ]}
+          >
+            <Feather name="minus" size={18} color={colors.light.text} />
+          </Pressable>
+          <View style={styles.intimacyTrack}>
+            {Array.from({ length: 6 }).map((_, i) => {
+              const within = i <= intimacyLevel;
+              const reachable = i <= ceiling;
+              return (
+                <View
+                  key={i}
+                  style={[
+                    styles.intimacyDot,
+                    within && styles.intimacyDotOn,
+                    !reachable && styles.intimacyDotLocked,
+                  ]}
+                />
+              );
+            })}
+          </View>
+          <Pressable
+            onPress={() =>
+              intimacyLevel < ceiling && commitIntimacy(intimacyLevel + 1)
+            }
+            disabled={intimacyLevel >= ceiling || update.isPending}
+            style={[
+              styles.intimacyStep,
+              (intimacyLevel >= ceiling || update.isPending) && {
+                opacity: 0.4,
+              },
+            ]}
+          >
+            <Feather name="plus" size={18} color={colors.light.text} />
+          </Pressable>
+        </View>
+      </View>
+
+      {/* ---- Age gate modal (inline overlay) ---- */}
+      {showGate ? (
+        <View style={styles.ageGateOverlay}>
+          <View style={styles.ageGateCard}>
+            <Text style={styles.ageGateTitle}>Confirm you are 18 or older</Text>
+            <Text style={styles.ageGateBody}>
+              Tapping &quot;I am 18+&quot; below records an explicit
+              affirmative confirmation on your profile. This is the only
+              way to enable Mature Mode.{"\n\n"}
+              Even after confirming, the model provider&apos;s usage policy
+              still applies: no sexually explicit content, no content
+              involving minors, no non-consensual scenarios — ever, in any
+              mode. Mature Mode is about adult emotional honesty and
+              tone, not explicit content.
+            </Text>
+            <View style={styles.ageGateBtnRow}>
+              <Pressable
+                onPress={() => setShowGate(false)}
+                style={[styles.backupBtn, { flex: 1 }]}
+              >
+                <Text style={styles.backupBtnText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={onConfirmAdult}
+                disabled={confirmAdultMut.isPending}
+                style={[
+                  styles.copyBtn,
+                  {
+                    flex: 1,
+                    justifyContent: "center",
+                    opacity: confirmAdultMut.isPending ? 0.6 : 1,
+                  },
+                ]}
+              >
+                {confirmAdultMut.isPending ? (
+                  <ActivityIndicator
+                    size="small"
+                    color={colors.light.primaryForeground}
+                  />
+                ) : (
+                  <Feather
+                    name="check"
+                    size={14}
+                    color={colors.light.primaryForeground}
+                  />
+                )}
+                <Text style={styles.copyBtnText}>I am 18+</Text>
+              </Pressable>
+            </View>
+          </View>
         </View>
       ) : null}
     </View>
@@ -1043,5 +1372,117 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_400Regular",
     fontSize: 13,
     lineHeight: 19,
+  },
+  // ----- Adult mode section
+  modeRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 6,
+  },
+  modeChip: {
+    flex: 1,
+    backgroundColor: colors.light.muted,
+    borderRadius: 12,
+    padding: 12,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: "transparent",
+  },
+  modeChipActive: {
+    borderColor: colors.light.primary,
+    backgroundColor: colors.light.background,
+  },
+  modeChipLocked: {
+    opacity: 0.6,
+  },
+  modeChipText: {
+    color: colors.light.text,
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 14,
+  },
+  modeChipTextActive: {
+    color: colors.light.primary,
+  },
+  modeChipHint: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_400Regular",
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  ageGateCta: {
+    alignSelf: "flex-start",
+    marginTop: 6,
+  },
+  intimacyRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginTop: 8,
+  },
+  intimacyStep: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.light.muted,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  intimacyTrack: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 4,
+  },
+  intimacyDot: {
+    flex: 1,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.light.muted,
+  },
+  intimacyDotOn: {
+    backgroundColor: colors.light.primary,
+  },
+  intimacyDotLocked: {
+    backgroundColor: "transparent",
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    borderStyle: "dashed",
+  },
+  ageGateOverlay: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 18,
+    zIndex: 100,
+  },
+  ageGateCard: {
+    backgroundColor: colors.light.background,
+    borderRadius: 16,
+    padding: 18,
+    gap: 12,
+    width: "100%",
+    maxWidth: 420,
+  },
+  ageGateTitle: {
+    color: colors.light.text,
+    fontFamily: "Inter_700Bold",
+    fontSize: 16,
+  },
+  ageGateBody: {
+    color: colors.light.text,
+    fontFamily: "Inter_400Regular",
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  ageGateBtnRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 4,
   },
 });
