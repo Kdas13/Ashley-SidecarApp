@@ -13,9 +13,17 @@ const router: IRouter = Router();
 // can reach it without credentials.
 router.use(healthRouter);
 
-// Gate pattern: health is public; all other mounted routers require X-API-Key.
-// All other mounted routers require the X-API-Key header to match API_SECRET.
-// This provides defense-in-depth alongside global rate limiting.
+// imageRouter serves static selfie/user-image PNGs to React Native <Image>
+// tags, which cannot attach Authorization or X-API-Key headers. These URLs
+// already use unguessable UUIDs as the capability token, and the outer
+// app.ts gate also exempts /selfies/ and /user-images/ from rate limiting +
+// the Bearer auth check. Mount it BEFORE requireApiKey so the inner
+// X-API-Key gate doesn't 401 every <Image> fetch.
+router.use(imageRouter);
+
+// Gate pattern: health + static images above are public; all other mounted
+// routers require the X-API-Key header to match API_SECRET. This provides
+// defense-in-depth alongside global rate limiting.
 router.use(requireApiKey);
 
 // Mounted routers. The api is per-device: every authenticated request
@@ -25,6 +33,5 @@ router.use(stateRouter);
 router.use(memoriesRouter);
 router.use(carryoverRouter);
 router.use(chatRouter);
-router.use(imageRouter);
 
 export default router;
