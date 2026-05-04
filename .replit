@@ -49,5 +49,8 @@ externalPort = 3002
 API_AUTH_KEY = "66f8c2aa1ae8cbcc8f886023fffd4c776d561e2d799c716ea99237fbe39d7a87"
 EXPO_PUBLIC_API_KEY = "66f8c2aa1ae8cbcc8f886023fffd4c776d561e2d799c716ea99237fbe39d7a87"
 
+[userenv.development]
+ASHLEY_MATURE_MODE_AVAILABLE = "true"
+
 [nix]
 channel = "stable-25_05"
