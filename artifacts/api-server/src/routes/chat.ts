@@ -26,6 +26,7 @@ import {
   generateImageBase64,
   transcribeAudioBase64,
   transcribeAudioBase64Stream,
+  synthesizeSpeech,
 } from "../lib/openai";
 import {
   saveSelfie,
@@ -1429,4 +1430,70 @@ router.post("/messages/:id/remember", async (req, res): Promise<void> => {
   }
 
   res.json({ message: updatedMsg });
+});
+
+// ---------------------------------------------------------------------------
+// POST /chat/tts — Stage 3 of the staged voice plan.
+//
+// Speaks one of Ashley's replies aloud. The mobile client opt-ins via a
+// per-device toggle (AsyncStorage `ashley.voiceReplyEnabled`); when on,
+// it POSTs the assistant's reply text here right after the /chat round-
+// trip lands and plays the returned audio.
+//
+// Wire format: request `{ text }`, response `{ audioBase64, mimeType }`
+// where `audioBase64` is raw base64 mp3 (no data: URL prefix). We use a
+// JSON envelope rather than streaming binary because React Native's
+// FileSystem.writeAsStringAsync(..., { encoding: 'base64' }) is the
+// path-of-least-resistance for getting bytes onto disk; the ~33% size
+// inflation is irrelevant for ≤1500 chars of TTS audio (~10-30 KB).
+//
+// Safety posture:
+//   • Auth + deviceId + rate-limit = same chokepoint as every other
+//     /chat/* route. No new prompt-bypass surface — this is pure
+//     output rendering of text Ashley already produced.
+//   • Text capped at 1500 chars upstream so cost ($0.60/M chars on
+//     gpt-4o-mini-tts) and latency are bounded.
+//   • TTS failure must NEVER break the chat UX — the client swallows
+//     errors here silently (Kane just won't hear that one reply).
+//
+// Future stages:
+//   • Stage 3.5 — per-sentence chunking + sequential playback for
+//     snappier perceived start.
+//   • Stage 5 — switch to gpt-4o-tts and pass `instructions` built
+//     from the voice-presence safety floor (gentler delivery for
+//     distress, etc — see contentPolicy.ts).
+// ---------------------------------------------------------------------------
+
+const TtsBodySchema = z.object({
+  text: z
+    .string()
+    .min(1, "text is required")
+    .max(1500, "text exceeds 1500-char TTS cap"),
+});
+
+router.post("/chat/tts", async (req, res): Promise<void> => {
+  const deviceId = getDeviceId(req);
+  if (!deviceId) {
+    res.status(400).json({ error: "X-Device-Id header is required" });
+    return;
+  }
+  const parsed = TtsBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error: parsed.error.issues[0]?.message ?? "Invalid /chat/tts payload",
+    });
+    return;
+  }
+  try {
+    const buf = await synthesizeSpeech(parsed.data.text);
+    res.json({
+      audioBase64: buf.toString("base64"),
+      mimeType: "audio/mpeg",
+    });
+  } catch (err) {
+    req.log.error({ err }, "TTS synthesis failed");
+    res.status(502).json({
+      error: "Couldn't generate speech — try again.",
+    });
+  }
 });

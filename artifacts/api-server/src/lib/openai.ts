@@ -104,6 +104,55 @@ export async function* transcribeAudioBase64Stream(
   yield { kind: "done", text: finalText.trim() };
 }
 
+/**
+ * Stage 3 of the staged voice plan — synthesise spoken audio for one of
+ * Ashley's replies. The mobile client toggles this on per-device; we
+ * hand back raw mp3 bytes (the SDK returns an ArrayBuffer) and the
+ * route wraps them in a base64 JSON envelope so React Native's
+ * AsyncStorage / FileSystem helpers can write it without a binary
+ * conversion dance on the device.
+ *
+ * Voice "shimmer" is a warm, mid-pitched female default; we can swap
+ * via a profile preference later. Length is capped upstream in the
+ * route's zod schema (≤1500 chars) so the cost ceiling and the latency
+ * are both bounded.
+ *
+ * Stage 5 hook: when tone-aware voice ships, switch to gpt-4o-tts and
+ * pass the prompt-built `instructions` field so Ashley's delivery can
+ * carry the voice-presence safety floor (gentler tone for distress,
+ * etc — see contentPolicy.ts).
+ */
+export async function synthesizeSpeech(text: string): Promise<Buffer> {
+  // The Replit OpenAI integration proxy doesn't expose the dedicated
+  // /audio/speech endpoint (returns 400 INVALID_ENDPOINT). The supported
+  // path is chat.completions with model "gpt-audio" and modalities
+  // ["text","audio"] — same pattern the integration's textToSpeech
+  // helper uses. The model returns base64-encoded audio in the message's
+  // `audio.data` field.
+  const response = await openai.chat.completions.create({
+    model: "gpt-audio",
+    modalities: ["text", "audio"],
+    audio: { voice: "shimmer", format: "mp3" },
+    messages: [
+      {
+        role: "system",
+        content: "You are an assistant that performs text-to-speech.",
+      },
+      {
+        role: "user",
+        content: `Repeat the following text verbatim: ${text}`,
+      },
+    ],
+  });
+  const audioData =
+    (response.choices[0]?.message as { audio?: { data?: string } } | undefined)
+      ?.audio?.data ?? "";
+  if (!audioData) {
+    throw new Error("TTS response missing audio.data");
+  }
+  return Buffer.from(audioData, "base64");
+}
+
 export async function generateImageBase64(
   prompt: string,
   size: "1024x1024" | "1024x1536" | "1536x1024" = "1024x1536",

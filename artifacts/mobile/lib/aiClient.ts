@@ -17,6 +17,7 @@ import { getDeviceIdSync, getOrCreateDeviceId } from "./deviceId";
 // we can read SSE events as they arrive over the wire. This is what
 // makes Stage 2's live partial transcripts actually live.
 import { fetch as expoFetch } from "expo/fetch";
+import * as FileSystem from "expo-file-system/legacy";
 
 // ---------------------------------------------------------------------------
 // HTTP plumbing — base URL, auth, retries
@@ -839,4 +840,35 @@ export async function markImageRemembered(
     },
   );
   return messageFromWire(data.message);
+}
+
+// ---------------------------------------------------------------------------
+// Stage 3 — TTS replies. POST one of Ashley's reply texts to /chat/tts,
+// receive a base64 mp3, write it to the cache directory, and return the
+// local file:// URI ready for expo-audio playback.
+//
+// We use the JSON envelope (audioBase64 + mimeType) rather than streaming
+// binary because RN's FileSystem.writeAsStringAsync with base64 encoding
+// is the path-of-least-resistance for getting bytes onto disk; the ~33%
+// size inflation is irrelevant for ≤1500 chars of TTS audio (10-30 KB).
+//
+// The caller (lib/voiceOutput.ts → useTtsPlayback) is responsible for
+// cleaning up the file after playback completes.
+// ---------------------------------------------------------------------------
+export async function synthesizeSpeechToFile(
+  text: string,
+): Promise<{ uri: string }> {
+  const data = await fetchJSON<{ audioBase64: string; mimeType: string }>(
+    "/chat/tts",
+    { method: "POST", body: JSON.stringify({ text }) },
+  );
+  const dir = FileSystem.cacheDirectory;
+  if (!dir) {
+    throw new Error("No cache directory available for TTS playback");
+  }
+  const uri = `${dir}ashley-tts-${Date.now()}.mp3`;
+  await FileSystem.writeAsStringAsync(uri, data.audioBase64, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  return { uri };
 }

@@ -20,6 +20,7 @@ import * as Clipboard from "expo-clipboard";
 import * as FileSystem from "expo-file-system/legacy";
 import * as MediaLibrary from "expo-media-library";
 import * as ImagePicker from "expo-image-picker";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import {
   useMessages,
@@ -34,6 +35,7 @@ import {
 import { useProfile, useUpdateProfile } from "@/lib/useProfile";
 import { useVoiceRecorder, VOICE_MAX_DURATION_MS } from "@/lib/voiceInput";
 import { useTranscribeAudioStream } from "@/lib/useVoice";
+import { useTtsPlayback } from "@/lib/voiceOutput";
 import type {
   ImageAnalysisMode,
   ImageCategory,
@@ -55,6 +57,10 @@ const RELATIONSHIP_MODE_PRESETS = [
 // Maximum length of the quote preview we capture from a swiped message.
 // Keeps storage and the on-screen quote header from getting unwieldy.
 const REPLY_PREVIEW_MAX = 140;
+
+// Stage 3 — local-only preference for spoken replies. No server roundtrip;
+// pure UX toggle persisted per-device.
+const VOICE_REPLY_STORAGE_KEY = "ashley.voiceReplyEnabled";
 
 // Image picker — visible labels for category + analysis-mode chips.
 const IMAGE_CATEGORIES: { value: ImageCategory; label: string }[] = [
@@ -301,6 +307,40 @@ export default function ChatScreen(): React.JSX.Element {
   const transcribeMutation = useTranscribeAudioStream();
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [voicePartial, setVoicePartial] = useState("");
+
+  // Stage 3 — spoken replies. Toggle persisted per-device in AsyncStorage,
+  // default OFF so Kane never gets ambushed by audio. The ref mirrors the
+  // state so the send-mutation closure can read the current value without
+  // being reconstructed on every toggle flip.
+  const tts = useTtsPlayback();
+  const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false);
+  const voiceReplyEnabledRef = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    AsyncStorage.getItem(VOICE_REPLY_STORAGE_KEY)
+      .then((v) => {
+        if (cancelled) return;
+        const enabled = v === "true";
+        voiceReplyEnabledRef.current = enabled;
+        setVoiceReplyEnabled(enabled);
+      })
+      .catch(() => {
+        // Silent — default OFF is the safe fallback.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const toggleVoiceReply = useCallback(() => {
+    const next = !voiceReplyEnabledRef.current;
+    voiceReplyEnabledRef.current = next;
+    setVoiceReplyEnabled(next);
+    void AsyncStorage.setItem(VOICE_REPLY_STORAGE_KEY, next ? "true" : "false");
+    if (!next) {
+      // Toggling off mid-playback should silence her immediately.
+      tts.stop();
+    }
+  }, [tts]);
   // Buffer the partial text in a ref too so the onDelta callback (created
   // once per call below) can accumulate without going stale between
   // renders. The setVoicePartial call is just for UI redraw.
@@ -310,6 +350,9 @@ export default function ChatScreen(): React.JSX.Element {
     setVoiceError(null);
     setVoicePartial("");
     voicePartialRef.current = "";
+    // Barge-in: re-opening the mic silences any in-flight spoken reply
+    // so Kane isn't talking over Ashley.
+    tts.stop();
     try {
       const granted = await voice.ensurePermission();
       if (!granted) {
@@ -320,7 +363,7 @@ export default function ChatScreen(): React.JSX.Element {
     } catch (e) {
       setVoiceError(e instanceof Error ? e.message : "Couldn't start recording");
     }
-  }, [voice]);
+  }, [voice, tts]);
 
   const handleMicPressOut = useCallback(async () => {
     let audio;
@@ -380,8 +423,23 @@ export default function ChatScreen(): React.JSX.Element {
     setDraft("");
     setReplyingTo(null);
     sendMutation.reset();
-    sendMutation.mutate({ content, replyTo: replyToSnapshot });
-  }, [draft, sendMutation, replyingTo]);
+    // Sending a fresh message supersedes any reply Ashley is currently
+    // speaking — silence her so the new turn isn't talked over.
+    tts.stop();
+    sendMutation
+      .mutateAsync({ content, replyTo: replyToSnapshot })
+      .then((result) => {
+        if (!voiceReplyEnabledRef.current) return;
+        const reply = result.ashley?.content?.trim() ?? "";
+        if (reply.length === 0) return;
+        // Cap at the server's 1500-char ceiling so we don't get a 400.
+        tts.speak(reply.slice(0, 1500));
+      })
+      .catch(() => {
+        // Send errors surface via sendMutation.error — TTS doesn't need
+        // to speak anything for a failed send.
+      });
+  }, [draft, sendMutation, replyingTo, tts]);
 
   const confirmClear = useCallback(() => {
     if (clearMutation.isPending) return;
@@ -581,6 +639,25 @@ export default function ChatScreen(): React.JSX.Element {
               style={{ marginLeft: 3 }}
             />
           </View>
+        </Pressable>
+        <Pressable
+          onPress={toggleVoiceReply}
+          style={styles.iconBtn}
+          accessibilityLabel={
+            voiceReplyEnabled
+              ? "Turn off spoken replies"
+              : "Turn on spoken replies"
+          }
+        >
+          <Feather
+            name={voiceReplyEnabled ? "volume-2" : "volume-x"}
+            size={18}
+            color={
+              voiceReplyEnabled
+                ? colors.light.primary
+                : colors.light.mutedForeground
+            }
+          />
         </Pressable>
         <Pressable
           onPress={confirmClear}
