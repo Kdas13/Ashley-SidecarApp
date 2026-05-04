@@ -41,6 +41,33 @@ function getApiBase(): string {
   return hasApiSuffix ? withScheme : `${withScheme}/api`;
 }
 
+/**
+ * Returns headers required for every API request. Includes the X-API-Key
+ * pre-shared secret so the api-server's requireApiKey middleware accepts
+ * the call. The key is sourced from EXPO_PUBLIC_API_KEY at build time.
+ *
+ * NOTE: EXPO_PUBLIC_* variables are inlined at bundle time by Expo and are
+ * visible in the JS bundle. This is acceptable for a personal-companion app
+ * where there is no multi-user model — the key protects against anonymous
+ * internet abuse, not a determined attacker with physical access to the
+ * bundle. Use a dedicated deployment secret (not a reused password) and
+ * rotate it if the app is ever distributed publicly.
+ */
+function apiHeaders(extra?: Record<string, string>): Record<string, string> {
+  const key = process.env.EXPO_PUBLIC_API_KEY ?? "";
+  return {
+    "Content-Type": "application/json",
+    ...(key ? { "X-API-Key": key } : {}),
+    ...extra,
+  };
+}
+
+/**
+ * Build the headers our api-server requires on every authenticated route.
+ * The key is shipped in the Expo bundle (EXPO_PUBLIC_API_KEY) — it's a basic
+ * gate against random scrapers/abuse, not a true secret. Without a valid
+ * Bearer the server returns 401.
+ */
 function authHeaders(): Record<string, string> {
   const key = process.env.EXPO_PUBLIC_API_KEY;
   if (!key) {
@@ -691,6 +718,7 @@ async function startSelfieJob(
 ): Promise<string> {
   const data = await fetchJSON<{ jobId?: unknown }>("/chat/selfie", {
     method: "POST",
+    headers: apiHeaders(),
     body: JSON.stringify({ messageId, vibe }),
   });
   if (typeof data.jobId !== "string" || !data.jobId.trim()) {
@@ -725,7 +753,12 @@ export async function fetchSelfieForMessage(
         `${base}/chat/selfie/${encodeURIComponent(jobId)}`,
         {
           method: "GET",
-          headers: { ...authHeaders(), "Cache-Control": "no-cache" },
+          headers: apiHeaders({
+            ...authHeaders(),
+            // Belt-and-suspenders: tell every cache layer not to revalidate
+            // with conditional requests, so we always get a fresh body.
+            "Cache-Control": "no-cache",
+          }),
         },
       );
     } catch {
@@ -796,6 +829,7 @@ export async function sendChatImage(
     ashleyMessage: WireMessage;
   }>("/chat/image", {
     method: "POST",
+    headers: apiHeaders(),
     body: JSON.stringify({
       userMessage: {
         id: req.id,

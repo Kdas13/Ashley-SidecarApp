@@ -81,7 +81,7 @@ const gate: RequestHandler = (req, res, next) => {
     next();
     return;
   }
-  apiRateLimit(req, res, (err) => {
+  apiRateLimit(req, res, (err: unknown) => {
     if (err) {
       next(err);
       return;

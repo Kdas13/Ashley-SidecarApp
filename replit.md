@@ -186,6 +186,15 @@ are not used by mobile in V1.1:
 - `EXPO_PUBLIC_DOMAIN` — set automatically by the mobile dev script from
   `$REPLIT_DEV_DOMAIN`; the AI client builds `https://${EXPO_PUBLIC_DOMAIN}/api/chat/reply`
   from it.
+- `API_SECRET` — **Required.** Pre-shared key that all API clients must
+  send as the `X-API-Key` request header. Without it, every route except
+  `/api/healthz` returns 503. Generate a strong random value
+  (`openssl rand -hex 32`) and set it as a Replit secret. The mobile app
+  and any other client must include `X-API-Key: <value>` on every request.
+- `EXPO_PUBLIC_API_KEY` — **Required for mobile.** Must be set to the same
+  value as `API_SECRET`. Expo inlines `EXPO_PUBLIC_*` vars at bundle time;
+  `aiClient.ts` reads it and attaches it as `X-API-Key` on every outbound
+  API request. Set this in `.env` (local dev) or as a Replit secret.
 
 ## Workflows
 

@@ -39,6 +39,10 @@ import {
   type ImageAnalysisMode as ImageAnalysisModeT,
   type ImageCategory as ImageCategoryT,
 } from "../lib/ashleyCoreSpec";
+import {
+  SummarizeChunkBodySchema,
+  SummarizeChunkResponseSchema,
+} from "@workspace/api-zod";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -706,6 +710,84 @@ router.get("/chat/selfie/:jobId", async (req, res): Promise<void> => {
 // ---------------------------------------------------------------------------
 // Background helpers — memory distillation + summarization
 // ---------------------------------------------------------------------------
+
+// Server-side caps for /chat/summarize. SummarizeChunkBodySchema is generated
+// and has no array-length or string-length constraints, so without these caps
+// a caller could pass thousands of messages with arbitrarily long content and
+// exhaust Anthropic token quota in a single allowed request. Per-IP rate
+// limiting comes from the global apiRateLimit in app.ts; these caps protect
+// the per-request token budget.
+const MAX_SUMMARIZE_MESSAGES = 100;
+const MAX_SUMMARIZE_MSG_LEN = 4000;
+const MAX_SUMMARIZE_PRIOR_LEN = 4000;
+
+const SafeSummarizeChunkBodySchema = SummarizeChunkBodySchema.and(
+  z.object({
+    messages: z
+      .array(
+        z.object({
+          role: z.string(),
+          content: z.string().max(MAX_SUMMARIZE_MSG_LEN),
+        }),
+      )
+      .max(MAX_SUMMARIZE_MESSAGES),
+    priorSummary: z.string().max(MAX_SUMMARIZE_PRIOR_LEN).optional(),
+  }),
+);
+
+// Stateless: take an ordered slice of messages and return one narrative
+// summary. Used by the local-first mobile client.
+router.post("/chat/summarize", async (req, res): Promise<void> => {
+  const parsed = SafeSummarizeChunkBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    req.log.warn(
+      { errors: parsed.error.message },
+      "Invalid summarize body",
+    );
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const { messages: chunk, priorSummary } = parsed.data;
+  if (!chunk || chunk.length === 0) {
+    res.status(400).json({ error: "messages chunk is required" });
+    return;
+  }
+
+  const transcript = chunk
+    .map((m) => {
+      const speaker =
+        m.role === "user" ? "USER" : m.role === "ashley" ? "ASHLEY" : "ASHLEY";
+      return `${speaker}: ${(m.content ?? "").trim()}`;
+    })
+    .filter((line) => !line.endsWith(": "))
+    .join("\n");
+
+  const userBlock = priorSummary && priorSummary.trim()
+    ? `Earlier summary (for context, do not repeat verbatim):\n${priorSummary.trim()}\n\n---\n\nNew chunk to summarize:\n${transcript}`
+    : `Chunk to summarize:\n${transcript}`;
+
+  try {
+    const result = await anthropic.messages.create({
+      model: CHAT_MODEL,
+      max_tokens: 1024,
+      system: SUMMARIZER_PROMPT,
+      messages: [{ role: "user", content: userBlock }],
+    });
+    const block = result.content[0];
+    const summary =
+      block && block.type === "text" ? block.text.trim() : "";
+    if (!summary) {
+      res.status(502).json({ error: "Summarizer returned empty text." });
+      return;
+    }
+    res.json(SummarizeChunkResponseSchema.parse({ summary }));
+  } catch (err) {
+    req.log.error({ err }, "Summarize chunk failed");
+    res
+      .status(502)
+      .json({ error: "Could not reach the language model right now." });
+  }
+});
 
 async function distillMemories(
   deviceId: string,
