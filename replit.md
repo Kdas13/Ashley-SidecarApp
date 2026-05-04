@@ -266,16 +266,29 @@ are not used by mobile in V1.1:
   by Expo) handles the keyboard natively, so KAV with `offset=0` just
   passes through cleanly. iOS keeps `behavior="padding"` with a small
   `offset=8`.
-- The chat `FlatList` uses `initialNumToRender={Math.min(Math.max(messages.length, 20), 200)}`
-  + `removeClippedSubviews={false}` so the entire history is laid out in
-  the first pass, and a multi-snap effect (`[0, 50, 150, 350, 700]` ms)
-  calls `scrollToEnd({ animated: false })` repeatedly on first non-empty
-  render until the user touches the list. This reliably lands at the
-  true bottom even for long histories where virtualization would
-  otherwise leave the user stranded mid-history. The tail past 700ms
-  was removed because it created a visible "still settling" feel — by
-  700ms the FlatList is done virtualizing 200 rows on Kane's device.
-  The growth-tracking `useEffect` also uses `animated: false` for the
-  cold-mount scroll (when previous messages length was 0) so it doesn't
-  fight the multi-snap with a 250ms ease curve; new messages arriving
-  later still get the smooth animated scroll.
+- The chat `FlatList` uses **`inverted`** with a memoized
+  `reversedMessages = messages.slice().reverse()` view (WhatsApp/iMessage
+  pattern). `data[0]` (the newest message after reversing) anchors to
+  the visually-bottom of the list at scroll offset 0, so cold-mount,
+  keyboard-open, and new-message-arrival all "just work" — the user
+  always sees the latest message and scrolls UP for history. We removed
+  ~110 lines of `scrollToEnd` / multi-snap / `userHasScrolledRef` /
+  `isNearBottomRef` machinery that previously tried (and intermittently
+  failed) to land at the true bottom across virtualization passes.
+  - The underlying `messages` array stays in `[oldest, ..., newest]`
+    order; only the rendered view is reversed. So
+    `messages[messages.length - 1]` / `lastMessage` / `hasUnansweredTail`
+    logic continues to work without changes.
+  - `inverted` flips the FlatList AND counter-flips each `renderItem`,
+    but does **NOT** counter-flip `ListHeaderComponent` /
+    `ListEmptyComponent` / `ListFooterComponent`. Wrap those in
+    `<View style={styles.invertedFix}>` (which is just
+    `transform: [{ scaleY: -1 }]`) or they render upside-down.
+  - The "Ashley is typing…" indicator is now `ListHeaderComponent`
+    (NOT `ListFooterComponent`) because with `inverted` the header
+    renders at the visually-bottom — exactly where the typing bubble
+    should appear.
+  - `initialNumToRender={20}` is sufficient to fill the viewport on
+    first paint; the rest virtualizes lazily as the user scrolls up.
+  - `removeClippedSubviews={false}` is kept for measurement stability,
+    but is no longer load-bearing for "land at the true bottom".

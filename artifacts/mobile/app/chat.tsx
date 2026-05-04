@@ -170,118 +170,20 @@ export default function ChatScreen(): React.JSX.Element {
     [messagesQuery.data],
   );
 
+  // Inverted FlatList renders data[0] at the visually-bottom and stays
+  // anchored to scroll offset 0 (the newest message) by default — no
+  // manual scrollToEnd machinery needed. The underlying `messages`
+  // array stays in its natural [oldest, ..., newest] order so the
+  // unanswered-tail / lastMessage / hasUnansweredTail logic below
+  // continues to work; we only reverse a memoized view for rendering.
+  const reversedMessages = useMemo(() => {
+    const copy = messages.slice();
+    copy.reverse();
+    return copy;
+  }, [messages]);
+
   const sendError =
     sendMutation.error instanceof Error ? sendMutation.error.message : null;
-
-  // Scroll behaviour — the prior version called scrollToEnd on every
-  // contentSize change AND on every messages.length change, which caused
-  // visible jitter every time a bubble re-measured (image load, quote
-  // expansion, "Ashley is typing..." footer mounting). New rule:
-  //   - Track whether the user is currently near the bottom via onScroll.
-  //   - When the message list grows: only auto-scroll if (a) the user is
-  //     near the bottom OR (b) the most-recent message is from the user
-  //     OR (c) we're mid-send.
-  //   - On the very first render with messages, snap to bottom once.
-  const isNearBottomRef = useRef(true);
-  const prevMessagesLenRef = useRef(0);
-  // True once the user has actually grabbed the list and dragged it. Until
-  // then we keep snapping to the bottom on every contentSize change — this
-  // is what fixes the "open chat → stranded mid-history" bug. FlatList
-  // virtualization measures items in passes; a single scrollToEnd on first
-  // render only reaches the bottom of items measured so far, then later
-  // items render below and leave the viewport stuck. By re-snapping on
-  // every contentSizeChange until the user interacts, we ride the layout
-  // passes all the way down to the real bottom.
-  const userHasScrolledRef = useRef(false);
-
-  const handleScroll = useCallback(
-    (e: {
-      nativeEvent: {
-        contentOffset: { y: number };
-        contentSize: { height: number };
-        layoutMeasurement: { height: number };
-      };
-    }) => {
-      const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
-      const distanceFromBottom =
-        contentSize.height - contentOffset.y - layoutMeasurement.height;
-      isNearBottomRef.current = distanceFromBottom < 80;
-    },
-    [],
-  );
-
-  // Fires when the user actively grabs and drags the list (not on
-  // programmatic scrollToEnd). After this, contentSize-driven auto-snap
-  // stops and the existing near-bottom heuristic takes over.
-  const handleScrollBeginDrag = useCallback(() => {
-    userHasScrolledRef.current = true;
-  }, []);
-
-  // Called by FlatList on every layout pass that changes the total
-  // content height. While the user hasn't interacted, keep scrolling to
-  // the true bottom — each pass that adds more virtualized rows will
-  // re-trigger this and we'll catch the new bottom.
-  const handleContentSizeChange = useCallback(() => {
-    if (userHasScrolledRef.current) return;
-    if (messages.length === 0) return;
-    listRef.current?.scrollToEnd({ animated: false });
-  }, [messages.length]);
-
-  useEffect(() => {
-    const prevLen = prevMessagesLenRef.current;
-    const grew = messages.length > prevLen;
-    prevMessagesLenRef.current = messages.length;
-    if (!grew && !sendMutation.isPending) return;
-    const lastMsg = messages[messages.length - 1];
-    const userJustSent = lastMsg?.role === "user";
-    if (
-      sendMutation.isPending ||
-      sendImageMutation.isPending ||
-      userJustSent ||
-      isNearBottomRef.current
-    ) {
-      // On cold mount (0 → N), use a non-animated jump so we don't fight
-      // the multi-snap effect's instant snaps with a 250ms ease curve.
-      // On subsequent growth (new message arriving while the user is
-      // already at the bottom), the smooth animated scroll is nicer UX.
-      const animated = prevLen > 0;
-      requestAnimationFrame(() =>
-        listRef.current?.scrollToEnd({ animated }),
-      );
-    }
-  }, [
-    messages,
-    sendMutation.isPending,
-    sendImageMutation.isPending,
-  ]);
-
-  // First-load snap: when messages first arrive (cache hit OR /state hydrate),
-  // FlatList virtualization renders items in passes — scrollToEnd on the first
-  // contentSizeChange only reaches the bottom of items measured so far, then
-  // more items render below and leave the user stranded mid-history. Schedule
-  // multiple snaps over ~2s to ride out the layout passes. Stops snapping
-  // once the user touches the list (userHasScrolledRef).
-  const initialSnapDoneRef = useRef(false);
-  useEffect(() => {
-    if (initialSnapDoneRef.current) return;
-    if (messages.length === 0) return;
-    initialSnapDoneRef.current = true;
-    // Tightened from [0, 50, 150, 350, 700, 1200, 2000] — the 1200/2000ms
-    // tail was visibly slow ("the chat bar moves down to the bottom slowly").
-    // 700ms is enough for FlatList to finish virtualizing 200 rows on
-    // Kane's device; if the user touches the list earlier the
-    // userHasScrolledRef guard stops further snaps anyway.
-    const delays = [0, 50, 150, 350, 700];
-    const timers = delays.map((ms) =>
-      setTimeout(() => {
-        if (userHasScrolledRef.current) return;
-        listRef.current?.scrollToEnd({ animated: false });
-      }, ms),
-    );
-    return () => {
-      timers.forEach((t) => clearTimeout(t));
-    };
-  }, [messages.length]);
 
   // Auto-retry: if the latest message is from the user (Ashley never
   // replied — common when the api-server gets recycled mid-request) keep
@@ -740,47 +642,57 @@ export default function ChatScreen(): React.JSX.Element {
         ) : (
           <FlatList
             ref={listRef}
-            data={messages}
+            // Inverted: data[0] (the newest message after `reversedMessages`)
+            // anchors to the visually-bottom of the list at scroll offset 0.
+            // Cold-mount, keyboard-open, and new-message-arrival all "just
+            // work" — no scrollToEnd / scrollToOffset / multi-snap needed.
+            // To see older messages the user scrolls UP (WhatsApp-style).
+            inverted
+            data={reversedMessages}
             renderItem={renderItem}
             keyExtractor={(m) => m.id}
             contentContainerStyle={styles.list}
-            // Render the entire chat history in the first pass so scrollToEnd
-            // reaches the actual bottom on mount instead of chasing the
-            // virtualization frontier across multiple frames. Capped at 200
-            // to keep the first paint reasonable for very long histories.
-            initialNumToRender={Math.min(Math.max(messages.length, 20), 200)}
+            // 20 fills the first viewport on Kane's device; the rest
+            // virtualizes lazily as he scrolls up into history.
+            initialNumToRender={20}
             // FlatList by default unmounts off-screen rows on Android, which
-            // can shift content height as Kane scrolls back up. Disable so
-            // measurements stay stable for our scroll-snap logic.
+            // can shift content height. Disable so scroll feels stable.
             removeClippedSubviews={false}
             ListEmptyComponent={
-              <View style={styles.emptyWrap}>
-                <Text style={styles.emptyText}>say something to her</Text>
-                <Text style={styles.emptyHint}>
-                  messages are saved on our server (tied to your Device ID)
-                  and sent to an AI provider so she can reply
-                </Text>
+              // ListEmptyComponent is NOT counter-flipped by `inverted`
+              // (only renderItem rows are), so wrap in a manual scaleY:-1
+              // to render right-side-up.
+              <View style={styles.invertedFix}>
+                <View style={styles.emptyWrap}>
+                  <Text style={styles.emptyText}>say something to her</Text>
+                  <Text style={styles.emptyHint}>
+                    messages are saved on our server (tied to your Device ID)
+                    and sent to an AI provider so she can reply
+                  </Text>
+                </View>
               </View>
             }
-            ListFooterComponent={
+            // With `inverted`, ListHeaderComponent renders at the
+            // visually-BOTTOM (immediately below data[0]). That's exactly
+            // where we want "Ashley is typing…" to appear. Counter-flip
+            // wrapper so the bubble itself is right-side-up.
+            ListHeaderComponent={
               sendMutation.isPending ||
               retryUnanswered.isPending ||
               hasUnansweredTail ? (
-                <View style={[styles.row, styles.rowLeft]}>
-                  <View style={[styles.bubble, styles.bubbleAshley, styles.typingBubble]}>
-                    <ActivityIndicator
-                      size="small"
-                      color={colors.light.mutedForeground}
-                    />
-                    <Text style={styles.typingText}>Ashley is typing…</Text>
+                <View style={styles.invertedFix}>
+                  <View style={[styles.row, styles.rowLeft]}>
+                    <View style={[styles.bubble, styles.bubbleAshley, styles.typingBubble]}>
+                      <ActivityIndicator
+                        size="small"
+                        color={colors.light.mutedForeground}
+                      />
+                      <Text style={styles.typingText}>Ashley is typing…</Text>
+                    </View>
                   </View>
                 </View>
               ) : null
             }
-            onScroll={handleScroll}
-            onScrollBeginDrag={handleScrollBeginDrag}
-            onContentSizeChange={handleContentSizeChange}
-            scrollEventThrottle={64}
           />
         )}
 
@@ -1807,6 +1719,14 @@ const styles = StyleSheet.create({
   },
   quotedBodyUser: { color: "rgba(26,19,37,0.75)" },
   quotedBodyAshley: { color: "rgba(245,232,216,0.85)" },
+  // Counter-flip wrapper for ListEmptyComponent / ListHeaderComponent
+  // when the FlatList has `inverted`. FlatList only counter-flips
+  // renderItem rows automatically; header/empty/footer slots inherit
+  // the parent's scaleY:-1 transform and render upside-down without
+  // this fix.
+  invertedFix: {
+    transform: [{ scaleY: -1 }],
+  },
   emptyWrap: {
     flex: 1,
     alignItems: "center",
