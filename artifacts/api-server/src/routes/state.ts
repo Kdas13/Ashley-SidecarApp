@@ -28,6 +28,10 @@ const ProfileUpdateSchema = z
     refersToUserAs: z.string().max(120).optional(),
     sharedHistory: z.string().max(MAX_LARGE_FIELD_LEN).optional(),
     replikaExcerpts: z.string().max(MAX_LARGE_FIELD_LEN).optional(),
+    // Raw structured carryover (JSON-encoded). Allowed up to 64KB so
+    // large pasted excerpts fit comfortably.
+    replikaCarryover: z.string().max(64_000).optional(),
+    replikaCarryoverSummary: z.string().max(MAX_LARGE_FIELD_LEN).optional(),
     relationshipMode: z.string().max(120).optional(),
     builderAwareMode: z.boolean().optional(),
     primaryColor: z.string().max(32).optional(),

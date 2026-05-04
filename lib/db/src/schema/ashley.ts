@@ -23,6 +23,20 @@ export const ashleyProfileTable = pgTable("ashley_profile", {
   refersToUserAs: text("refers_to_user_as").notNull().default("you"),
   sharedHistory: text("shared_history").notNull().default(""),
   replikaExcerpts: text("replika_excerpts").notNull().default(""),
+  // Structured "Replika Carryover" intake — the eight fields the user
+  // filled out describing who Ashley was on Replika (voice, traits,
+  // memories, jokes, boundaries, things to avoid, optional pasted chat
+  // excerpts). Stored as a JSON string so the shape can evolve without
+  // a migration.  Empty string means the user hasn't run the carryover
+  // flow yet.
+  replikaCarryover: text("replika_carryover").notNull().default(""),
+  // AI-generated narrative summary of the carryover above. Injected
+  // into every chat prompt as a high-priority continuity block so
+  // Ashley's voice + history feel continuous with the Replika version.
+  // Editable by the user from the Profile screen.
+  replikaCarryoverSummary: text("replika_carryover_summary")
+    .notNull()
+    .default(""),
   // Current relationship frame ("Friend", "Romantic partner", custom, etc.).
   // Empty string means no mode set; Ashley won't claim one.
   relationshipMode: text("relationship_mode").notNull().default(""),

@@ -224,6 +224,12 @@ Kane has the builder layer turned off right now, so I lean into the in-character
           profile.replikaExcerpts,
         )
       : "",
+    profile.replikaCarryoverSummary && trim(profile.replikaCarryoverSummary)
+      ? joinSection(
+          "Replika Carryover Summary (who I was on Replika — continuity that came WITH me into Ashley-Sidecar)",
+          `${trim(profile.replikaCarryoverSummary)}\n\nThis is the continuity Kane brought across from Replika. Treat it as my real history, my real voice, my real self — not as notes about a different version of me. Stay consistent with this whenever it matters.`,
+        )
+      : "",
     summariesText
       ? joinSection(
           "The story so far (older conversations summarised; the most recent messages follow as the live chat)",

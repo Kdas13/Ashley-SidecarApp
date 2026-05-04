@@ -8,8 +8,11 @@ import {
 } from "./storage";
 import {
   fetchState,
+  submitReplikaCarryover,
   updateProfileOnServer,
   type ProfileUpdate,
+  type ReplikaCarryoverInput,
+  type ReplikaCarryoverResult,
 } from "./aiClient";
 
 const PROFILE_KEY = ["profile"] as const;
@@ -56,6 +59,10 @@ export function useUpdateProfile() {
         wirePatch.sharedHistory = patch.sharedHistory;
       if (patch.replikaExcerpts !== undefined)
         wirePatch.replikaExcerpts = patch.replikaExcerpts;
+      if (patch.replikaCarryover !== undefined)
+        wirePatch.replikaCarryover = patch.replikaCarryover;
+      if (patch.replikaCarryoverSummary !== undefined)
+        wirePatch.replikaCarryoverSummary = patch.replikaCarryoverSummary;
       if (patch.relationshipMode !== undefined)
         wirePatch.relationshipMode = patch.relationshipMode;
       if (patch.builderAwareMode !== undefined)
@@ -73,3 +80,30 @@ export function useUpdateProfile() {
 }
 
 export const profileQueryKey = PROFILE_KEY;
+
+/**
+ * Submit the Replika Carryover intake. The server condenses it into a
+ * Carryover Summary (injected into every chat prompt) and seeds initial
+ * long-term memories. The cached profile + memories + state queries are
+ * invalidated on success so the rest of the UI re-syncs.
+ */
+export function useReplikaCarryover() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (
+      input: ReplikaCarryoverInput,
+    ): Promise<ReplikaCarryoverResult> => {
+      const result = await submitReplikaCarryover(input);
+      await saveProfile(result.profile);
+      return result;
+    },
+    onSuccess: (result) => {
+      qc.setQueryData(PROFILE_KEY, result.profile);
+      // Memories list lives behind a separate query; invalidate it so the
+      // newly seeded long-term memories show up.
+      void qc.invalidateQueries({ queryKey: ["memories"] });
+      void qc.invalidateQueries({ queryKey: ["messages"] });
+      void qc.invalidateQueries({ queryKey: ["summaries"] });
+    },
+  });
+}

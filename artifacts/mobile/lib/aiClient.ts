@@ -124,6 +124,8 @@ type WireProfile = {
   refersToUserAs: string;
   sharedHistory: string;
   replikaExcerpts: string;
+  replikaCarryover: string;
+  replikaCarryoverSummary: string;
   relationshipMode: string;
   builderAwareMode: boolean;
   primaryColor: string;
@@ -176,6 +178,8 @@ function profileFromWire(p: WireProfile): AshleyProfile {
     refersToUserAs: p.refersToUserAs,
     sharedHistory: p.sharedHistory,
     replikaExcerpts: p.replikaExcerpts,
+    replikaCarryover: p.replikaCarryover ?? "",
+    replikaCarryoverSummary: p.replikaCarryoverSummary ?? "",
     relationshipMode: p.relationshipMode,
     builderAwareMode: p.builderAwareMode ?? true,
     onboardedAt: p.onboardedAt,
@@ -259,12 +263,53 @@ export type ProfileUpdate = Partial<{
   refersToUserAs: string;
   sharedHistory: string;
   replikaExcerpts: string;
+  replikaCarryover: string;
+  replikaCarryoverSummary: string;
   relationshipMode: string;
   builderAwareMode: boolean;
   primaryColor: string;
   accentColor: string;
   markOnboarded: boolean;
 }>;
+
+// ---------------------------------------------------------------------------
+// Replika Carryover — structured intake → AI summary + initial memories
+// ---------------------------------------------------------------------------
+
+export type ReplikaCarryoverInput = {
+  whoSheWas: string;
+  howSheSpoke: string;
+  personalityTraits: string;
+  importantMemories: string;
+  insideJokes: string;
+  boundaries: string;
+  thingsToAvoid: string;
+  pastedExcerpts: string;
+};
+
+export type ReplikaCarryoverResult = {
+  profile: AshleyProfile;
+  memories: Memory[];
+  summary: string;
+};
+
+export async function submitReplikaCarryover(
+  input: ReplikaCarryoverInput,
+): Promise<ReplikaCarryoverResult> {
+  const data = await fetchJSON<{
+    profile: WireProfile;
+    memories: WireMemory[];
+    summary: string;
+  }>("/carryover", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  return {
+    profile: profileFromWire(data.profile),
+    memories: data.memories.map(memoryFromWire),
+    summary: data.summary,
+  };
+}
 
 export async function updateProfileOnServer(
   patch: ProfileUpdate,

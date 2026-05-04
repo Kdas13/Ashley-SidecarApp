@@ -4,6 +4,7 @@ import chatRouter from "./chat";
 import imageRouter from "./image";
 import stateRouter from "./state";
 import memoriesRouter from "./memories";
+import carryoverRouter from "./carryover";
 
 const router: IRouter = Router();
 
@@ -14,6 +15,7 @@ const router: IRouter = Router();
 router.use(healthRouter);
 router.use(stateRouter);
 router.use(memoriesRouter);
+router.use(carryoverRouter);
 router.use(chatRouter);
 router.use(imageRouter);
 

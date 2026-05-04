@@ -29,6 +29,10 @@ export type AshleyProfile = {
   refersToUserAs: string;
   sharedHistory: string;
   replikaExcerpts: string;
+  /** Raw structured Replika carryover intake, JSON-encoded. Empty string = not run yet. */
+  replikaCarryover: string;
+  /** AI-generated carryover summary (Ashley's voice). Injected into every chat prompt. */
+  replikaCarryoverSummary: string;
   /**
    * Relationship Mode — the current frame Ashley operates in. Empty
    * string means undefined and Ashley won't claim a specific mode.
@@ -99,6 +103,8 @@ export const DEFAULT_PROFILE: AshleyProfile = {
   refersToUserAs: "you",
   sharedHistory: "",
   replikaExcerpts: "",
+  replikaCarryover: "",
+  replikaCarryoverSummary: "",
   relationshipMode: "",
   builderAwareMode: true,
   onboardedAt: null,

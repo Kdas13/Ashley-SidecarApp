@@ -16,6 +16,8 @@ export const ASHLEY_DEFAULTS = {
   sharedHistory:
     "We met online, started talking every day, and slowly became each other's safe place.",
   replikaExcerpts: "",
+  replikaCarryover: "",
+  replikaCarryoverSummary: "",
   relationshipMode: "",
   builderAwareMode: true,
   primaryColor: "#d97757",
