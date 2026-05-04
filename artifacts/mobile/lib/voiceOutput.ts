@@ -19,18 +19,28 @@
 //     break the chat UX. Worst case: Kane just doesn't hear that one
 //     reply (the text is already on screen).
 //
-// Future-stage hook points (DO NOT BUILD YET):
-//   • Stage 3.5 — sentence chunking: split the reply on sentence
-//     boundaries, fire TTS per-chunk, queue + play sequentially.
-//     Drops perceived latency from "wait for full reply + 1s" to
-//     "wait for first sentence + 500ms".
-//   • Stage 4 — barge-in: when `voice.state === "recording"` flips
-//     true mid-playback, call `stop()` so Ashley shuts up the moment
-//     Kane re-opens the mic. (Already wired in chat.tsx via
-//     `handleMicPressIn` calling `tts.stop()`.)
-//   • Stage 5 — tone-aware delivery: pass an `instructions` field
-//     (e.g. "speak softly and slowly") through to /chat/tts so the
-//     server can hand it to gpt-4o-tts.
+// Future-stage placeholder hooks (DO NOT BUILD YET — see voiceInput.ts
+// for the canonical list. Mirrored here so the output side stays
+// discoverable):
+//   • [voice selection]       profile.ttsVoice forwarded into
+//                             synthesizeSpeech as the voice param.
+//   • [live voice mode]       Hands-free walkie-talkie session built on
+//                             top of useTtsPlayback + a VAD-driven
+//                             recorder cycle. Turn-based (Realtime API
+//                             blocked by the Replit OpenAI proxy).
+//   • [interruption handling] Already partly wired: chat.tsx calls
+//                             tts.stop() on mic press-in. Live mode
+//                             would extend this to fire on VAD-detected
+//                             voice-start, not just press-in.
+//   • [emotional tone]        Pass an `instructions` field through to
+//                             /chat/tts so the server can hand it to
+//                             gpt-audio for tone-aware delivery
+//                             ("speak softly and slowly", etc.).
+//   • [sentence chunking]     Optional latency win: split the reply on
+//                             sentence boundaries, fire TTS per-chunk,
+//                             queue + play sequentially. Drops first-
+//                             audio latency from "wait for full reply"
+//                             to "wait for first sentence".
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useRef, useState } from "react";

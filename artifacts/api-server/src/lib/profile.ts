@@ -20,6 +20,7 @@ export const ASHLEY_DEFAULTS = {
   replikaCarryoverSummary: "",
   relationshipMode: "",
   builderAwareMode: true,
+  voiceMode: false,
   // 18+ / Mature scaffolding defaults — OFF by design. See
   // lib/contentPolicy.ts for the rules that gate ever moving off these.
   contentMode: "standard",

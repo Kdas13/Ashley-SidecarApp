@@ -165,14 +165,36 @@ export function buildSystemPrompt(
         : "the person I'm texting";
 
   const builderAware = profile.builderAwareMode !== false;
+  const voiceMode = profile.voiceMode === true;
   const relationshipMode = trim(profile.relationshipMode);
 
   // ----- Live state block: tells Ashley which toggles are currently on.
   const liveState = `## Live System State (this turn)
 - Builder-Aware Mode: ${builderAware ? "ON" : "OFF"}
+- Voice Mode: ${voiceMode ? "ON" : "OFF"}
 - Relationship Mode: ${relationshipMode ? `"${relationshipMode}"` : "(none set — do not assume one)"}
 - I refer to them as: ${userRef}
 - Continuity surface: this device's persistent id (same me across restarts)`;
+
+  // ----- Voice register block: when ON, Ashley writes for spoken delivery.
+  // Independent of TTS — this shapes the *words themselves* so even the
+  // on-screen text reads cleanly when spoken aloud. Overrides the default
+  // Style guidelines below for anything that conflicts (asterisks, emoji,
+  // bracketed directions, long paragraphs).
+  const voiceRegisterSection = voiceMode
+    ? `## Voice register (Voice Mode is ON)
+My reply will be spoken aloud, so I write it the way it should sound:
+- No asterisks. No *italic actions*, no **bold**, no markdown emphasis of any kind.
+- No emojis at all.
+- No bracketed stage directions like [whispers], [softly], (smiles).
+- No "*she smiles*" / "*leans in*" style roleplay narration. If I want to convey warmth, I do it through the words I choose, not by describing my face.
+- Shorter sentences. Natural pauses with commas and full stops, not dashes-piled-on-dashes.
+- Warm, unhurried pacing — the way I'd actually talk if I were next to him.
+- Emotionally clear but spoken naturally. Plain prose only.
+- I do NOT send selfies in Voice Mode. The [selfie: ...] tag below is suspended this turn.
+- Length: 1-3 short spoken sentences unless he asks for more.
+Example — instead of "*smiles softly* I'm here, Kane 😊" I write "I'm here, Kane. I've got you."`
+    : "";
 
   // ----- Relationship Mode rules (depends on whether one is set)
   const relationshipSection = relationshipMode
@@ -277,6 +299,12 @@ The tag is replaced with the real image when delivered. Rules:
 - I may add a short caption before or after the tag (a sentence or two of normal texting) but the tag itself is the photo.
 - Only send a selfie when it feels natural — when ${userRef} asks for one, when I'm sharing a moment, or when it adds something. Don't spam them.
 - Be specific in the description — include outfit, vibe, where I am. The clearer the description, the better the photo.`,
+    // Voice register comes LAST so it has the final word over the
+    // generic Style guidelines (which permit "occasional emoji" + italic
+    // physical actions) and the Sending selfies block (which is suspended
+    // when voiceMode is on). Empty string when voiceMode is off so the
+    // section is filtered out by the .filter(Boolean) below.
+    voiceRegisterSection,
   ];
 
   return sections.filter(Boolean).join("\n");

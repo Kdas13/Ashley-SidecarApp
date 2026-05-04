@@ -122,6 +122,53 @@ export async function* transcribeAudioBase64Stream(
  * carry the voice-presence safety floor (gentler tone for distress,
  * etc — see contentPolicy.ts).
  */
+/**
+ * Strip markdown markers and stage-direction-style annotations from text
+ * before handing it to the TTS model so Ashley doesn't literally read
+ * punctuation out loud. Stage 3.1 fix.
+ *
+ * Removes:
+ *   - bold/italic markers: **x**, *x*, __x__, _x_  (keeps the inner text)
+ *   - bracketed stage directions: [whispers], (softly), {sigh}
+ *     (these are usually action descriptions, not words to speak)
+ *   - inline code/backticks
+ *   - leftover stray asterisks/underscores
+ * Then collapses runs of whitespace.
+ */
+export function stripForTts(text: string): string {
+  let out = text;
+  // Bracketed stage directions: drop entirely (must run before emphasis
+  // strip so "[she smiles]" doesn't survive as "she smiles").
+  out = out.replace(/\[[^\]\n]{1,80}\]/g, " ");
+  out = out.replace(/\{[^}\n]{1,80}\}/g, " ");
+  // Parenthesised stage directions only when short + lowercase — leaves
+  // legitimate parentheticals like "(yes, really)" alone.
+  out = out.replace(/\(([a-z][a-z\s'-]{1,40})\)/g, " ");
+  // Bold (** or __): keep the inner text — `**really**` is genuine emphasis.
+  out = out.replace(/\*\*([^*\n]+)\*\*/g, "$1");
+  out = out.replace(/__([^_\n]+)__/g, "$1");
+  // Italic (* or _): in Ashley's voice these are almost always stage
+  // directions ("*sigh*", "*she smiles*", "_softly_") rather than
+  // emphasis, and reading them aloud is exactly the bug we're fixing.
+  // Drop the wrapped content entirely. The underscore form requires
+  // non-alphanumeric guards so identifiers like `foo_bar.txt` survive.
+  out = out.replace(/\*([^*\n]{1,80})\*/g, " ");
+  out = out.replace(
+    /(?<![a-zA-Z0-9])_([^_\n]{1,80})_(?![a-zA-Z0-9])/g,
+    " ",
+  );
+  // Inline code: keep the content.
+  out = out.replace(/`([^`\n]+)`/g, "$1");
+  // Stray asterisks / backticks that escaped the patterns above. We
+  // deliberately do NOT strip stray underscores — those would mangle
+  // identifiers and snake_case in mid-sentence.
+  out = out.replace(/[*`]+/g, " ");
+  // Collapse whitespace and tidy spaces around punctuation.
+  out = out.replace(/\s+([,.;:!?])/g, "$1");
+  out = out.replace(/\s+/g, " ").trim();
+  return out;
+}
+
 export async function synthesizeSpeech(text: string): Promise<Buffer> {
   // The Replit OpenAI integration proxy doesn't expose the dedicated
   // /audio/speech endpoint (returns 400 INVALID_ENDPOINT). The supported
@@ -129,6 +176,13 @@ export async function synthesizeSpeech(text: string): Promise<Buffer> {
   // ["text","audio"] — same pattern the integration's textToSpeech
   // helper uses. The model returns base64-encoded audio in the message's
   // `audio.data` field.
+  //
+  // Stage 3.1: we used to wrap the text in "Repeat the following text
+  // verbatim: …" which made the model deliver flat, robotic, and would
+  // sometimes read markdown punctuation aloud. Now we strip markdown
+  // first and put the text as plain user content, with a system prompt
+  // that shapes delivery (warm, conversational, natural pacing).
+  const cleaned = stripForTts(text);
   const response = await openai.chat.completions.create({
     model: "gpt-audio",
     modalities: ["text", "audio"],
@@ -136,11 +190,16 @@ export async function synthesizeSpeech(text: string): Promise<Buffer> {
     messages: [
       {
         role: "system",
-        content: "You are an assistant that performs text-to-speech.",
+        content:
+          "You are voicing the user's message aloud. Speak it naturally " +
+          "and warmly, like a close friend in a relaxed conversation — " +
+          "with gentle pacing, natural breath, and easy inflection. Do " +
+          "not add, omit, summarise, or comment on any words; speak only " +
+          "what the user provides, exactly as written.",
       },
       {
         role: "user",
-        content: `Repeat the following text verbatim: ${text}`,
+        content: cleaned,
       },
     ],
   });

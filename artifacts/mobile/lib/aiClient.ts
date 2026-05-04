@@ -139,6 +139,7 @@ type WireProfile = {
   replikaCarryoverSummary: string;
   relationshipMode: string;
   builderAwareMode: boolean;
+  voiceMode: boolean;
   contentMode: "standard" | "mature";
   adultConfirmedAt: string | null;
   intimacyLevel: number;
@@ -201,6 +202,7 @@ function profileFromWire(p: WireProfile): AshleyProfile {
     replikaCarryoverSummary: p.replikaCarryoverSummary ?? "",
     relationshipMode: p.relationshipMode,
     builderAwareMode: p.builderAwareMode ?? true,
+    voiceMode: p.voiceMode === true,
     contentMode: p.contentMode === "mature" ? "mature" : "standard",
     adultConfirmedAt: p.adultConfirmedAt ?? null,
     intimacyLevel:
@@ -503,6 +505,7 @@ export type ProfileUpdate = Partial<{
   replikaCarryoverSummary: string;
   relationshipMode: string;
   builderAwareMode: boolean;
+  voiceMode: boolean;
   contentMode: "standard" | "mature";
   intimacyLevel: number;
   primaryColor: string;

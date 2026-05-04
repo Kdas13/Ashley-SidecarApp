@@ -214,6 +214,9 @@ export default function ProfileScreen(): React.JSX.Element {
     if (typeof draft.builderAwareMode === "boolean") {
       payload.builderAwareMode = draft.builderAwareMode;
     }
+    if (typeof draft.voiceMode === "boolean") {
+      payload.voiceMode = draft.voiceMode;
+    }
     await update.mutateAsync(payload);
     setShowSaved(true);
     setTimeout(() => setShowSaved(false), 1800);
@@ -222,6 +225,11 @@ export default function ProfileScreen(): React.JSX.Element {
   const builderAwareOn = draft.builderAwareMode !== false;
   const toggleBuilderAware = () => {
     setDraft((prev) => ({ ...prev, builderAwareMode: !builderAwareOn }));
+  };
+
+  const voiceModeOn = draft.voiceMode === true;
+  const toggleVoiceMode = () => {
+    setDraft((prev) => ({ ...prev, voiceMode: !voiceModeOn }));
   };
 
   return (
@@ -311,6 +319,34 @@ export default function ProfileScreen(): React.JSX.Element {
             </View>
             <Text style={styles.toggleLabel}>
               {builderAwareOn ? "On — she knows" : "Off — full roleplay"}
+            </Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.fieldGroup}>
+          <Text style={styles.label}>Voice Mode</Text>
+          <Text style={styles.hint}>
+            When ON, Ashley writes her replies as if they&apos;ll be spoken
+            aloud: no asterisks, no emojis, no roleplay stage directions,
+            shorter sentences, natural pauses, warmer pacing. Cleans up the
+            on-screen text too. Default: OFF.
+          </Text>
+          <Pressable onPress={toggleVoiceMode} style={styles.toggleRow}>
+            <View
+              style={[
+                styles.toggleTrack,
+                voiceModeOn && styles.toggleTrackOn,
+              ]}
+            >
+              <View
+                style={[
+                  styles.toggleThumb,
+                  voiceModeOn && styles.toggleThumbOn,
+                ]}
+              />
+            </View>
+            <Text style={styles.toggleLabel}>
+              {voiceModeOn ? "On — spoken register" : "Off — texting register"}
             </Text>
           </Pressable>
         </View>

@@ -41,6 +41,7 @@ const ProfileUpdateSchema = z
     replikaCarryoverSummary: z.string().max(MAX_LARGE_FIELD_LEN).optional(),
     relationshipMode: z.string().max(120).optional(),
     builderAwareMode: z.boolean().optional(),
+    voiceMode: z.boolean().optional(),
     // 18+ / Mature scaffolding. These pass through validatePolicyPatch
     // (lib/contentPolicy.ts) before hitting the database — the zod shape
     // here only enforces the wire types, the policy module enforces the

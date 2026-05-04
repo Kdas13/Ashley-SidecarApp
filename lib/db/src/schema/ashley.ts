@@ -47,6 +47,13 @@ export const ashleyProfileTable = pgTable("ashley_profile", {
   // Calibration in the prompt still prevents her from claiming a literal
   // human body / flat / job).
   builderAwareMode: boolean("builder_aware_mode").notNull().default(true),
+  // Voice Mode. When true, Ashley re-shapes her *text* output for spoken
+  // delivery: no asterisks, no emojis, no bracketed stage directions,
+  // shorter sentences, natural pauses, warm pacing. This is independent of
+  // TTS playback (voiceMode shapes the words; TTS just speaks them) so the
+  // cleaner register also makes the on-screen text read more naturally.
+  // Default OFF — opt-in per device via the profile screen.
+  voiceMode: boolean("voice_mode").notNull().default(false),
   // ----- 18+ / Mature Mode scaffolding (designed for the future, OFF by default).
   // Three independent signals stack — see lib/contentPolicy.ts on the server
   // for the single source of truth. Schema only persists the per-device state.

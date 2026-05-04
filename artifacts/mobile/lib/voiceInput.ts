@@ -12,21 +12,51 @@
 // emotional certainty from voice alone — see the future voice-presence
 // safety floor in contentPolicy.ts.
 //
-// Future-stage hook points (DO NOT BUILD YET):
-//   • Stage 2 — Streaming STT: chunk the recording in real time and POST
-//     partial buffers; surface partial transcripts in the input box.
-//   • Stage 3 — TTS replies: pipe Ashley's reply text through a TTS
-//     endpoint and play with expo-audio's playback API.
-//   • Stage 4 — Live conversation: silence detection (volume metering is
-//     already supported by expo-audio's status updates), barge-in
-//     (interrupt playback when mic re-opens), turn-taking (state machine
-//     around "she's speaking" / "I'm speaking" / "both silent").
-//   • Stage 5 — Tone awareness: switch transcribe to verbose_json so the
-//     server can carry segment timing + non-verbal markers; gate via the
-//     voice-presence safety floor in contentPolicy.ts.
-//   • Wire format: when Stage 2+ lands, add `inputMode: "text" | "voice"`
-//     to the user-message payload so the prompt builder knows when to
-//     append the voice floor block.
+// Status of the staged voice plan (single source of truth — keep in sync
+// with voiceOutput.ts):
+//   ✓ Stage 1   — Push-to-talk STT (this file).
+//   ✓ Stage 3   — TTS voice replies (voiceOutput.ts + lib/openai.ts
+//                 synthesizeSpeech). Auto-spoken Ashley reply, toggle in
+//                 chat header, clean delivery prompt, stripForTts() drops
+//                 markdown emphasis + bracketed stage directions before
+//                 TTS so asterisks aren't read aloud.
+//   ✓ Stage 3.5 — Voice register (profile.voiceMode flag). Re-shapes
+//                 Ashley's *text* output for spoken delivery (no
+//                 asterisks/emojis/stage directions, short sentences,
+//                 natural pauses, warm pacing). Server-side, lives in
+//                 ashleyCoreSpec.ts buildSystemPrompt.
+//
+// Future-stage placeholder hooks (DO NOT BUILD YET — Kane re-scoped away
+// from full live voice; these are explicit reservations):
+//   • [voice selection]      Pick from a list of TTS voices per
+//                            device. Wire as profile.ttsVoice (string),
+//                            forwarded by /chat/tts to the OpenAI voice
+//                            param. Default: current "alloy".
+//   • [live voice mode]      Hands-free walkie-talkie session: VAD
+//                            (lib/voiceActivity.ts already drafted with
+//                            -35/-40 dB thresholds, 200/800ms holds) +
+//                            recorder cycling + barge-in + state machine
+//                            (idle | listening | thinking | speaking).
+//                            Realtime API is blocked by the Replit
+//                            OpenAI proxy, so this would be turn-based
+//                            via the existing transcribe→chat→tts
+//                            pipeline (~4-5s per turn).
+//   • [interruption handling] When live mode lands: a "VAD-only"
+//                            recorder runs during thinking+speaking and
+//                            stops TTS the moment voice is detected.
+//                            Partly wired today: handleMicPressIn in
+//                            chat.tsx already calls tts.stop().
+//   • [emotional tone]       Switch /chat/transcribe to verbose_json so
+//                            the server gets segment timing + non-verbal
+//                            markers; pipe an `instructions` field into
+//                            synthesizeSpeech for tone-aware delivery
+//                            ("speak softly", "warm and slow", etc.).
+//                            Gated via the voice-presence safety floor.
+//   • [wire format]          When live mode lands, add inputMode:
+//                            "text" | "voice" to the chat payload so the
+//                            prompt builder can append a voice-floor
+//                            block alongside the existing voiceMode
+//                            register block.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useRef, useState } from "react";
@@ -35,6 +65,7 @@ import {
   RecordingPresets,
   useAudioRecorder,
   setAudioModeAsync,
+  type RecordingStatus,
 } from "expo-audio";
 import * as FileSystem from "expo-file-system/legacy";
 
@@ -54,6 +85,12 @@ export type VoiceRecorderState = "idle" | "recording" | "processing";
 export type VoiceRecorder = {
   state: VoiceRecorderState;
   elapsedMs: number;
+  /**
+   * Live metering value in dB (roughly -160 silence … 0 peak). Updated on
+   * every recorder status tick (~100ms). null when not recording. Used by
+   * the Stage 4 live-conversation VAD; push-to-talk callers ignore it.
+   */
+  metering: number | null;
   /** Request mic permission (no-op if already granted). Returns true if granted. */
   ensurePermission: () => Promise<boolean>;
   /** Begin recording. Caller should have already awaited ensurePermission(). */
@@ -74,7 +111,26 @@ export type VoiceRecorder = {
 const MIN_RECORDING_MS = 350;
 
 export function useVoiceRecorder(): VoiceRecorder {
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  // Metering is opt-in per start() call. We hold the latest dB value in a
+  // ref so the status listener (created once below) can keep writing
+  // without triggering a re-render every 100ms; consumers get the value
+  // via the returned `metering` field, which is mirrored into state on
+  // each status tick (cheap setState — RN batches at 60fps anyway).
+  const meteringRef = useRef<number | null>(null);
+  const [metering, setMetering] = useState<number | null>(null);
+  const recorder = useAudioRecorder(
+    RecordingPresets.HIGH_QUALITY,
+    (status: RecordingStatus) => {
+      // `metering` is only present when the recorder was prepared with
+      // isMeteringEnabled:true (see start() below). The expo-audio types
+      // don't surface it on RecordingStatus yet, hence the cast.
+      const m = (status as RecordingStatus & { metering?: number }).metering;
+      if (typeof m === "number" && Number.isFinite(m)) {
+        meteringRef.current = m;
+        setMetering(m);
+      }
+    },
+  );
   const [state, setState] = useState<VoiceRecorderState>("idle");
   const [elapsedMs, setElapsedMs] = useState(0);
   const startedAtRef = useRef<number | null>(null);
@@ -96,7 +152,15 @@ export function useVoiceRecorder(): VoiceRecorder {
     // setAudioModeAsync({ allowsRecording: true }) is required on iOS so
     // the audio session is configured for capture; harmless on Android.
     await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
-    await recorder.prepareToRecordAsync();
+    // isMeteringEnabled adds the `metering` field to status updates so
+    // the Stage 4 VAD can see live dB values. Cheap (no measurable
+    // battery impact) and ignored by push-to-talk callers.
+    await recorder.prepareToRecordAsync({
+      ...RecordingPresets.HIGH_QUALITY,
+      isMeteringEnabled: true,
+    });
+    meteringRef.current = null;
+    setMetering(null);
     recorder.record();
     startedAtRef.current = Date.now();
     setElapsedMs(0);
@@ -137,6 +201,8 @@ export function useVoiceRecorder(): VoiceRecorder {
       } catch {
         /* non-fatal */
       }
+      meteringRef.current = null;
+      setMetering(null);
       if (!returnAudio || !uri || durationMs < MIN_RECORDING_MS) {
         setState("idle");
         setElapsedMs(0);
@@ -173,5 +239,5 @@ export function useVoiceRecorder(): VoiceRecorder {
     await finish(false);
   }, [finish]);
 
-  return { state, elapsedMs, ensurePermission, start, stop, cancel };
+  return { state, elapsedMs, metering, ensurePermission, start, stop, cancel };
 }

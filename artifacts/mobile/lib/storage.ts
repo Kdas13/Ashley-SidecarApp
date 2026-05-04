@@ -48,6 +48,14 @@ export type AshleyProfile = {
    */
   builderAwareMode: boolean;
   /**
+   * Voice Mode. When true, Ashley writes her replies as if they will be
+   * spoken aloud: no asterisks, no emojis, no bracketed stage directions,
+   * shorter sentences, natural pauses, warm pacing. Independent of TTS
+   * playback — voiceMode shapes the words themselves so even the on-screen
+   * text reads naturally. Default OFF.
+   */
+  voiceMode: boolean;
+  /**
    * 18+ / Mature scaffolding. Stays "standard" until BOTH the server-side
    * operator switch is on AND the user has confirmed their age via
    * /profile/confirm-adult AND the user explicitly chose "mature".
@@ -161,6 +169,7 @@ export const DEFAULT_PROFILE: AshleyProfile = {
   replikaCarryoverSummary: "",
   relationshipMode: "",
   builderAwareMode: true,
+  voiceMode: false,
   contentMode: "standard",
   adultConfirmedAt: null,
   intimacyLevel: 0,
