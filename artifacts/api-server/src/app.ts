@@ -55,6 +55,10 @@ app.use((req, res, next) => {
   // Voice push-to-talk uploads ship base64 audio in JSON. A 60s recording
   // is comfortably under 12mb at our recording quality preset.
   if (req.path === "/api/chat/transcribe") return jsonLarge(req, res, next);
+  // Stage 2 streaming variant ships the same base64 audio in JSON; the
+  // *response* is SSE but the request body is identical to Stage 1.
+  if (req.path === "/api/chat/transcribe/stream")
+    return jsonLarge(req, res, next);
   return jsonSmall(req, res, next);
 });
 app.use(express.urlencoded({ extended: true }));

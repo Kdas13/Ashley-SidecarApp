@@ -22,7 +22,11 @@ import { getOrCreateProfileFor } from "../lib/profile";
 import { MEMORY_DISTILLER_PROMPT, SUMMARIZER_PROMPT } from "../lib/ashleyPrompt";
 import { buildSystemPrompt } from "../lib/ashleyCoreSpec";
 import { buildSelfiePromptSafetyPrefix } from "../lib/contentPolicy";
-import { generateImageBase64, transcribeAudioBase64 } from "../lib/openai";
+import {
+  generateImageBase64,
+  transcribeAudioBase64,
+  transcribeAudioBase64Stream,
+} from "../lib/openai";
 import {
   saveSelfie,
   saveUserImage,
@@ -909,6 +913,103 @@ router.post("/chat/transcribe", async (req, res): Promise<void> => {
     res.status(502).json({
       error: "Couldn't transcribe that — try again or just type it.",
     });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /chat/transcribe/stream — Stage 2 of the staged voice plan.
+//
+// Same request shape as /chat/transcribe; the response is an SSE stream
+// so the client can show partial transcripts while the model is still
+// producing text. Push-to-talk semantics unchanged — the audio still
+// arrives as a single base64 blob; only the response is streamed.
+//
+// Wire format (one message per chunk, per SSE convention):
+//   event: delta
+//   data: {"text":"…incremental chunk…"}
+//
+//   event: done
+//   data: {"transcript":"…final full text…"}
+//
+//   event: error
+//   data: {"error":"…user-facing message…"}
+//
+// The client (lib/aiClient.ts → transcribeAudioStream) accumulates the
+// deltas for a live banner preview and uses the `done` event's transcript
+// as the authoritative final string to append to the chat draft. If the
+// stream fails mid-flight, the client falls back to the non-streaming
+// /chat/transcribe endpoint so the user always gets a transcript.
+// ---------------------------------------------------------------------------
+
+router.post("/chat/transcribe/stream", async (req, res): Promise<void> => {
+  const deviceId = getDeviceId(req);
+  if (!deviceId) {
+    res.status(400).json({ error: "X-Device-Id header is required" });
+    return;
+  }
+  const parsed = TranscribeBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error:
+        parsed.error.issues[0]?.message ??
+        "Invalid /chat/transcribe/stream payload",
+    });
+    return;
+  }
+  const { audioBase64, mimeType } = parsed.data;
+
+  // Set up SSE headers. X-Accel-Buffering: no asks proxies (nginx, the
+  // Replit proxy) not to buffer the response; without it events would
+  // pile up until the connection closes and the "live" feel is lost.
+  res.status(200);
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  const writeEvent = (event: string, data: unknown): void => {
+    if (res.writableEnded) return;
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  let aborted = false;
+  req.on("close", () => {
+    aborted = true;
+  });
+
+  try {
+    let finalTranscript = "";
+    for await (const ev of transcribeAudioBase64Stream(
+      audioBase64,
+      audioFilenameFor(mimeType),
+      mimeType,
+    )) {
+      if (aborted) return;
+      if (ev.kind === "delta") {
+        writeEvent("delta", { text: ev.text });
+      } else {
+        finalTranscript = ev.text;
+        writeEvent("done", { transcript: ev.text });
+      }
+    }
+    // Defensive — if the upstream loop exited without emitting "done"
+    // (the SDK should always close with one, but belt-and-braces) push
+    // a done with whatever we accumulated so the client commits a
+    // transcript instead of timing out.
+    if (!aborted && !res.writableEnded) {
+      writeEvent("done", { transcript: finalTranscript });
+    }
+  } catch (err) {
+    req.log.error({ err }, "Whisper streaming transcription failed");
+    if (!aborted && !res.writableEnded) {
+      writeEvent("error", {
+        error: "Couldn't transcribe that — try again or just type it.",
+      });
+    }
+  } finally {
+    if (!res.writableEnded) res.end();
   }
 });
 

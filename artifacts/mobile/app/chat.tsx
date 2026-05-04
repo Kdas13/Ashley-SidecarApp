@@ -33,7 +33,7 @@ import {
 } from "@/lib/useMessages";
 import { useProfile, useUpdateProfile } from "@/lib/useProfile";
 import { useVoiceRecorder, VOICE_MAX_DURATION_MS } from "@/lib/voiceInput";
-import { useTranscribeAudio } from "@/lib/useVoice";
+import { useTranscribeAudioStream } from "@/lib/useVoice";
 import type {
   ImageAnalysisMode,
   ImageCategory,
@@ -289,15 +289,27 @@ export default function ChatScreen(): React.JSX.Element {
     setReplyingTo(null);
   }, []);
 
-  // ----- Voice push-to-talk (Stage 1) ------------------------------------
+  // ----- Voice push-to-talk (Stages 1 + 2) -------------------------------
   // Hold the mic to record, release to transcribe + insert into the draft.
-  // Text remains the canonical fallback at all times.
+  // Stage 2 streams partial transcripts back over SSE so words appear in
+  // the recording banner while the model is still producing text instead
+  // of the user sitting in silence for 2-3s after release. The hook
+  // silently falls back to the Stage 1 endpoint if streaming fails, so
+  // the user always gets a transcript. Text remains the canonical
+  // fallback at all times.
   const voice = useVoiceRecorder();
-  const transcribeMutation = useTranscribeAudio();
+  const transcribeMutation = useTranscribeAudioStream();
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [voicePartial, setVoicePartial] = useState("");
+  // Buffer the partial text in a ref too so the onDelta callback (created
+  // once per call below) can accumulate without going stale between
+  // renders. The setVoicePartial call is just for UI redraw.
+  const voicePartialRef = useRef("");
 
   const handleMicPressIn = useCallback(async () => {
     setVoiceError(null);
+    setVoicePartial("");
+    voicePartialRef.current = "";
     try {
       const granted = await voice.ensurePermission();
       if (!granted) {
@@ -323,7 +335,18 @@ export default function ChatScreen(): React.JSX.Element {
       return;
     }
     try {
-      const { transcript } = await transcribeMutation.mutateAsync(audio);
+      const { transcript } = await transcribeMutation.mutateAsync({
+        audio,
+        onDelta: (chunk) => {
+          voicePartialRef.current += chunk;
+          setVoicePartial(voicePartialRef.current);
+        },
+      });
+      // Clear the partial preview now that we have the authoritative
+      // final transcript — the banner disappears and the text lands in
+      // the draft below.
+      voicePartialRef.current = "";
+      setVoicePartial("");
       if (transcript.length === 0) {
         setVoiceError("Didn't catch that — try again");
         return;
@@ -336,6 +359,8 @@ export default function ChatScreen(): React.JSX.Element {
       });
       requestAnimationFrame(() => inputRef.current?.focus());
     } catch (e) {
+      voicePartialRef.current = "";
+      setVoicePartial("");
       setVoiceError(e instanceof Error ? e.message : "Couldn't transcribe");
     }
   }, [voice, transcribeMutation]);
@@ -747,6 +772,22 @@ export default function ChatScreen(): React.JSX.Element {
             <View style={styles.voiceDot} />
             <Text style={styles.voiceStatusText}>
               Listening… {Math.floor(voice.elapsedMs / 1000)}s
+            </Text>
+          </View>
+        ) : transcribeMutation.isPending ? (
+          // Stage 2 — show partial transcript live as the model produces
+          // text. Shows "Transcribing…" until the first delta arrives,
+          // then quotes the running partial so the user can see words
+          // appearing instead of staring at a silent spinner.
+          <View style={styles.voiceStatus} pointerEvents="none">
+            <ActivityIndicator
+              size="small"
+              color={colors.light.mutedForeground}
+            />
+            <Text style={styles.voiceStatusText} numberOfLines={2}>
+              {voicePartial.length > 0
+                ? `“${voicePartial}”`
+                : "Transcribing…"}
             </Text>
           </View>
         ) : null}

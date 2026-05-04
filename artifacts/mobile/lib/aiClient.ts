@@ -310,6 +310,147 @@ export async function transcribeAudio(input: {
   return { transcript: data.transcript ?? "" };
 }
 
+/**
+ * Stage 2 streaming transcription. Uploads the same audio blob as Stage 1
+ * but consumes the response as an SSE stream so partial transcripts can
+ * be shown live while the model is still producing text.
+ *
+ * Throws `STREAMING_UNSUPPORTED` if the runtime fetch implementation
+ * doesn't expose `response.body.getReader()`. Callers should catch that
+ * specific error and fall back to the non-streaming `transcribeAudio()`
+ * so the user always gets a transcript even on older runtimes.
+ *
+ * Future stages will:
+ *   • Stage 4 — open a long-lived WebSocket via OpenAI's Realtime API
+ *     for true chunked-upload-during-recording (silence detection +
+ *     barge-in live in that rung, not here).
+ *   • Stage 5 — add `inputMode: "voice"` to the eventual /chat send so
+ *     buildSystemPrompt can append the voice-presence safety floor.
+ */
+export const STREAMING_UNSUPPORTED = "STREAMING_UNSUPPORTED";
+
+export async function transcribeAudioStream(
+  input: {
+    audioBase64: string;
+    mimeType: string;
+    durationMs: number;
+  },
+  callbacks: { onDelta?: (chunk: string) => void } = {},
+): Promise<{ transcript: string }> {
+  const base = getApiBase();
+  const res = await fetch(`${base}/chat/transcribe/stream`, {
+    method: "POST",
+    headers: {
+      ...authHeaders(),
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `POST /chat/transcribe/stream returned ${res.status}${
+        text ? `: ${text.slice(0, 240)}` : ""
+      }`,
+    );
+  }
+
+  // React Native fetch on Hermes (RN 0.74+) exposes a streaming body.
+  // If it's missing in this runtime, surface a sentinel so the caller
+  // can fall back to /chat/transcribe instead of hanging.
+  const body = res.body as ReadableStream<Uint8Array> | null | undefined;
+  const reader = body?.getReader?.();
+  if (!reader) {
+    throw new Error(STREAMING_UNSUPPORTED);
+  }
+
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let finalTranscript = "";
+  let streamError: string | null = null;
+
+  // Parse one complete SSE message at a time. Per the EventSource spec,
+  // a "field" is `name: value` and a message is terminated by a blank
+  // line. Multiple data: lines within a single message must be joined
+  // with "\n" to reconstruct the original payload.
+  const handleMessage = (raw: string): void => {
+    let event = "message";
+    const dataLines: string[] = [];
+    // Spec accepts \n, \r, or \r\n as line terminators inside a message.
+    // Normalising to \n first means we don't have to worry about a
+    // dangling \r corrupting our `startsWith` checks or the JSON we
+    // hand to JSON.parse.
+    const normalized = raw.replace(/\r\n?/g, "\n");
+    for (const line of normalized.split("\n")) {
+      if (line.length === 0 || line.startsWith(":")) continue; // blank / comment
+      if (line.startsWith("event:")) {
+        event = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        // Spec: a single space after the colon is part of the syntax,
+        // not the payload — strip exactly one if present.
+        const v = line.slice(5);
+        dataLines.push(v.startsWith(" ") ? v.slice(1) : v);
+      }
+      // ignore unknown fields (id:, retry:, etc.) — we don't use them
+    }
+    if (dataLines.length === 0) return;
+    const dataStr = dataLines.join("\n");
+    let data: { text?: string; transcript?: string; error?: string };
+    try {
+      data = JSON.parse(dataStr);
+    } catch {
+      return;
+    }
+    if (event === "delta" && typeof data.text === "string") {
+      callbacks.onDelta?.(data.text);
+    } else if (event === "done" && typeof data.transcript === "string") {
+      finalTranscript = data.transcript;
+    } else if (event === "error") {
+      streamError =
+        typeof data.error === "string" && data.error.trim()
+          ? data.error.trim()
+          : "Couldn't transcribe that — try again.";
+    }
+  };
+
+  // Find the next message boundary, accepting either \n\n or \r\n\r\n
+  // (or any mix). Returns the index of the FIRST terminator char and
+  // the length of the terminator so the caller can advance correctly.
+  const findBoundary = (
+    buf: string,
+  ): { idx: number; len: number } | null => {
+    const nn = buf.indexOf("\n\n");
+    const rnrn = buf.indexOf("\r\n\r\n");
+    if (nn === -1 && rnrn === -1) return null;
+    if (nn === -1) return { idx: rnrn, len: 4 };
+    if (rnrn === -1) return { idx: nn, len: 2 };
+    return rnrn < nn ? { idx: rnrn, len: 4 } : { idx: nn, len: 2 };
+  };
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = findBoundary(buffer);
+    while (boundary !== null) {
+      const raw = buffer.slice(0, boundary.idx);
+      buffer = buffer.slice(boundary.idx + boundary.len);
+      if (raw.length > 0) handleMessage(raw);
+      boundary = findBoundary(buffer);
+    }
+  }
+  // Flush any trailing partial (in practice the server always closes
+  // on a blank-line-terminated message, but be defensive).
+  if (buffer.replace(/\s/g, "").length > 0) handleMessage(buffer);
+
+  if (streamError) {
+    throw new Error(streamError);
+  }
+  return { transcript: finalTranscript };
+}
+
 // 18+ age gate. Recording the confirmation is the ONLY thing that lets a
 // subsequent PUT /profile { contentMode: "mature" } succeed. The body
 // shape mirrors the server's strict zod check.
