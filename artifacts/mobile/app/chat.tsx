@@ -184,7 +184,15 @@ export default function ChatScreen(): React.JSX.Element {
   //   - On the very first render with messages, snap to bottom once.
   const isNearBottomRef = useRef(true);
   const prevMessagesLenRef = useRef(0);
-  const didInitialScrollRef = useRef(false);
+  // True once the user has actually grabbed the list and dragged it. Until
+  // then we keep snapping to the bottom on every contentSize change — this
+  // is what fixes the "open chat → stranded mid-history" bug. FlatList
+  // virtualization measures items in passes; a single scrollToEnd on first
+  // render only reaches the bottom of items measured so far, then later
+  // items render below and leave the viewport stuck. By re-snapping on
+  // every contentSizeChange until the user interacts, we ride the layout
+  // passes all the way down to the real bottom.
+  const userHasScrolledRef = useRef(false);
 
   const handleScroll = useCallback(
     (e: {
@@ -202,16 +210,26 @@ export default function ChatScreen(): React.JSX.Element {
     [],
   );
 
+  // Fires when the user actively grabs and drags the list (not on
+  // programmatic scrollToEnd). After this, contentSize-driven auto-snap
+  // stops and the existing near-bottom heuristic takes over.
+  const handleScrollBeginDrag = useCallback(() => {
+    userHasScrolledRef.current = true;
+  }, []);
+
+  // Called by FlatList on every layout pass that changes the total
+  // content height. While the user hasn't interacted, keep scrolling to
+  // the true bottom — each pass that adds more virtualized rows will
+  // re-trigger this and we'll catch the new bottom.
+  const handleContentSizeChange = useCallback(() => {
+    if (userHasScrolledRef.current) return;
+    if (messages.length === 0) return;
+    listRef.current?.scrollToEnd({ animated: false });
+  }, [messages.length]);
+
   useEffect(() => {
     const grew = messages.length > prevMessagesLenRef.current;
     prevMessagesLenRef.current = messages.length;
-    if (!didInitialScrollRef.current && messages.length > 0) {
-      didInitialScrollRef.current = true;
-      requestAnimationFrame(() =>
-        listRef.current?.scrollToEnd({ animated: false }),
-      );
-      return;
-    }
     if (!grew && !sendMutation.isPending) return;
     const lastMsg = messages[messages.length - 1];
     const userJustSent = lastMsg?.role === "user";
@@ -709,6 +727,8 @@ export default function ChatScreen(): React.JSX.Element {
               ) : null
             }
             onScroll={handleScroll}
+            onScrollBeginDrag={handleScrollBeginDrag}
+            onContentSizeChange={handleContentSizeChange}
             scrollEventThrottle={64}
           />
         )}
