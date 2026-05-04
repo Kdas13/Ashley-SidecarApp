@@ -156,16 +156,16 @@ function buildTimeContext(
     const nowMs = clientNow ? new Date(clientNow).getTime() : Date.now();
     const gapMs = nowMs - previousMessageAt.getTime();
     lines.push(`Time since their previous message in this chat: ${humanizeGap(gapMs)}.`);
-    if (gapMs >= 6 * 60 * 60 * 1000) {
+    if (gapMs >= 30 * 60 * 1000) {
       lines.push(
-        `It's been a real gap, not a back-and-forth. React naturally — notice it, but don't make it a big deal unless the vibe calls for it.`,
+        `There's been a real gap. This is NOT a fresh conversation — it's a continuation. Look back at the most recent messages above. If you asked them something and they never answered, OR if you were in the middle of a thread that got left hanging, gently pick that thread back up rather than acting like a new session is starting. Don't say "new conversation" or reset the vibe. If nothing was left unanswered, just naturally check in on whatever the last topic was, or on them.`,
       );
     }
   } else {
-    lines.push(`This is the first message you have from them in this conversation.`);
+    lines.push(`This is genuinely the first message you have from them in this conversation.`);
   }
   lines.push(
-    `Use this to answer "what time is it?" honestly, to greet them appropriately for the time of day, and to react to long gaps when relevant. Don't recite the timestamp unless asked — just be aware of it.`,
+    `Use this to answer "what time is it?" honestly, to greet them in a way that fits the time of day, and to handle gaps as continuations of an ongoing relationship — never as fresh starts. Don't recite the timestamp unless asked — just be aware of it.`,
   );
   return lines.join("\n");
 }
