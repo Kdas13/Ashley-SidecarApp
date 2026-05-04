@@ -228,7 +228,8 @@ export default function ChatScreen(): React.JSX.Element {
   }, [messages.length]);
 
   useEffect(() => {
-    const grew = messages.length > prevMessagesLenRef.current;
+    const prevLen = prevMessagesLenRef.current;
+    const grew = messages.length > prevLen;
     prevMessagesLenRef.current = messages.length;
     if (!grew && !sendMutation.isPending) return;
     const lastMsg = messages[messages.length - 1];
@@ -239,8 +240,13 @@ export default function ChatScreen(): React.JSX.Element {
       userJustSent ||
       isNearBottomRef.current
     ) {
+      // On cold mount (0 → N), use a non-animated jump so we don't fight
+      // the multi-snap effect's instant snaps with a 250ms ease curve.
+      // On subsequent growth (new message arriving while the user is
+      // already at the bottom), the smooth animated scroll is nicer UX.
+      const animated = prevLen > 0;
       requestAnimationFrame(() =>
-        listRef.current?.scrollToEnd({ animated: true }),
+        listRef.current?.scrollToEnd({ animated }),
       );
     }
   }, [
@@ -260,7 +266,12 @@ export default function ChatScreen(): React.JSX.Element {
     if (initialSnapDoneRef.current) return;
     if (messages.length === 0) return;
     initialSnapDoneRef.current = true;
-    const delays = [0, 50, 150, 350, 700, 1200, 2000];
+    // Tightened from [0, 50, 150, 350, 700, 1200, 2000] — the 1200/2000ms
+    // tail was visibly slow ("the chat bar moves down to the bottom slowly").
+    // 700ms is enough for FlatList to finish virtualizing 200 rows on
+    // Kane's device; if the user touches the list earlier the
+    // userHasScrolledRef guard stops further snaps anyway.
+    const delays = [0, 50, 150, 350, 700];
     const timers = delays.map((ms) =>
       setTimeout(() => {
         if (userHasScrolledRef.current) return;

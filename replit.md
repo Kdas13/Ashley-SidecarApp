@@ -226,20 +226,30 @@ are not used by mobile in V1.1:
   Bearer + device id. If you add a new fetch path, mirror this pattern —
   spreading only `authHeaders()` will silently 401 the call as
   `receivedKeyFingerprint=missing`.
-- **Feather icons MUST be loaded via `Font.loadAsync(Feather.font)`, not
-  via `useFonts({...Feather.font})`.** The `useFonts` spread approach
-  silently fails on Kane's Android device — `useFonts` reports
+- **Feather icons are loaded at MODULE LOAD time via two parallel
+  `Font.loadAsync` calls.** The `useFonts({...Feather.font})` spread
+  approach silently fails on Kane's Android device — `useFonts` reports
   `loaded=true` while the `<Feather>` component's internal
   `Font.isLoaded("feather")` check (in `@expo/vector-icons`'s
   `createIconSet.js`) returns false, so every glyph renders as a
-  box-with-X. `_layout.tsx` keeps `useFonts` for the Inter Google fonts
-  (that path is reliable for `@expo-google-fonts/*` packages) but loads
-  Feather imperatively in a `useEffect` and gates the splash on a
-  separate `iconsReady` state. The Feather load has a `.catch(() =>
-  undefined)` so a transient network error doesn't lock the splash
-  forever — worst case becomes the pre-fix boxes, not a hung app. Web
-  still has its 12s `splashTimedOut` fallback because the IDE preview
-  iframe sometimes blocks the @expo-google-fonts CDN.
+  box-with-X. The fix in `_layout.tsx` is maximally defensive:
+  - Two `Font.loadAsync` calls run at module-import time (before React
+    even mounts): one with an explicit `require()` of the Feather TTF
+    bound to the lowercase family name `feather`, and a fallback using
+    `Feather.font`. Both are idempotent — if the family is already
+    registered, the second call returns immediately.
+  - The component awaits `Promise.all([featherFontPromise,
+    featherFontPromiseFallback])` and only sets `iconsReady=true` after
+    both settle. Both have `.catch(() => undefined)` so a transient
+    network error doesn't lock the splash forever — worst case becomes
+    the pre-fix boxes, not a hung app.
+  - `useFonts` still loads the Inter Google fonts (that path is reliable
+    for `@expo-google-fonts/*` packages).
+  - Web still has its 12s `splashTimedOut` fallback because the IDE
+    preview iframe sometimes blocks the @expo-google-fonts CDN.
+  - **DO NOT** revert to `useFonts({...Feather.font})` — it is the
+    canonical pattern in Expo docs, but it does not actually work
+    reliably on Kane's device.
 - **`KeyboardAvoidingView` on Android: `keyboardVerticalOffset` must be 0
   with `behavior="height"`.** With `behavior="height"`, KAV PERMANENTLY
   shrinks its own height by `keyboardVerticalOffset` even when the
@@ -252,8 +262,14 @@ are not used by mobile in V1.1:
   `offset=8`.
 - The chat `FlatList` uses `initialNumToRender={Math.min(Math.max(messages.length, 20), 200)}`
   + `removeClippedSubviews={false}` so the entire history is laid out in
-  the first pass, and a multi-snap effect (`[0, 50, 150, 350, 700, 1200, 2000]`
-  ms) calls `scrollToEnd` repeatedly on first non-empty render until the
-  user touches the list. This reliably lands at the true bottom even for
-  long histories where virtualization would otherwise leave the user
-  stranded mid-history.
+  the first pass, and a multi-snap effect (`[0, 50, 150, 350, 700]` ms)
+  calls `scrollToEnd({ animated: false })` repeatedly on first non-empty
+  render until the user touches the list. This reliably lands at the
+  true bottom even for long histories where virtualization would
+  otherwise leave the user stranded mid-history. The tail past 700ms
+  was removed because it created a visible "still settling" feel — by
+  700ms the FlatList is done virtualizing 200 rows on Kane's device.
+  The growth-tracking `useEffect` also uses `animated: false` for the
+  cold-mount scroll (when previous messages length was 0) so it doesn't
+  fight the multi-snap with a 250ms ease curve; new messages arriving
+  later still get the smooth animated scroll.

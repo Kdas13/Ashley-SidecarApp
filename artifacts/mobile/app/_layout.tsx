@@ -37,6 +37,34 @@ SystemUI.setBackgroundColorAsync("#1a1325").catch(() => {
   /* ignore */
 });
 
+// Kick off the Feather TTF download at MODULE LOAD time, not inside an
+// effect. By the time React renders the first frame, this promise is
+// usually already resolved. We use an explicit require() rather than
+// `Feather.font` to bypass any indirection through the @expo/vector-icons
+// build's static `font` getter — Kane's device was somehow still
+// rendering boxes-with-X even after switching to Font.loadAsync inside a
+// useEffect, so we go maximally defensive: load the asset directly under
+// the family name `<Feather>` looks up internally (`feather`, lowercase,
+// per createIconSet.js:8).
+const featherFontPromise: Promise<void> = Font.loadAsync({
+  feather: require("@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/Feather.ttf"),
+})
+  .catch(() => {
+    // Swallow — if the TTF genuinely can't load we'd rather render the
+    // app with broken glyphs than hang the splash forever. A retry path
+    // exists at the component level (createIconSet's own setState
+    // re-renders when its internal Font.loadAsync resolves).
+  })
+  .then(() => undefined);
+
+// Belt-and-braces: also try the canonical `Feather.font` path. Each call
+// to Font.loadAsync is idempotent — if the family is already registered
+// it returns immediately, so this costs nothing and gives us a second
+// shot in case the explicit-require path failed for some reason.
+const featherFontPromiseFallback: Promise<void> = Font.loadAsync(Feather.font)
+  .catch(() => undefined)
+  .then(() => undefined);
+
 function RootLayoutNav(): React.JSX.Element {
   return (
     <Stack
@@ -104,7 +132,10 @@ export default function RootLayout(): React.JSX.Element | null {
 
   useEffect(() => {
     let cancelled = false;
-    Font.loadAsync(Feather.font)
+    // Wait for BOTH module-level promises (explicit-require + Feather.font
+    // fallback) before unblocking the splash. Both .catch swallow errors,
+    // so this never rejects.
+    Promise.all([featherFontPromise, featherFontPromiseFallback])
       .catch(() => undefined)
       .finally(() => {
         if (!cancelled) setIconsReady(true);
