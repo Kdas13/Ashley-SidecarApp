@@ -7,7 +7,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Feather } from "@expo/vector-icons";
+import { Icon as Feather } from "@/components/Icon";
 import { router } from "expo-router";
 
 import { AmbientBackground } from "@/components/AmbientBackground";

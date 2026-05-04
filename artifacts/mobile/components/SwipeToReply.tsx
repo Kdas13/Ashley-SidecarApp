@@ -1,6 +1,6 @@
 import React, { useCallback, useRef } from "react";
 import { StyleSheet } from "react-native";
-import { Feather } from "@expo/vector-icons";
+import { Icon as Feather } from "@/components/Icon";
 import * as Haptics from "expo-haptics";
 import ReanimatedSwipeable, {
   type SwipeableMethods,

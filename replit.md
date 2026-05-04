@@ -226,30 +226,36 @@ are not used by mobile in V1.1:
   Bearer + device id. If you add a new fetch path, mirror this pattern —
   spreading only `authHeaders()` will silently 401 the call as
   `receivedKeyFingerprint=missing`.
-- **Feather icons are loaded at MODULE LOAD time via two parallel
-  `Font.loadAsync` calls.** The `useFonts({...Feather.font})` spread
-  approach silently fails on Kane's Android device — `useFonts` reports
-  `loaded=true` while the `<Feather>` component's internal
-  `Font.isLoaded("feather")` check (in `@expo/vector-icons`'s
-  `createIconSet.js`) returns false, so every glyph renders as a
-  box-with-X. The fix in `_layout.tsx` is maximally defensive:
-  - Two `Font.loadAsync` calls run at module-import time (before React
-    even mounts): one with an explicit `require()` of the Feather TTF
-    bound to the lowercase family name `feather`, and a fallback using
-    `Feather.font`. Both are idempotent — if the family is already
-    registered, the second call returns immediately.
-  - The component awaits `Promise.all([featherFontPromise,
-    featherFontPromiseFallback])` and only sets `iconsReady=true` after
-    both settle. Both have `.catch(() => undefined)` so a transient
-    network error doesn't lock the splash forever — worst case becomes
-    the pre-fix boxes, not a hung app.
-  - `useFonts` still loads the Inter Google fonts (that path is reliable
-    for `@expo-google-fonts/*` packages).
-  - Web still has its 12s `splashTimedOut` fallback because the IDE
-    preview iframe sometimes blocks the @expo-google-fonts CDN.
-  - **DO NOT** revert to `useFonts({...Feather.font})` — it is the
-    canonical pattern in Expo docs, but it does not actually work
-    reliably on Kane's device.
+- **Icons use Unicode/emoji glyphs, NOT @expo/vector-icons.** Four
+  separate Feather-font-loading strategies were tried and all failed on
+  Kane's Android device — glyphs kept rendering as boxes-with-X:
+  1. `useFonts({...Feather.font})` spread (canonical Expo pattern)
+  2. Imperative `Font.loadAsync(Feather.font)` in `useEffect` with a
+     gate state
+  3. Module-level `Font.loadAsync` with an explicit `require()` of
+     `Feather.ttf` under the lowercase family name `"feather"`
+  4. Belt-and-braces: BOTH (3) and a `Font.loadAsync(Feather.font)`
+     fallback running in parallel at module load
+  Root cause never confirmed but most likely either pnpm symlink +
+  Metro asset registry interaction (the TTF resolves through
+  `node_modules/.pnpm/@expo+vector-icons@.../Feather.ttf`), Expo Go
+  bundle caching on Kane's specific device, or a `createIconSet.js`
+  race that can't be defeated from outside the library. The fix:
+  `components/Icon.tsx` exports an `Icon` component (re-exported as
+  `Feather` for drop-in compatibility) that maps icon names →
+  Unicode/emoji characters and renders them as `<Text>`. No font
+  loading required — the system font on every device handles these
+  glyphs natively. All 8 screens/components import via
+  `import { Icon as Feather } from "@/components/Icon"` so existing
+  `<Feather name="x" size={...} color={...} />` JSX continues to work
+  unchanged. `_layout.tsx` no longer touches `expo-font` for icons
+  (Inter via `@expo-google-fonts/inter` still loads via `useFonts`).
+  - **DO NOT** add `@expo/vector-icons` back. If you need a new icon,
+    add it to the `ICON_MAP` in `components/Icon.tsx`.
+  - Aesthetic note: emoji glyphs (paperclip, mic, send, trash) render
+    in color on most Androids, which is jarring against the dark theme.
+    If polish is needed, swap individual entries to monochrome Unicode
+    alternatives (e.g. `mic` → `●`, `send` → `▶`).
 - **`KeyboardAvoidingView` on Android: `keyboardVerticalOffset` must be 0
   with `behavior="height"`.** With `behavior="height"`, KAV PERMANENTLY
   shrinks its own height by `keyboardVerticalOffset` even when the

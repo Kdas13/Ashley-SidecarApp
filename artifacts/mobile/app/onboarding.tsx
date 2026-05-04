@@ -15,7 +15,7 @@ import {
 import { loadProfile } from "@/lib/storage";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router } from "expo-router";
-import { Feather } from "@expo/vector-icons";
+import { Icon as Feather } from "@/components/Icon";
 
 import { AnimatedAvatar } from "@/components/AnimatedAvatar";
 import { AmbientBackground } from "@/components/AmbientBackground";
