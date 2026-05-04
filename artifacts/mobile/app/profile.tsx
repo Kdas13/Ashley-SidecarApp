@@ -16,9 +16,11 @@ import { Feather } from "@expo/vector-icons";
 import { router } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 
+import { useQueryClient } from "@tanstack/react-query";
+
 import { useProfile, useUpdateProfile } from "@/lib/useProfile";
 import type { AshleyProfile } from "@/lib/storage";
-import { getDeviceIdSync, hasDeviceId } from "@/lib/deviceId";
+import { getDeviceIdSync, hasDeviceId, setDeviceId } from "@/lib/deviceId";
 import colors from "@/constants/colors";
 
 type EditableField = {
@@ -188,7 +190,11 @@ export default function ProfileScreen(): React.JSX.Element {
 }
 
 function DeviceAndBackupSection(): React.JSX.Element {
+  const qc = useQueryClient();
   const [copied, setCopied] = useState(false);
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [restoreInput, setRestoreInput] = useState("");
+  const [restoring, setRestoring] = useState(false);
   const deviceId = hasDeviceId() ? getDeviceIdSync() : "";
 
   const onCopy = async () => {
@@ -202,10 +208,62 @@ function DeviceAndBackupSection(): React.JSX.Element {
     }
   };
 
-  const showPlaceholder = (label: string) => {
+  const onPasteFromClipboard = async () => {
+    try {
+      const txt = await Clipboard.getStringAsync();
+      if (txt && txt.trim()) setRestoreInput(txt.trim());
+    } catch {
+      // best-effort
+    }
+  };
+
+  const doRestore = async () => {
+    const target = restoreInput.trim();
+    if (!target || target === deviceId) {
+      setRestoreOpen(false);
+      return;
+    }
     Alert.alert(
-      `${label} (coming soon)`,
-      "Backup and restore will be available in a future update. For now, your conversation lives on the server tied to this Device ID — keep a copy somewhere safe if you ever reinstall.",
+      "Switch to this Device ID?",
+      "Your current Ashley on this phone will be replaced with whatever conversation, profile, and memories are saved on the server under the Device ID you pasted. The current Device ID will be forgotten — copy it first if you want it back.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Switch",
+          style: "destructive",
+          onPress: async () => {
+            setRestoring(true);
+            try {
+              await setDeviceId(target);
+              // Drop every cached query so /state, messages, memories,
+              // summaries, profile all refetch under the new device id.
+              qc.clear();
+              setRestoreOpen(false);
+              setRestoreInput("");
+              Alert.alert(
+                "Restored",
+                "Reconnected to the conversation saved under that Device ID.",
+              );
+            } catch (err) {
+              Alert.alert(
+                "Couldn't restore",
+                err instanceof Error
+                  ? err.message
+                  : "Something went wrong switching device id.",
+              );
+            } finally {
+              setRestoring(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const showExportPlaceholder = () => {
+    Alert.alert(
+      "Export backup (coming soon)",
+      "A one-tap export is on the way. For now, copy your Device ID — that's the only thing you need to recover this Ashley on another phone (or after Expo Go clears its storage). Use Restore below to paste it back in.",
     );
   };
 
@@ -216,8 +274,9 @@ function DeviceAndBackupSection(): React.JSX.Element {
       <View style={styles.fieldGroup}>
         <Text style={styles.label}>Device ID</Text>
         <Text style={styles.hint}>
-          Identifies your conversation on the server. Keep a copy if you ever
-          want to reinstall and reach the same Ashley again.
+          Identifies your conversation on the server. Copy it somewhere safe
+          — if this phone ever forgets it (Expo Go updates can wipe local
+          storage), paste it into Restore below to get her back.
         </Text>
         <View style={styles.deviceIdRow}>
           <Text
@@ -245,23 +304,81 @@ function DeviceAndBackupSection(): React.JSX.Element {
       </View>
 
       <View style={styles.backupRow}>
-        <Pressable
-          onPress={() => showPlaceholder("Export backup")}
-          style={styles.backupBtn}
-        >
+        <Pressable onPress={showExportPlaceholder} style={styles.backupBtn}>
           <Feather name="download" size={14} color={colors.light.text} />
           <Text style={styles.backupBtnText}>Export backup</Text>
           <Text style={styles.comingSoonPill}>Soon</Text>
         </Pressable>
         <Pressable
-          onPress={() => showPlaceholder("Import backup")}
+          onPress={() => setRestoreOpen((v) => !v)}
           style={styles.backupBtn}
         >
-          <Feather name="upload" size={14} color={colors.light.text} />
-          <Text style={styles.backupBtnText}>Import backup</Text>
-          <Text style={styles.comingSoonPill}>Soon</Text>
+          <Feather
+            name={restoreOpen ? "x" : "upload"}
+            size={14}
+            color={colors.light.text}
+          />
+          <Text style={styles.backupBtnText}>
+            {restoreOpen ? "Cancel" : "Restore from Device ID"}
+          </Text>
         </Pressable>
       </View>
+
+      {restoreOpen ? (
+        <View style={styles.restoreBox}>
+          <Text style={styles.hint}>
+            Paste a Device ID you copied earlier. Your current conversation on
+            this phone will be replaced with the one saved under that ID on the
+            server.
+          </Text>
+          <TextInput
+            value={restoreInput}
+            onChangeText={setRestoreInput}
+            placeholder="paste Device ID here"
+            placeholderTextColor={colors.light.mutedForeground}
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={styles.restoreInput}
+          />
+          <View style={styles.restoreBtnRow}>
+            <Pressable
+              onPress={onPasteFromClipboard}
+              style={[styles.backupBtn, { flex: 1 }]}
+            >
+              <Feather name="clipboard" size={14} color={colors.light.text} />
+              <Text style={styles.backupBtnText}>Paste</Text>
+            </Pressable>
+            <Pressable
+              onPress={restoring ? undefined : doRestore}
+              disabled={restoring || !restoreInput.trim()}
+              style={[
+                styles.copyBtn,
+                {
+                  flex: 1,
+                  justifyContent: "center",
+                  opacity: restoring || !restoreInput.trim() ? 0.5 : 1,
+                },
+              ]}
+            >
+              {restoring ? (
+                <ActivityIndicator
+                  size="small"
+                  color={colors.light.primaryForeground}
+                />
+              ) : (
+                <Feather
+                  name="check"
+                  size={14}
+                  color={colors.light.primaryForeground}
+                />
+              )}
+              <Text style={styles.copyBtnText}>
+                {restoring ? "Switching…" : "Restore"}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -415,5 +532,25 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 6,
     overflow: "hidden",
+  },
+  restoreBox: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: colors.light.muted,
+    gap: 10,
+  },
+  restoreInput: {
+    backgroundColor: colors.light.background,
+    color: colors.light.text,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontFamily: "Inter_400Regular",
+    fontSize: 13,
+  },
+  restoreBtnRow: {
+    flexDirection: "row",
+    gap: 10,
   },
 });

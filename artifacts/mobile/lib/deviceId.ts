@@ -73,3 +73,28 @@ export function getDeviceIdSync(): string {
 export function hasDeviceId(): boolean {
   return cached !== null;
 }
+
+const DEVICE_ID_RE = /^[A-Za-z0-9-]+$/;
+
+/**
+ * Override the persisted device id with a user-supplied one. Used by the
+ * "Restore from Device ID" flow on the profile screen so a user whose
+ * AsyncStorage was wiped (e.g. Expo Go updated overnight) can paste in
+ * the id they previously copied and reconnect to all of their existing
+ * server-side conversation, memories, and profile.
+ *
+ * Validates loosely — accepts anything 8-128 chars matching the same
+ * charset the server middleware allows. Caller is responsible for
+ * invalidating any in-memory React Query caches afterwards.
+ */
+export async function setDeviceId(rawId: string): Promise<string> {
+  const id = rawId.trim();
+  if (id.length < 8 || id.length > 128 || !DEVICE_ID_RE.test(id)) {
+    throw new Error(
+      "That doesn't look like a valid Device ID. Paste the full id you copied earlier.",
+    );
+  }
+  await AsyncStorage.setItem(DEVICE_ID_KEY, id);
+  cached = id;
+  return id;
+}
