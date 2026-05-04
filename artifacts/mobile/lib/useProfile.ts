@@ -147,6 +147,7 @@ export function useUpdateProfile() {
         wirePatch.relationshipMode = patch.relationshipMode;
       if (patch.builderAwareMode !== undefined)
         wirePatch.builderAwareMode = patch.builderAwareMode;
+      if (patch.voiceMode !== undefined) wirePatch.voiceMode = patch.voiceMode;
       if (patch.contentMode !== undefined)
         wirePatch.contentMode = patch.contentMode;
       if (patch.intimacyLevel !== undefined)
