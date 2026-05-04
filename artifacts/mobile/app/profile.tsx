@@ -270,6 +270,7 @@ function DeviceAndBackupSection(): React.JSX.Element {
   return (
     <View style={styles.settingsSection}>
       <Text style={styles.sectionTitle}>Device & backup</Text>
+      <Text style={styles.versionStamp}>build: restore-v2 ✓</Text>
 
       <View style={styles.fieldGroup}>
         <Text style={styles.label}>Device ID</Text>
@@ -552,5 +553,13 @@ const styles = StyleSheet.create({
   restoreBtnRow: {
     flexDirection: "row",
     gap: 10,
+  },
+  versionStamp: {
+    color: colors.light.primary,
+    fontFamily: "Inter_500Medium",
+    fontSize: 11,
+    marginTop: -8,
+    marginBottom: 12,
+    opacity: 0.7,
   },
 });
