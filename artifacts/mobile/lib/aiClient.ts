@@ -307,6 +307,15 @@ export async function sendChatMessage(
             }
           : {}),
       },
+      // Wall-clock + timezone from the user's device. The server uses
+      // these to inject a "Time context" block into Ashley's system
+      // prompt so she can answer "what time is it?" honestly and react
+      // naturally to long gaps between messages.
+      clientNow: new Date().toISOString(),
+      clientTimezone:
+        (typeof Intl !== "undefined" &&
+          Intl.DateTimeFormat().resolvedOptions().timeZone) ||
+        "UTC",
     }),
   });
   return {

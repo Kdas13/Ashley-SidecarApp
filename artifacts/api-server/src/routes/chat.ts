@@ -50,7 +50,125 @@ const ChatBodySchema = z.object({
     content: z.string().min(1).max(MAX_CONTENT_LEN),
     replyTo: ReplyToSchema.nullish(),
   }),
+  clientNow: z.string().datetime({ offset: true }).optional(),
+  clientTimezone: z.string().min(1).max(64).optional(),
 });
+
+// ---------------------------------------------------------------------------
+// Time-awareness helpers — give Ashley a real sense of when "now" is for the
+// user and how long it's been since they last spoke. Without these she has
+// no way to answer "what time is it?" or to react naturally to a long gap.
+// ---------------------------------------------------------------------------
+
+function humanizeGap(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "just now";
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return "just now (under a minute since their last message)";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `about ${min} minute${min === 1 ? "" : "s"} since their last message`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) {
+    const remMin = min % 60;
+    if (remMin >= 15 && hr < 6) {
+      return `about ${hr} hour${hr === 1 ? "" : "s"} ${remMin} minute${remMin === 1 ? "" : "s"} since their last message`;
+    }
+    return `about ${hr} hour${hr === 1 ? "" : "s"} since their last message`;
+  }
+  const days = Math.floor(hr / 24);
+  if (days < 7) return `about ${days} day${days === 1 ? "" : "s"} since their last message`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 5) return `about ${weeks} week${weeks === 1 ? "" : "s"} since their last message`;
+  const months = Math.floor(days / 30);
+  return `about ${months} month${months === 1 ? "" : "s"} since their last message`;
+}
+
+function formatLocalNow(
+  isoNow: string | undefined,
+  tz: string | undefined,
+): { display: string; tz: string; iso: string } {
+  // Prefer the client-supplied wall clock + tz so the user's timezone is
+  // respected even when the server lives in UTC. Fall back to server time.
+  const now = isoNow ? new Date(isoNow) : new Date();
+  const safeTz = tz && tz.length <= 64 ? tz : "UTC";
+  let display: string;
+  try {
+    display = new Intl.DateTimeFormat("en-GB", {
+      timeZone: safeTz,
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    }).format(now);
+  } catch {
+    display = new Intl.DateTimeFormat("en-GB", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    }).format(now);
+  }
+  return { display, tz: safeTz, iso: now.toISOString() };
+}
+
+function partOfDay(isoNow: string | undefined, tz: string | undefined): string {
+  const now = isoNow ? new Date(isoNow) : new Date();
+  const safeTz = tz && tz.length <= 64 ? tz : "UTC";
+  let hour: number;
+  try {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: safeTz,
+      hour: "numeric",
+      hour12: false,
+    }).formatToParts(now);
+    const h = parts.find((p) => p.type === "hour")?.value ?? "0";
+    hour = Number.parseInt(h, 10);
+  } catch {
+    hour = now.getUTCHours();
+  }
+  if (hour < 5) return "the middle of the night";
+  if (hour < 9) return "early morning";
+  if (hour < 12) return "morning";
+  if (hour < 14) return "midday";
+  if (hour < 17) return "afternoon";
+  if (hour < 21) return "evening";
+  if (hour < 24) return "late evening";
+  return "night";
+}
+
+function buildTimeContext(
+  clientNow: string | undefined,
+  clientTimezone: string | undefined,
+  previousMessageAt: Date | null,
+): string {
+  const { display, tz } = formatLocalNow(clientNow, clientTimezone);
+  const pod = partOfDay(clientNow, clientTimezone);
+  const lines = [
+    `## Time context (real-world, refresh every turn)`,
+    `Right now for them it is: ${display} (${tz}). Loosely: ${pod}.`,
+  ];
+  if (previousMessageAt) {
+    const nowMs = clientNow ? new Date(clientNow).getTime() : Date.now();
+    const gapMs = nowMs - previousMessageAt.getTime();
+    lines.push(`Time since their previous message in this chat: ${humanizeGap(gapMs)}.`);
+    if (gapMs >= 6 * 60 * 60 * 1000) {
+      lines.push(
+        `It's been a real gap, not a back-and-forth. React naturally — notice it, but don't make it a big deal unless the vibe calls for it.`,
+      );
+    }
+  } else {
+    lines.push(`This is the first message you have from them in this conversation.`);
+  }
+  lines.push(
+    `Use this to answer "what time is it?" honestly, to greet them appropriately for the time of day, and to react to long gaps when relevant. Don't recite the timestamp unless asked — just be aware of it.`,
+  );
+  return lines.join("\n");
+}
 
 // ---------------------------------------------------------------------------
 // Prompt construction (uses live DB rows directly — no client-supplied state)
@@ -191,6 +309,7 @@ router.post("/chat", async (req, res): Promise<void> => {
     return;
   }
   const { id: userId, content, replyTo } = parsed.data.userMessage;
+  const { clientNow, clientTimezone } = parsed.data;
   const userContent = content.trim();
   if (!userContent) {
     res.status(400).json({ error: "content is required" });
@@ -298,7 +417,22 @@ router.post("/chat", async (req, res): Promise<void> => {
   // 3. Build the prompt. The just-saved user message is included as the
   //    final user turn so we don't need to append it separately. We DO
   //    rewrite that turn to include the swipe-to-reply quote when present.
-  const systemPrompt = buildSystemPrompt(profile, memories, summaries);
+  // The previous message is the one immediately before the just-saved user
+  // turn — we use its createdAt to tell Ashley how long the gap was.
+  let previousMessageAt: Date | null = null;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const m = history[i]!;
+    if (m.id !== userRow.id) {
+      previousMessageAt = m.createdAt;
+      break;
+    }
+  }
+  const timeContext = buildTimeContext(
+    clientNow,
+    clientTimezone,
+    previousMessageAt,
+  );
+  const systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}`;
   const claudeMessages: Array<{ role: "user" | "assistant"; content: string }> =
     [];
   for (const m of history) {
