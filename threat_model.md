@@ -21,7 +21,7 @@ Production assumptions for scans: `NODE_ENV` is set to `production`; platform TL
 - **API server to PostgreSQL** -- Legacy routes read and mutate persistent profile, message, memory, and summary rows. Any production exposure of these routes requires authentication/authorization or other deployment-level access restrictions.
 - **API server to object/local storage** -- Selfie save/read paths cross into object storage or local filesystem. Selfie identifiers must remain server-generated and constrained to prevent traversal or arbitrary object access.
 - **Public internet to API** -- In production the API is reachable over HTTPS. Public endpoints are unauthenticated unless explicit middleware is added.
-- **Development-only surfaces** -- `artifacts/mockup-sandbox`, Expo development scripts, generated `dist` files, and build tooling are out of production scope unless shown to be deployed.
+- **Development-only surfaces** -- Expo development scripts, generated `dist` files, and build tooling are out of production scope unless shown to be deployed.
 
 ## Scan Anchors
 
@@ -31,7 +31,7 @@ Production assumptions for scans: `NODE_ENV` is set to `production`; platform TL
 - Mobile outbound data flow: `artifacts/mobile/lib/aiClient.ts`, `artifacts/mobile/lib/useMessages.ts`, and AsyncStorage wrappers in `artifacts/mobile/lib/storage.ts`.
 - Public/stateless intended surface: `/api/chat/reply`, `/api/chat/selfie`, `/api/chat/selfie/:jobId`, `/api/chat/summarize`, and `/api/selfies/:filename`.
 - Legacy database-backed surfaces: `/api/profile`, `/api/chat/messages`, `/api/memories`, `/api/conversation-summaries`, and `/api/image/selfie`; these are mounted and production-relevant if the API server is deployed.
-- Dev-only: `artifacts/mockup-sandbox`, `artifacts/mobile/scripts`, `artifacts/mobile/server`, generated `dist` directories, and local preview tooling.
+- Dev-only: `artifacts/mobile/scripts`, `artifacts/mobile/server`, generated `dist` directories, and local preview tooling.
 
 ## Threat Categories
 

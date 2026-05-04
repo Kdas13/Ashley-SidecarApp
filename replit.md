@@ -78,7 +78,6 @@ no DB knowledge of the conversation — the phone is the source of truth.
 
 - `artifacts/mobile` — the user-facing companion app (`Ashley-Sidecar`).
 - `artifacts/api-server` — Express backend mounted at `/api`. Dormant in V1.
-- `artifacts/mockup-sandbox` — Vite-based component playground (default).
 
 ## Local storage layer (`artifacts/mobile/lib/`)
 
@@ -192,7 +191,6 @@ are not used by mobile in V1.1:
 
 - `artifacts/api-server: API Server` — `pnpm --filter @workspace/api-server run dev`
 - `artifacts/mobile: expo` — `pnpm --filter @workspace/mobile run dev`
-- `artifacts/mockup-sandbox: Component Preview Server` — Vite dev server.
 
 ## Notes / known limitations
 
