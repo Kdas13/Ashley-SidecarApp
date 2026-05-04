@@ -56,13 +56,22 @@ export default function HomeScreen(): React.JSX.Element {
           >
             <Feather name="settings" size={20} color={colors.light.text} />
           </Pressable>
-          <Pressable
-            onPress={() => router.push("/memories")}
-            style={styles.iconBtn}
-            accessibilityLabel="Memories"
-          >
-            <Feather name="book-open" size={20} color={colors.light.text} />
-          </Pressable>
+          <View style={styles.topBarRight}>
+            <Pressable
+              onPress={() => router.push("/visuals" as never)}
+              style={styles.iconBtn}
+              accessibilityLabel="Visual memory"
+            >
+              <Feather name="image" size={20} color={colors.light.text} />
+            </Pressable>
+            <Pressable
+              onPress={() => router.push("/memories")}
+              style={styles.iconBtn}
+              accessibilityLabel="Memories"
+            >
+              <Feather name="book-open" size={20} color={colors.light.text} />
+            </Pressable>
+          </View>
         </View>
 
         <View style={styles.middle}>
@@ -118,6 +127,11 @@ const styles = StyleSheet.create({
   topBar: {
     flexDirection: "row",
     justifyContent: "space-between",
+    alignItems: "center",
+  },
+  topBarRight: {
+    flexDirection: "row",
+    gap: 8,
   },
   iconBtn: {
     width: 44,

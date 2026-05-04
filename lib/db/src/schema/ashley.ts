@@ -76,6 +76,17 @@ export const messagesTable = pgTable(
     // remember the visual prompt here. The selfie endpoint patches
     // `imageUrl` (and clears this column) when the photo is ready.
     selfieVibe: text("selfie_vibe"),
+    // For images uploaded BY the user (paperclip flow). Null on Ashley
+    // messages and on text-only user messages.
+    imageMimeType: text("image_mime_type"),
+    imageCategory: text("image_category"),
+    imageCaption: text("image_caption"),
+    imageAnalysisMode: text("image_analysis_mode"),
+    // Tri-state for the "should I remember this image?" card:
+    //   null  → user hasn't decided yet, card is shown after Ashley's reply
+    //   true  → user said "remember key details" or "visual reference"
+    //   false → user dismissed the card
+    imageRemembered: boolean("image_remembered"),
     // Optional swipe-to-reply quote attached to user messages.
     replyToId: text("reply_to_id"),
     replyToRole: text("reply_to_role"),

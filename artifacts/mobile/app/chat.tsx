@@ -19,17 +19,25 @@ import { router } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import * as FileSystem from "expo-file-system/legacy";
 import * as MediaLibrary from "expo-media-library";
+import * as ImagePicker from "expo-image-picker";
 
 import {
   useMessages,
   useSendMessage,
+  useSendImage,
+  useMarkImageRemembered,
   useClearMessages,
   useRetrySelfie,
   useRetryUnansweredReply,
   useSelfieInFlight,
 } from "@/lib/useMessages";
 import { useProfile, useUpdateProfile } from "@/lib/useProfile";
-import type { Message, ReplyToRef } from "@/lib/storage";
+import type {
+  ImageAnalysisMode,
+  ImageCategory,
+  Message,
+  ReplyToRef,
+} from "@/lib/storage";
 import colors from "@/constants/colors";
 import { SwipeToReply } from "@/components/SwipeToReply";
 
@@ -45,6 +53,44 @@ const RELATIONSHIP_MODE_PRESETS = [
 // Maximum length of the quote preview we capture from a swiped message.
 // Keeps storage and the on-screen quote header from getting unwieldy.
 const REPLY_PREVIEW_MAX = 140;
+
+// Image picker — visible labels for category + analysis-mode chips.
+const IMAGE_CATEGORIES: { value: ImageCategory; label: string }[] = [
+  { value: "art_progress", label: "Art progress" },
+  { value: "clothing_design", label: "Clothing design" },
+  { value: "ashley_identity", label: "Ashley identity" },
+  { value: "app_screenshot", label: "App screenshot" },
+  { value: "medical", label: "Medical" },
+  { value: "other", label: "Other" },
+];
+
+const IMAGE_MODES: { value: ImageAnalysisMode; label: string; hint: string }[] =
+  [
+    { value: "quick", label: "Quick reaction", hint: "short, warm, what jumps out" },
+    { value: "critique", label: "Critique", hint: "honest feedback, what could shift" },
+    { value: "stepbystep", label: "Step by step", hint: "walk through it methodically" },
+    { value: "debug", label: "Debug", hint: "what's wrong + how to fix" },
+    { value: "extract", label: "Extract", hint: "pull out text / numbers / structure" },
+    { value: "compare", label: "Compare", hint: "compare with what came before" },
+  ];
+
+type PickedImage = {
+  uri: string;
+  base64: string;
+  mimeType: string;
+  width: number;
+  height: number;
+};
+
+function mimeFromUri(uri: string, fallback: string | undefined): string {
+  if (fallback) return fallback;
+  const lower = uri.toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".gif")) return "image/gif";
+  if (lower.endsWith(".heic")) return "image/heic";
+  return "image/jpeg";
+}
 
 function buildReplyPreview(message: Message): ReplyToRef {
   const raw = (message.content ?? "").trim();
@@ -71,8 +117,18 @@ export default function ChatScreen(): React.JSX.Element {
 
   const messagesQuery = useMessages();
   const sendMutation = useSendMessage();
+  const sendImageMutation = useSendImage();
+  const markImageRemembered = useMarkImageRemembered();
   const clearMutation = useClearMessages();
   const retryUnanswered = useRetryUnansweredReply();
+
+  // Paperclip / image-upload modal state. Held open from "picked an
+  // image" until either Send or Cancel.
+  const [pickedImage, setPickedImage] = useState<PickedImage | null>(null);
+  const [imageCategory, setImageCategory] = useState<ImageCategory>("other");
+  const [imageMode, setImageMode] = useState<ImageAnalysisMode>("quick");
+  const [imageCaption, setImageCaption] = useState("");
+  const [imagePickerError, setImagePickerError] = useState<string | null>(null);
 
   const profileQuery = useProfile();
   const updateProfile = useUpdateProfile();
@@ -109,12 +165,63 @@ export default function ChatScreen(): React.JSX.Element {
   const sendError =
     sendMutation.error instanceof Error ? sendMutation.error.message : null;
 
+  // Scroll behaviour — the prior version called scrollToEnd on every
+  // contentSize change AND on every messages.length change, which caused
+  // visible jitter every time a bubble re-measured (image load, quote
+  // expansion, "Ashley is typing..." footer mounting). New rule:
+  //   - Track whether the user is currently near the bottom via onScroll.
+  //   - When the message list grows: only auto-scroll if (a) the user is
+  //     near the bottom OR (b) the most-recent message is from the user
+  //     OR (c) we're mid-send.
+  //   - On the very first render with messages, snap to bottom once.
+  const isNearBottomRef = useRef(true);
+  const prevMessagesLenRef = useRef(0);
+  const didInitialScrollRef = useRef(false);
+
+  const handleScroll = useCallback(
+    (e: {
+      nativeEvent: {
+        contentOffset: { y: number };
+        contentSize: { height: number };
+        layoutMeasurement: { height: number };
+      };
+    }) => {
+      const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+      const distanceFromBottom =
+        contentSize.height - contentOffset.y - layoutMeasurement.height;
+      isNearBottomRef.current = distanceFromBottom < 80;
+    },
+    [],
+  );
+
   useEffect(() => {
-    if (messages.length === 0 && !sendMutation.isPending) return;
-    requestAnimationFrame(() => {
-      listRef.current?.scrollToEnd({ animated: true });
-    });
-  }, [messages.length, sendMutation.isPending]);
+    const grew = messages.length > prevMessagesLenRef.current;
+    prevMessagesLenRef.current = messages.length;
+    if (!didInitialScrollRef.current && messages.length > 0) {
+      didInitialScrollRef.current = true;
+      requestAnimationFrame(() =>
+        listRef.current?.scrollToEnd({ animated: false }),
+      );
+      return;
+    }
+    if (!grew && !sendMutation.isPending) return;
+    const lastMsg = messages[messages.length - 1];
+    const userJustSent = lastMsg?.role === "user";
+    if (
+      sendMutation.isPending ||
+      sendImageMutation.isPending ||
+      userJustSent ||
+      isNearBottomRef.current
+    ) {
+      requestAnimationFrame(() =>
+        listRef.current?.scrollToEnd({ animated: true }),
+      );
+    }
+  }, [
+    messages,
+    sendMutation.isPending,
+    sendImageMutation.isPending,
+  ]);
 
   // Auto-retry: if the latest message is from the user (Ashley never
   // replied — common when the api-server gets recycled mid-request) keep
@@ -124,7 +231,12 @@ export default function ChatScreen(): React.JSX.Element {
   // retry is in flight. We also dismiss the stale send-error banner once a
   // retry succeeds so the green path looks clean.
   const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
-  const hasUnansweredTail = lastMessage?.role === "user";
+  // Image messages have their own dedicated /chat/image flow — text-only
+  // /chat doesn't know what to do with them. So an unanswered image
+  // message at the tail is NOT a candidate for the auto-retry; the user
+  // can re-tap the paperclip if it really stalled. (See architect note
+  // about /chat being unable to retry image-message ids.)
+  const hasUnansweredTail = lastMessage?.role === "user" && !lastMessage?.imageUrl;
   const retryMutateRef = useRef(retryUnanswered.mutateAsync);
   retryMutateRef.current = retryUnanswered.mutateAsync;
   const sendResetRef = useRef(sendMutation.reset);
@@ -201,11 +313,149 @@ export default function ChatScreen(): React.JSX.Element {
     );
   }, [clearMutation]);
 
+  // ---------------------------------------------------------------------
+  // Paperclip / image-upload flow
+  // ---------------------------------------------------------------------
+
+  const openImagePicker = useCallback(async () => {
+    setImagePickerError(null);
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert(
+          "Permission needed",
+          "Allow photo library access so you can send Ashley pictures.",
+        );
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsMultipleSelection: false,
+        base64: true,
+        quality: 0.85,
+        exif: false,
+      });
+      if (result.canceled) return;
+      const asset = result.assets[0];
+      if (!asset || !asset.base64) {
+        Alert.alert("Couldn't read image", "Try again with a different photo.");
+        return;
+      }
+      // Base64 size cap mirrors the server (~7 MB of base64 string).
+      if (asset.base64.length > 7 * 1024 * 1024) {
+        Alert.alert(
+          "Photo too large",
+          "That image is over the 5 MB limit. Try a smaller one or take a new photo.",
+        );
+        return;
+      }
+      const mimeType = mimeFromUri(asset.uri, asset.mimeType ?? undefined);
+      // Block HEIC at the picker — Claude vision can't read it. iOS users
+      // can usually pick a JPEG version of the same photo.
+      if (mimeType === "image/heic") {
+        Alert.alert(
+          "HEIC not supported",
+          "iPhone HEIC photos can't be analysed yet. Try sharing the photo as JPEG.",
+        );
+        return;
+      }
+      setPickedImage({
+        uri: asset.uri,
+        base64: asset.base64,
+        mimeType,
+        width: asset.width,
+        height: asset.height,
+      });
+      setImageCategory("other");
+      setImageMode("quick");
+      setImageCaption("");
+    } catch (e) {
+      Alert.alert(
+        "Couldn't open photos",
+        e instanceof Error ? e.message : "Try again.",
+      );
+    }
+  }, []);
+
+  const cancelImagePicker = useCallback(() => {
+    setPickedImage(null);
+    setImagePickerError(null);
+  }, []);
+
+  const sendPickedImage = useCallback(async () => {
+    if (!pickedImage || sendImageMutation.isPending) return;
+    const replyToSnapshot = replyingTo;
+    const captionSnapshot = imageCaption.trim();
+    const picked = pickedImage;
+    const cat = imageCategory;
+    const mode = imageMode;
+    setImagePickerError(null);
+    try {
+      await sendImageMutation.mutateAsync({
+        uri: picked.uri,
+        base64: picked.base64,
+        mimeType: picked.mimeType,
+        category: cat,
+        mode,
+        caption: captionSnapshot,
+        ...(replyToSnapshot ? { replyTo: replyToSnapshot } : {}),
+      });
+      setPickedImage(null);
+      setImageCaption("");
+      setReplyingTo(null);
+    } catch (err) {
+      setImagePickerError(
+        err instanceof Error
+          ? err.message
+          : "Couldn't send the image — try again.",
+      );
+    }
+  }, [
+    pickedImage,
+    sendImageMutation,
+    imageCaption,
+    imageCategory,
+    imageMode,
+    replyingTo,
+  ]);
+
+  // ---------------------------------------------------------------------
+  // Remember card — shown under Ashley's reply when the previous message
+  // is a user-uploaded image with an undecided imageRemembered flag.
+  // ---------------------------------------------------------------------
+
+  const onRemember = useCallback(
+    (userMessageId: string, decision: "remember" | "visual" | "dismiss") => {
+      markImageRemembered.mutate({ messageId: userMessageId, decision });
+    },
+    [markImageRemembered],
+  );
+
   const renderItem = useCallback(
-    ({ item }: { item: Message }) => (
-      <MessageBubble message={item} onSwipeReply={handleStartReply} />
-    ),
-    [handleStartReply],
+    ({ item, index }: { item: Message; index: number }) => {
+      const prev = index > 0 ? messages[index - 1] : null;
+      const showRememberCard =
+        item.role === "ashley" &&
+        prev &&
+        prev.role === "user" &&
+        !!prev.imageUrl &&
+        prev.imageRemembered === null &&
+        prev.imageCategory != null;
+      return (
+        <>
+          <MessageBubble message={item} onSwipeReply={handleStartReply} />
+          {showRememberCard && prev ? (
+            <RememberCard
+              userMessageId={prev.id}
+              category={prev.imageCategory ?? "other"}
+              onChoose={onRemember}
+              isPending={markImageRemembered.isPending}
+            />
+          ) : null}
+        </>
+      );
+    },
+    [handleStartReply, messages, onRemember, markImageRemembered.isPending],
   );
 
   return (
@@ -295,9 +545,8 @@ export default function ChatScreen(): React.JSX.Element {
                 </View>
               ) : null
             }
-            onContentSizeChange={() =>
-              listRef.current?.scrollToEnd({ animated: false })
-            }
+            onScroll={handleScroll}
+            scrollEventThrottle={64}
           />
         )}
 
@@ -345,6 +594,25 @@ export default function ChatScreen(): React.JSX.Element {
         ) : null}
 
         <View style={[styles.inputBar, { paddingBottom: insets.bottom + 8 }]}>
+          <Pressable
+            onPress={openImagePicker}
+            disabled={sendMutation.isPending || sendImageMutation.isPending}
+            style={({ pressed }) => [
+              styles.attachBtn,
+              (sendMutation.isPending || sendImageMutation.isPending) && {
+                opacity: 0.4,
+              },
+              pressed && { transform: [{ scale: 0.95 }] },
+            ]}
+            accessibilityLabel="Attach a photo"
+            hitSlop={6}
+          >
+            <Feather
+              name="paperclip"
+              size={20}
+              color={colors.light.mutedForeground}
+            />
+          </Pressable>
           <TextInput
             ref={inputRef}
             value={draft}
@@ -356,7 +624,7 @@ export default function ChatScreen(): React.JSX.Element {
             style={styles.input}
             multiline
             maxLength={4000}
-            editable={!sendMutation.isPending}
+            editable={!sendMutation.isPending && !sendImageMutation.isPending}
             onSubmitEditing={send}
             blurOnSubmit={false}
           />
@@ -474,6 +742,220 @@ export default function ChatScreen(): React.JSX.Element {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <Modal
+        visible={!!pickedImage}
+        transparent
+        animationType="slide"
+        onRequestClose={cancelImagePicker}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.imagePickerCard}>
+            <View style={styles.imagePickerHeader}>
+              <Text style={styles.modalTitle}>Send a photo</Text>
+              <Pressable
+                onPress={cancelImagePicker}
+                hitSlop={8}
+                accessibilityLabel="Cancel"
+                disabled={sendImageMutation.isPending}
+              >
+                <Feather
+                  name="x"
+                  size={20}
+                  color={colors.light.mutedForeground}
+                />
+              </Pressable>
+            </View>
+            {pickedImage ? (
+              <Image
+                source={{ uri: pickedImage.uri }}
+                style={styles.imagePickerPreview}
+                resizeMode="cover"
+                accessibilityLabel="Selected photo preview"
+              />
+            ) : null}
+            <Text style={styles.modalLabel}>What is this?</Text>
+            <View style={styles.chipsWrap}>
+              {IMAGE_CATEGORIES.map((c) => {
+                const active = c.value === imageCategory;
+                return (
+                  <Pressable
+                    key={c.value}
+                    onPress={() => setImageCategory(c.value)}
+                    disabled={sendImageMutation.isPending}
+                    style={[styles.chip, active && styles.chipActive]}
+                  >
+                    <Text
+                      style={[styles.chipText, active && styles.chipTextActive]}
+                    >
+                      {c.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Text style={styles.modalLabel}>How should she look at it?</Text>
+            <View style={styles.chipsWrap}>
+              {IMAGE_MODES.map((m) => {
+                const active = m.value === imageMode;
+                return (
+                  <Pressable
+                    key={m.value}
+                    onPress={() => setImageMode(m.value)}
+                    disabled={sendImageMutation.isPending}
+                    style={[styles.chip, active && styles.chipActive]}
+                  >
+                    <Text
+                      style={[styles.chipText, active && styles.chipTextActive]}
+                    >
+                      {m.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Text style={styles.modeHint}>
+              {IMAGE_MODES.find((m) => m.value === imageMode)?.hint ?? ""}
+            </Text>
+            <TextInput
+              value={imageCaption}
+              onChangeText={setImageCaption}
+              placeholder="add a note for her (optional)"
+              placeholderTextColor={colors.light.mutedForeground}
+              style={styles.imageCaptionInput}
+              maxLength={1000}
+              multiline
+              editable={!sendImageMutation.isPending}
+            />
+            {imagePickerError ? (
+              <Text style={styles.imagePickerError} numberOfLines={3}>
+                {imagePickerError}
+              </Text>
+            ) : null}
+            {imageCategory === "medical" ? (
+              <Text style={styles.medicalNotice}>
+                Heads up: she won't diagnose. She'll help you organise what
+                you're seeing and flag NHS 111 / 999 if anything looks
+                acute.
+              </Text>
+            ) : null}
+            <Pressable
+              onPress={sendPickedImage}
+              disabled={sendImageMutation.isPending || !pickedImage}
+              style={({ pressed }) => [
+                styles.imagePickerSendBtn,
+                (sendImageMutation.isPending || !pickedImage) && {
+                  opacity: 0.4,
+                },
+                pressed && { transform: [{ scale: 0.98 }] },
+              ]}
+              accessibilityLabel="Send the photo"
+            >
+              {sendImageMutation.isPending ? (
+                <ActivityIndicator
+                  size="small"
+                  color={colors.light.primaryForeground}
+                />
+              ) : (
+                <>
+                  <Feather
+                    name="send"
+                    size={16}
+                    color={colors.light.primaryForeground}
+                  />
+                  <Text style={styles.imagePickerSendText}>
+                    Send to {ashleyName}
+                  </Text>
+                </>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// "Should I remember anything?" card — appears under Ashley's reply to a
+// user-uploaded image while the user hasn't decided yet. Three options:
+// keep it as a memory, keep it as a visual reference (lighter weight), or
+// dismiss the card. Tapping any option clears the card immediately.
+// ---------------------------------------------------------------------------
+
+function RememberCard({
+  userMessageId,
+  category,
+  onChoose,
+  isPending,
+}: {
+  userMessageId: string;
+  category: ImageCategory;
+  onChoose: (
+    id: string,
+    decision: "remember" | "visual" | "dismiss",
+  ) => void;
+  isPending: boolean;
+}): React.JSX.Element {
+  return (
+    <View style={[styles.row, styles.rowLeft]}>
+      <View style={styles.rememberCard}>
+        <View style={styles.rememberHeader}>
+          <Feather
+            name="bookmark"
+            size={14}
+            color={colors.light.accent}
+          />
+          <Text style={styles.rememberHeaderText}>
+            Should I remember anything?
+          </Text>
+        </View>
+        <Text style={styles.rememberHint}>
+          {category === "ashley_identity"
+            ? "I can hold this as part of how I see myself."
+            : category === "medical"
+              ? "I can keep this so I can refer back to it next time."
+              : "I can keep this in mind for next time we talk."}
+        </Text>
+        <View style={styles.rememberRow}>
+          <Pressable
+            onPress={() => onChoose(userMessageId, "remember")}
+            disabled={isPending}
+            style={({ pressed }) => [
+              styles.rememberBtn,
+              styles.rememberBtnPrimary,
+              isPending && { opacity: 0.4 },
+              pressed && { transform: [{ scale: 0.97 }] },
+            ]}
+          >
+            <Text style={styles.rememberBtnPrimaryText}>Remember</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => onChoose(userMessageId, "visual")}
+            disabled={isPending}
+            style={({ pressed }) => [
+              styles.rememberBtn,
+              styles.rememberBtnSecondary,
+              isPending && { opacity: 0.4 },
+              pressed && { transform: [{ scale: 0.97 }] },
+            ]}
+          >
+            <Text style={styles.rememberBtnSecondaryText}>Just visual</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => onChoose(userMessageId, "dismiss")}
+            disabled={isPending}
+            style={({ pressed }) => [
+              styles.rememberBtn,
+              styles.rememberBtnGhost,
+              isPending && { opacity: 0.4 },
+              pressed && { transform: [{ scale: 0.97 }] },
+            ]}
+          >
+            <Text style={styles.rememberBtnGhostText}>Skip</Text>
+          </Pressable>
+        </View>
+      </View>
     </View>
   );
 }
@@ -1100,6 +1582,145 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 2,
+  },
+  attachBtn: {
+    width: 40,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 2,
+  },
+  imagePickerCard: {
+    backgroundColor: colors.light.background,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 26,
+    gap: 8,
+    maxHeight: "92%",
+  },
+  imagePickerHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 4,
+  },
+  imagePickerPreview: {
+    width: "100%",
+    height: 180,
+    borderRadius: 12,
+    backgroundColor: colors.light.muted,
+    marginBottom: 4,
+  },
+  modeHint: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_400Regular",
+    fontSize: 11,
+    fontStyle: "italic",
+  },
+  imageCaptionInput: {
+    backgroundColor: colors.light.muted,
+    color: colors.light.text,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontFamily: "Inter_400Regular",
+    fontSize: 14,
+    minHeight: 48,
+    maxHeight: 110,
+    marginTop: 6,
+  },
+  medicalNotice: {
+    color: colors.light.accent,
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
+    backgroundColor: "rgba(122, 92, 255, 0.10)",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  imagePickerError: {
+    color: colors.light.destructive,
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
+  },
+  imagePickerSendBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: colors.light.primary,
+    borderRadius: 14,
+    paddingVertical: 14,
+    marginTop: 10,
+  },
+  imagePickerSendText: {
+    color: colors.light.primaryForeground,
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 14,
+  },
+  rememberCard: {
+    maxWidth: "85%",
+    marginLeft: 4,
+    marginVertical: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(122, 92, 255, 0.35)",
+    backgroundColor: "rgba(122, 92, 255, 0.08)",
+    gap: 10,
+  },
+  rememberHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  rememberHeaderText: {
+    color: colors.light.text,
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 13,
+  },
+  rememberHint: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_400Regular",
+    fontSize: 12,
+  },
+  rememberRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  rememberBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 10,
+  },
+  rememberBtnPrimary: {
+    backgroundColor: colors.light.primary,
+  },
+  rememberBtnPrimaryText: {
+    color: colors.light.primaryForeground,
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 12,
+  },
+  rememberBtnSecondary: {
+    backgroundColor: colors.light.muted,
+  },
+  rememberBtnSecondaryText: {
+    color: colors.light.text,
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
+  },
+  rememberBtnGhost: {
+    backgroundColor: "transparent",
+  },
+  rememberBtnGhostText: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
+    textDecorationLine: "underline",
   },
   center: {
     flex: 1,

@@ -14,8 +14,12 @@ import {
   clearChatOnServer,
   fetchSelfieForMessage,
   fetchState,
+  markImageRemembered,
+  sendChatImage,
   sendChatMessage,
+  type RememberDecision,
 } from "./aiClient";
+import type { ImageAnalysisMode, ImageCategory } from "./storage";
 
 const MESSAGES_KEY = ["messages"] as const;
 const SUMMARIES_KEY = ["summaries"] as const;
@@ -171,6 +175,101 @@ export function useRetryUnansweredReply() {
         );
       }
       return response.ashleyMessage;
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Image upload (paperclip flow) — POST /chat/image
+// ---------------------------------------------------------------------------
+
+export type SendImageArgs = {
+  uri: string;
+  base64: string;
+  mimeType: string;
+  category: ImageCategory;
+  mode: ImageAnalysisMode;
+  caption: string;
+  replyTo?: ReplyToRef | null;
+};
+
+export function useSendImage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: SendImageArgs): Promise<SendMessageResult> => {
+      const userId = newId();
+      // Optimistic insert: show the local file:// URI in the user's bubble
+      // immediately so the chat doesn't appear frozen during upload.
+      const optimisticUser: Message = {
+        id: userId,
+        role: "user",
+        content: args.caption ?? "",
+        createdAt: new Date().toISOString(),
+        imageUrl: args.uri,
+        imageMimeType: args.mimeType,
+        imageCategory: args.category,
+        imageCaption: args.caption,
+        imageAnalysisMode: args.mode,
+        imageRemembered: null,
+        replyTo: args.replyTo ?? null,
+      };
+      const previous = qc.getQueryData<Message[]>(MESSAGES_KEY) ?? [];
+      const optimisticList = [...previous, optimisticUser];
+      // Optimistic update is in-memory only — we deliberately do NOT
+      // write the file:// URI to AsyncStorage. If the upload succeeds
+      // we persist the server's public URL below; if it fails or the
+      // app is killed mid-upload, the cache resets cleanly on next boot.
+      qc.setQueryData(MESSAGES_KEY, optimisticList);
+
+      let response: { userMessage: Message; ashleyMessage: Message };
+      try {
+        response = await sendChatImage({
+          id: userId,
+          base64: args.base64,
+          mimeType: args.mimeType,
+          category: args.category,
+          mode: args.mode,
+          caption: args.caption,
+          ...(args.replyTo ? { replyTo: args.replyTo } : {}),
+        });
+      } catch (err) {
+        throw err instanceof Error ? err : new Error("Could not send image");
+      }
+
+      const next = [
+        ...previous,
+        response.userMessage,
+        response.ashleyMessage,
+      ];
+      qc.setQueryData(MESSAGES_KEY, next);
+      await withStorageLock(STORAGE_KEYS.messages, () => saveMessages(next));
+      qc.invalidateQueries({ queryKey: SUMMARIES_KEY });
+
+      return { user: response.userMessage, ashley: response.ashleyMessage };
+    },
+    onError: () => {
+      qc.invalidateQueries({ queryKey: MESSAGES_KEY });
+    },
+  });
+}
+
+export function useMarkImageRemembered() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: {
+      messageId: string;
+      decision: RememberDecision;
+    }): Promise<Message> => {
+      const updated = await markImageRemembered(args.messageId, args.decision);
+      await patchInCache(qc, args.messageId, {
+        imageRemembered: updated.imageRemembered ?? null,
+      });
+      // The "remember" / "visual" decisions create a new memory server-side,
+      // so refresh that query to keep the memories screen current.
+      if (args.decision !== "dismiss") {
+        qc.invalidateQueries({ queryKey: ["memories"] });
+      }
+      return updated;
     },
   });
 }

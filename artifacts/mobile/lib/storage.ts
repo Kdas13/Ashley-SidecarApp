@@ -60,12 +60,28 @@ export type Memory = {
   updatedAt: string;
 };
 
+export type ImageCategory =
+  | "art_progress"
+  | "ashley_identity"
+  | "app_screenshot"
+  | "medical"
+  | "clothing_design"
+  | "other";
+
+export type ImageAnalysisMode =
+  | "quick"
+  | "critique"
+  | "stepbystep"
+  | "debug"
+  | "extract"
+  | "compare";
+
 export type Message = {
   id: string;
   role: "user" | "ashley";
   content: string;
   createdAt: string;
-  /** Absolute URL of a generated selfie, when one is attached. */
+  /** Absolute URL of an attached image (generated selfie OR user upload). */
   imageUrl?: string | null;
   /**
    * Visual prompt the server stored when Ashley wanted to take a selfie
@@ -74,6 +90,18 @@ export type Message = {
    * Cleared once the photo arrives.
    */
   selfieVibe?: string | null;
+  /** For images the user uploaded via the paperclip flow. */
+  imageMimeType?: string | null;
+  imageCategory?: ImageCategory | null;
+  imageCaption?: string | null;
+  imageAnalysisMode?: ImageAnalysisMode | null;
+  /**
+   * Tri-state for the "should I remember this image?" decision card:
+   *   null  → undecided, the card is shown after Ashley's reply.
+   *   true  → user chose remember / visual reference.
+   *   false → user dismissed the card.
+   */
+  imageRemembered?: boolean | null;
   /** Quoted earlier message attached to a swipe-to-reply. */
   replyTo?: ReplyToRef | null;
 };

@@ -42,7 +42,18 @@ app.use(
   }),
 );
 app.use(cors());
-app.use(express.json({ limit: "1mb" }));
+// The base64 image-upload route (/api/chat/image) needs ~12mb of headroom;
+// every other endpoint stays on a tight 1mb cap so a stray text payload
+// can't bloat memory pressure. We pick the right parser per-request based
+// on the path. (Mounting two json parsers globally doesn't work because
+// express.json is idempotent — once req._body is set the second pass
+// no-ops.)
+const jsonLarge = express.json({ limit: "12mb" });
+const jsonSmall = express.json({ limit: "1mb" });
+app.use((req, res, next) => {
+  if (req.path === "/api/chat/image") return jsonLarge(req, res, next);
+  return jsonSmall(req, res, next);
+});
 app.use(express.urlencoded({ extended: true }));
 
 // Public paths that bypass auth + rate limiting + device-id check:
@@ -51,7 +62,11 @@ app.use(express.urlencoded({ extended: true }));
 //                                  (selfie URLs already use unguessable UUIDs;
 //                                  RN <Image> can't attach Authorization)
 const isPublicApiPath = (path: string): boolean => {
-  return path === "/healthz" || path.startsWith("/selfies/");
+  return (
+    path === "/healthz" ||
+    path.startsWith("/selfies/") ||
+    path.startsWith("/user-images/")
+  );
 };
 
 const gate: RequestHandler = (req, res, next) => {

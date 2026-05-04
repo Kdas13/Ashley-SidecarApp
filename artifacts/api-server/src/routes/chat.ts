@@ -22,7 +22,17 @@ import { getOrCreateProfileFor } from "../lib/profile";
 import { MEMORY_DISTILLER_PROMPT, SUMMARIZER_PROMPT } from "../lib/ashleyPrompt";
 import { buildSystemPrompt } from "../lib/ashleyCoreSpec";
 import { generateImageBase64 } from "../lib/openai";
-import { saveSelfie, localSelfieDir } from "../lib/storage";
+import {
+  saveSelfie,
+  saveUserImage,
+  userImageExtForMime,
+  localSelfieDir,
+} from "../lib/storage";
+import {
+  buildImagePromptAddendum,
+  type ImageAnalysisMode as ImageAnalysisModeT,
+  type ImageCategory as ImageCategoryT,
+} from "../lib/ashleyCoreSpec";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -831,3 +841,419 @@ async function maybeRollUpOlderMessages(deviceId: string): Promise<void> {
 }
 
 export default router;
+
+// ---------------------------------------------------------------------------
+// POST /chat/image — paperclip upload + Claude vision analysis
+// ---------------------------------------------------------------------------
+
+const ALLOWED_IMAGE_MIME = [
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+] as const;
+const CLAUDE_IMAGE_MIME = ["image/jpeg", "image/png", "image/webp", "image/gif"] as const;
+type ClaudeImageMime = (typeof CLAUDE_IMAGE_MIME)[number];
+
+const IMAGE_CATEGORY_VALUES = [
+  "art_progress",
+  "ashley_identity",
+  "app_screenshot",
+  "medical",
+  "clothing_design",
+  "other",
+] as const;
+
+const IMAGE_MODE_VALUES = [
+  "quick",
+  "critique",
+  "stepbystep",
+  "debug",
+  "extract",
+  "compare",
+] as const;
+
+// Approximate cap: 5 MB raw → ~6.7 MB base64. We accept up to 7 MB of
+// base64 string length so a clean 5 MB photo from the picker fits.
+const MAX_IMAGE_BASE64_LEN = 7 * 1024 * 1024;
+
+const ChatImageBodySchema = z.object({
+  userMessage: z.object({
+    id: z.string().min(8).max(128),
+    content: z.string().max(MAX_CONTENT_LEN).optional().default(""),
+    replyTo: ReplyToSchema.nullish(),
+  }),
+  image: z.object({
+    base64: z.string().min(64).max(MAX_IMAGE_BASE64_LEN),
+    mimeType: z.string().min(3).max(64),
+  }),
+  category: z.enum(IMAGE_CATEGORY_VALUES),
+  mode: z.enum(IMAGE_MODE_VALUES),
+  clientNow: z.string().datetime({ offset: true }).optional(),
+  clientTimezone: z.string().min(1).max(64).optional(),
+});
+
+router.post("/chat/image", async (req, res): Promise<void> => {
+  const deviceId = getDeviceId(req);
+  const parsed = ChatImageBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const { userMessage, image, category, mode, clientNow, clientTimezone } =
+    parsed.data;
+  const { id: userId, replyTo } = userMessage;
+  const caption = (userMessage.content ?? "").trim();
+
+  const mime = image.mimeType.toLowerCase();
+  if (!ALLOWED_IMAGE_MIME.includes(mime as (typeof ALLOWED_IMAGE_MIME)[number])) {
+    res.status(415).json({ error: `Unsupported image type: ${mime}` });
+    return;
+  }
+  // HEIC isn't supported by Claude vision — clients should re-encode before
+  // upload, but reject here too for safety.
+  const claudeMime: ClaudeImageMime = mime === "image/jpg" ? "image/jpeg" : (mime as ClaudeImageMime);
+  if (!CLAUDE_IMAGE_MIME.includes(claudeMime)) {
+    res.status(415).json({ error: `Image type ${mime} can't be analysed` });
+    return;
+  }
+
+  // 1. Persist the image to object storage / disk.
+  let imageUrl: string;
+  try {
+    const ext = userImageExtForMime(mime);
+    const filename = `${userId}.${ext}`;
+    const buf = Buffer.from(image.base64, "base64");
+    const relUrl = await saveUserImage(filename, buf, mime);
+    imageUrl = `${publicBaseUrl()}${relUrl}`;
+  } catch (err) {
+    req.log.error({ err }, "Failed to save uploaded image");
+    res.status(500).json({ error: "Could not save your image" });
+    return;
+  }
+
+  // 2. Persist the user message (idempotent on id).
+  let userRow: Message;
+  try {
+    const inserted = await db
+      .insert(messagesTable)
+      .values({
+        id: userId,
+        deviceId,
+        role: "user",
+        content: caption,
+        imageUrl,
+        imageMimeType: mime,
+        imageCategory: category,
+        imageCaption: caption,
+        imageAnalysisMode: mode,
+        replyToId: replyTo?.id ?? null,
+        replyToRole: replyTo?.role ?? null,
+        replyToPreview: replyTo?.preview ?? null,
+      })
+      .onConflictDoNothing({ target: messagesTable.id })
+      .returning();
+    if (inserted.length > 0) {
+      userRow = inserted[0]!;
+    } else {
+      const existing = await db
+        .select()
+        .from(messagesTable)
+        .where(
+          and(
+            eq(messagesTable.id, userId),
+            eq(messagesTable.deviceId, deviceId),
+          ),
+        )
+        .limit(1);
+      if (existing.length === 0) {
+        res
+          .status(409)
+          .json({ error: "Message id collides with another device" });
+        return;
+      }
+      userRow = existing[0]!;
+      // Idempotency: if Ashley already replied to this image, return the pair.
+      const existingReply = await db
+        .select()
+        .from(messagesTable)
+        .where(
+          and(
+            eq(messagesTable.deviceId, deviceId),
+            eq(messagesTable.role, "ashley"),
+            gt(messagesTable.createdAt, userRow.createdAt),
+          ),
+        )
+        .orderBy(asc(messagesTable.createdAt))
+        .limit(1);
+      if (existingReply.length > 0) {
+        res.json({ userMessage: userRow, ashleyMessage: existingReply[0]! });
+        return;
+      }
+    }
+  } catch (err) {
+    req.log.error({ err }, "Failed to persist user image message");
+    res.status(500).json({ error: "Could not save your message" });
+    return;
+  }
+
+  // 3. Load context from DB (same shape as /chat).
+  let profile: AshleyProfile;
+  let memories: Memory[];
+  let summaries: ConversationSummary[];
+  let history: Message[];
+  try {
+    profile = await getOrCreateProfileFor(deviceId);
+    [memories, summaries, history] = await Promise.all([
+      db.select().from(memoriesTable).where(eq(memoriesTable.deviceId, deviceId)),
+      db
+        .select()
+        .from(conversationSummariesTable)
+        .where(eq(conversationSummariesTable.deviceId, deviceId)),
+      db
+        .select()
+        .from(messagesTable)
+        .where(eq(messagesTable.deviceId, deviceId))
+        .orderBy(desc(messagesTable.createdAt))
+        .limit(HISTORY_WINDOW),
+    ]);
+    history.reverse();
+  } catch (err) {
+    req.log.error({ err }, "Failed to load chat context for image turn");
+    res.status(500).json({ error: "Could not load conversation" });
+    return;
+  }
+
+  // 4. Build prompt: time context + core spec + image addendum.
+  let previousMessageAt: Date | null = null;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const m = history[i]!;
+    if (m.id !== userRow.id) {
+      previousMessageAt = m.createdAt;
+      break;
+    }
+  }
+  const timeContext = buildTimeContext(
+    clientNow,
+    clientTimezone,
+    previousMessageAt,
+  );
+  const userRef = (profile.refersToUserAs ?? "you").trim() || "you";
+  const imageAddendum = buildImagePromptAddendum({
+    category: category as ImageCategoryT,
+    mode: mode as ImageAnalysisModeT,
+    caption,
+    userRef,
+  });
+  const systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}\n\n${imageAddendum}`;
+
+  // 5. Build Claude messages: history as text-only (older images become a
+  //    "[user shared a photo]" placeholder so we don't blow context).
+  type TextBlock = { type: "text"; text: string };
+  type ImageBlock = {
+    type: "image";
+    source: { type: "base64"; media_type: ClaudeImageMime; data: string };
+  };
+  type ContentBlock = TextBlock | ImageBlock;
+  const claudeMessages: Array<{
+    role: "user" | "assistant";
+    content: string | ContentBlock[];
+  }> = [];
+  for (const m of history) {
+    if (m.id === userRow.id) continue; // appended last with image content
+    const role: "user" | "assistant" =
+      m.role === "user" ? "user" : "assistant";
+    let text = (m.content ?? "").trim();
+    if (m.imageUrl && m.role === "user") {
+      const cat = m.imageCategory ? ` (${m.imageCategory})` : "";
+      const cap = text ? `: "${text}"` : "";
+      text = `[shared a photo${cat}${cap}]`;
+    }
+    if (m.imageUrl && m.role === "ashley" && !text) {
+      text = "[sent a selfie]";
+    }
+    if (!text) continue;
+    claudeMessages.push({ role, content: text });
+  }
+  // Final turn: the image itself + caption + mode hint as a tiny nudge.
+  const captionForModel = caption.length > 0 ? caption : "(no caption)";
+  const modelHint = `[Photo attached. Category: ${category}. Mode: ${mode}. Caption: ${captionForModel}]`;
+  const finalContent: ContentBlock[] = [
+    {
+      type: "image",
+      source: { type: "base64", media_type: claudeMime, data: image.base64 },
+    },
+    { type: "text", text: modelHint },
+  ];
+  claudeMessages.push({ role: "user", content: finalContent });
+
+  while (claudeMessages.length > 0 && claudeMessages[0]!.role !== "user") {
+    claudeMessages.shift();
+  }
+
+  // 6. Call Claude vision.
+  let assistantText = "";
+  try {
+    const reply = await anthropic.messages.create({
+      model: CHAT_MODEL,
+      max_tokens: 4096,
+      system: systemPrompt,
+      messages: claudeMessages,
+    });
+    const block = reply.content[0];
+    assistantText =
+      block && block.type === "text"
+        ? block.text.trim()
+        : "*looks at the photo, then back at you* sorry — i lost my words for a second. tell me again what you wanted me to see?";
+  } catch (err) {
+    req.log.error({ err }, "Claude vision call failed");
+    res
+      .status(502)
+      .json({ error: "Could not reach the language model right now." });
+    return;
+  }
+  // Strip any rogue [selfie: ...] tag — she shouldn't be sending one in
+  // response to a photo, but if she does we just drop it.
+  assistantText = assistantText.replace(/\[selfie:\s*[^\]]+\]/gi, "").trim();
+  if (!assistantText) {
+    assistantText = "*looks at the photo* one sec — let me try that again?";
+  }
+
+  // 7. Persist Ashley's reply.
+  let ashleyRow: Message;
+  try {
+    const [inserted] = await db
+      .insert(messagesTable)
+      .values({
+        id: newId(),
+        deviceId,
+        role: "ashley",
+        content: assistantText,
+      })
+      .returning();
+    ashleyRow = inserted!;
+  } catch (err) {
+    req.log.error({ err }, "Failed to persist Ashley reply for image turn");
+    res.status(500).json({ error: "Could not save Ashley's reply" });
+    return;
+  }
+
+  // 8. Fire-and-forget: distill memories + maybe summarize.
+  const userTextForDistill = caption
+    ? `[shared a ${category} photo] ${caption}`
+    : `[shared a ${category} photo, mode=${mode}]`;
+  void distillMemories(deviceId, userTextForDistill, assistantText);
+  void maybeRollUpOlderMessages(deviceId);
+
+  res.json({ userMessage: userRow, ashleyMessage: ashleyRow });
+});
+
+// ---------------------------------------------------------------------------
+// POST /messages/:id/remember — user's decision on the "should I remember
+// this image?" card. Sets messages.image_remembered and, when the user
+// chose to remember, inserts a memory row tied to the image.
+// ---------------------------------------------------------------------------
+
+const RememberBodySchema = z.object({
+  decision: z.enum(["remember", "visual", "dismiss"]),
+});
+
+router.post("/messages/:id/remember", async (req, res): Promise<void> => {
+  const deviceId = getDeviceId(req);
+  const messageId = req.params.id;
+  const parsed = RememberBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const decision = parsed.data.decision;
+
+  // Confirm the message belongs to this device and IS an image message.
+  const owns = await db
+    .select()
+    .from(messagesTable)
+    .where(
+      and(
+        eq(messagesTable.id, messageId),
+        eq(messagesTable.deviceId, deviceId),
+      ),
+    )
+    .limit(1);
+  if (owns.length === 0) {
+    res.status(404).json({ error: "Message not found" });
+    return;
+  }
+  const msg = owns[0]!;
+  if (!msg.imageUrl) {
+    res.status(400).json({ error: "Message has no image to remember" });
+    return;
+  }
+
+  const newValue = decision === "dismiss" ? false : true;
+  let updatedMsg: Message;
+  try {
+    const [row] = await db
+      .update(messagesTable)
+      .set({ imageRemembered: newValue })
+      .where(
+        and(
+          eq(messagesTable.id, messageId),
+          eq(messagesTable.deviceId, deviceId),
+        ),
+      )
+      .returning();
+    updatedMsg = row!;
+  } catch (err) {
+    req.log.error({ err }, "Failed to update image-remembered flag");
+    res.status(500).json({ error: "Could not save your choice" });
+    return;
+  }
+
+  // For "remember" / "visual" decisions, drop a memory row so Ashley can
+  // weave the image into future turns. Find the Ashley reply that
+  // immediately follows this user image so we can include her summary.
+  if (decision !== "dismiss") {
+    try {
+      const followups = await db
+        .select()
+        .from(messagesTable)
+        .where(
+          and(
+            eq(messagesTable.deviceId, deviceId),
+            eq(messagesTable.role, "ashley"),
+            gt(messagesTable.createdAt, updatedMsg.createdAt),
+          ),
+        )
+        .orderBy(asc(messagesTable.createdAt))
+        .limit(1);
+      const ashleyReply = followups[0]?.content ?? "";
+      const cap = (updatedMsg.imageCaption ?? "").trim();
+      const cat = updatedMsg.imageCategory ?? "other";
+      const head = decision === "visual"
+        ? `Visual reference (${cat})`
+        : `Image moment (${cat})`;
+      const detail =
+        cap.length > 0 ? `Their note: "${cap}".` : "No caption.";
+      const ashleyBit =
+        ashleyReply.length > 0
+          ? ` My reaction at the time: "${ashleyReply.slice(0, 320).trim()}${ashleyReply.length > 320 ? "…" : ""}"`
+          : "";
+      const memoryContent = `${head}. ${detail}${ashleyBit}`.slice(0, 500);
+      await db.insert(memoriesTable).values({
+        id: randomUUID(),
+        deviceId,
+        content: memoryContent,
+        tag: cat === "medical" ? "event" : cat === "ashley_identity" ? "relationship" : "general",
+        importance: decision === "remember" ? 4 : 3,
+      });
+    } catch (err) {
+      req.log.warn(
+        { err, messageId },
+        "Failed to insert image memory row (decision still saved)",
+      );
+    }
+  }
+
+  res.json({ message: updatedMsg });
+});

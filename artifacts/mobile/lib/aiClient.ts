@@ -1,6 +1,8 @@
 import type {
   AshleyProfile,
   ConversationSummary,
+  ImageAnalysisMode,
+  ImageCategory,
   Memory,
   Message,
   MemoryTag,
@@ -141,6 +143,11 @@ type WireMessage = {
   content: string;
   imageUrl: string | null;
   selfieVibe: string | null;
+  imageMimeType: string | null;
+  imageCategory: string | null;
+  imageCaption: string | null;
+  imageAnalysisMode: string | null;
+  imageRemembered: boolean | null;
   replyToId: string | null;
   replyToRole: "user" | "ashley" | null;
   replyToPreview: string | null;
@@ -199,6 +206,12 @@ function messageFromWire(m: WireMessage): Message {
     createdAt: m.createdAt,
     imageUrl: m.imageUrl ?? null,
     selfieVibe: m.selfieVibe ?? null,
+    imageMimeType: m.imageMimeType ?? null,
+    imageCategory: (m.imageCategory as ImageCategory | null) ?? null,
+    imageCaption: m.imageCaption ?? null,
+    imageAnalysisMode:
+      (m.imageAnalysisMode as ImageAnalysisMode | null) ?? null,
+    imageRemembered: m.imageRemembered ?? null,
     replyTo,
   };
 }
@@ -529,4 +542,77 @@ export async function fetchSelfieForMessage(
     // status === "pending" → keep polling
   }
   throw new Error("Selfie took too long — try again.");
+}
+
+// ---------------------------------------------------------------------------
+// User image upload (paperclip flow) + remember-decision card
+// ---------------------------------------------------------------------------
+
+export type SendChatImageRequest = {
+  /** Stable client-generated id; the server is idempotent on it. */
+  id: string;
+  /** Base64-encoded image bytes (no data: prefix). */
+  base64: string;
+  mimeType: string;
+  category: ImageCategory;
+  mode: ImageAnalysisMode;
+  caption: string;
+  replyTo?: ReplyToRef | null;
+};
+
+export async function sendChatImage(
+  req: SendChatImageRequest,
+): Promise<ChatResponse> {
+  const data = await fetchJSON<{
+    userMessage: WireMessage;
+    ashleyMessage: WireMessage;
+  }>("/chat/image", {
+    method: "POST",
+    body: JSON.stringify({
+      userMessage: {
+        id: req.id,
+        content: req.caption ?? "",
+        ...(req.replyTo
+          ? {
+              replyTo: {
+                id: req.replyTo.id,
+                role: req.replyTo.role,
+                preview: req.replyTo.preview,
+              },
+            }
+          : {}),
+      },
+      image: {
+        base64: req.base64,
+        mimeType: req.mimeType,
+      },
+      category: req.category,
+      mode: req.mode,
+      clientNow: new Date().toISOString(),
+      clientTimezone:
+        (typeof Intl !== "undefined" &&
+          Intl.DateTimeFormat().resolvedOptions().timeZone) ||
+        "UTC",
+    }),
+  });
+  return {
+    userMessage: messageFromWire(data.userMessage),
+    ashleyMessage: messageFromWire(data.ashleyMessage),
+  };
+}
+
+export type RememberDecision = "remember" | "visual" | "dismiss";
+
+export async function markImageRemembered(
+  messageId: string,
+  decision: RememberDecision,
+): Promise<Message> {
+  const data = await fetchJSON<{ message: WireMessage }>(
+    `/messages/${encodeURIComponent(messageId)}/remember`,
+    {
+      method: "POST",
+      body: JSON.stringify({ decision }),
+    },
+  );
+  return messageFromWire(data.message);
 }
