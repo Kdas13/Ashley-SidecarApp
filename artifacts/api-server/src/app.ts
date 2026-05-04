@@ -52,6 +52,9 @@ const jsonLarge = express.json({ limit: "12mb" });
 const jsonSmall = express.json({ limit: "1mb" });
 app.use((req, res, next) => {
   if (req.path === "/api/chat/image") return jsonLarge(req, res, next);
+  // Voice push-to-talk uploads ship base64 audio in JSON. A 60s recording
+  // is comfortably under 12mb at our recording quality preset.
+  if (req.path === "/api/chat/transcribe") return jsonLarge(req, res, next);
   return jsonSmall(req, res, next);
 });
 app.use(express.urlencoded({ extended: true }));

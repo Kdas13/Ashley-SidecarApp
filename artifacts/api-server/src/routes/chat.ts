@@ -22,7 +22,7 @@ import { getOrCreateProfileFor } from "../lib/profile";
 import { MEMORY_DISTILLER_PROMPT, SUMMARIZER_PROMPT } from "../lib/ashleyPrompt";
 import { buildSystemPrompt } from "../lib/ashleyCoreSpec";
 import { buildSelfiePromptSafetyPrefix } from "../lib/contentPolicy";
-import { generateImageBase64 } from "../lib/openai";
+import { generateImageBase64, transcribeAudioBase64 } from "../lib/openai";
 import {
   saveSelfie,
   saveUserImage,
@@ -846,6 +846,71 @@ async function maybeRollUpOlderMessages(deviceId: string): Promise<void> {
   // reference unused import to avoid lint issues if drizzle helpers change
   void ashleyProfileTable;
 }
+
+// ---------------------------------------------------------------------------
+// POST /chat/transcribe — Stage 1 of the staged voice plan.
+//
+// Push-to-talk audio arrives as base64 in JSON. We forward to OpenAI
+// Whisper and return the transcript text. The transcript is NOT
+// auto-sent — the mobile client drops it into the chat draft for the
+// user to review and send manually via the regular /chat path. This
+// keeps voice as a strict input modality on top of the existing text
+// chokepoint, with no new prompt-bypass paths.
+//
+// Future stages: switch to streaming chunks, add inputMode="voice"
+// flag on the eventual /chat send so buildSystemPrompt can append the
+// voice-presence safety floor (see contentPolicy.ts).
+// ---------------------------------------------------------------------------
+
+const TranscribeBodySchema = z.object({
+  audioBase64: z.string().min(100, "Recording too short"),
+  mimeType: z
+    .string()
+    .min(3)
+    .max(64)
+    .regex(/^audio\//, "mimeType must start with audio/"),
+  durationMs: z.number().int().nonnegative().optional(),
+});
+
+function audioFilenameFor(mimeType: string): string {
+  const m = mimeType.toLowerCase();
+  if (m.includes("wav")) return "speech.wav";
+  if (m.includes("webm")) return "speech.webm";
+  if (m.includes("ogg")) return "speech.ogg";
+  if (m.includes("mpeg") || m.includes("mp3")) return "speech.mp3";
+  if (m.includes("caf")) return "speech.caf";
+  return "speech.m4a";
+}
+
+router.post("/chat/transcribe", async (req, res): Promise<void> => {
+  const deviceId = getDeviceId(req);
+  if (!deviceId) {
+    res.status(400).json({ error: "X-Device-Id header is required" });
+    return;
+  }
+  const parsed = TranscribeBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error:
+        parsed.error.issues[0]?.message ?? "Invalid /chat/transcribe payload",
+    });
+    return;
+  }
+  const { audioBase64, mimeType } = parsed.data;
+  try {
+    const transcript = await transcribeAudioBase64(
+      audioBase64,
+      audioFilenameFor(mimeType),
+      mimeType,
+    );
+    res.json({ transcript });
+  } catch (err) {
+    req.log.error({ err }, "Whisper transcription failed");
+    res.status(502).json({
+      error: "Couldn't transcribe that — try again or just type it.",
+    });
+  }
+});
 
 export default router;
 

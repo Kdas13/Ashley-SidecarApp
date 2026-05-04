@@ -290,6 +290,26 @@ export async function fetchState(): Promise<ServerState> {
   };
 }
 
+/**
+ * Stage 1 voice input — POST a base64-encoded audio clip and get back the
+ * Whisper transcript. The transcript is then merged into the existing
+ * TextInput draft for user review (see chat.tsx). Future stages will:
+ *   • stream chunks instead of posting whole clips,
+ *   • carry an `inputMode: "voice"` flag on the eventual /chat send so
+ *     the prompt builder can append the voice-presence safety floor.
+ */
+export async function transcribeAudio(input: {
+  audioBase64: string;
+  mimeType: string;
+  durationMs: number;
+}): Promise<{ transcript: string }> {
+  const data = await fetchJSON<{ transcript: string }>("/chat/transcribe", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  return { transcript: data.transcript ?? "" };
+}
+
 // 18+ age gate. Recording the confirmation is the ONLY thing that lets a
 // subsequent PUT /profile { contentMode: "mature" } succeed. The body
 // shape mirrors the server's strict zod check.

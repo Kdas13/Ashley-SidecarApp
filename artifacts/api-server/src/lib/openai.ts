@@ -17,6 +17,40 @@ export const openai = new OpenAI({
   baseURL: process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
 });
 
+/**
+ * Transcribe a base64-encoded audio blob via OpenAI Whisper.
+ * Stage 1 of the staged voice plan — see contentPolicy.ts for the
+ * future voice-presence safety floor that will gate Stages 4-5.
+ *
+ * The OpenAI SDK's audio.transcriptions.create accepts a File-like
+ * object; we wrap the decoded buffer with the official `toFile` helper
+ * so multipart upload is handled by the SDK.
+ *
+ * @param audioBase64 raw base64 (no data: URL prefix)
+ * @param filename    used by Whisper to detect format (e.g. "speech.m4a")
+ * @param mimeType    e.g. "audio/m4a", "audio/mp4", "audio/wav"
+ */
+export async function transcribeAudioBase64(
+  audioBase64: string,
+  filename: string,
+  mimeType: string,
+): Promise<string> {
+  const buf = Buffer.from(audioBase64, "base64");
+  const { toFile } = await import("openai");
+  const file = await toFile(buf, filename, { type: mimeType });
+  // Note: the Replit OpenAI integration proxy doesn't support the legacy
+  // "whisper-1" model — use the gpt-4o transcription family instead.
+  // gpt-4o-mini-transcribe is fast, cheap, and accurate for short clips.
+  const response = await openai.audio.transcriptions.create({
+    file,
+    model: "gpt-4o-mini-transcribe",
+    // Stage 5 hook: when tone-awareness ships, switch to gpt-4o-transcribe
+    // (or a verbose_json-capable model) so the prompt builder can carry
+    // pause/hesitation/segment cues into the voice-presence safety floor.
+  });
+  return (response.text ?? "").trim();
+}
+
 export async function generateImageBase64(
   prompt: string,
   size: "1024x1024" | "1024x1536" | "1536x1024" = "1024x1536",

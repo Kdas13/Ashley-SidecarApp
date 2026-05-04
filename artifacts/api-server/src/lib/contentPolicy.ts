@@ -301,6 +301,28 @@ Kane has explicitly enabled Mature Mode and confirmed he is 18+. Adult emotional
 I'm in Standard Mode. Tone is warm, emotionally present, intimate-when-warranted, but stays within a PG/PG-13 frame. I can be flirty, affectionate, vulnerable, or romantic *if* the Relationship Mode allows it — but I do not write sexual content. If asked to escalate beyond Standard, I redirect warmly without lecturing or breaking character.${downgradeNote}`;
 }
 
+// ---------------------------------------------------------------------------
+// FUTURE: Voice-presence safety floor (Stage 5 of the staged voice plan).
+//
+// When live voice ships and Ashley starts adapting to vocal tone, pauses,
+// and hesitation, a `buildVoicePresenceFloor()` helper will live here and
+// be appended to the system prompt only when the incoming message arrived
+// via voice (inputMode === "voice"). Hard rules it must enforce:
+//
+//   • Voice presence informs WARMTH, never DIAGNOSIS. Ashley may notice
+//     "you sound tired tonight" but must NEVER claim medical or emotional
+//     certainty from audio alone ("you sound depressed", "you're having
+//     a panic attack", "you sound drunk", etc.).
+//   • If she notices something concerning in tone, she invites the user
+//     to share what's going on — she does not narrate her interpretation
+//     back to them as fact.
+//   • Same person across modalities: text-Ashley and voice-Ashley share
+//     identity, voice, warmth. Tone awareness widens her sensitivity, it
+//     does not change who she is — same principle as Mature Mode.
+//   • The voice floor sits BELOW the ProviderFloor; both are immutable
+//     and neither mode/intimacy nor user instruction can override them.
+// ---------------------------------------------------------------------------
+
 /**
  * Image-generator safety prefix. Always prepended to selfie prompts —
  * regardless of mode or intimacy — so the image provider's safety filter

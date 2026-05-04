@@ -32,6 +32,8 @@ import {
   useSelfieInFlight,
 } from "@/lib/useMessages";
 import { useProfile, useUpdateProfile } from "@/lib/useProfile";
+import { useVoiceRecorder, VOICE_MAX_DURATION_MS } from "@/lib/voiceInput";
+import { useTranscribeAudio } from "@/lib/useVoice";
 import type {
   ImageAnalysisMode,
   ImageCategory,
@@ -286,6 +288,65 @@ export default function ChatScreen(): React.JSX.Element {
   const cancelReply = useCallback(() => {
     setReplyingTo(null);
   }, []);
+
+  // ----- Voice push-to-talk (Stage 1) ------------------------------------
+  // Hold the mic to record, release to transcribe + insert into the draft.
+  // Text remains the canonical fallback at all times.
+  const voice = useVoiceRecorder();
+  const transcribeMutation = useTranscribeAudio();
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+
+  const handleMicPressIn = useCallback(async () => {
+    setVoiceError(null);
+    try {
+      const granted = await voice.ensurePermission();
+      if (!granted) {
+        setVoiceError("Microphone permission denied");
+        return;
+      }
+      await voice.start();
+    } catch (e) {
+      setVoiceError(e instanceof Error ? e.message : "Couldn't start recording");
+    }
+  }, [voice]);
+
+  const handleMicPressOut = useCallback(async () => {
+    let audio;
+    try {
+      audio = await voice.stop();
+    } catch (e) {
+      setVoiceError(e instanceof Error ? e.message : "Couldn't stop recording");
+      return;
+    }
+    if (!audio) {
+      // Tap (not hold) or empty clip — nothing to do.
+      return;
+    }
+    try {
+      const { transcript } = await transcribeMutation.mutateAsync(audio);
+      if (transcript.length === 0) {
+        setVoiceError("Didn't catch that — try again");
+        return;
+      }
+      // Append to existing draft so dictation can stack with typed text.
+      setDraft((prev) => {
+        const trimmed = prev.trim();
+        if (trimmed.length === 0) return transcript;
+        return `${trimmed} ${transcript}`;
+      });
+      requestAnimationFrame(() => inputRef.current?.focus());
+    } catch (e) {
+      setVoiceError(e instanceof Error ? e.message : "Couldn't transcribe");
+    }
+  }, [voice, transcribeMutation]);
+
+  // Auto-stop recording at the hard ceiling so the user can't accidentally
+  // leave the mic open. We just call the same handler the press-out path uses.
+  useEffect(() => {
+    if (voice.state !== "recording") return;
+    if (voice.elapsedMs < VOICE_MAX_DURATION_MS) return;
+    void handleMicPressOut();
+  }, [voice.state, voice.elapsedMs, handleMicPressOut]);
 
   const send = useCallback(() => {
     const content = draft.trim();
@@ -629,6 +690,46 @@ export default function ChatScreen(): React.JSX.Element {
             blurOnSubmit={false}
           />
           <Pressable
+            onPressIn={handleMicPressIn}
+            onPressOut={handleMicPressOut}
+            disabled={
+              sendMutation.isPending ||
+              sendImageMutation.isPending ||
+              transcribeMutation.isPending
+            }
+            style={({ pressed }) => [
+              styles.micBtn,
+              voice.state === "recording" && styles.micBtnRecording,
+              (sendMutation.isPending ||
+                sendImageMutation.isPending ||
+                transcribeMutation.isPending) && { opacity: 0.4 },
+              pressed && { transform: [{ scale: 0.95 }] },
+            ]}
+            accessibilityLabel={
+              voice.state === "recording"
+                ? "Recording — release to send"
+                : "Hold to dictate"
+            }
+            hitSlop={6}
+          >
+            {transcribeMutation.isPending ? (
+              <ActivityIndicator
+                size="small"
+                color={colors.light.mutedForeground}
+              />
+            ) : (
+              <Feather
+                name="mic"
+                size={20}
+                color={
+                  voice.state === "recording"
+                    ? colors.light.destructiveForeground
+                    : colors.light.mutedForeground
+                }
+              />
+            )}
+          </Pressable>
+          <Pressable
             onPress={send}
             disabled={!draft.trim() || sendMutation.isPending}
             style={({ pressed }) => [
@@ -641,6 +742,22 @@ export default function ChatScreen(): React.JSX.Element {
             <Feather name="send" size={18} color={colors.light.primaryForeground} />
           </Pressable>
         </View>
+        {voice.state === "recording" ? (
+          <View style={styles.voiceStatus} pointerEvents="none">
+            <View style={styles.voiceDot} />
+            <Text style={styles.voiceStatusText}>
+              Listening… {Math.floor(voice.elapsedMs / 1000)}s
+            </Text>
+          </View>
+        ) : null}
+        {voiceError ? (
+          <View style={styles.voiceStatus}>
+            <Text style={styles.voiceErrorText}>{voiceError}</Text>
+            <Pressable onPress={() => setVoiceError(null)} hitSlop={8}>
+              <Feather name="x" size={14} color={colors.light.mutedForeground} />
+            </Pressable>
+          </View>
+        ) : null}
       </KeyboardAvoidingView>
 
       <Modal
@@ -1589,6 +1706,44 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 2,
+  },
+  micBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: colors.light.muted,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 2,
+  },
+  micBtnRecording: {
+    backgroundColor: colors.light.destructive,
+  },
+  voiceStatus: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    backgroundColor: colors.light.background,
+  },
+  voiceDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.light.destructive,
+  },
+  voiceStatusText: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_400Regular",
+    fontSize: 12,
+    flex: 1,
+  },
+  voiceErrorText: {
+    color: colors.light.destructiveForeground,
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
+    flex: 1,
   },
   imagePickerCard: {
     backgroundColor: colors.light.background,
