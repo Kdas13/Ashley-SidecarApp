@@ -711,7 +711,15 @@ export default function ChatScreen(): React.JSX.Element {
 
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={Platform.OS === "ios" ? 8 : insets.top + 56}
+        // CRITICAL: on Android with behavior="height", KeyboardAvoidingView
+        // PERMANENTLY shrinks its own height by `keyboardVerticalOffset` —
+        // even when the keyboard is closed. The previous value of
+        // `insets.top + 56` (~80px) was leaving a ~80px dead zone below the
+        // input bar with the user's latest message hidden behind it. We rely
+        // on Android's default windowSoftInputMode=adjustResize (set by Expo)
+        // to handle the keyboard — KAV with offset=0 then just adds nothing
+        // when keyboard is closed and the natural layout flows correctly.
+        keyboardVerticalOffset={Platform.OS === "ios" ? 8 : 0}
         style={{ flex: 1 }}
       >
         {messagesQuery.isLoading ? (

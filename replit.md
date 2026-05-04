@@ -226,13 +226,30 @@ are not used by mobile in V1.1:
   Bearer + device id. If you add a new fetch path, mirror this pattern —
   spreading only `authHeaders()` will silently 401 the call as
   `receivedKeyFingerprint=missing`.
-- The splash screen in `_layout.tsx` waits indefinitely on **native** for
-  the Feather vector-icon font to finish loading via `useFonts({...})`.
-  A timeout-based fallback (originally 2s, then 12s) only fires on **web**
-  (the Replit IDE preview iframe sometimes blocks the @expo-google-fonts
-  CDN). On native the timeout fallback would just manifest as boxes-with-X
-  glyphs because Metro can be slow to serve the TTF on a cold cache —
-  better to keep the splash up than render broken icons.
+- **Feather icons MUST be loaded via `Font.loadAsync(Feather.font)`, not
+  via `useFonts({...Feather.font})`.** The `useFonts` spread approach
+  silently fails on Kane's Android device — `useFonts` reports
+  `loaded=true` while the `<Feather>` component's internal
+  `Font.isLoaded("feather")` check (in `@expo/vector-icons`'s
+  `createIconSet.js`) returns false, so every glyph renders as a
+  box-with-X. `_layout.tsx` keeps `useFonts` for the Inter Google fonts
+  (that path is reliable for `@expo-google-fonts/*` packages) but loads
+  Feather imperatively in a `useEffect` and gates the splash on a
+  separate `iconsReady` state. The Feather load has a `.catch(() =>
+  undefined)` so a transient network error doesn't lock the splash
+  forever — worst case becomes the pre-fix boxes, not a hung app. Web
+  still has its 12s `splashTimedOut` fallback because the IDE preview
+  iframe sometimes blocks the @expo-google-fonts CDN.
+- **`KeyboardAvoidingView` on Android: `keyboardVerticalOffset` must be 0
+  with `behavior="height"`.** With `behavior="height"`, KAV PERMANENTLY
+  shrinks its own height by `keyboardVerticalOffset` even when the
+  keyboard is closed. The chat screen previously used
+  `keyboardVerticalOffset={insets.top + 56}` (~80px), which left an ~80px
+  dead zone below the input bar with the user's latest message hidden
+  behind it. Android's default `windowSoftInputMode=adjustResize` (set
+  by Expo) handles the keyboard natively, so KAV with `offset=0` just
+  passes through cleanly. iOS keeps `behavior="padding"` with a small
+  `offset=8`.
 - The chat `FlatList` uses `initialNumToRender={Math.min(Math.max(messages.length, 20), 200)}`
   + `removeClippedSubviews={false}` so the entire history is laid out in
   the first pass, and a multi-snap effect (`[0, 50, 150, 350, 700, 1200, 2000]`

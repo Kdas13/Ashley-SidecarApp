@@ -5,6 +5,7 @@ import {
   Inter_700Bold,
 } from "@expo-google-fonts/inter";
 import { Feather } from "@expo/vector-icons";
+import * as Font from "expo-font";
 import { useFonts } from "expo-font";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Stack } from "expo-router";
@@ -79,15 +80,39 @@ async function bootstrap(): Promise<void> {
 }
 
 export default function RootLayout(): React.JSX.Element | null {
-  const [fontsLoaded, fontError] = useFonts({
+  // Inter (Google fonts) goes through useFonts as normal — that path is
+  // reliable for @expo-google-fonts packages.
+  const [interLoaded, interError] = useFonts({
     Inter_400Regular,
     Inter_500Medium,
     Inter_600SemiBold,
     Inter_700Bold,
-    ...Feather.font,
   });
+  // Feather is loaded IMPERATIVELY via Font.loadAsync rather than via the
+  // `...Feather.font` spread inside useFonts. The spread approach was
+  // unreliable on Kane's device — useFonts reported `loaded=true` while the
+  // <Feather> component's internal `Font.isLoaded("feather")` check
+  // (createIconSet.js:56) returned false, so every glyph rendered as a
+  // box-with-X. Loading the family name ourselves and gating the entire
+  // render on a separate `iconsReady` state guarantees Feather is registered
+  // before any <Feather> ever mounts. We catch errors so a transient network
+  // hiccup doesn't lock the splash forever — the worst case becomes the
+  // pre-fix behaviour (boxes), not a hung app.
+  const [iconsReady, setIconsReady] = useState(false);
   const [splashTimedOut, setSplashTimedOut] = useState(false);
   const [bootDone, setBootDone] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    Font.loadAsync(Feather.font)
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setIconsReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     bootstrap()
@@ -96,18 +121,18 @@ export default function RootLayout(): React.JSX.Element | null {
   }, []);
 
   useEffect(() => {
-    if ((fontsLoaded || fontError) && bootDone) {
+    if ((interLoaded || interError) && iconsReady && bootDone) {
       SplashScreen.hideAsync().catch(() => undefined);
     }
-  }, [fontsLoaded, fontError, bootDone]);
+  }, [interLoaded, interError, iconsReady, bootDone]);
 
   useEffect(() => {
     // The splash-timeout fallback only exists for the proxied web preview in
     // the Replit IDE — the iframe sometimes blocks the @expo-google-fonts
-    // CDN and we don't want to hang forever. On native (Expo Go) the Feather
-    // TTF is served by Metro and ALWAYS resolves, so a timeout fallback there
-    // would only manifest as broken icon glyphs (boxes-with-X) on slow links.
-    // We deliberately do NOT set splashTimedOut on native.
+    // CDN and we don't want to hang forever. On native (Expo Go) Metro
+    // serves both the Inter and Feather TTFs and they always resolve, so a
+    // timeout fallback there would only manifest as broken glyphs on slow
+    // links. We deliberately do NOT set splashTimedOut on native.
     if (Platform.OS !== "web") return;
     const t = setTimeout(() => {
       setSplashTimedOut(true);
@@ -116,9 +141,10 @@ export default function RootLayout(): React.JSX.Element | null {
     return () => clearTimeout(t);
   }, []);
 
-  // On native: render only once fonts are truly loaded (or have errored hard).
+  // On native: render only once Inter AND Feather are truly loaded
+  // (or Inter has errored hard — Feather has its own catch above).
   // On web: also allow render after the splashTimedOut fallback fires.
-  const fontsReady = fontsLoaded || fontError;
+  const fontsReady = (interLoaded || interError) && iconsReady;
   const allowWebFallback = Platform.OS === "web" && splashTimedOut;
   if (!fontsReady && !allowWebFallback) return null;
 
