@@ -194,7 +194,12 @@ are not used by mobile in V1.1:
 - `EXPO_PUBLIC_API_KEY` — **Required for mobile.** Must be set to the same
   value as `API_SECRET`. Expo inlines `EXPO_PUBLIC_*` vars at bundle time;
   `aiClient.ts` reads it and attaches it as `X-API-Key` on every outbound
-  API request. Set this in `.env` (local dev) or as a Replit secret.
+  API request. Set this in `.env` (local dev) or as a Replit secret. The
+  mobile dev script wraps the whole command in `bash -c '…'` so it can
+  hard-fail with `FATAL: EXPO_PUBLIC_API_KEY is empty` and print a safe
+  fingerprint (`len=64 fingerprint=<first 8 chars>…`) on success — that
+  way Metro never starts with a missing key, and we can verify the key is
+  loaded without leaking the secret to logs.
 
 ## Workflows
 
@@ -213,3 +218,15 @@ are not used by mobile in V1.1:
 - AI replies require the api-server to be reachable on the same Replit
   domain as the Expo dev server. In production deployments both are
   served behind the same proxy automatically.
+- `aiClient.ts` defines two header helpers — `apiHeaders()` (Content-Type
+  + X-API-Key) and `authHeaders()` (Authorization Bearer + X-Device-Id).
+  `fetchJSON()` and the streaming `expoFetch` in `transcribeAudioStream`
+  spread **both** in that order, so every request carries X-API-Key
+  (required by the server's `requireApiKey` middleware) **and** the
+  Bearer + device id. If you add a new fetch path, mirror this pattern —
+  spreading only `authHeaders()` will silently 401 the call as
+  `receivedKeyFingerprint=missing`.
+- The splash screen in `_layout.tsx` waits up to 12s for the Feather
+  vector-icon font to finish downloading from Metro before rendering
+  chrome. Shorter timeouts caused icon glyphs to render as boxes-with-X
+  on cold-cache loads over the dev tunnel.

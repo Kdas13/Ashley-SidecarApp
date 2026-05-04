@@ -102,10 +102,13 @@ export default function RootLayout(): React.JSX.Element | null {
 
   useEffect(() => {
     // Don't block forever if fonts can't load (e.g. blocked CDN in proxied web preview).
+    // Bumped from 2s → 12s because Feather.font is fetched from Metro on first load
+    // over the dev tunnel, which can take 5-8s on a cold cache. A premature timeout
+    // would render the chat UI with broken icon glyphs (boxes-with-X).
     const t = setTimeout(() => {
       setSplashTimedOut(true);
       SplashScreen.hideAsync().catch(() => undefined);
-    }, 2000);
+    }, 12000);
     return () => clearTimeout(t);
   }, []);
 

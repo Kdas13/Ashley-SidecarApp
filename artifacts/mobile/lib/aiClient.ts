@@ -101,6 +101,7 @@ async function fetchJSON<T>(
 ): Promise<T> {
   const base = getApiBase();
   const headers = {
+    ...apiHeaders(),
     ...authHeaders(),
     ...(init.body ? { "Content-Type": "application/json" } : {}),
     ...(init.headers as Record<string, string> | undefined),
@@ -388,6 +389,7 @@ export async function transcribeAudioStream(
   const res = await expoFetch(url, {
     method: "POST",
     headers: {
+      ...apiHeaders(),
       ...authHeaders(),
       "Content-Type": "application/json",
       Accept: "text/event-stream",
