@@ -226,7 +226,17 @@ are not used by mobile in V1.1:
   Bearer + device id. If you add a new fetch path, mirror this pattern —
   spreading only `authHeaders()` will silently 401 the call as
   `receivedKeyFingerprint=missing`.
-- The splash screen in `_layout.tsx` waits up to 12s for the Feather
-  vector-icon font to finish downloading from Metro before rendering
-  chrome. Shorter timeouts caused icon glyphs to render as boxes-with-X
-  on cold-cache loads over the dev tunnel.
+- The splash screen in `_layout.tsx` waits indefinitely on **native** for
+  the Feather vector-icon font to finish loading via `useFonts({...})`.
+  A timeout-based fallback (originally 2s, then 12s) only fires on **web**
+  (the Replit IDE preview iframe sometimes blocks the @expo-google-fonts
+  CDN). On native the timeout fallback would just manifest as boxes-with-X
+  glyphs because Metro can be slow to serve the TTF on a cold cache —
+  better to keep the splash up than render broken icons.
+- The chat `FlatList` uses `initialNumToRender={Math.min(Math.max(messages.length, 20), 200)}`
+  + `removeClippedSubviews={false}` so the entire history is laid out in
+  the first pass, and a multi-snap effect (`[0, 50, 150, 350, 700, 1200, 2000]`
+  ms) calls `scrollToEnd` repeatedly on first non-empty render until the
+  user touches the list. This reliably lands at the true bottom even for
+  long histories where virtualization would otherwise leave the user
+  stranded mid-history.

@@ -12,6 +12,7 @@ import * as SplashScreen from "expo-splash-screen";
 import * as SystemUI from "expo-system-ui";
 import { StatusBar } from "expo-status-bar";
 import React, { useEffect, useState } from "react";
+import { Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -101,10 +102,13 @@ export default function RootLayout(): React.JSX.Element | null {
   }, [fontsLoaded, fontError, bootDone]);
 
   useEffect(() => {
-    // Don't block forever if fonts can't load (e.g. blocked CDN in proxied web preview).
-    // Bumped from 2s → 12s because Feather.font is fetched from Metro on first load
-    // over the dev tunnel, which can take 5-8s on a cold cache. A premature timeout
-    // would render the chat UI with broken icon glyphs (boxes-with-X).
+    // The splash-timeout fallback only exists for the proxied web preview in
+    // the Replit IDE — the iframe sometimes blocks the @expo-google-fonts
+    // CDN and we don't want to hang forever. On native (Expo Go) the Feather
+    // TTF is served by Metro and ALWAYS resolves, so a timeout fallback there
+    // would only manifest as broken icon glyphs (boxes-with-X) on slow links.
+    // We deliberately do NOT set splashTimedOut on native.
+    if (Platform.OS !== "web") return;
     const t = setTimeout(() => {
       setSplashTimedOut(true);
       SplashScreen.hideAsync().catch(() => undefined);
@@ -112,7 +116,11 @@ export default function RootLayout(): React.JSX.Element | null {
     return () => clearTimeout(t);
   }, []);
 
-  if (!fontsLoaded && !fontError && !splashTimedOut) return null;
+  // On native: render only once fonts are truly loaded (or have errored hard).
+  // On web: also allow render after the splashTimedOut fallback fires.
+  const fontsReady = fontsLoaded || fontError;
+  const allowWebFallback = Platform.OS === "web" && splashTimedOut;
+  if (!fontsReady && !allowWebFallback) return null;
 
   return (
     <SafeAreaProvider>

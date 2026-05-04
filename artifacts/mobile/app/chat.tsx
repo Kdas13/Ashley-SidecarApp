@@ -249,6 +249,29 @@ export default function ChatScreen(): React.JSX.Element {
     sendImageMutation.isPending,
   ]);
 
+  // First-load snap: when messages first arrive (cache hit OR /state hydrate),
+  // FlatList virtualization renders items in passes — scrollToEnd on the first
+  // contentSizeChange only reaches the bottom of items measured so far, then
+  // more items render below and leave the user stranded mid-history. Schedule
+  // multiple snaps over ~2s to ride out the layout passes. Stops snapping
+  // once the user touches the list (userHasScrolledRef).
+  const initialSnapDoneRef = useRef(false);
+  useEffect(() => {
+    if (initialSnapDoneRef.current) return;
+    if (messages.length === 0) return;
+    initialSnapDoneRef.current = true;
+    const delays = [0, 50, 150, 350, 700, 1200, 2000];
+    const timers = delays.map((ms) =>
+      setTimeout(() => {
+        if (userHasScrolledRef.current) return;
+        listRef.current?.scrollToEnd({ animated: false });
+      }, ms),
+    );
+    return () => {
+      timers.forEach((t) => clearTimeout(t));
+    };
+  }, [messages.length]);
+
   // Auto-retry: if the latest message is from the user (Ashley never
   // replied — common when the api-server gets recycled mid-request) keep
   // poking the server every ~12s until her reply lands. The retry
@@ -702,6 +725,15 @@ export default function ChatScreen(): React.JSX.Element {
             renderItem={renderItem}
             keyExtractor={(m) => m.id}
             contentContainerStyle={styles.list}
+            // Render the entire chat history in the first pass so scrollToEnd
+            // reaches the actual bottom on mount instead of chasing the
+            // virtualization frontier across multiple frames. Capped at 200
+            // to keep the first paint reasonable for very long histories.
+            initialNumToRender={Math.min(Math.max(messages.length, 20), 200)}
+            // FlatList by default unmounts off-screen rows on Android, which
+            // can shift content height as Kane scrolls back up. Disable so
+            // measurements stay stable for our scroll-snap logic.
+            removeClippedSubviews={false}
             ListEmptyComponent={
               <View style={styles.emptyWrap}>
                 <Text style={styles.emptyText}>say something to her</Text>
