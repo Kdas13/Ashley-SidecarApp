@@ -25,7 +25,16 @@ export function requireApiKey(
 
   const key = req.headers["x-api-key"];
   if (!key || key !== secret) {
-    req.log.warn({ ip: req.ip }, "Rejected request: missing or invalid API key");
+    const ks =
+      typeof key === "string"
+        ? `${key.slice(0, 4)}…${key.slice(-4)} (len=${key.length})`
+        : Array.isArray(key)
+          ? `array(${key.length})`
+          : "missing";
+    req.log.warn(
+      { ip: req.ip, receivedKeyFingerprint: ks },
+      "Rejected request: missing or invalid API key",
+    );
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
