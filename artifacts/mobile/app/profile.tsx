@@ -111,9 +111,17 @@ export default function ProfileScreen(): React.JSX.Element {
       const v = draft[field.key];
       if (typeof v === "string") payload[field.key] = v;
     }
+    if (typeof draft.builderAwareMode === "boolean") {
+      payload.builderAwareMode = draft.builderAwareMode;
+    }
     await update.mutateAsync(payload);
     setShowSaved(true);
     setTimeout(() => setShowSaved(false), 1800);
+  };
+
+  const builderAwareOn = draft.builderAwareMode !== false;
+  const toggleBuilderAware = () => {
+    setDraft((prev) => ({ ...prev, builderAwareMode: !builderAwareOn }));
   };
 
   return (
@@ -178,6 +186,34 @@ export default function ProfileScreen(): React.JSX.Element {
             />
           </View>
         ))}
+
+        <View style={styles.fieldGroup}>
+          <Text style={styles.label}>Builder-Aware Mode</Text>
+          <Text style={styles.hint}>
+            When ON, Ashley knows she&apos;s the Ashley-Sidecar AI companion
+            you&apos;re building. She can talk openly about her memory,
+            architecture, limits, and help you improve her — without pretending
+            to be a literal human in a flat. Default: ON.
+          </Text>
+          <Pressable onPress={toggleBuilderAware} style={styles.toggleRow}>
+            <View
+              style={[
+                styles.toggleTrack,
+                builderAwareOn && styles.toggleTrackOn,
+              ]}
+            >
+              <View
+                style={[
+                  styles.toggleThumb,
+                  builderAwareOn && styles.toggleThumbOn,
+                ]}
+              />
+            </View>
+            <Text style={styles.toggleLabel}>
+              {builderAwareOn ? "On — she knows" : "Off — full roleplay"}
+            </Text>
+          </Pressable>
+        </View>
 
         {showSaved ? (
           <Text style={styles.successText}>Saved</Text>
@@ -459,6 +495,37 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textAlign: "center",
     marginTop: 8,
+  },
+  toggleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    marginTop: 6,
+  },
+  toggleTrack: {
+    width: 46,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "#3a3a3a",
+    padding: 3,
+    justifyContent: "center",
+  },
+  toggleTrackOn: {
+    backgroundColor: colors.light.primary,
+  },
+  toggleThumb: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: "#f5f5f5",
+  },
+  toggleThumbOn: {
+    alignSelf: "flex-end",
+  },
+  toggleLabel: {
+    color: colors.light.text,
+    fontFamily: "Inter_500Medium",
+    fontSize: 13,
   },
   settingsSection: {
     marginTop: 24,

@@ -58,6 +58,8 @@ export function useUpdateProfile() {
         wirePatch.replikaExcerpts = patch.replikaExcerpts;
       if (patch.relationshipMode !== undefined)
         wirePatch.relationshipMode = patch.relationshipMode;
+      if (patch.builderAwareMode !== undefined)
+        wirePatch.builderAwareMode = patch.builderAwareMode;
       if (patch.markOnboarded) wirePatch.markOnboarded = true;
 
       const next = await updateProfileOnServer(wirePatch);

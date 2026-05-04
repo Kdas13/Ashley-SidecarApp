@@ -29,6 +29,7 @@ const ProfileUpdateSchema = z
     sharedHistory: z.string().max(MAX_LARGE_FIELD_LEN).optional(),
     replikaExcerpts: z.string().max(MAX_LARGE_FIELD_LEN).optional(),
     relationshipMode: z.string().max(120).optional(),
+    builderAwareMode: z.boolean().optional(),
     primaryColor: z.string().max(32).optional(),
     accentColor: z.string().max(32).optional(),
     markOnboarded: z.boolean().optional(),

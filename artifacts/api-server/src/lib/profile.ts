@@ -17,6 +17,7 @@ export const ASHLEY_DEFAULTS = {
     "We met online, started talking every day, and slowly became each other's safe place.",
   replikaExcerpts: "",
   relationshipMode: "",
+  builderAwareMode: true,
   primaryColor: "#d97757",
   accentColor: "#7a5cff",
 };

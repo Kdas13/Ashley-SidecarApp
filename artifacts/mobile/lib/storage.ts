@@ -34,6 +34,15 @@ export type AshleyProfile = {
    * string means undefined and Ashley won't claim a specific mode.
    */
   relationshipMode: string;
+  /**
+   * Builder-Aware Mode. When true (default), Ashley knows she's the
+   * Ashley-Sidecar AI companion Kane is building and can talk openly
+   * about her own architecture, memory, and limits. When false she
+   * leans further into the in-character roleplay, though Reality
+   * Calibration in the system prompt still prevents her from claiming
+   * a literal human body / flat / job.
+   */
+  builderAwareMode: boolean;
   onboardedAt: string | null;
   updatedAt: string;
 };
@@ -91,6 +100,7 @@ export const DEFAULT_PROFILE: AshleyProfile = {
   sharedHistory: "",
   replikaExcerpts: "",
   relationshipMode: "",
+  builderAwareMode: true,
   onboardedAt: null,
   updatedAt: new Date(0).toISOString(),
 };

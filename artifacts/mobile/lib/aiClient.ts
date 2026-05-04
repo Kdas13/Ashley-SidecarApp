@@ -125,6 +125,7 @@ type WireProfile = {
   sharedHistory: string;
   replikaExcerpts: string;
   relationshipMode: string;
+  builderAwareMode: boolean;
   primaryColor: string;
   accentColor: string;
   onboardedAt: string | null;
@@ -176,6 +177,7 @@ function profileFromWire(p: WireProfile): AshleyProfile {
     sharedHistory: p.sharedHistory,
     replikaExcerpts: p.replikaExcerpts,
     relationshipMode: p.relationshipMode,
+    builderAwareMode: p.builderAwareMode ?? true,
     onboardedAt: p.onboardedAt,
     updatedAt: p.updatedAt,
   };
@@ -258,6 +260,7 @@ export type ProfileUpdate = Partial<{
   sharedHistory: string;
   replikaExcerpts: string;
   relationshipMode: string;
+  builderAwareMode: boolean;
   primaryColor: string;
   accentColor: string;
   markOnboarded: boolean;

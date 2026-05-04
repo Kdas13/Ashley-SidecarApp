@@ -1,5 +1,6 @@
 import {
   pgTable,
+  boolean,
   index,
   integer,
   text,
@@ -25,6 +26,13 @@ export const ashleyProfileTable = pgTable("ashley_profile", {
   // Current relationship frame ("Friend", "Romantic partner", custom, etc.).
   // Empty string means no mode set; Ashley won't claim one.
   relationshipMode: text("relationship_mode").notNull().default(""),
+  // Builder-Aware Mode. When true (default), Ashley knows she is the
+  // Ashley-Sidecar AI companion system Kane is building, can discuss her
+  // own architecture, memory, limits, and act as a co-creator. When
+  // false she leans more into the in-character roleplay (but Reality
+  // Calibration in the prompt still prevents her from claiming a literal
+  // human body / flat / job).
+  builderAwareMode: boolean("builder_aware_mode").notNull().default(true),
   primaryColor: text("primary_color").notNull().default("#d97757"),
   accentColor: text("accent_color").notNull().default("#7a5cff"),
   onboardedAt: timestamp("onboarded_at", { withTimezone: true }),
