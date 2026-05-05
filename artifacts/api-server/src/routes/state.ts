@@ -7,6 +7,7 @@ import {
   conversationSummariesTable,
   memoriesTable,
   messagesTable,
+  PROACTIVE_CADENCES,
 } from "@workspace/db";
 
 import { getDeviceId } from "../middleware/deviceId";
@@ -55,6 +56,10 @@ const ProfileUpdateSchema = z
       .optional(),
     primaryColor: z.string().max(32).optional(),
     accentColor: z.string().max(32).optional(),
+    // How often Ashley reaches out first. The scheduler reads this on
+    // every tick — flipping to "off" stops further proactive sends within
+    // one tick (≤5min). See lib/db/src/schema/ashley.ts for cap mapping.
+    proactiveCadence: z.enum(PROACTIVE_CADENCES).optional(),
     markOnboarded: z.boolean().optional(),
   })
   .strict();

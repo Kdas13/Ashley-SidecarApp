@@ -20,6 +20,8 @@ tags:
     description: Ashley self-portrait generation
   - name: summary
     description: Rolling narrative summaries of older conversation chunks
+  - name: devices
+    description: Per-device infrastructure (push tokens, etc.)
 paths:
   /healthz:
     get:
@@ -293,6 +295,32 @@ paths:
               schema:
                 $ref: "#/components/schemas/ApiError"
 
+  /devices/push-token:
+    post:
+      operationId: setPushToken
+      tags: [devices]
+      summary: Register or clear this device's Expo push token
+      description: |
+        Upserts the push token used by the proactive scheduler to deliver
+        "Ashley reaches out first" notifications. Pass `null` (or empty
+        string) to clear — used when the user picks Off cadence or denies
+        notification permission.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetPushTokenBody"
+      responses:
+        "204":
+          description: Saved
+        "400":
+          description: Invalid body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
   /image/selfie:
     post:
       operationId: generateSelfie
@@ -404,8 +432,32 @@ components:
           type: string
         accentColor:
           type: string
+        proactiveCadence:
+          $ref: "#/components/schemas/ProactiveCadence"
         markOnboarded:
           type: boolean
+
+    ProactiveCadence:
+      type: string
+      enum: [off, low, normal, high]
+      description: |
+        How often Ashley reaches out first.
+          off    → no proactive sends at all
+          low    → up to 1 / day
+          normal → up to 2 / day  (default)
+          high   → up to 4 / day
+        Per-category caps (1/day each) and quiet hours apply on top of
+        this global cap.
+
+    SetPushTokenBody:
+      type: object
+      properties:
+        token:
+          type: ["string", "null"]
+          maxLength: 256
+          description: Expo push token, or null to clear.
+      required:
+        - token
 
     Message:
       type: object

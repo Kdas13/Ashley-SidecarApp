@@ -293,13 +293,31 @@ router.post("/chat", async (req, res): Promise<void> => {
     return;
   }
 
-  // 2. Load context from DB.
+  // 2. Load context from DB. While we're here, opportunistically stash
+  //    the device's IANA timezone on the profile so the proactive scheduler
+  //    can evaluate quiet hours (22:00-08:00) in wall-clock time without
+  //    having to round-trip the device. Fire-and-forget — never blocks the
+  //    chat reply, never errors out the request.
   let profile: AshleyProfile;
   let memories: Memory[];
   let summaries: ConversationSummary[];
   let history: Message[];
   try {
     profile = await getOrCreateProfileFor(deviceId);
+    if (
+      clientTimezone &&
+      typeof clientTimezone === "string" &&
+      clientTimezone.length <= 64 &&
+      clientTimezone !== profile.timezone
+    ) {
+      void db
+        .update(ashleyProfileTable)
+        .set({ timezone: clientTimezone })
+        .where(eq(ashleyProfileTable.deviceId, deviceId))
+        .catch((err) => {
+          req.log.warn({ err }, "Failed to update profile timezone (non-fatal)");
+        });
+    }
     [memories, summaries, history] = await Promise.all([
       db
         .select()

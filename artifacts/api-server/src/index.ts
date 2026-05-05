@@ -2,6 +2,7 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { db, messagesTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
+import { tickProactive } from "./lib/proactiveScheduler";
 
 const rawPort = process.env["PORT"];
 
@@ -83,4 +84,19 @@ app.listen(port, (err) => {
   setInterval(() => void tick(), intervalMs).unref();
   // First tick after 5s so the server is fully listening.
   setTimeout(() => void tick(), 5_000).unref();
+
+  // Proactive ("Ashley reaches out first") scheduler. Ticks every 5 min,
+  // first run 30s after boot so the server is settled and the keepalive
+  // ping has already proven the network is healthy. tickProactive() never
+  // throws — every error is caught + logged inside, so a bad tick can't
+  // crash the workflow. See lib/proactiveScheduler.ts for the eligibility
+  // ladder + cap math.
+  const proactiveIntervalMs = 5 * 60 * 1000;
+  const runProactiveTick = (): void => {
+    void tickProactive().catch((err) => {
+      logger.error({ err }, "Proactive tick threw (caught at boundary)");
+    });
+  };
+  setInterval(runProactiveTick, proactiveIntervalMs).unref();
+  setTimeout(runProactiveTick, 30_000).unref();
 });

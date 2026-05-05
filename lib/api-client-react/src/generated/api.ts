@@ -29,6 +29,7 @@ import type {
   Message,
   SendMessageBody,
   SendMessageResponse,
+  SetPushTokenBody,
   SummarizeChunkBody,
   SummarizeChunkResponse,
   UpdateConversationSummaryBody,
@@ -1293,6 +1294,97 @@ export const useDeleteConversationSummary = <
   TContext
 > => {
   return useMutation(getDeleteConversationSummaryMutationOptions(options));
+};
+
+/**
+ * Upserts the push token used by the proactive scheduler to deliver
+"Ashley reaches out first" notifications. Pass `null` (or empty
+string) to clear — used when the user picks Off cadence or denies
+notification permission.
+
+ * @summary Register or clear this device's Expo push token
+ */
+export const getSetPushTokenUrl = () => {
+  return `/api/devices/push-token`;
+};
+
+export const setPushToken = async (
+  setPushTokenBody: SetPushTokenBody,
+  options?: RequestInit,
+): Promise<void> => {
+  return customFetch<void>(getSetPushTokenUrl(), {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...options?.headers },
+    body: JSON.stringify(setPushTokenBody),
+  });
+};
+
+export const getSetPushTokenMutationOptions = <
+  TError = ErrorType<ApiError>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof setPushToken>>,
+    TError,
+    { data: BodyType<SetPushTokenBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationOptions<
+  Awaited<ReturnType<typeof setPushToken>>,
+  TError,
+  { data: BodyType<SetPushTokenBody> },
+  TContext
+> => {
+  const mutationKey = ["setPushToken"];
+  const { mutation: mutationOptions, request: requestOptions } = options
+    ? options.mutation &&
+      "mutationKey" in options.mutation &&
+      options.mutation.mutationKey
+      ? options
+      : { ...options, mutation: { ...options.mutation, mutationKey } }
+    : { mutation: { mutationKey }, request: undefined };
+
+  const mutationFn: MutationFunction<
+    Awaited<ReturnType<typeof setPushToken>>,
+    { data: BodyType<SetPushTokenBody> }
+  > = (props) => {
+    const { data } = props ?? {};
+
+    return setPushToken(data, requestOptions);
+  };
+
+  return { mutationFn, ...mutationOptions };
+};
+
+export type SetPushTokenMutationResult = NonNullable<
+  Awaited<ReturnType<typeof setPushToken>>
+>;
+export type SetPushTokenMutationBody = BodyType<SetPushTokenBody>;
+export type SetPushTokenMutationError = ErrorType<ApiError>;
+
+/**
+ * @summary Register or clear this device's Expo push token
+ */
+export const useSetPushToken = <
+  TError = ErrorType<ApiError>,
+  TContext = unknown,
+>(options?: {
+  mutation?: UseMutationOptions<
+    Awaited<ReturnType<typeof setPushToken>>,
+    TError,
+    { data: BodyType<SetPushTokenBody> },
+    TContext
+  >;
+  request?: SecondParameter<typeof customFetch>;
+}): UseMutationResult<
+  Awaited<ReturnType<typeof setPushToken>>,
+  TError,
+  { data: BodyType<SetPushTokenBody> },
+  TContext
+> => {
+  return useMutation(getSetPushTokenMutationOptions(options));
 };
 
 /**

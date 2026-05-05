@@ -65,6 +65,18 @@ export type AshleyProfile = {
   adultConfirmedAt: string | null;
   /** 0..5 intimacy ladder. Capped per mode by the server (standard ≤ 3, mature ≤ 5). */
   intimacyLevel: number;
+  /**
+   * How often Ashley reaches out first via push notification.
+   *   off    — never. Disables push registration entirely.
+   *   low    — up to 1 / day.
+   *   normal — up to 2 / day. Default for new installs.
+   *   high   — up to 4 / day.
+   * Per-category daily caps + quiet hours (22:00-08:00 device-local) +
+   * a 90-min recent-message guard apply on top of this global cap.
+   * Server-side scheduler enforces all of it; the mobile only stores the
+   * user's preference and decides whether to ask for push permission.
+   */
+  proactiveCadence: "off" | "low" | "normal" | "high";
   onboardedAt: string | null;
   updatedAt: string;
 };
@@ -185,6 +197,7 @@ export const DEFAULT_PROFILE: AshleyProfile = {
   contentMode: "standard",
   adultConfirmedAt: null,
   intimacyLevel: 0,
+  proactiveCadence: "normal",
   onboardedAt: null,
   updatedAt: new Date(0).toISOString(),
 };

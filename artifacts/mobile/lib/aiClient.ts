@@ -173,6 +173,7 @@ type WireProfile = {
   intimacyLevel: number;
   primaryColor: string;
   accentColor: string;
+  proactiveCadence?: string | null;
   onboardedAt: string | null;
   updatedAt: string;
 };
@@ -217,6 +218,14 @@ type WireSummary = {
   updatedAt: string;
 };
 
+function normalizeProactiveCadence(
+  v: string | null | undefined,
+): AshleyProfile["proactiveCadence"] {
+  if (v === "off" || v === "low" || v === "normal" || v === "high") return v;
+  // Server default + safe fallback for older rows that pre-date the column.
+  return "normal";
+}
+
 function profileFromWire(p: WireProfile): AshleyProfile {
   return {
     name: p.name,
@@ -239,6 +248,7 @@ function profileFromWire(p: WireProfile): AshleyProfile {
       typeof p.intimacyLevel === "number" && Number.isFinite(p.intimacyLevel)
         ? p.intimacyLevel
         : 0,
+    proactiveCadence: normalizeProactiveCadence(p.proactiveCadence),
     onboardedAt: p.onboardedAt,
     updatedAt: p.updatedAt,
   };
@@ -549,6 +559,7 @@ export type ProfileUpdate = Partial<{
   intimacyLevel: number;
   primaryColor: string;
   accentColor: string;
+  proactiveCadence: "off" | "low" | "normal" | "high";
   markOnboarded: boolean;
 }>;
 
@@ -599,6 +610,28 @@ export async function updateProfileOnServer(
     body: JSON.stringify(patch),
   });
   return profileFromWire(data.profile);
+}
+
+/**
+ * Upsert (or clear) this device's Expo push token on the server. Pass
+ * a non-empty string to register, or `null` to unregister (used when the
+ * user picks the "Off" cadence or denies notification permission).
+ *
+ * Fire-and-forget from the caller's perspective: throws on real network
+ * failure but silently no-ops on transient blips. The api-server returns
+ * 204 on success — no body.
+ */
+export async function setPushTokenOnServer(token: string | null): Promise<void> {
+  await fetchJSON<undefined>("/devices/push-token", {
+    method: "POST",
+    body: JSON.stringify({ token }),
+  }).catch((err) => {
+    // Swallow the JSON-parse error from a 204 (empty body) response —
+    // fetchJSON's .json() call rejects on empty bodies. Anything else
+    // re-throws.
+    if (err instanceof SyntaxError) return;
+    throw err;
+  });
 }
 
 export type ChatRequest = {

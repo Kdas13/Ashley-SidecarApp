@@ -50,6 +50,12 @@ export const UpdateProfileBody = zod.object({
   replikaExcerpts: zod.string().optional(),
   primaryColor: zod.string().optional(),
   accentColor: zod.string().optional(),
+  proactiveCadence: zod
+    .enum(["off", "low", "normal", "high"])
+    .optional()
+    .describe(
+      "How often Ashley reaches out first.\n  off    → no proactive sends at all\n  low    → up to 1 \/ day\n  normal → up to 2 \/ day  (default)\n  high   → up to 4 \/ day\nPer-category caps (1\/day each) and quiet hours apply on top of\nthis global cap.\n",
+    ),
   markOnboarded: zod.boolean().optional(),
 });
 
@@ -232,6 +238,24 @@ export const UpdateConversationSummaryResponse = zod.object({
  */
 export const DeleteConversationSummaryParams = zod.object({
   id: zod.coerce.number(),
+});
+
+/**
+ * Upserts the push token used by the proactive scheduler to deliver
+"Ashley reaches out first" notifications. Pass `null` (or empty
+string) to clear — used when the user picks Off cadence or denies
+notification permission.
+
+ * @summary Register or clear this device's Expo push token
+ */
+export const setPushTokenBodyTokenMax = 256;
+
+export const SetPushTokenBody = zod.object({
+  token: zod
+    .string()
+    .max(setPushTokenBodyTokenMax)
+    .nullable()
+    .describe("Expo push token, or null to clear."),
 });
 
 /**

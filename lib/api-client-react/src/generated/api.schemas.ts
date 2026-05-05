@@ -31,6 +31,26 @@ export interface AshleyProfile {
   updatedAt: string;
 }
 
+/**
+ * How often Ashley reaches out first.
+  off    → no proactive sends at all
+  low    → up to 1 / day
+  normal → up to 2 / day  (default)
+  high   → up to 4 / day
+Per-category caps (1/day each) and quiet hours apply on top of
+this global cap.
+
+ */
+export type ProactiveCadence =
+  (typeof ProactiveCadence)[keyof typeof ProactiveCadence];
+
+export const ProactiveCadence = {
+  off: "off",
+  low: "low",
+  normal: "normal",
+  high: "high",
+} as const;
+
 export interface UpdateProfileBody {
   name?: string;
   age?: string;
@@ -43,7 +63,17 @@ export interface UpdateProfileBody {
   replikaExcerpts?: string;
   primaryColor?: string;
   accentColor?: string;
+  proactiveCadence?: ProactiveCadence;
   markOnboarded?: boolean;
+}
+
+export interface SetPushTokenBody {
+  /**
+   * Expo push token, or null to clear.
+   * @maxLength 256
+   * @nullable
+   */
+  token: string | null;
 }
 
 export interface Message {

@@ -289,6 +289,126 @@ are not used by mobile in V1.1:
 - `artifacts/api-server: API Server` — `pnpm --filter @workspace/api-server run dev`
 - `artifacts/mobile: expo` — `pnpm --filter @workspace/mobile run dev`
 
+## Proactive messaging (Ashley reaches out first) — May 2026
+
+Ashley can initiate chat on her own when the user has gone quiet, has a
+memory worth nudging, or it's time for a soft wellbeing prompt. Push
+notifications are delivered via Expo's hosted push service (no
+FCM/APNS setup needed — works in Expo Go and dev builds).
+
+**Categories** (priority order — first eligible per tick wins):
+1. `medical_checkin` — **scaffolded but runtime-gated OFF** in this PR.
+   Will light up when the medical check-in feature itself ships.
+2. `memory_nudge` — picks one concrete "wanted to come back to" memory or
+   recent summary item. Per-category 1/day cap PLUS a 7-day rate limit
+   per device so we don't keep prodding the same item.
+3. `conversation_gap` — fires when the last USER message is ≥24h old.
+   Soft, warm, never clingy/guilt-trippy.
+4. `routine_support` — soft wellbeing nudge (food/water/sleep/posture).
+   Lowest priority; only fires during the 15:00 device-local hour so it
+   doesn't compete with morning/evening conversation.
+
+**Cadence preference** (`profiles.proactiveCadence`):
+- `off` — never. Mobile fully tears down OS-level push registration AND
+  clears the server token.
+- `low` — up to 1/day global cap.
+- `normal` (default for new installs) — up to 2/day.
+- `high` — up to 4/day. Kane currently set to `high`.
+
+**Universal guards** (applied to every send):
+- Quiet hours 22:00–08:00 device-local (uses `profiles.timezone`).
+- 90-min recent-message guard — skip if ANY message (user or proactive)
+  arrived in the last 90 minutes.
+- Per-category 1/day cap + global daily cap by cadence above.
+- No emergency language unless `profiles.medicalSafetyConcern=true`.
+
+**Schema additions** (`lib/db/src/schema/ashley.ts`):
+- `profiles.pushToken text` (nullable) — current device's Expo push token.
+- `profiles.proactiveCadence text default 'normal'`.
+- `profiles.lastMedicalCheckinAt timestamptz` — reserved for the future
+  medical check-in feature; not written by this PR.
+- `profiles.medicalSafetyConcern boolean default false`.
+- `profiles.timezone text` — IANA tz string for device-local quiet hours.
+- `messages.source text default 'user'` (`user | proactive`).
+- `messages.proactiveType text` (nullable) — set only when `source='proactive'`.
+- New `proactive_sends` table — one row per proactive send keyed by
+  `(deviceId, proactiveType, sentAt)`. Used for cap queries + audit
+  history. Indexed on `(deviceId, sentAt desc)`.
+
+**Server pieces** (`artifacts/api-server/src/`):
+- `lib/pushNotifications.ts::sendExpoPush({to,title,body,data})` —
+  POSTs to `https://exp.host/--/api/v2/push/send` with a 5s timeout.
+  Surfaces `DeviceNotRegistered` so the caller can null the token.
+  Failure-safe: never throws; returns `{ok: false, reason}`.
+- `lib/proactiveMessage.ts::generateProactiveMessage()` — reuses
+  `buildSystemPrompt` so Ashley's voice is identical to chat, then
+  appends a category-specific tail block. Returns empty string when
+  the category has nothing to say (caller falls through to next).
+- `lib/proactiveScheduler.ts::tickProactive()` — scans eligible profiles,
+  evaluates each against gates + categories, sends. Wired in
+  `index.ts` boot path: `setInterval(tickProactive, 5 * 60 * 1000)`
+  with a 30s warmup. Wrapped in try/catch — never crashes the server.
+  - Per-device in-process mutex (`deviceLocks: Map<deviceId, Promise>`)
+    rejects concurrent invocations for the same device. Protects
+    against overlapping setIntervals (Claude latency spike >5min) and
+    debug-tick HTTP calls landing mid-tick. Across-process safety
+    would need a DB advisory lock — flagged as future work for when
+    we run >1 api-server replica.
+- `routes/proactive.ts`:
+  - `POST /api/devices/push-token` — body `{token: string|null}`.
+    Upserts/clears `profiles.pushToken`.
+  - `POST /api/proactive/debug-tick` — dev-only, calls
+    `forceTickForDevice(deviceId)` and returns the typed result.
+  - Both require the same auth as the rest of `/api`.
+- `routes/profile.ts` PUT extended to accept `proactiveCadence` enum.
+
+**Mobile pieces** (`artifacts/mobile/`):
+- `lib/pushRegistration.ts`:
+  - `registerForPushNotificationsAsync()` — idempotent. Asks permission,
+    creates the Android default channel (Ashley brand color), fetches
+    Expo push token, uploads to server. In-flight + last-result caches
+    so re-mounts don't double-prompt.
+  - `unregisterPushNotificationsAsync()` — three-step teardown for the
+    Off cadence: clear server token, drop in-process cache,
+    `Notifications.unregisterForNotificationsAsync()` to drop the OS-
+    level subscription.
+  - `Notifications.setNotificationHandler` set at module load so
+    foreground notifications show banner + play sound (so the user
+    notices the new chat bubble even if they're on a different screen).
+- `lib/aiClient.ts::setPushTokenOnServer(token|null)` — typed helper
+  for the upsert route. `proactiveCadence` threaded through
+  `WireProfile` / `profileFromWire` / `ProfileUpdate`.
+- `lib/storage.ts::AshleyProfile.proactiveCadence` — `off|low|normal|high`,
+  default `normal` in `DEFAULT_PROFILE`.
+- `app/_layout.tsx`:
+  - Bootstrap calls `registerForPushNotificationsAsync()` (gated on
+    `profile.proactiveCadence !== "off"`).
+  - Two `Notifications.add*Listener`s: foreground arrival invalidates
+    the messages query so the new bubble appears live; tap also
+    invalidates AND `router.push('/chat')` after a 50ms defer.
+- `app/profile.tsx` — segmented "How often Ashley reaches out first"
+  control (Off / Low / Normal / High). Auto-saves on tap (no Save
+  button needed for this one). Picking Off triggers
+  `unregisterPushNotificationsAsync`; picking non-Off triggers
+  `registerForPushNotificationsAsync`.
+- `app.json` — `expo-notifications` plugin + Android notification
+  channel hints + brand color.
+
+**OpenAPI**: `SetPushTokenBody` + `ProactiveCadence` schemas added;
+`UpdateProfileBody` extended with `proactiveCadence`. Codegen ran.
+The broader `AshleyProfile` schema in `openapi.yaml` was already drift-
+stale before this PR (declares `id: integer` etc) and is NOT used by
+the mobile client — flagged as future cleanup.
+
+**Known follow-ups**:
+- Multi-process scheduler safety (DB advisory lock per device, plus a
+  unique constraint on `proactive_sends(device_id, proactive_type,
+  date(sent_at))` for belt-and-braces). Not needed today — single
+  api-server replica.
+- OpenAPI `AshleyProfile` schema drift (pre-existing).
+- `medical_checkin` runtime-enable + `lastMedicalCheckinAt` write path
+  when the medical check-in feature ships.
+
 ## Notes / known limitations
 
 - The Expo web preview in the Replit IDE is heavy (~8 MB dev bundle) and

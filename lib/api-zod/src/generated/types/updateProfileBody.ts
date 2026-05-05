@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { ProactiveCadence } from "./proactiveCadence";
 
 export interface UpdateProfileBody {
   name?: string;
@@ -18,5 +19,6 @@ export interface UpdateProfileBody {
   replikaExcerpts?: string;
   primaryColor?: string;
   accentColor?: string;
+  proactiveCadence?: ProactiveCadence;
   markOnboarded?: boolean;
 }

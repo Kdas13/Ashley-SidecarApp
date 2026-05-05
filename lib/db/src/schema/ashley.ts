@@ -75,6 +75,44 @@ export const ashleyProfileTable = pgTable("ashley_profile", {
   intimacyLevel: integer("intimacy_level").notNull().default(0),
   primaryColor: text("primary_color").notNull().default("#d97757"),
   accentColor: text("accent_color").notNull().default("#7a5cff"),
+  // IANA timezone string (e.g. "Europe/London", "America/New_York").
+  // Opportunistically updated on every /chat call from the
+  // `clientTimezone` field in the request body so the proactive
+  // scheduler can evaluate quiet hours (22:00-08:00) in the user's
+  // wall-clock time without having to ask the device. Defaults to UTC
+  // — wrong for most humans but safe (skews quiet hours rather than
+  // erroring) until the first chat lands.
+  timezone: text("timezone").notNull().default("UTC"),
+  // ----- Push notifications + proactive ("Ashley reaches out first") scaffolding.
+  // pushToken: Expo push token for this device. Set via POST /api/devices/push-token
+  //   when the mobile app finishes its permission grant. Nulled when the user
+  //   picks Off cadence, when the user denies notification permission, or when
+  //   the Expo Push API tells us the token is no longer registered. One device
+  //   == one token (we replace, not append).
+  pushToken: text("push_token"),
+  // proactiveCadence: how aggressively Ashley reaches out first. Drives the
+  //   global per-day cap in the scheduler:
+  //     off    → scheduler skips this device entirely
+  //     low    → 1 proactive message / day max
+  //     normal → 2 / day max  (default for new installs)
+  //     high   → 4 / day max  (Kane's preference)
+  //   Per-category caps (1/day each) and quiet hours apply on top of this.
+  proactiveCadence: text("proactive_cadence").notNull().default("normal"),
+  // Daily medical check-in eligibility input. The medical check-in feature
+  // itself is NOT built yet — the scheduler scaffolds the category but the
+  // medical_checkin slot is gated OFF at runtime until that feature lands.
+  // Will be written by the future medical flow when Kane completes (or
+  // defers) his daily check-in.
+  lastMedicalCheckinAt: timestamp("last_medical_checkin_at", {
+    withTimezone: true,
+  }),
+  // Per Kane's spec: the proactive generator must NEVER use emergency / urgent
+  // / crisis language unless the device has affirmatively flagged a real
+  // medical safety concern. Defaults false so the warm/soft tone is the only
+  // option until a medical workflow opts in.
+  medicalSafetyConcern: boolean("medical_safety_concern")
+    .notNull()
+    .default(false),
   onboardedAt: timestamp("onboarded_at", { withTimezone: true }),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
@@ -130,6 +168,18 @@ export const messagesTable = pgTable(
     replyToId: text("reply_to_id"),
     replyToRole: text("reply_to_role"),
     replyToPreview: text("reply_to_preview"),
+    // Origin marker for proactive ("Ashley reaches out first") messages.
+    //   "user"      — normal user-initiated turn (default; covers both user
+    //                 messages and Ashley's replies in a user-driven thread).
+    //   "proactive" — Ashley reached out first via the scheduler. Also fires
+    //                 a push notification at insert time.
+    // Default keeps the entire historical backfill valid as "user".
+    source: text("source").notNull().default("user"),
+    // Sub-type for proactive messages. Null on every "user"-source row.
+    // Allowed values: medical_checkin | conversation_gap | memory_nudge |
+    // routine_support. Used by the scheduler for the per-category daily cap
+    // and by future analytics; not exposed in the chat UI.
+    proactiveType: text("proactive_type"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -211,3 +261,72 @@ export type InsertConversationSummary = z.infer<
 >;
 export type ConversationSummary =
   typeof conversationSummariesTable.$inferSelect;
+
+// Audit + cap-tracking ledger for proactive ("Ashley reaches out first")
+// sends. Exactly one row inserted per successful proactive message:
+// scheduler writes the message into `messagesTable` AND a row here in the
+// same step. Used as the source of truth for:
+//   - per-category daily cap (1/day each, by proactiveType)
+//   - global daily cap (1/2/4 by cadence)
+//   - "last memory_nudge >= 7d ago" rate-limit
+// We keep this separate from messagesTable so the cap math doesn't have to
+// scan all chat history, and so a future "history wipe" doesn't reset
+// Kane's daily cap (the audit trail outlives chat clears).
+export const proactiveSendsTable = pgTable(
+  "proactive_sends",
+  {
+    id: text("id").primaryKey(),
+    deviceId: text("device_id").notNull(),
+    // Loose reference to messages.id — not a hard FK so a chat-history wipe
+    // (DELETE /chat/messages) doesn't cascade-delete the audit row.
+    messageId: text("message_id").notNull(),
+    // medical_checkin | conversation_gap | memory_nudge | routine_support.
+    proactiveType: text("proactive_type").notNull(),
+    sentAt: timestamp("sent_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    // Cap queries always look up "rows for this device, newest first" so
+    // we cover both the global cap (last 24h) and the per-category cap
+    // (most-recent-by-type) with one composite index.
+    byDeviceSentAt: index("proactive_sends_device_sent_idx").on(
+      t.deviceId,
+      t.sentAt,
+    ),
+  }),
+);
+
+export const insertProactiveSendSchema = createInsertSchema(
+  proactiveSendsTable,
+).omit({ sentAt: true });
+export type InsertProactiveSend = z.infer<typeof insertProactiveSendSchema>;
+export type ProactiveSend = typeof proactiveSendsTable.$inferSelect;
+
+// Allowed values for `ashleyProfileTable.proactiveCadence`. Mirrored in the
+// API spec / zod validators so wire validation and DB validation stay in
+// sync.
+export const PROACTIVE_CADENCES = ["off", "low", "normal", "high"] as const;
+export type ProactiveCadence = (typeof PROACTIVE_CADENCES)[number];
+
+// Allowed values for `messagesTable.proactiveType` (and the matching
+// proactiveSendsTable column). Order in this array is also the scheduler's
+// priority order — first eligible category wins.
+export const PROACTIVE_TYPES = [
+  "medical_checkin",
+  "memory_nudge",
+  "conversation_gap",
+  "routine_support",
+] as const;
+export type ProactiveType = (typeof PROACTIVE_TYPES)[number];
+
+// Per-cadence global daily cap. Off short-circuits in the scheduler before
+// this lookup, so it isn't a key here.
+export const PROACTIVE_GLOBAL_CAP_BY_CADENCE: Record<
+  Exclude<ProactiveCadence, "off">,
+  number
+> = {
+  low: 1,
+  normal: 2,
+  high: 4,
+};

@@ -6,7 +6,8 @@ import {
 } from "@expo-google-fonts/inter";
 import { useFonts } from "expo-font";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { Stack } from "expo-router";
+import * as Notifications from "expo-notifications";
+import { router, Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import * as SystemUI from "expo-system-ui";
 import { StatusBar } from "expo-status-bar";
@@ -23,6 +24,7 @@ import {
   fetchState,
   type ServerState,
 } from "@/lib/aiClient";
+import { registerForPushNotificationsAsync } from "@/lib/pushRegistration";
 import {
   saveMemories,
   saveMessages,
@@ -81,6 +83,16 @@ async function bootstrap(): Promise<void> {
     saveMemories(state.memories).catch(() => undefined),
     saveSummaries(state.summaries).catch(() => undefined),
   ]);
+
+  // Push notification registration. Runs AFTER state hydration so the
+  // permission prompt doesn't appear during the splash. If the user's
+  // current cadence is "off" we don't even ask — saves a noisy prompt
+  // for users who explicitly opted out. Anything that fails inside
+  // registerForPushNotificationsAsync surfaces as `token: null` rather
+  // than a throw, so it can never break boot.
+  if (state.profile.proactiveCadence !== "off") {
+    void registerForPushNotificationsAsync().catch(() => undefined);
+  }
 }
 
 export default function RootLayout(): React.JSX.Element | null {
@@ -101,6 +113,40 @@ export default function RootLayout(): React.JSX.Element | null {
     bootstrap()
       .catch(() => undefined)
       .finally(() => setBootDone(true));
+  }, []);
+
+  // Notification listeners — installed once at root mount, torn down on
+  // unmount. Two distinct paths:
+  //   • addNotificationReceivedListener fires when a push ARRIVES while
+  //     the app is in the foreground. The proactive message is already
+  //     in the server's chat history, so we just invalidate the messages
+  //     query and the new bubble pops into the list immediately.
+  //   • addNotificationResponseReceivedListener fires when the user TAPS
+  //     a push (foreground or background). Same query invalidation, plus
+  //     route them to the chat screen so they see the message.
+  // expo-notifications listeners are global — they fire even when no
+  // screen is mounted — so this is the right place to wire them.
+  useEffect(() => {
+    const foregroundSub = Notifications.addNotificationReceivedListener(() => {
+      queryClient.invalidateQueries({ queryKey: ["messages"] });
+    });
+    const tapSub = Notifications.addNotificationResponseReceivedListener(() => {
+      queryClient.invalidateQueries({ queryKey: ["messages"] });
+      // Tiny defer so any in-flight nav settles before we push.
+      setTimeout(() => {
+        try {
+          router.push("/chat");
+        } catch {
+          // navigator may not be ready yet on cold start — the
+          // invalidate above will at least surface the bubble next
+          // time the user opens chat.
+        }
+      }, 50);
+    });
+    return () => {
+      foregroundSub.remove();
+      tapSub.remove();
+    };
   }, []);
 
   useEffect(() => {

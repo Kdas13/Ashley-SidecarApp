@@ -40,8 +40,23 @@
         {
           "microphonePermission": "Ashley uses the microphone for push-to-talk so you can speak instead of typing."
         }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#d97757",
+          "defaultChannel": "default",
+          "sounds": []
+        }
       ]
     ],
+    "notification": {
+      "icon": "./assets/images/icon.png",
+      "color": "#d97757",
+      "androidMode": "default",
+      "iosDisplayInForeground": true
+    },
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true

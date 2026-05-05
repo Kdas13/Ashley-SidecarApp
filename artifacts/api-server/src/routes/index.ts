@@ -6,6 +6,7 @@ import stateRouter from "./state";
 import memoriesRouter from "./memories";
 import carryoverRouter from "./carryover";
 import webSearchRouter from "./webSearch";
+import proactiveRouter from "./proactive";
 import { requireApiKey } from "../middleware/apiKey";
 
 const router: IRouter = Router();
@@ -34,6 +35,7 @@ router.use(stateRouter);
 router.use(memoriesRouter);
 router.use(carryoverRouter);
 router.use(webSearchRouter);
+router.use(proactiveRouter);
 router.use(chatRouter);
 
 export default router;

@@ -30,7 +30,25 @@ import type { ReplikaCarryoverInput } from "@/lib/aiClient";
 import type { AshleyProfile } from "@/lib/storage";
 import { intimacyRung } from "@/lib/policy";
 import { getDeviceIdSync, hasDeviceId, setDeviceId } from "@/lib/deviceId";
+import {
+  registerForPushNotificationsAsync,
+  resetPushRegistrationCache,
+  unregisterPushNotificationsAsync,
+} from "@/lib/pushRegistration";
 import colors from "@/constants/colors";
+
+type ProactiveCadence = AshleyProfile["proactiveCadence"];
+
+const CADENCE_OPTIONS: Array<{
+  value: ProactiveCadence;
+  label: string;
+  detail: string;
+}> = [
+  { value: "off", label: "Off", detail: "Never reaches out first." },
+  { value: "low", label: "Low", detail: "Up to 1 / day." },
+  { value: "normal", label: "Normal", detail: "Up to 2 / day." },
+  { value: "high", label: "High", detail: "Up to 4 / day." },
+];
 
 type EditableField = {
   key: keyof AshleyProfile;
@@ -217,6 +235,14 @@ export default function ProfileScreen(): React.JSX.Element {
     if (typeof draft.voiceMode === "boolean") {
       payload.voiceMode = draft.voiceMode;
     }
+    if (
+      draft.proactiveCadence === "off" ||
+      draft.proactiveCadence === "low" ||
+      draft.proactiveCadence === "normal" ||
+      draft.proactiveCadence === "high"
+    ) {
+      payload.proactiveCadence = draft.proactiveCadence;
+    }
     await update.mutateAsync(payload);
     setShowSaved(true);
     setTimeout(() => setShowSaved(false), 1800);
@@ -230,6 +256,44 @@ export default function ProfileScreen(): React.JSX.Element {
   const voiceModeOn = draft.voiceMode === true;
   const toggleVoiceMode = () => {
     setDraft((prev) => ({ ...prev, voiceMode: !voiceModeOn }));
+  };
+
+  const cadence: ProactiveCadence =
+    draft.proactiveCadence === "off" ||
+    draft.proactiveCadence === "low" ||
+    draft.proactiveCadence === "normal" ||
+    draft.proactiveCadence === "high"
+      ? draft.proactiveCadence
+      : "normal";
+
+  // Picking a new cadence is "live": we save it immediately, then handle
+  // the side-effects of the value (ask permission for non-Off, clear the
+  // server-side push token + reset our cache for Off). The visible text
+  // input fields still need an explicit Save tap — only this one segmented
+  // control is auto-save because there's no draft state worth previewing.
+  const onCadenceChange = (next: ProactiveCadence) => {
+    if (next === cadence) return;
+    setDraft((prev) => ({ ...prev, proactiveCadence: next }));
+    void (async () => {
+      try {
+        await update.mutateAsync({ proactiveCadence: next });
+      } catch (err) {
+        console.warn("[profile] cadence save failed", err);
+        return;
+      }
+      if (next === "off") {
+        // Fully unregister so the OS-level subscription is dropped too.
+        // The next time the user picks a non-Off cadence we re-prompt.
+        await unregisterPushNotificationsAsync();
+        resetPushRegistrationCache();
+      } else {
+        // Asking again is idempotent — the helper short-circuits when
+        // permission is already granted and the token is already
+        // uploaded. This is what triggers the OS prompt the FIRST time
+        // a user moves OFF → Low / Normal / High.
+        await registerForPushNotificationsAsync().catch(() => undefined);
+      }
+    })();
   };
 
   return (
@@ -349,6 +413,44 @@ export default function ProfileScreen(): React.JSX.Element {
               {voiceModeOn ? "On — spoken register" : "Off — texting register"}
             </Text>
           </Pressable>
+        </View>
+
+        <View style={styles.fieldGroup}>
+          <Text style={styles.label}>How often Ashley reaches out first</Text>
+          <Text style={styles.hint}>
+            When she has nothing to react to, she can still drop you a short
+            line — a check-in, a memory nudge, or a quick wellbeing prompt.
+            Quiet hours (10pm–8am your time) and a no-spam window are always
+            on; she won&apos;t talk over a fresh conversation either. Pick
+            Off to disable entirely.
+          </Text>
+          <View style={styles.cadenceRow}>
+            {CADENCE_OPTIONS.map((opt) => {
+              const selected = opt.value === cadence;
+              return (
+                <Pressable
+                  key={opt.value}
+                  onPress={() => onCadenceChange(opt.value)}
+                  style={[
+                    styles.cadenceChip,
+                    selected && styles.cadenceChipSelected,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.cadenceChipLabel,
+                      selected && styles.cadenceChipLabelSelected,
+                    ]}
+                  >
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <Text style={styles.cadenceDetail}>
+            {CADENCE_OPTIONS.find((o) => o.value === cadence)?.detail ?? ""}
+          </Text>
         </View>
 
         {showSaved ? (
@@ -1264,6 +1366,41 @@ const styles = StyleSheet.create({
     color: colors.light.text,
     fontFamily: "Inter_500Medium",
     fontSize: 13,
+  },
+  cadenceRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 8,
+  },
+  cadenceChip: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    backgroundColor: "#1f1f1f",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cadenceChipSelected: {
+    borderColor: colors.light.primary,
+    backgroundColor: colors.light.primary,
+  },
+  cadenceChipLabel: {
+    color: colors.light.text,
+    fontFamily: "Inter_500Medium",
+    fontSize: 13,
+  },
+  cadenceChipLabelSelected: {
+    color: "#0b0b0b",
+    fontFamily: "Inter_700Bold",
+  },
+  cadenceDetail: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_400Regular",
+    fontSize: 12,
+    marginTop: 8,
   },
   settingsSection: {
     marginTop: 24,
