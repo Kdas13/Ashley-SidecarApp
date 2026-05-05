@@ -137,6 +137,12 @@ no DB knowledge of the conversation — the phone is the source of truth.
 
 ## Backend
 
+> **Note (May 2026):** Mobile actually calls `POST /api/chat` (stateful, writes
+> to `messagesTable`) as the primary path now, not `/api/chat/reply`. The
+> stateless route below is the V1.1 design that has since been superseded.
+> See `docs/presence-loop.md` for the current chat architecture and the
+> planned streaming/interrupt evolution.
+
 The mobile app only uses one server endpoint:
 
 - `POST /api/chat/reply` — **stateless**. Body:
