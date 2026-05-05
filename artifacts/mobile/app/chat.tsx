@@ -914,7 +914,6 @@ export default function ChatScreen(): React.JSX.Element {
             // typing indicator would be redundant on the happy path.
             ListHeaderComponent={
               <View style={styles.invertedFix}>
-                <PresenceSignalsList signals={presence.signals} />
                 {(retryUnanswered.isPending ||
                   (hasUnansweredTail && !streamMutation.isPending)) ? (
                   <View style={[styles.row, styles.rowLeft]}>
@@ -939,6 +938,19 @@ export default function ChatScreen(): React.JSX.Element {
             }
           />
         )}
+
+        {/*
+         * Adaptive presence signals ("I'm here…", "take your time",
+         * "connection dipped…") live OUTSIDE the inverted FlatList.
+         * Putting them inside `ListHeaderComponent` made them render
+         * upside-down on Android even with the standard `invertedFix`
+         * scaleY:-1 wrapper — likely an Animated.View + nested
+         * negative-scale interaction. They're transient overlays
+         * about Ashley's CURRENT state, not pinned to a specific
+         * message, so rendering them in normal flow above the input
+         * bar is both visually correct and architecturally cleaner.
+         */}
+        <PresenceSignalsList signals={presence.signals} />
 
         {sendError && !hasUnansweredTail ? (
           <Pressable

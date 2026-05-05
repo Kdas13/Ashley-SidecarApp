@@ -37,9 +37,11 @@ const ICON_MAP: Record<string, string> = {
   mic: "\uD83C\uDFA4", // 🎤
   minus: "\u2212", // −
   paperclip: "\uD83D\uDCCE", // 📎
+  play: "\u25B6", // ▶ (filled right-pointing triangle — Continue button)
   plus: "+",
   "refresh-cw": "\u21BB", // ↻
   send: "\u27A4", // ➤
+  square: "\u25A0", // ■ (filled square — stop button glyph)
   settings: "\u2699\uFE0F", // ⚙️
   star: "\u2605", // ★
   "trash-2": "\uD83D\uDDD1\uFE0F", // 🗑️
