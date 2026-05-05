@@ -20,20 +20,41 @@ import { Platform } from "react-native";
 
 import { setPushTokenOnServer } from "./aiClient";
 
+// -----------------------------------------------------------------------------
+// Expo Go gate
+// -----------------------------------------------------------------------------
+// Expo dropped REMOTE push notifications from Expo Go in SDK 53 — calling
+// `getExpoPushTokenAsync` (and a few other remote APIs) now throws a noisy
+// "Android Push notifications functionality was removed from Expo Go" error
+// at runtime. The fix Expo recommends is "use a development build", which is
+// a real one-time EAS build and not something we want to gate the entire
+// app on. So in Expo Go we silently no-op the whole push registration flow
+// — the user can still save their cadence preference (it persists on the
+// server), and the moment they switch to a dev/standalone build the next
+// launch picks up the token and starts delivering pushes for real.
+//
+// `Constants.executionEnvironment === "storeClient"` is the official way to
+// detect Expo Go at runtime; `appOwnership` is deprecated.
+const IS_EXPO_GO = Constants.executionEnvironment === "storeClient";
+
 // Foreground display behaviour: when a proactive Ashley message arrives
 // while the user is already in the app, show the banner + play the sound
 // so they notice the new chat bubble even if they aren't on the chat
-// screen. Set once at module load — Notifications keeps a singleton.
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-    // Newer SDK fields — duplicate of shouldShowAlert for SDK 50+ compat.
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+// screen. Skipped in Expo Go because the underlying remote-push pipeline
+// is gone there; setting the handler is harmless on its own but we
+// keep all push-related side-effects in one branch for clarity.
+if (!IS_EXPO_GO) {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: false,
+      // Newer SDK fields — duplicate of shouldShowAlert for SDK 50+ compat.
+      shouldShowBanner: true,
+      shouldShowList: true,
+    }),
+  });
+}
 
 // Module-level guard so we don't re-prompt within the same JS session
 // even if _layout re-renders. AsyncStorage isn't needed: getPermissionsAsync
@@ -96,6 +117,15 @@ function resolveProjectId(): string | undefined {
 export async function registerForPushNotificationsAsync(): Promise<RegisterResult> {
   // Web preview never gets push — fail fast, no ask.
   if (Platform.OS === "web") {
+    return { token: null, reason: "not_a_device" };
+  }
+
+  // Expo Go (SDK 53+) — remote push removed. Quietly bail without
+  // touching any of the Notifications APIs that would log the
+  // "remote notifications was removed from Expo Go" warning. The
+  // user's cadence preference still saves; pushes will start working
+  // automatically the moment they switch to a dev / standalone build.
+  if (IS_EXPO_GO) {
     return { token: null, reason: "not_a_device" };
   }
 
@@ -226,6 +256,11 @@ export async function unregisterPushNotificationsAsync(): Promise<void> {
   } catch (err) {
     console.warn("[push] unregister: server clear failed", err);
   }
+  // Skip the OS-level unsubscribe in Expo Go — the API itself is part of
+  // the removed-in-SDK-53 surface and would emit the noisy warning. Server
+  // token is already cleared above which is the only thing that matters
+  // for "stop sending pushes to this device" intent in Expo Go.
+  if (IS_EXPO_GO) return;
   try {
     await Notifications.unregisterForNotificationsAsync();
   } catch (err) {

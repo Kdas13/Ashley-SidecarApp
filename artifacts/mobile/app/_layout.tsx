@@ -6,6 +6,7 @@ import {
 } from "@expo-google-fonts/inter";
 import { useFonts } from "expo-font";
 import { QueryClientProvider } from "@tanstack/react-query";
+import Constants from "expo-constants";
 import * as Notifications from "expo-notifications";
 import { router, Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
@@ -127,6 +128,14 @@ export default function RootLayout(): React.JSX.Element | null {
   // expo-notifications listeners are global — they fire even when no
   // screen is mounted — so this is the right place to wire them.
   useEffect(() => {
+    // Skip listener attach in Expo Go — remote push is gone there since
+    // SDK 53, so no notifications can ever arrive to fire these. Attaching
+    // them is harmless on its own but `expo-notifications` logs a warning
+    // when any of its remote-push surface is touched in Expo Go, and we
+    // want a clean console for the rest of dev. Listeners come back
+    // automatically when running in a dev / standalone build.
+    if (Constants.executionEnvironment === "storeClient") return;
+
     const foregroundSub = Notifications.addNotificationReceivedListener(() => {
       queryClient.invalidateQueries({ queryKey: ["messages"] });
     });
