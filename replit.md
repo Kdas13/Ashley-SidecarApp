@@ -428,6 +428,22 @@ it just like Expo Go). This repo is now EAS-ready:
   `eas init` (or the prompt during `eas build`) writes it; that change
   needs to be committed so production builds keep finding the same EAS
   project.
+- **Version-pin gotcha (cost two failed builds, May 2026):**
+  `expo-dev-client` follows Expo's parallel-versioning convention where
+  the major version maps to the SDK number (SDK 54 → `expo-dev-client@~6.0.x`,
+  SDK 55 → `expo-dev-client@~55.0.x`). A naked `pnpm add expo-dev-client`
+  pulled `55.0.30` against `expo@54.x`, which dragged in `expo-dev-menu@55.x`
+  whose Kotlin overrides a method that doesn't exist in SDK 54's
+  `expo-modules-core`. Build failed at `:expo-dev-menu:compileDebugKotlin`
+  with `'onDidCreateReactActivityDelegateNotification' overrides nothing.`
+  **Fix:** always install Expo-ecosystem packages with
+  `pnpm exec expo install <pkg>` (or `--fix`), not `pnpm add`. Currently
+  pinned to `expo-dev-client@^6.0.21`.
+- EAS free tier queues are 1–3 hours. Use `--no-wait --json` to fire and
+  forget; check status later with
+  `pnpm exec eas build:list --platform android --limit 3 --json`. Build
+  log files at the GCS URL in `logFiles[]` are gzip-compressed NDJSON —
+  `curl -L --compressed | jq -r '.msg'` to read.
 
 `pushRegistration.ts` already gates the entire remote-push surface on
 `Constants.executionEnvironment === "storeClient"` (Expo Go). In a
