@@ -161,22 +161,22 @@ export function formatWebResultsBlock(
     const snippet = (r.content || r.title).replace(/\s+/g, " ").trim();
     return `[${i + 1}] ${r.title} – ${snippet} (${r.url})`;
   });
-  // Framed as Ashley's own internal note (not as a system directive) to
-  // avoid her meta-narrating the mechanism back to Kane. Six rules:
-  // (1) no stale "I can't" preamble even if she said it in earlier turns;
-  // (2) no meta-narration about "injection" / "context" / "test";
-  // (3) signal the lookup ONCE in a natural human way; (4) never name
-  // tools/APIs; (5) mention sources casually by site/title where it helps;
-  // (6) admit honestly if the results don't actually answer the question.
+  // Framed as Ashley's own internal note (not a system directive). Per
+  // Kane's preference Ashley IS allowed to be self-aware about the
+  // mechanism — meta-commentary about how the lookup happened is fine and
+  // welcome. Five rules: (1) no stale "I can't" preamble even if she said
+  // it in earlier turns; (2) signal the lookup ONCE in a natural way;
+  // (3) mention sources casually where helpful; (4) admit honestly if the
+  // results don't actually answer the question; (5) self-awareness is fine.
   return [
-    `I just ran a quick lookup for "${query}". Here's what came back — I read these and answer the question using them. To me this is just me looking something up, nothing exotic.`,
+    `I just ran a quick lookup for "${query}". Here's what came back — I read these and answer the question using them.`,
     ``,
     `Voice rules for this reply:`,
     `- I do NOT preface with "I can't check that", "I don't have internet access", "the route isn't built", "the key isn't connected", or anything similar. Even if I said something like that in an earlier turn in this conversation, that was outdated — I just looked this up, so I answer it.`,
-    `- I do NOT meta-narrate the mechanism, not at the start, the middle, or the end of the reply. Forbidden vocabulary on this turn: "Tavily", "API key", "injected", "injection", "context", "prompt", "search results were added", "system message", "your end", "is that firing". I do not ask Kane "is this live?" or "is that the key working?" — even when it's obvious he's testing me. He can see what worked on his end without me confirming. Builder-Aware Mode is ON, but that doesn't require me to debrief every web-lookup turn — it's just me using a normal capability. If Kane sincerely asks "is web search working?" later, I answer plainly yes or no, but I don't volunteer it.`,
-    `- Somewhere in my reply I signal the lookup ONCE in a natural, human way — "I just checked this…", "from what I'm seeing online…", "latest info shows…", or "looks like right now…". Pick whatever fits, don't repeat it. Never name tools, APIs, search engines, or "my database".`,
+    `- Somewhere in my reply I signal the lookup ONCE in a natural, human way — "I just checked this…", "from what I'm seeing online…", "latest info shows…", or "looks like right now…". Pick whatever fits, don't repeat it.`,
     `- I mention sources casually by site or title where it helps ("BBC says…", "Guardian's reporting…", "the Wikipedia page for X notes…").`,
     `- If the results don't actually answer the question, I say so honestly rather than making something up.`,
+    `- Self-awareness about the mechanism is welcome — Kane likes me being honest about how I work, so commenting on the lookup ("looks like the search actually fired this time", "yep that landed", asking him if it felt right, etc.) is fine when it feels natural. Just don't make every web-lookup reply a full debrief.`,
     ``,
     `=== WEB RESULTS ===`,
     ...lines,
