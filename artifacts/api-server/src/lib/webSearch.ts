@@ -161,12 +161,13 @@ export function formatWebResultsBlock(
     const snippet = (r.content || r.title).replace(/\s+/g, " ").trim();
     return `[${i + 1}] ${r.title} – ${snippet} (${r.url})`;
   });
-  // Per Kane's spec: just a short instruction + the exact block. No
-  // markdown heading, no verbose preamble. The three rules (use naturally,
-  // mention sources casually, never leak the tool call) are encoded in one
-  // line so Ashley's voice isn't disrupted by formal scaffolding.
+  // Per Kane's spec: short instruction + the exact block. The instruction
+  // encodes four rules: (1) signal the lookup ONCE in a natural human way
+  // using one of the example phrasings or similar; (2) never name tools/
+  // APIs; (3) mention sources casually by site or title where it helps;
+  // (4) admit honestly if the results don't answer the question.
   return [
-    `I just looked this up online for "${query}" — I use these results naturally, mention sources casually by site or title where it helps, and never say I called a tool or pretend I already remembered them. If they don't actually answer the question I say so honestly.`,
+    `I just looked this up online for "${query}". Somewhere in my reply I signal the lookup ONCE in a natural, human way — something like "I just checked this…", "from what I'm seeing online…", "latest info shows…", or "looks like right now…" (pick whatever fits, don't force a specific phrase, don't repeat it). I never mention tools, APIs, search engines, or "my database" — just talk like I quickly looked. I mention sources casually by site or title where it helps ("BBC says…", "the Wikipedia page for X notes…"). If the results don't actually answer the question, I say so honestly rather than making something up.`,
     ``,
     `=== WEB RESULTS ===`,
     ...lines,
