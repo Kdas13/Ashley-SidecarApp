@@ -869,6 +869,21 @@ export default function ChatScreen(): React.JSX.Element {
           <View style={styles.center}>
             <ActivityIndicator color={colors.light.primary} />
           </View>
+        ) : reversedMessages.length === 0 ? (
+          // Empty state lives OUTSIDE the FlatList. Previously this was
+          // FlatList's `ListEmptyComponent`, which inherits the parent's
+          // inverted transform and renders upside-down — we used to patch
+          // it with a manual scaleY:-1 wrapper. That manual flip caused
+          // visible glitches on some Android devices (mirrored text, "?"
+          // glyphs that didn't update through cache layers). Rendering
+          // the empty UI in normal flex flow eliminates ALL flip math.
+          <View style={[styles.center, styles.emptyWrap]}>
+            <Text style={styles.emptyText}>say something to her</Text>
+            <Text style={styles.emptyHint}>
+              messages are saved on our server (tied to your Device ID)
+              and sent to an AI provider so she can reply
+            </Text>
+          </View>
         ) : (
           <FlatList
             ref={listRef}
@@ -877,6 +892,15 @@ export default function ChatScreen(): React.JSX.Element {
             // Cold-mount, keyboard-open, and new-message-arrival all "just
             // work" — no scrollToEnd / scrollToOffset / multi-snap needed.
             // To see older messages the user scrolls UP (WhatsApp-style).
+            //
+            // FlatList's `inverted` prop auto-counter-flips renderItem rows
+            // internally, so message bubbles, icons, and timestamps render
+            // upright with NO manual transform. We deliberately do NOT use
+            // ListHeaderComponent / ListEmptyComponent / ListFooterComponent
+            // here — those slots inherit the parent flip and used to need
+            // a manual scaleY:-1 wrapper, which caused mirrored UI bugs.
+            // All such "header / empty / signal" content is rendered as
+            // siblings BELOW the FlatList in normal flex flow instead.
             inverted
             data={reversedMessages}
             renderItem={renderItem}
@@ -888,67 +912,39 @@ export default function ChatScreen(): React.JSX.Element {
             // FlatList by default unmounts off-screen rows on Android, which
             // can shift content height. Disable so scroll feels stable.
             removeClippedSubviews={false}
-            ListEmptyComponent={
-              // ListEmptyComponent is NOT counter-flipped by `inverted`
-              // (only renderItem rows are), so wrap in a manual scaleY:-1
-              // to render right-side-up.
-              <View style={styles.invertedFix}>
-                <View style={styles.emptyWrap}>
-                  <Text style={styles.emptyText}>say something to her</Text>
-                  <Text style={styles.emptyHint}>
-                    messages are saved on our server (tied to your Device ID)
-                    and sent to an AI provider so she can reply
-                  </Text>
-                </View>
-              </View>
-            }
-            // With `inverted`, ListHeaderComponent renders at the
-            // visually-BOTTOM (immediately below data[0]). That's where
-            // we surface presence signals ("I'm here…", "take your
-            // time") so they sit right under the latest message.
-            //
-            // The legacy "Ashley is typing…" indicator is only used
-            // for the non-streaming retry-unanswered fallback path —
-            // the new streaming path inserts an Ashley bubble with a
-            // pulsing cursor immediately on send, so a separate
-            // typing indicator would be redundant on the happy path.
-            ListHeaderComponent={
-              <View style={styles.invertedFix}>
-                {(retryUnanswered.isPending ||
-                  (hasUnansweredTail && !streamMutation.isPending)) ? (
-                  <View style={[styles.row, styles.rowLeft]}>
-                    <View
-                      style={[
-                        styles.bubble,
-                        styles.bubbleAshley,
-                        styles.typingBubble,
-                      ]}
-                    >
-                      <ActivityIndicator
-                        size="small"
-                        color={colors.light.mutedForeground}
-                      />
-                      <Text style={styles.typingText}>
-                        Ashley is typing…
-                      </Text>
-                    </View>
-                  </View>
-                ) : null}
-              </View>
-            }
           />
         )}
 
         {/*
+         * Legacy "Ashley is typing…" indicator for the non-streaming
+         * retry-unanswered fallback path. Lives OUTSIDE the inverted
+         * FlatList so it renders upright with no transform. Placed
+         * between the list and the input bar — the same visual slot
+         * the old ListHeaderComponent occupied.
+         */}
+        {(retryUnanswered.isPending ||
+          (hasUnansweredTail && !streamMutation.isPending)) ? (
+          <View style={[styles.row, styles.rowLeft]}>
+            <View
+              style={[
+                styles.bubble,
+                styles.bubbleAshley,
+                styles.typingBubble,
+              ]}
+            >
+              <ActivityIndicator
+                size="small"
+                color={colors.light.mutedForeground}
+              />
+              <Text style={styles.typingText}>Ashley is typing…</Text>
+            </View>
+          </View>
+        ) : null}
+
+        {/*
          * Adaptive presence signals ("I'm here…", "take your time",
-         * "connection dipped…") live OUTSIDE the inverted FlatList.
-         * Putting them inside `ListHeaderComponent` made them render
-         * upside-down on Android even with the standard `invertedFix`
-         * scaleY:-1 wrapper — likely an Animated.View + nested
-         * negative-scale interaction. They're transient overlays
-         * about Ashley's CURRENT state, not pinned to a specific
-         * message, so rendering them in normal flow above the input
-         * bar is both visually correct and architecturally cleaner.
+         * "connection dipped…"). Rendered in normal flex flow above
+         * the input bar so no counter-flip is needed.
          */}
         <PresenceSignalsList signals={presence.signals} />
 
@@ -2159,14 +2155,6 @@ const styles = StyleSheet.create({
   },
   quotedBodyUser: { color: "rgba(26,19,37,0.75)" },
   quotedBodyAshley: { color: "rgba(245,232,216,0.85)" },
-  // Counter-flip wrapper for ListEmptyComponent / ListHeaderComponent
-  // when the FlatList has `inverted`. FlatList only counter-flips
-  // renderItem rows automatically; header/empty/footer slots inherit
-  // the parent's scaleY:-1 transform and render upside-down without
-  // this fix.
-  invertedFix: {
-    transform: [{ scaleY: -1 }],
-  },
   emptyWrap: {
     flex: 1,
     alignItems: "center",

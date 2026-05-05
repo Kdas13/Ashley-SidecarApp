@@ -359,13 +359,23 @@ are not used by mobile in V1.1:
     logic continues to work without changes.
   - `inverted` flips the FlatList AND counter-flips each `renderItem`,
     but does **NOT** counter-flip `ListHeaderComponent` /
-    `ListEmptyComponent` / `ListFooterComponent`. Wrap those in
-    `<View style={styles.invertedFix}>` (which is just
-    `transform: [{ scaleY: -1 }]`) or they render upside-down.
-  - The "Ashley is typing…" indicator is now `ListHeaderComponent`
-    (NOT `ListFooterComponent`) because with `inverted` the header
-    renders at the visually-bottom — exactly where the typing bubble
-    should appear.
+    `ListEmptyComponent` / `ListFooterComponent`. We previously patched
+    those slots with a manual `transform: [{ scaleY: -1 }]` wrapper
+    (`styles.invertedFix`); on Kane's Android device this manifested as
+    mirrored/upside-down text and "?" glyphs that wouldn't update even
+    after Metro served fresh bundles. **The fix: do NOT use those FlatList
+    slots at all.** Lift any header / empty / signal UI OUT of the
+    FlatList and render it as a flex-flow sibling between the FlatList
+    and the input bar. No counter-flip math, no upside-down failure mode.
+  - Empty state ("say something to her"): conditional render — when
+    `reversedMessages.length === 0`, render the empty View *instead of*
+    the FlatList. Same flex slot, no transform.
+  - Legacy "Ashley is typing…" indicator (used only on the non-streaming
+    retry-unanswered fallback path): rendered as a sibling immediately
+    below the FlatList. Visually equivalent to the old
+    `ListHeaderComponent` slot under `inverted`, but with no flip.
+  - Adaptive presence signals (`<PresenceSignalsList>`): also rendered
+    as a sibling below the FlatList, above the input bar.
   - `initialNumToRender={20}` is sufficient to fill the viewport on
     first paint; the rest virtualizes lazily as the user scrolls up.
   - `removeClippedSubviews={false}` is kept for measurement stability,
