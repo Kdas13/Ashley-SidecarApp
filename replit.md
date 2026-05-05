@@ -1,548 +1,72 @@
 # Ashley-Sidecar
 
-A personal AI companion mobile app (Expo / React Native, targeting Expo Go on
-Android). The shipped scope is **V1.1 — local-first with stateless AI chat**:
-profile, memories, and chat messages all live on the device in AsyncStorage;
-the only thing the API server does for the mobile app is run a single
-stateless Claude call per outgoing message and return the reply. Server has
-no DB knowledge of the conversation — the phone is the source of truth.
+A personal AI companion mobile app providing local-first, stateless AI chat with a focus on profile management, memories, and real-time conversation.
 
-## V1.1 scope (what ships today)
+## Run & Operate
 
-- Expo shell with Expo Router
-- Animated avatar (`AnimatedAvatar`) on an ambient indigo / amber / violet
-  background (`AmbientBackground`)
-- 5-step onboarding flow that captures name, identity, personality, what
-  Ashley calls the user, and an optional shared-history note
-- Local profile storage and profile editor
-- Local long-term memory store with full CRUD (add, edit, delete, importance
-  stars, single tag)
-- Chat with real Ashley replies via **streaming** `POST /api/chat/stream`
-  (SSE; Anthropic Claude through the Replit AI Integrations proxy).
-  Tokens render in-place into the Ashley bubble as they arrive. The
-  send button does an in-place swap to a stop button while a reply is
-  in flight; tapping it aborts the upstream Anthropic call server-side
-  and surfaces the partial as an "interrupted" bubble with Continue
-  (primary) / Retry (secondary) actions. Adaptive presence signals
-  ("I'm here…" after 3s, "take your time" after 12s, "connection
-  dipped…" on a 7s watchdog) are emitted by `usePresenceLoop`. See
-  `docs/presence-loop.md` for the full Stage 1 architecture. The
-  legacy non-streaming `POST /api/chat` route is still mounted as a
-  fallback for the rare unanswered-tail recovery path.
-- **Real selfies in chat (poll-based, two-call flow).** When Ashley wants
-  to send a photo she emits a `[selfie: <visual vibe>]` marker. The flow
-  is split across two endpoints so the chat bubble appears immediately
-  while the slow image generation runs in the background:
-    1. `POST /api/chat/reply` → returns `{reply, imageUrl: null, selfieVibe}`
-       in ~3 s. The mobile bubble renders the text plus a "taking a
-       selfie…" placeholder.
-    2. `POST /api/chat/selfie` → returns `{jobId}` in <100 ms (HTTP 202).
-       The server kicks off `gpt-image-1` in the background and stores
-       the job state in an in-memory Map (5-min TTL).
-    3. `GET /api/chat/selfie/:jobId` → mobile polls every 2 s (up to
-       120 s) for `{status: "pending" | "ready" | "failed", imageUrl?,
-       error?}`. Each individual request is sub-second so the Replit
-       proxy / RN-fetch ~60 s connection cap is sidestepped.
-  When `ready`, the imageUrl is patched into the existing bubble and the
-  placeholder disappears. On failure, the bubble shows a tap-to-retry
-  affordance with the actual error inline.
-- **Dev-server resilience.** The mobile `aiClient` wraps every POST in
-  `fetchWithProxyRetry`, which detects Replit's "Run this app to see the
-  results here." placeholder HTML (status 404/502/503 + matching body
-  marker) and retries once after 4 s. This makes the chat self-healing
-  during the brief api-server rebuild gap that happens whenever the
-  workflow recycles in dev. Real 4xx/5xx JSON errors pass through
-  untouched and are surfaced verbatim in the chat error banner along
-  with the resolved API base URL — so any future "couldn't reach Ashley"
-  is debuggable from a single screenshot.
-- **Onboarding persistence guard.** After `useUpdateProfile` mutates,
-  `onboarding.tsx` re-reads the profile from AsyncStorage and verifies
-  `onboardedAt` is set before navigating to `/`. If the write didn't
-  stick (silent storage failure), an Alert surfaces the error instead of
-  bouncing the user to chat with nothing saved. Prevents the "onboarding
-  repeats every reload" bug class.
-- No emojis in UI chrome — Feather icons only (Ashley herself uses
-  emoji sparingly in her texts, that's part of her voice)
-- No camera / phone-side image upload — image flow is one-way
-  (Ashley → user)
+- **Mobile Dev**: `pnpm --filter @workspace/mobile run dev` (Scan QR with Expo Go on Android)
+- **API Server Dev**: `pnpm --filter @workspace/api-server run dev`
+- **EAS Build**: `pnpm --filter @workspace/mobile exec eas build --platform android`
+- **Required Env Vars**:
+    - `DATABASE_URL` (for legacy stateful routes, not V1.1 mobile)
+    - `SESSION_SECRET` (backend session secret)
+    - `AI_INTEGRATIONS_ANTHROPIC_BASE_URL`
+    - `AI_INTEGRATIONS_ANTHROPIC_API_KEY`
+    - `EXPO_PUBLIC_DOMAIN` (auto-set by mobile dev script)
+    - `API_SECRET` (generate with `openssl rand -hex 32`, set as Replit secret)
+    - `EXPO_PUBLIC_API_KEY` (must match `API_SECRET`, set in `.env` or Replit secret)
+    - `TAVILY_API_KEY` (Optional, enables web search)
 
 ## Stack
 
-- **Mobile**: Expo SDK 54, Expo Router (stack), TanStack Query (in-memory
-  cache over AsyncStorage), Reanimated, expo-image, expo-linear-gradient,
-  KeyboardAvoidingView, Inter via @expo-google-fonts (non-blocking with a
-  1.5 s splash fallback so the app renders even when the Google Fonts CDN is
-  unreachable).
-- **Local storage**: `@react-native-async-storage/async-storage` (uses
-  `localStorage` on the web preview).
-- **API server**: Express 5 + Pino, Drizzle ORM (Postgres), generated
-  React Query hooks + Zod schemas from a single OpenAPI spec. Mobile only
-  calls the new stateless `POST /api/chat/reply`; the legacy stateful
-  `/api/chat/messages` + `/api/memories` + `/api/profile` + `/api/image/selfie`
-  routes remain available for future server-backed mode.
+- **Mobile**: Expo SDK 54, Expo Router, TanStack Query, React Native, Reanimated, expo-image, expo-linear-gradient, KeyboardAvoidingView, Inter font.
+- **Local Storage**: `@react-native-async-storage/async-storage`.
+- **API Server**: Express 5, Pino, Drizzle ORM (Postgres).
+- **Build Tool**: pnpm
 
-## Artifacts
+## Where things live
 
-- `artifacts/mobile` — the user-facing companion app (`Ashley-Sidecar`).
-- `artifacts/api-server` — Express backend mounted at `/api`. Dormant in V1.
+- `artifacts/mobile/`: User-facing companion app.
+- `artifacts/api-server/`: Express backend.
+- `artifacts/mobile/lib/storage.ts`: Typed AsyncStorage wrapper.
+- `artifacts/mobile/app/`: Mobile screens (e.g., `chat.tsx`, `onboarding.tsx`).
+- `artifacts/api-server/src/lib/db/src/schema/ashley.ts`: DB schema (for legacy routes).
+- `artifacts/api-server/src/lib/api-spec/openapi.yaml`: API contracts (for legacy routes).
+- `artifacts/mobile/components/Icon.tsx`: Source for all UI icons.
 
-## Local storage layer (`artifacts/mobile/lib/`)
+## Architecture decisions
 
-- `storage.ts` — typed AsyncStorage wrapper. Exports types
-  `AshleyProfile`, `Memory`, `Message`, the storage keys
-  (`@ashley/profile/v1`, `@ashley/memories/v1`, `@ashley/messages/v1`),
-  a `newId()` helper for string IDs, load/save/clear helpers, and
-  `withStorageLock(key, fn)` — a per-key promise-chain mutex that
-  serializes read-modify-write mutations so concurrent writes
-  cannot lose updates.
-- `useProfile.ts` — `useProfile()` + `useUpdateProfile()` React Query
-  hooks backed by the profile key. Default profile has `onboardedAt: null`,
-  which the home screen uses to gate the redirect to onboarding.
-- `useMemories.ts` — `useMemories()`, `useCreateMemory()`,
-  `useUpdateMemory()`, `useDeleteMemory()`. IDs are strings (`newId()`).
-- `useMessages.ts` — `useMessages()`, `useSendMessage()`, and
-  `useClearMessages()`. `useSendMessage` appends the user message
-  locally, calls `fetchAshleyReply` with the current profile + memories +
-  prior history, then appends Ashley's reply locally. On error the user
-  message stays in the log and the error surfaces via `mutation.error`.
-- `aiClient.ts` — `fetchAshleyReply(req)` POSTs to
-  `${EXPO_PUBLIC_DOMAIN}/api/chat/reply` with `{ content, profile,
-  memories, history }` (history trimmed to the most recent 30 turns) and
-  returns `{ reply, imageUrl }`. Throws on non-2xx or empty reply.
+- **Local-First with Stateless AI Chat**: Profile, memories, and messages are stored locally on the device. The API server provides stateless AI chat responses, reducing server load and ensuring privacy.
+- **Streaming AI Replies**: AI chat replies are streamed via Server-Sent Events (SSE) for a more responsive user experience, with adaptive presence signals.
+- **Two-Call Selfie Generation**: Selfie image generation is split into two API calls (`/api/chat/reply` and `/api/chat/selfie`) to provide immediate text display while the image generates in the background, sidestepping connection timeouts.
+- **Dev-Server Resilience**: The mobile client includes retry logic for API calls that encounter Replit's dev server placeholder, ensuring a smoother development experience during server restarts.
+- **Unicode/Emoji Icons**: Instead of `expo/vector-icons`, UI icons are rendered using Unicode/emoji characters for broader device compatibility and to avoid font loading issues.
+- **Inverted FlatList for Chat**: The chat `FlatList` is `inverted` to display the newest messages at the bottom, mimicking standard chat apps and simplifying new message handling and scrolling logic.
 
-## Mobile screens (`artifacts/mobile/app/`)
+## Product
 
-- `_layout.tsx` — loads Inter, hides the splash on font-ready or after
-  1.5 s, wraps the app in `SafeAreaProvider` + `GestureHandlerRootView` +
-  React Query, renders the stack. Does **not** set any API base URL.
-- `index.tsx` — home: animated avatar + ambient background + greeting +
-  CTA (open chat). Auto-redirects to `/onboarding` when the profile has no
-  `onboardedAt`. Header has a settings icon (left) and book-open icon to
-  memories (right). No emojis.
-- `onboarding.tsx` — 5-step flow: (1) name, (2) identity, (3) personality,
-  (4) what Ashley calls the user, (5) optional shared history. On finish it
-  writes the profile (`onboardedAt = ISO now`) and seeds 1–3 memories from
-  the supplied identity, refers-to-user-as, and shared-history fields.
-- `chat.tsx` — chat with real AI replies. Renders user + Ashley bubbles.
-  Ashley bubbles can include a generated selfie image above an optional
-  caption (rendered when `message.imageUrl` is set). While the request is
-  in flight a footer "Ashley is typing…" bubble shows with a spinner. On
-  error a destructive banner appears that the user can tap to dismiss;
-  the user's outgoing message remains in the log. There is no manual
-  selfie / camera button — Ashley decides when to send one.
-- `memories.tsx` — list, add, inline-edit, and forget memories. Tap a
-  card to enter edit mode (content, tag, importance 1–5). All operations
-  go through the local hooks.
-- `profile.tsx` — edit every persona field. Save shows a transient
-  "Saved" confirmation (1.8 s) and writes through `useUpdateProfile`.
+- **Personal AI Companion**: Offers a personalized AI interaction experience.
+- **Local Profile & Memory Management**: Users can manage their identity, personality, and long-term memories directly on their device.
+- **Real-time Streaming Chat**: Engage in conversations with Ashley, featuring streaming AI replies and dynamic presence indicators.
+- **AI-Generated Selfies**: Ashley can send AI-generated images within the chat.
+- **Proactive Messaging**: Ashley can initiate conversations based on user activity, memory nudges, or well-being prompts, with configurable cadences.
+- **Onboarding Flow**: Guides users through initial setup, including persona customization and shared history.
 
-## Deleted in V1
+## User preferences
 
-- `app/selfie.tsx` — image-generation screen, not part of V1.
-- `lib/api.ts` — the absolute-URL API base helper; mobile no longer
-  speaks to the backend.
+- _Populate as you build_
 
-## Backend
+## Gotchas
 
-> **Note (May 2026 — Stage 1 streaming):** Mobile primary chat path is
-> now `POST /api/chat/stream` (SSE). The stateful non-streaming
-> `POST /api/chat` route is kept mounted purely as the fallback for
-> `useRetryUnansweredReply` when the SSE connection itself fails before
-> a meta event arrives. The stateless `/api/chat/reply` route described
-> below is the original V1.1 design and has been superseded — do not
-> add new clients to it. See `docs/presence-loop.md` for the streaming
-> architecture (SSE event types, abort protocol, continue-from-partial
-> contract, presence-signal taxonomy).
->
-> **Streaming routes added in Stage 1:**
->
-> - `POST /api/chat/stream` — SSE. Body either `{ userMessage }` (new
->   turn) or `{ continueFromMessageId }` (resume an interrupted reply).
->   Validated as exclusive in zod. Emits `meta` (with
->   `streamId === ashleyMessage.id`, `userMessage`, `ashleyMessage`,
->   `mode: "new" | "continue"`), then a stream of `delta` events with
->   text chunks, terminating in `done` (clean end) or `interrupted`
->   (server-side abort) or `error`. The Ashley DB row is inserted
->   up-front with `status="streaming"`, then patched to
->   `complete` / `interrupted` on the terminal event. `client-close`
->   on the underlying socket calls `ac.abort()`.
-> - `POST /api/chat/stream/:streamId/abort` — fire-and-forget,
->   idempotent. Resolves the streamId in `inFlightStreams: Map<string,
->   AbortController>` and aborts. 200 even on unknown streamId.
-> - `messagesTable.status` text column (default `"complete"`, allowed
->   values `complete | streaming | interrupted`). On boot,
->   `index.ts` flips any orphan `status='streaming'` rows to
->   `'interrupted'` (logs the count) so a recycled api-server doesn't
->   leave dangling bubbles.
-> - Continue mode: server prepends the interrupted Ashley row's
->   partial content as the final `assistant` turn in the messages
->   array, then nudges Claude with "Continue naturally from where you
->   were, without repeating yourself" before resuming the stream into
->   a *new* Ashley row (the original interrupted row is left in place
->   as the visible "before" half).
->
-> **Mobile streaming pieces:**
->
-> - `lib/aiClient.ts::streamAshleyReply({req, callbacks, signal})` —
->   expo/fetch + manual SSE buffer, mirrors the existing
->   `transcribeAudioStream` pattern. Spreads both `apiHeaders()` AND
->   `authHeaders()` (X-API-Key + Bearer + X-Device-Id) on the POST.
->   `abortStream(streamId)` is a small POST helper.
-> - `lib/useMessages.ts` — `useStreamMessage`, `useContinueMessage`,
->   `useStopStream`, `useActiveStream`. A module-level
->   `inFlightStreamControllers: Map<streamId, AbortController>` is
->   populated in the meta callback so stop has a target the moment
->   meta lands. Delta flushes are throttled to ~30ms intervals to
->   avoid render storms on token-heavy bursts. Final state is
->   persisted to AsyncStorage via the existing `persistCacheSnapshot`.
-> - `lib/usePresenceLoop.ts` — pure reducer
->   (`idle | listening | thinking | speaking | waiting | interrupted`)
->   plus a small hook with adaptive timers. Signals are
->   one-shot per state-entry (re-entering thinking re-arms "I'm
->   here…"). Watchdog tracks last delta arrival in a ref and fires
->   `CONNECTION_DIP` when speaking goes silent ≥7s.
-> - `app/chat.tsx` — wires the reducer events
->   (USER_TYPING/USER_CLEAR_DRAFT/USER_SEND/USER_INTERRUPT/STREAM_*)
->   into the input + mutation lifecycle. Send button does an
->   in-place swap to a square stop button when
->   `activeStream != null` or state ∈ {thinking, speaking}.
->   Interrupted Ashley bubbles render a Continue (primary) / Retry
->   (secondary) row underneath the partial text. Streaming bubbles
->   show a pulsing block-cursor (`▍`) at the end of the text. The
->   `PresenceSignalsList` component renders signals as small italic
->   muted-tone rows in the `ListHeaderComponent` slot (which sits at
->   the visually-bottom thanks to `inverted`). Connection-dip
->   triggers an auto-retry-once per stream via the stop+continue
->   dance, guarded by `autoRetriedStreamRef`.
+- **`expo-dev-client` Version Pinning**: Always install Expo-ecosystem packages with `pnpm exec expo install <pkg>` to avoid version mismatches.
+- **API Key Headers**: All API requests must include both `X-API-Key` and `Authorization` (Bearer + X-Device-Id) headers.
+- **Android `KeyboardAvoidingView`**: `keyboardVerticalOffset` should be `0` with `behavior="height"` on Android to prevent persistent dead zones.
+- **`FlatList` Header/Footer Components with `inverted`**: Do not use `ListHeaderComponent`, `ListEmptyComponent`, or `ListFooterComponent` with `inverted` `FlatList`s; render them as flex siblings instead.
+- **Replit Web Preview Limitations**: The Expo web preview can be heavy and may render blank; use Expo Go on an Android device for actual testing.
+- **Storage is Per-Device**: Clearing app data resets the profile.
 
-The mobile app only uses one server endpoint:
+## Pointers
 
-- `POST /api/chat/reply` — **stateless**. Body:
-  `{ content, profile?, memories?, history? }`. Response:
-  `{ reply, imageUrl }` where `imageUrl` is `null` for plain text replies
-  or an absolute `https://…/api/selfies/<id>.png` URL when Ashley sent a
-  photo. Validates with zod, builds the system prompt inline (mirrors
-  `buildSystemPrompt` in `ashleyPrompt.ts` but takes plain JSON shapes
-  instead of Drizzle row types), trims history to the last 30 turns,
-  ensures the conversation starts with a `user` turn, calls
-  `claude-sonnet-4-6` via `@workspace/integrations-anthropic-ai`. The
-  system prompt instructs Ashley to emit `[selfie: <vibe>]` instead of
-  roleplaying photos in italics; the route detects the marker, calls
-  `generateImageBase64` (gpt-image-1) with her appearance + the vibe,
-  persists the bytes via `saveSelfie`, strips the marker from the reply
-  text, and returns the absolute URL. Returns 502 on Anthropic failure;
-  selfie generation failure just drops the imageUrl and keeps the text.
-  Per-IP rate limit: 30 requests / 5 minutes.
-
-The legacy stateful routes are still mounted and remain functional but
-are not used by mobile in V1.1:
-
-- `GET/PUT /api/profile`, `GET/POST/DELETE /api/chat/messages`,
-  `GET/POST/PATCH/DELETE /api/memories`, `POST /api/image/selfie`,
-  `GET /api/selfies/<id>.png`.
-- Schema: `lib/db/src/schema/ashley.ts` (`ashley_profile`, `messages`,
-  `memories`).
-- Spec: `lib/api-spec/openapi.yaml`. The new `/chat/reply` endpoint is
-  intentionally **not** in the OpenAPI spec — it is a thin internal
-  helper, not part of the public API contract. Add it to the spec if/when
-  a non-mobile client needs it. Codegen:
-  `pnpm --filter @workspace/api-spec run codegen`.
-- Selfie image bytes are persisted via `artifacts/api-server/src/lib/storage.ts`,
-  which writes to Replit Object Storage (App Storage) when
-  `PRIVATE_OBJECT_DIR` is set and falls back to local disk
-  (`artifacts/api-server/storage/selfies/`) for dev / unconfigured
-  environments. The `/api/selfies/<id>.png` route reads from object
-  storage first and falls back to disk so legacy local files keep working.
-
-## Environment
-
-- `DATABASE_URL` — provisioned Postgres (used by the legacy stateful
-  routes; not touched by V1.1 mobile flow).
-- `SESSION_SECRET` — backend session secret.
-- `AI_INTEGRATIONS_ANTHROPIC_BASE_URL` + `AI_INTEGRATIONS_ANTHROPIC_API_KEY`
-  — Replit AI Integrations proxy creds, required for `/api/chat/reply`.
-- `EXPO_PUBLIC_DOMAIN` — set automatically by the mobile dev script from
-  `$REPLIT_DEV_DOMAIN`; the AI client builds `https://${EXPO_PUBLIC_DOMAIN}/api/chat/reply`
-  from it.
-- `API_SECRET` — **Required.** Pre-shared key that all API clients must
-  send as the `X-API-Key` request header. Without it, every route except
-  `/api/healthz` returns 503. Generate a strong random value
-  (`openssl rand -hex 32`) and set it as a Replit secret. The mobile app
-  and any other client must include `X-API-Key: <value>` on every request.
-- `TAVILY_API_KEY` — Optional. Enables Stage 1 web search (Tavily). When
-  unset the `POST /api/tools/web-search` route returns 503 and the
-  inline pre-search in `/api/chat/stream` silently skips (logs a warning,
-  Ashley replies normally without web context). Get a key at
-  https://app.tavily.com (free tier covers our expected volume).
-- `EXPO_PUBLIC_API_KEY` — **Required for mobile.** Must be set to the same
-  value as `API_SECRET`. Expo inlines `EXPO_PUBLIC_*` vars at bundle time;
-  `aiClient.ts` reads it and attaches it as `X-API-Key` on every outbound
-  API request. Set this in `.env` (local dev) or as a Replit secret. The
-  mobile dev script wraps the whole command in `bash -c '…'` so it can
-  hard-fail with `FATAL: EXPO_PUBLIC_API_KEY is empty` and print a safe
-  fingerprint (`len=64 fingerprint=<first 8 chars>…`) on success — that
-  way Metro never starts with a missing key, and we can verify the key is
-  loaded without leaking the secret to logs.
-
-## Workflows
-
-- `artifacts/api-server: API Server` — `pnpm --filter @workspace/api-server run dev`
-- `artifacts/mobile: expo` — `pnpm --filter @workspace/mobile run dev`
-
-## Proactive messaging (Ashley reaches out first) — May 2026
-
-Ashley can initiate chat on her own when the user has gone quiet, has a
-memory worth nudging, or it's time for a soft wellbeing prompt. Push
-notifications are delivered via Expo's hosted push service (no
-FCM/APNS setup needed — works in Expo Go and dev builds).
-
-**Categories** (priority order — first eligible per tick wins):
-1. `medical_checkin` — **scaffolded but runtime-gated OFF** in this PR.
-   Will light up when the medical check-in feature itself ships.
-2. `memory_nudge` — picks one concrete "wanted to come back to" memory or
-   recent summary item. Per-category 1/day cap PLUS a 7-day rate limit
-   per device so we don't keep prodding the same item.
-3. `conversation_gap` — fires when the last USER message is ≥24h old.
-   Soft, warm, never clingy/guilt-trippy.
-4. `routine_support` — soft wellbeing nudge (food/water/sleep/posture).
-   Lowest priority; only fires during the 15:00 device-local hour so it
-   doesn't compete with morning/evening conversation.
-
-**Cadence preference** (`profiles.proactiveCadence`):
-- `off` — never. Mobile fully tears down OS-level push registration AND
-  clears the server token.
-- `low` — up to 1/day global cap.
-- `normal` (default for new installs) — up to 2/day.
-- `high` — up to 4/day. Kane currently set to `high`.
-
-**Universal guards** (applied to every send):
-- Quiet hours 22:00–08:00 device-local (uses `profiles.timezone`).
-- 90-min recent-message guard — skip if ANY message (user or proactive)
-  arrived in the last 90 minutes.
-- Per-category 1/day cap + global daily cap by cadence above.
-- No emergency language unless `profiles.medicalSafetyConcern=true`.
-
-**Schema additions** (`lib/db/src/schema/ashley.ts`):
-- `profiles.pushToken text` (nullable) — current device's Expo push token.
-- `profiles.proactiveCadence text default 'normal'`.
-- `profiles.lastMedicalCheckinAt timestamptz` — reserved for the future
-  medical check-in feature; not written by this PR.
-- `profiles.medicalSafetyConcern boolean default false`.
-- `profiles.timezone text` — IANA tz string for device-local quiet hours.
-- `messages.source text default 'user'` (`user | proactive`).
-- `messages.proactiveType text` (nullable) — set only when `source='proactive'`.
-- New `proactive_sends` table — one row per proactive send keyed by
-  `(deviceId, proactiveType, sentAt)`. Used for cap queries + audit
-  history. Indexed on `(deviceId, sentAt desc)`.
-
-**Server pieces** (`artifacts/api-server/src/`):
-- `lib/pushNotifications.ts::sendExpoPush({to,title,body,data})` —
-  POSTs to `https://exp.host/--/api/v2/push/send` with a 5s timeout.
-  Surfaces `DeviceNotRegistered` so the caller can null the token.
-  Failure-safe: never throws; returns `{ok: false, reason}`.
-- `lib/proactiveMessage.ts::generateProactiveMessage()` — reuses
-  `buildSystemPrompt` so Ashley's voice is identical to chat, then
-  appends a category-specific tail block. Returns empty string when
-  the category has nothing to say (caller falls through to next).
-- `lib/proactiveScheduler.ts::tickProactive()` — scans eligible profiles,
-  evaluates each against gates + categories, sends. Wired in
-  `index.ts` boot path: `setInterval(tickProactive, 5 * 60 * 1000)`
-  with a 30s warmup. Wrapped in try/catch — never crashes the server.
-  - Per-device in-process mutex (`deviceLocks: Map<deviceId, Promise>`)
-    rejects concurrent invocations for the same device. Protects
-    against overlapping setIntervals (Claude latency spike >5min) and
-    debug-tick HTTP calls landing mid-tick. Across-process safety
-    would need a DB advisory lock — flagged as future work for when
-    we run >1 api-server replica.
-- `routes/proactive.ts`:
-  - `POST /api/devices/push-token` — body `{token: string|null}`.
-    Upserts/clears `profiles.pushToken`.
-  - `POST /api/proactive/debug-tick` — dev-only, calls
-    `forceTickForDevice(deviceId)` and returns the typed result.
-  - Both require the same auth as the rest of `/api`.
-- `routes/profile.ts` PUT extended to accept `proactiveCadence` enum.
-
-**Mobile pieces** (`artifacts/mobile/`):
-- `lib/pushRegistration.ts`:
-  - `registerForPushNotificationsAsync()` — idempotent. Asks permission,
-    creates the Android default channel (Ashley brand color), fetches
-    Expo push token, uploads to server. In-flight + last-result caches
-    so re-mounts don't double-prompt.
-  - `unregisterPushNotificationsAsync()` — three-step teardown for the
-    Off cadence: clear server token, drop in-process cache,
-    `Notifications.unregisterForNotificationsAsync()` to drop the OS-
-    level subscription.
-  - `Notifications.setNotificationHandler` set at module load so
-    foreground notifications show banner + play sound (so the user
-    notices the new chat bubble even if they're on a different screen).
-- `lib/aiClient.ts::setPushTokenOnServer(token|null)` — typed helper
-  for the upsert route. `proactiveCadence` threaded through
-  `WireProfile` / `profileFromWire` / `ProfileUpdate`.
-- `lib/storage.ts::AshleyProfile.proactiveCadence` — `off|low|normal|high`,
-  default `normal` in `DEFAULT_PROFILE`.
-- `app/_layout.tsx`:
-  - Bootstrap calls `registerForPushNotificationsAsync()` (gated on
-    `profile.proactiveCadence !== "off"`).
-  - Two `Notifications.add*Listener`s: foreground arrival invalidates
-    the messages query so the new bubble appears live; tap also
-    invalidates AND `router.push('/chat')` after a 50ms defer.
-- `app/profile.tsx` — segmented "How often Ashley reaches out first"
-  control (Off / Low / Normal / High). Auto-saves on tap (no Save
-  button needed for this one). Picking Off triggers
-  `unregisterPushNotificationsAsync`; picking non-Off triggers
-  `registerForPushNotificationsAsync`.
-- `app.json` — `expo-notifications` plugin + Android notification
-  channel hints + brand color.
-
-**OpenAPI**: `SetPushTokenBody` + `ProactiveCadence` schemas added;
-`UpdateProfileBody` extended with `proactiveCadence`. Codegen ran.
-The broader `AshleyProfile` schema in `openapi.yaml` was already drift-
-stale before this PR (declares `id: integer` etc) and is NOT used by
-the mobile client — flagged as future cleanup.
-
-**Known follow-ups**:
-- Multi-process scheduler safety (DB advisory lock per device, plus a
-  unique constraint on `proactive_sends(device_id, proactive_type,
-  date(sent_at))` for belt-and-braces). Not needed today — single
-  api-server replica.
-- OpenAPI `AshleyProfile` schema drift (pre-existing).
-- `medical_checkin` runtime-enable + `lastMedicalCheckinAt` write path
-  when the medical check-in feature ships.
-
-## EAS dev build (Android) — May 2026
-
-Push notifications were removed from Expo Go in SDK 53, so to actually
-deliver Ashley's proactive messages to a phone we need a one-time EAS
-development build (an APK installed once, then `expo start` connects to
-it just like Expo Go). This repo is now EAS-ready:
-
-- `artifacts/mobile/eas.json` — `development` (APK + dev-client),
-  `preview` (APK), `production` (AAB) profiles.
-- `artifacts/mobile/app.json` — `android.package` and
-  `ios.bundleIdentifier` set to `com.kanesidecar.ashley`. Change BEFORE
-  the first build if a different identifier is desired; after the first
-  build it's tied to the EAS keystore.
-- `expo-dev-client` + `eas-cli` installed as workspace devDependencies
-  (NOT global — call as `pnpm --filter @workspace/mobile exec eas …`).
-- `extra.eas.projectId` is NOT yet in app.json. The first run of
-  `eas init` (or the prompt during `eas build`) writes it; that change
-  needs to be committed so production builds keep finding the same EAS
-  project.
-- **Version-pin gotcha (cost two failed builds, May 2026):**
-  `expo-dev-client` follows Expo's parallel-versioning convention where
-  the major version maps to the SDK number (SDK 54 → `expo-dev-client@~6.0.x`,
-  SDK 55 → `expo-dev-client@~55.0.x`). A naked `pnpm add expo-dev-client`
-  pulled `55.0.30` against `expo@54.x`, which dragged in `expo-dev-menu@55.x`
-  whose Kotlin overrides a method that doesn't exist in SDK 54's
-  `expo-modules-core`. Build failed at `:expo-dev-menu:compileDebugKotlin`
-  with `'onDidCreateReactActivityDelegateNotification' overrides nothing.`
-  **Fix:** always install Expo-ecosystem packages with
-  `pnpm exec expo install <pkg>` (or `--fix`), not `pnpm add`. Currently
-  pinned to `expo-dev-client@^6.0.21`.
-- EAS free tier queues are 1–3 hours. Use `--no-wait --json` to fire and
-  forget; check status later with
-  `pnpm exec eas build:list --platform android --limit 3 --json`. Build
-  log files at the GCS URL in `logFiles[]` are gzip-compressed NDJSON —
-  `curl -L --compressed | jq -r '.msg'` to read.
-
-`pushRegistration.ts` already gates the entire remote-push surface on
-`Constants.executionEnvironment === "storeClient"` (Expo Go). In a
-dev-client build that returns `"standalone"`, so registration runs
-normally with no further code changes.
-
-## Notes / known limitations
-
-- The Expo web preview in the Replit IDE is heavy (~8 MB dev bundle) and
-  occasionally renders blank in the proxied iframe even when the bundle
-  has compiled. The actual target is **Expo Go on Android** — scan the
-  QR code from the `artifacts/mobile: expo` workflow logs to load the
-  app on a phone, where it renders normally.
-- Storage is per-device. Clearing app data (or `localStorage` on web)
-  resets the profile and triggers onboarding again.
-- AI replies require the api-server to be reachable on the same Replit
-  domain as the Expo dev server. In production deployments both are
-  served behind the same proxy automatically.
-- `aiClient.ts` defines two header helpers — `apiHeaders()` (Content-Type
-  + X-API-Key) and `authHeaders()` (Authorization Bearer + X-Device-Id).
-  `fetchJSON()` and the streaming `expoFetch` in `transcribeAudioStream`
-  spread **both** in that order, so every request carries X-API-Key
-  (required by the server's `requireApiKey` middleware) **and** the
-  Bearer + device id. If you add a new fetch path, mirror this pattern —
-  spreading only `authHeaders()` will silently 401 the call as
-  `receivedKeyFingerprint=missing`.
-- **Icons use Unicode/emoji glyphs, NOT @expo/vector-icons.** Four
-  separate Feather-font-loading strategies were tried and all failed on
-  Kane's Android device — glyphs kept rendering as boxes-with-X:
-  1. `useFonts({...Feather.font})` spread (canonical Expo pattern)
-  2. Imperative `Font.loadAsync(Feather.font)` in `useEffect` with a
-     gate state
-  3. Module-level `Font.loadAsync` with an explicit `require()` of
-     `Feather.ttf` under the lowercase family name `"feather"`
-  4. Belt-and-braces: BOTH (3) and a `Font.loadAsync(Feather.font)`
-     fallback running in parallel at module load
-  Root cause never confirmed but most likely either pnpm symlink +
-  Metro asset registry interaction (the TTF resolves through
-  `node_modules/.pnpm/@expo+vector-icons@.../Feather.ttf`), Expo Go
-  bundle caching on Kane's specific device, or a `createIconSet.js`
-  race that can't be defeated from outside the library. The fix:
-  `components/Icon.tsx` exports an `Icon` component (re-exported as
-  `Feather` for drop-in compatibility) that maps icon names →
-  Unicode/emoji characters and renders them as `<Text>`. No font
-  loading required — the system font on every device handles these
-  glyphs natively. All 8 screens/components import via
-  `import { Icon as Feather } from "@/components/Icon"` so existing
-  `<Feather name="x" size={...} color={...} />` JSX continues to work
-  unchanged. `_layout.tsx` no longer touches `expo-font` for icons
-  (Inter via `@expo-google-fonts/inter` still loads via `useFonts`).
-  - **DO NOT** add `@expo/vector-icons` back. If you need a new icon,
-    add it to the `ICON_MAP` in `components/Icon.tsx`.
-  - Aesthetic note: emoji glyphs (paperclip, mic, send, trash) render
-    in color on most Androids, which is jarring against the dark theme.
-    If polish is needed, swap individual entries to monochrome Unicode
-    alternatives (e.g. `mic` → `●`, `send` → `▶`).
-- **`KeyboardAvoidingView` on Android: `keyboardVerticalOffset` must be 0
-  with `behavior="height"`.** With `behavior="height"`, KAV PERMANENTLY
-  shrinks its own height by `keyboardVerticalOffset` even when the
-  keyboard is closed. The chat screen previously used
-  `keyboardVerticalOffset={insets.top + 56}` (~80px), which left an ~80px
-  dead zone below the input bar with the user's latest message hidden
-  behind it. Android's default `windowSoftInputMode=adjustResize` (set
-  by Expo) handles the keyboard natively, so KAV with `offset=0` just
-  passes through cleanly. iOS keeps `behavior="padding"` with a small
-  `offset=8`.
-- The chat `FlatList` uses **`inverted`** with a memoized
-  `reversedMessages = messages.slice().reverse()` view (WhatsApp/iMessage
-  pattern). `data[0]` (the newest message after reversing) anchors to
-  the visually-bottom of the list at scroll offset 0, so cold-mount,
-  keyboard-open, and new-message-arrival all "just work" — the user
-  always sees the latest message and scrolls UP for history. We removed
-  ~110 lines of `scrollToEnd` / multi-snap / `userHasScrolledRef` /
-  `isNearBottomRef` machinery that previously tried (and intermittently
-  failed) to land at the true bottom across virtualization passes.
-  - The underlying `messages` array stays in `[oldest, ..., newest]`
-    order; only the rendered view is reversed. So
-    `messages[messages.length - 1]` / `lastMessage` / `hasUnansweredTail`
-    logic continues to work without changes.
-  - `inverted` flips the FlatList AND counter-flips each `renderItem`,
-    but does **NOT** counter-flip `ListHeaderComponent` /
-    `ListEmptyComponent` / `ListFooterComponent`. We previously patched
-    those slots with a manual `transform: [{ scaleY: -1 }]` wrapper
-    (`styles.invertedFix`); on Kane's Android device this manifested as
-    mirrored/upside-down text and "?" glyphs that wouldn't update even
-    after Metro served fresh bundles. **The fix: do NOT use those FlatList
-    slots at all.** Lift any header / empty / signal UI OUT of the
-    FlatList and render it as a flex-flow sibling between the FlatList
-    and the input bar. No counter-flip math, no upside-down failure mode.
-  - Empty state ("say something to her"): conditional render — when
-    `reversedMessages.length === 0`, render the empty View *instead of*
-    the FlatList. Same flex slot, no transform.
-  - Legacy "Ashley is typing…" indicator (used only on the non-streaming
-    retry-unanswered fallback path): rendered as a sibling immediately
-    below the FlatList. Visually equivalent to the old
-    `ListHeaderComponent` slot under `inverted`, but with no flip.
-  - Adaptive presence signals (`<PresenceSignalsList>`): also rendered
-    as a sibling below the FlatList, above the input bar.
-  - `initialNumToRender={20}` is sufficient to fill the viewport on
-    first paint; the rest virtualizes lazily as the user scrolls up.
-  - `removeClippedSubviews={false}` is kept for measurement stability,
-    but is no longer load-bearing for "land at the true bottom".
+- **Stage 1 Streaming Architecture**: `docs/presence-loop.md`
+- **Tavily API**: https://app.tavily.com (for optional web search)
+- **Expo Notifications**: `https://docs.expo.dev/versions/latest/sdk/notifications/`
