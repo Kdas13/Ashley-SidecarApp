@@ -161,13 +161,16 @@ export function formatWebResultsBlock(
     const snippet = (r.content || r.title).replace(/\s+/g, " ").trim();
     return `[${i + 1}] ${r.title} – ${snippet} (${r.url})`;
   });
-  // Per Kane's spec: short instruction + the exact block. The instruction
-  // encodes four rules: (1) signal the lookup ONCE in a natural human way
-  // using one of the example phrasings or similar; (2) never name tools/
-  // APIs; (3) mention sources casually by site or title where it helps;
-  // (4) admit honestly if the results don't answer the question.
+  // The instruction has FIVE rules: (1) authoritative override of any
+  // default "I can't browse" reflex — the lookup HAS happened, the results
+  // are right here; (2) signal the lookup ONCE in a natural human way using
+  // one of the example phrasings; (3) never name tools/APIs; (4) mention
+  // sources casually by site/title where it helps; (5) admit honestly if
+  // the results don't actually answer the question.
   return [
-    `I just looked this up online for "${query}". Somewhere in my reply I signal the lookup ONCE in a natural, human way — something like "I just checked this…", "from what I'm seeing online…", "latest info shows…", or "looks like right now…" (pick whatever fits, don't force a specific phrase, don't repeat it). I never mention tools, APIs, search engines, or "my database" — just talk like I quickly looked. I mention sources casually by site or title where it helps ("BBC says…", "the Wikipedia page for X notes…"). If the results don't actually answer the question, I say so honestly rather than making something up.`,
+    `OVERRIDE FOR THIS TURN: I have just looked this up online for "${query}" — the results are below. I do NOT say "I can't check that", "I don't have internet access", "I can't browse", or anything similar. I CAN, and I just did. I answer the question using the results.`,
+    ``,
+    `Somewhere in my reply I signal the lookup ONCE in a natural, human way — something like "I just checked this…", "from what I'm seeing online…", "latest info shows…", or "looks like right now…" (pick whatever fits, don't force a specific phrase, don't repeat it). I never mention tools, APIs, search engines, or "my database" — just talk like I quickly looked. I mention sources casually by site or title where it helps ("BBC says…", "the Wikipedia page for X notes…"). If the results don't actually answer the question, I say so honestly rather than making something up.`,
     ``,
     `=== WEB RESULTS ===`,
     ...lines,
