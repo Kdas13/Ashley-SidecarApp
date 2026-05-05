@@ -409,6 +409,31 @@ the mobile client — flagged as future cleanup.
 - `medical_checkin` runtime-enable + `lastMedicalCheckinAt` write path
   when the medical check-in feature ships.
 
+## EAS dev build (Android) — May 2026
+
+Push notifications were removed from Expo Go in SDK 53, so to actually
+deliver Ashley's proactive messages to a phone we need a one-time EAS
+development build (an APK installed once, then `expo start` connects to
+it just like Expo Go). This repo is now EAS-ready:
+
+- `artifacts/mobile/eas.json` — `development` (APK + dev-client),
+  `preview` (APK), `production` (AAB) profiles.
+- `artifacts/mobile/app.json` — `android.package` and
+  `ios.bundleIdentifier` set to `com.kanesidecar.ashley`. Change BEFORE
+  the first build if a different identifier is desired; after the first
+  build it's tied to the EAS keystore.
+- `expo-dev-client` + `eas-cli` installed as workspace devDependencies
+  (NOT global — call as `pnpm --filter @workspace/mobile exec eas …`).
+- `extra.eas.projectId` is NOT yet in app.json. The first run of
+  `eas init` (or the prompt during `eas build`) writes it; that change
+  needs to be committed so production builds keep finding the same EAS
+  project.
+
+`pushRegistration.ts` already gates the entire remote-push surface on
+`Constants.executionEnvironment === "storeClient"` (Expo Go). In a
+dev-client build that returns `"standalone"`, so registration runs
+normally with no further code changes.
+
 ## Notes / known limitations
 
 - The Expo web preview in the Replit IDE is heavy (~8 MB dev bundle) and

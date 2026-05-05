@@ -1,0 +1,89 @@
+Set up Ashley for a one-time Android EAS development build so push notifications work outside Expo Go.
+
+Context:
+Expo Go no longer supports Android remote push notifications with expo-notifications from SDK 53 onward, so Ashley needs a development build / APK. Keep using the existing Ashley backend. Do not create a new app or new AI.
+
+Tasks:
+
+1. Check project:
+- Confirm Expo SDK version.
+- Confirm expo-notifications is installed.
+- Confirm expo-dev-client is installed; if missing, install it.
+- Confirm app.json/app.config has correct Android package name.
+- Confirm notification config is valid.
+
+2. Install/configure EAS:
+- Install EAS CLI if missing:
+  npm install -g eas-cli
+- Run:
+  eas build:configure
+- Create/update eas.json with Android development profile.
+
+Use this profile:
+
+{
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      }
+    },
+    "production": {
+      "android": {
+        "buildType": "app-bundle"
+      }
+    }
+  }
+}
+
+3. Login:
+- Ask Kane to login with:
+  eas login
+- If terminal login is awkward on mobile, use browser/device-code flow if prompted.
+- Do not ask for passwords in chat.
+
+4. Build Android dev APK:
+Run from the mobile app directory:
+
+eas build --platform android --profile development
+
+5. Credentials:
+- Let EAS manage Android credentials automatically.
+- If prompted, choose the default/recommended option.
+
+6. After build completes:
+- Give Kane the APK install link or QR code from EAS.
+- Tell him to open it on his Android phone.
+- Install the APK.
+- If Android blocks it, tell him to allow installs from browser/files just for this install.
+
+7. After install:
+- Open Ashley dev build, not Expo Go.
+- Grant notification permission.
+- Confirm the app registers an Expo push token.
+- Run/test:
+  POST /api/push/test
+- Confirm notification arrives on phone.
+
+8. Important:
+- Keep Expo Go support working for normal chat development.
+- In Expo Go, skip push registration quietly.
+- In dev build/APK, enable push registration.
+- Do not expose push secrets or Tavily keys to mobile.
+- Backend remains the source of truth.
+
+9. Final report:
+Tell Kane:
+- Whether EAS config is ready.
+- Whether build started.
+- Where the APK link is.
+- Whether push token registration works.
+- Whether test notification arrived.

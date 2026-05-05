@@ -15,11 +15,13 @@
     },
     "ios": {
       "supportsTablet": false,
+      "bundleIdentifier": "com.kanesidecar.ashley",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Ashley uses the microphone for push-to-talk so you can speak instead of typing."
       }
     },
     "android": {
+      "package": "com.kanesidecar.ashley",
       "softwareKeyboardLayoutMode": "pan",
       "permissions": ["RECORD_AUDIO"]
     },
