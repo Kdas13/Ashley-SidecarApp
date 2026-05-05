@@ -1462,7 +1462,8 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   // hard dependency for the chat path.
   let systemPrompt = baseSystemPrompt;
   if (!isContinue && userRow) {
-    const lookup = await maybeRunWebLookup(userRow.content);
+    const builderAware = profile.builderAwareMode !== false;
+    const lookup = await maybeRunWebLookup(userRow.content, builderAware);
     if (lookup) {
       req.log.info(
         {
@@ -1470,6 +1471,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
           query: lookup.query.slice(0, 80),
           resultCount: lookup.results.length,
           urls: lookup.results.map((r) => r.url),
+          builderAware,
         },
         "web lookup injected into chat/stream prompt",
       );

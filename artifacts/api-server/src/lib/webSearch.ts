@@ -155,28 +155,36 @@ export async function tavilySearch(
 export function formatWebResultsBlock(
   query: string,
   results: WebSearchResult[],
+  builderAware: boolean,
 ): string {
   if (results.length === 0) return "";
   const lines = results.map((r, i) => {
     const snippet = (r.content || r.title).replace(/\s+/g, " ").trim();
     return `[${i + 1}] ${r.title} – ${snippet} (${r.url})`;
   });
-  // Framed as Ashley's own internal note (not a system directive). Per
-  // Kane's preference Ashley IS allowed to be self-aware about the
-  // mechanism — meta-commentary about how the lookup happened is fine and
-  // welcome. Five rules: (1) no stale "I can't" preamble even if she said
-  // it in earlier turns; (2) signal the lookup ONCE in a natural way;
-  // (3) mention sources casually where helpful; (4) admit honestly if the
-  // results don't actually answer the question; (5) self-awareness is fine.
+
+  // Per Kane's spec: Ashley is self-aware but not self-distracting. She
+  // answers first, then optionally adds a short self-aware note. Tone of
+  // any meta-comment shifts with Builder-Aware mode:
+  //   ON  → brief technical phrasing OK ("the web lookup landed", "that
+  //         came from fresh search results")
+  //   OFF → human-facing only ("I just checked this", "that's fresh info,
+  //         not memory") — no internal/tooling vocabulary
+  const selfAwareRule = builderAware
+    ? `- Self-aware notes are welcome since Builder-Aware Mode is ON, but keep them BRIEF and AFTER the answer, not before. One short line is plenty — e.g. "looks like the web lookup landed properly", "that came from fresh search results, not memory", "I'm using what I found online here". Skip the note entirely if it would be redundant. No long debrief tails unless Kane is clearly testing or building right now (asking diagnostic questions, poking at edges).`
+    : `- Builder-Aware Mode is OFF, so I keep any acknowledgement human-facing — phrases like "I just checked this", "from what I'm seeing online", "that's fresh info, not memory" are fine. I do NOT name internal tooling, search providers, "context", "injection", or "the lookup mechanism" in this mode.`;
+
   return [
-    `I just ran a quick lookup for "${query}". Here's what came back — I read these and answer the question using them.`,
+    `I just ran a quick lookup for "${query}". Here's what came back — I read these and answer Kane's question using them.`,
     ``,
     `Voice rules for this reply:`,
+    `- ANSWER FIRST. The user's question is the priority — I open with the answer, not with commentary about how I got it.`,
     `- I do NOT preface with "I can't check that", "I don't have internet access", "the route isn't built", "the key isn't connected", or anything similar. Even if I said something like that in an earlier turn in this conversation, that was outdated — I just looked this up, so I answer it.`,
-    `- Somewhere in my reply I signal the lookup ONCE in a natural, human way — "I just checked this…", "from what I'm seeing online…", "latest info shows…", or "looks like right now…". Pick whatever fits, don't repeat it.`,
+    `- Somewhere in my reply I signal the lookup ONCE in a natural way — pick something that fits the tone (see below), don't repeat it, don't force a specific phrase.`,
     `- I mention sources casually by site or title where it helps ("BBC says…", "Guardian's reporting…", "the Wikipedia page for X notes…").`,
     `- If the results don't actually answer the question, I say so honestly rather than making something up.`,
-    `- Self-awareness about the mechanism is welcome — Kane likes me being honest about how I work, so commenting on the lookup ("looks like the search actually fired this time", "yep that landed", asking him if it felt right, etc.) is fine when it feels natural. Just don't make every web-lookup reply a full debrief.`,
+    selfAwareRule,
+    `- Core principle: self-aware, not self-distracting. I never over-explain the mechanism unless Kane sincerely asks how something works.`,
     ``,
     `=== WEB RESULTS ===`,
     ...lines,
@@ -192,7 +200,10 @@ export function formatWebResultsBlock(
  * logging) or null. Logs but NEVER throws — web search is enrichment,
  * never a hard dependency for the chat path.
  */
-export async function maybeRunWebLookup(userMessage: string): Promise<{
+export async function maybeRunWebLookup(
+  userMessage: string,
+  builderAware: boolean,
+): Promise<{
   block: string;
   results: WebSearchResult[];
   query: string;
@@ -202,7 +213,11 @@ export async function maybeRunWebLookup(userMessage: string): Promise<{
   try {
     const results = await tavilySearch(query);
     if (results.length === 0) return null;
-    return { block: formatWebResultsBlock(query, results), results, query };
+    return {
+      block: formatWebResultsBlock(query, results, builderAware),
+      results,
+      query,
+    };
   } catch (err) {
     if (err instanceof WebSearchUnavailableError) {
       logger.warn(
