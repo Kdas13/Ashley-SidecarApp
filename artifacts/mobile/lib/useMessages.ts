@@ -1,4 +1,4 @@
-import { useEffect, useReducer } from "react";
+import { useEffect, useReducer, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -11,13 +11,17 @@ import {
   type ReplyToRef,
 } from "./storage";
 import {
+  abortStream,
   clearChatOnServer,
   fetchSelfieForMessage,
   fetchState,
   markImageRemembered,
   sendChatImage,
   sendChatMessage,
+  streamAshleyReply,
   type RememberDecision,
+  type StreamReplyMeta,
+  type StreamReplyOutcome,
 } from "./aiClient";
 import type { ImageAnalysisMode, ImageCategory } from "./storage";
 
@@ -137,6 +141,491 @@ export function useSendMessage() {
     },
     onError: () => {
       qc.invalidateQueries({ queryKey: MESSAGES_KEY });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Presence Loop — Stage 1
+//
+// useStreamMessage / useContinueMessage open an SSE stream against
+// /chat/stream (see lib/aiClient.ts → streamAshleyReply) and apply each
+// `meta` / `delta` / `done` / `interrupted` event to the React Query cache
+// so the chat bubble fills in live as Anthropic produces tokens.
+//
+// Cache write strategy:
+//   - On `meta`: synchronously insert (or replace) the user + ashley rows.
+//                Ashley row carries `status: "streaming"` and empty content.
+//   - On `delta`: APPEND to a buffer ref; the actual cache update is
+//                throttled to ~30ms intervals so 50 deltas/sec don't
+//                trigger 50 React re-renders (a real concern at Sonnet's
+//                streaming rate). The flush always commits the entire
+//                buffered text, so no chunk is dropped.
+//   - On `done` / `interrupted` / `error`: flush any pending delta
+//                immediately, then write the terminal status + content.
+//   - AsyncStorage write happens ONLY on the terminal event — the live
+//                deltas don't touch disk.
+//
+// Stop / abort:
+//   - useStopStream(streamId) calls abortStream() server-side AND fires
+//                the local AbortController so the SSE fetch unwinds
+//                immediately. Server-side abort is the source of truth
+//                for the persisted partial.
+//
+// Active-stream registry: useActiveStream() lets the chat screen subscribe
+// to "is something streaming right now?" so it can swap the send button to
+// stop in-place. Module-level so it survives mutation re-renders.
+// ---------------------------------------------------------------------------
+
+const DELTA_FLUSH_MS = 30;
+
+type ActiveStream = {
+  streamId: string;
+  mode: "new" | "continue";
+} | null;
+
+const inFlightStreamControllers = new Map<string, AbortController>();
+let activeStream: ActiveStream = null;
+const activeStreamListeners = new Set<() => void>();
+
+function setActiveStream(next: ActiveStream): void {
+  activeStream = next;
+  for (const l of activeStreamListeners) l();
+}
+
+/**
+ * Clear `activeStream` ONLY if it still references the streamId we own.
+ *
+ * The unconditional `setActiveStream(null)` pattern races during the
+ * connection-dip auto-retry path: the original stream's `finally` can
+ * fire AFTER the continuation's `onMeta` has already populated
+ * `activeStream` with the new id, wiping the stop button mid-stream
+ * and leaving the user with no way to interrupt the live continuation.
+ * Gating on identity makes the clear safe to call from any unwind path.
+ */
+function clearActiveStreamIfOwned(streamId: string | undefined): void {
+  if (!streamId) return;
+  if (activeStream?.streamId === streamId) {
+    setActiveStream(null);
+  }
+}
+
+export function useActiveStream(): ActiveStream {
+  const [, force] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    const listener = () => force();
+    activeStreamListeners.add(listener);
+    return () => {
+      activeStreamListeners.delete(listener);
+    };
+  }, []);
+  return activeStream;
+}
+
+/**
+ * Persist the current cache snapshot to AsyncStorage. Call this on
+ * terminal stream events only; the streaming-delta path skips disk
+ * writes entirely.
+ */
+async function persistCacheSnapshot(
+  qc: ReturnType<typeof useQueryClient>,
+): Promise<void> {
+  const snapshot = qc.getQueryData<Message[]>(MESSAGES_KEY) ?? [];
+  await withStorageLock(STORAGE_KEYS.messages, () => saveMessages(snapshot));
+}
+
+/** Optional presence-loop hooks the chat screen wires into the stream. */
+export type StreamHooks = {
+  /** Fires once, on the first non-empty delta. Drives STREAM_FIRST_TOKEN. */
+  onFirstDelta?: () => void;
+  /** Fires on every delta arrival. Drives the watchdog timer reset. */
+  onDeltaArrived?: () => void;
+};
+
+type RunStreamArgs = {
+  qc: ReturnType<typeof useQueryClient>;
+  optimisticUserId: string | null;
+  optimisticAshleyId: string | null;
+  // Either newTurn OR continueFromMessageId — exactly one.
+  newTurn?: { id: string; content: string; replyTo?: ReplyToRef | null };
+  continueFromMessageId?: string;
+  controller: AbortController;
+  hooks?: StreamHooks;
+};
+
+/**
+ * Shared streaming engine used by both useStreamMessage and
+ * useContinueMessage. Wires the SSE callbacks into the React Query cache.
+ */
+async function runStream(args: RunStreamArgs): Promise<StreamReplyOutcome> {
+  const { qc, optimisticUserId, optimisticAshleyId, controller, hooks } = args;
+  let ashleyId: string | null = null;
+  let pendingDelta = "";
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  let firstDeltaSeen = false;
+
+  const flushNow = (): void => {
+    if (!ashleyId || pendingDelta.length === 0) return;
+    const chunk = pendingDelta;
+    pendingDelta = "";
+    const previous = qc.getQueryData<Message[]>(MESSAGES_KEY) ?? [];
+    const next = previous.map((m) =>
+      m.id === ashleyId ? { ...m, content: (m.content ?? "") + chunk } : m,
+    );
+    qc.setQueryData(MESSAGES_KEY, next);
+  };
+
+  const cancelFlush = (): void => {
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+  };
+
+  const scheduleFlush = (): void => {
+    if (flushTimer) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      flushNow();
+    }, DELTA_FLUSH_MS);
+  };
+
+  const outcome = await streamAshleyReply(
+    args.newTurn
+      ? { newTurn: args.newTurn }
+      : { continueFromMessageId: args.continueFromMessageId! },
+    {
+      onMeta: (meta: StreamReplyMeta) => {
+        ashleyId = meta.ashleyMessage.id;
+        setActiveStream({ streamId: meta.streamId, mode: meta.mode });
+        // Register the local AbortController against the real streamId
+        // *before* we start handling deltas so useStopStream() can find
+        // and abort it the instant the user taps stop. (Registering only
+        // on `done` would create a window where stop has no effect.)
+        inFlightStreamControllers.set(meta.streamId, controller);
+
+        // Reconcile the optimistic rows with the server-authoritative
+        // rows. The user row keeps the same id (server is idempotent),
+        // but the Ashley row is brand new. For continue mode there is
+        // no user row to reconcile.
+        const previous = qc.getQueryData<Message[]>(MESSAGES_KEY) ?? [];
+        const filtered = previous.filter((m) => {
+          if (optimisticAshleyId && m.id === optimisticAshleyId) return false;
+          // For new-turn mode we also drop the optimistic user row so
+          // we can reinsert it with the server's authoritative metadata
+          // (createdAt etc.). Continue mode never inserts an optimistic
+          // user row, so this is a no-op there.
+          if (
+            optimisticUserId &&
+            m.id === optimisticUserId &&
+            meta.userMessage &&
+            meta.userMessage.id === optimisticUserId
+          ) {
+            return false;
+          }
+          return true;
+        });
+        const additions: Message[] = [];
+        if (meta.userMessage) additions.push(meta.userMessage);
+        additions.push(meta.ashleyMessage);
+        qc.setQueryData(MESSAGES_KEY, [...filtered, ...additions]);
+      },
+      onDelta: (text: string) => {
+        if (!firstDeltaSeen) {
+          firstDeltaSeen = true;
+          hooks?.onFirstDelta?.();
+        }
+        hooks?.onDeltaArrived?.();
+        pendingDelta += text;
+        scheduleFlush();
+      },
+      onDone: ({ content, selfieVibe }) => {
+        cancelFlush();
+        pendingDelta = "";
+        if (!ashleyId) return;
+        const previous = qc.getQueryData<Message[]>(MESSAGES_KEY) ?? [];
+        const next = previous.map((m) =>
+          m.id === ashleyId
+            ? {
+                ...m,
+                content,
+                status: "complete" as const,
+                selfieVibe: selfieVibe ?? m.selfieVibe ?? null,
+              }
+            : m,
+        );
+        qc.setQueryData(MESSAGES_KEY, next);
+      },
+      onInterrupted: ({ partialContent }) => {
+        cancelFlush();
+        pendingDelta = "";
+        if (!ashleyId) return;
+        const previous = qc.getQueryData<Message[]>(MESSAGES_KEY) ?? [];
+        const next = previous.map((m) => {
+          if (m.id !== ashleyId) return m;
+          // If the server told us a partial, prefer it (it's authoritative
+          // — written from the same accumulated buffer the SSE wrote
+          // out). Otherwise keep whatever deltas we'd already applied.
+          const finalContent =
+            partialContent.length > 0 ? partialContent : (m.content ?? "");
+          return {
+            ...m,
+            content: finalContent,
+            status: "interrupted" as const,
+          };
+        });
+        qc.setQueryData(MESSAGES_KEY, next);
+      },
+      onError: () => {
+        cancelFlush();
+        pendingDelta = "";
+        // Mirror onInterrupted's cache shape so the UI can offer
+        // Continue/Retry on errored streams too.
+        if (!ashleyId) return;
+        const previous = qc.getQueryData<Message[]>(MESSAGES_KEY) ?? [];
+        const next = previous.map((m) =>
+          m.id === ashleyId
+            ? { ...m, status: "interrupted" as const }
+            : m,
+        );
+        qc.setQueryData(MESSAGES_KEY, next);
+      },
+    },
+    { signal: controller.signal },
+  );
+
+  cancelFlush();
+  // Final safety flush: in the rare case `done` arrived with no fresh
+  // content (pure cancel) but we'd buffered some deltas, get them onto
+  // the bubble before we hand control back.
+  flushNow();
+  return outcome;
+}
+
+export type StreamMessageArg =
+  | string
+  | {
+      content: string;
+      replyTo?: ReplyToRef | null;
+      hooks?: StreamHooks;
+    };
+
+export function useStreamMessage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (
+      arg: StreamMessageArg,
+    ): Promise<{ user: Message; ashley: Message | null; outcome: StreamReplyOutcome }> => {
+      const content = typeof arg === "string" ? arg : arg.content;
+      const replyTo = typeof arg === "string" ? null : arg.replyTo ?? null;
+      const hooks = typeof arg === "string" ? undefined : arg.hooks;
+      const userId = newId();
+      const optimisticAshleyId = `optimistic-ashley-${userId}`;
+
+      // 1. Optimistic insert: user bubble + an empty Ashley bubble in
+      //    "streaming" state so the typing indicator is in-place from
+      //    frame zero. The server-authoritative ids replace these on
+      //    the meta event.
+      const optimisticUser: Message = {
+        id: userId,
+        role: "user",
+        content,
+        createdAt: new Date().toISOString(),
+        replyTo,
+        status: "complete",
+      };
+      const optimisticAshley: Message = {
+        id: optimisticAshleyId,
+        role: "ashley",
+        content: "",
+        createdAt: new Date(Date.now() + 1).toISOString(),
+        status: "streaming",
+      };
+      const previous = qc.getQueryData<Message[]>(MESSAGES_KEY) ?? [];
+      qc.setQueryData(MESSAGES_KEY, [
+        ...previous,
+        optimisticUser,
+        optimisticAshley,
+      ]);
+
+      // 2. Open the SSE stream with a local AbortController so the
+      //    stop button can cancel it. runStream registers this against
+      //    the streamId on the meta event, so useStopStream can find
+      //    it for the duration of the stream.
+      const ac = new AbortController();
+      let outcome: StreamReplyOutcome | undefined;
+      try {
+        outcome = await runStream({
+          qc,
+          optimisticUserId: userId,
+          optimisticAshleyId,
+          newTurn: { id: userId, content, replyTo },
+          controller: ac,
+          ...(hooks ? { hooks } : {}),
+        });
+      } catch (err) {
+        // Don't clear activeStream here — the finally below handles it
+        // safely (and unconditional clears race the auto-retry path).
+        throw err instanceof Error ? err : new Error("Stream failed");
+      } finally {
+        if (outcome?.meta) {
+          inFlightStreamControllers.delete(outcome.meta.streamId);
+          clearActiveStreamIfOwned(outcome.meta.streamId);
+        } else {
+          // Meta event never arrived (network failure on the POST,
+          // server 4xx/5xx, runtime without ReadableStream, etc.).
+          // The optimistic Ashley row therefore was never replaced
+          // by the server-authoritative one — strip it from cache
+          // so the user isn't left staring at a permanent empty
+          // bubble with the streaming cursor and no recovery
+          // affordance. The user's outgoing message is preserved
+          // so they can simply re-send.
+          qc.setQueryData<Message[]>(MESSAGES_KEY, (prev) =>
+            (prev ?? []).filter((m) => m.id !== optimisticAshleyId),
+          );
+        }
+      }
+
+      // Persist final state to disk + invalidate side queries.
+      await persistCacheSnapshot(qc);
+      qc.invalidateQueries({ queryKey: SUMMARIES_KEY });
+
+      const finalAshleyMeta = outcome.meta;
+      const finalAshley = finalAshleyMeta
+        ? (qc.getQueryData<Message[]>(MESSAGES_KEY) ?? []).find(
+            (m) => m.id === finalAshleyMeta.ashleyMessage.id,
+          ) ?? null
+        : null;
+
+      // Selfie kickoff — only on a clean done with a vibe.
+      if (
+        outcome.kind === "done" &&
+        outcome.final.selfieVibe &&
+        finalAshley
+      ) {
+        void fetchAndAttachSelfie(
+          qc,
+          finalAshley.id,
+          outcome.final.selfieVibe,
+        );
+      }
+
+      // Surface a real error to the mutation so the UI banner shows.
+      if (outcome.kind === "error") {
+        throw outcome.error;
+      }
+
+      const finalUser = outcome.meta?.userMessage ?? optimisticUser;
+      return { user: finalUser, ashley: finalAshley, outcome };
+    },
+    // No onError handler — the mutationFn's finally already does the
+    // safe (id-guarded) cleanup, and an unconditional clear here would
+    // race the connection-dip auto-retry continuation.
+  });
+}
+
+export type ContinueMessageArg =
+  | string
+  | { continueFromMessageId: string; hooks?: StreamHooks };
+
+/**
+ * Resume an interrupted Ashley reply. The interrupted bubble is left in
+ * place; the server returns a fresh Ashley row containing the continuation.
+ */
+export function useContinueMessage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (
+      arg: ContinueMessageArg,
+    ): Promise<{ ashley: Message | null; outcome: StreamReplyOutcome }> => {
+      const continueFromMessageId =
+        typeof arg === "string" ? arg : arg.continueFromMessageId;
+      const hooks = typeof arg === "string" ? undefined : arg.hooks;
+      const ac = new AbortController();
+      let outcome: StreamReplyOutcome | undefined;
+      try {
+        outcome = await runStream({
+          qc,
+          optimisticUserId: null,
+          optimisticAshleyId: null,
+          continueFromMessageId,
+          controller: ac,
+          ...(hooks ? { hooks } : {}),
+        });
+      } finally {
+        if (outcome?.meta) {
+          inFlightStreamControllers.delete(outcome.meta.streamId);
+          clearActiveStreamIfOwned(outcome.meta.streamId);
+        }
+        // No-op when meta never arrived — we never set activeStream,
+        // so there's nothing to clear. Continue mode never inserts an
+        // optimistic Ashley row either (the partial-bubble lives on
+        // its own pre-existing row), so no cache surgery is needed.
+      }
+
+      await persistCacheSnapshot(qc);
+      qc.invalidateQueries({ queryKey: SUMMARIES_KEY });
+
+      const finalAshleyMeta = outcome.meta;
+      const finalAshley = finalAshleyMeta
+        ? (qc.getQueryData<Message[]>(MESSAGES_KEY) ?? []).find(
+            (m) => m.id === finalAshleyMeta.ashleyMessage.id,
+          ) ?? null
+        : null;
+
+      if (
+        outcome.kind === "done" &&
+        outcome.final.selfieVibe &&
+        finalAshley
+      ) {
+        void fetchAndAttachSelfie(
+          qc,
+          finalAshley.id,
+          outcome.final.selfieVibe,
+        );
+      }
+
+      if (outcome.kind === "error") {
+        throw outcome.error;
+      }
+
+      return { ashley: finalAshley, outcome };
+    },
+    // No onError — the mutationFn's finally handles cleanup safely
+    // without the activeStream-clobber race.
+  });
+}
+
+/**
+ * Stop a live SSE chat stream both client-side (abort the fetch) and
+ * server-side (POST /chat/stream/:id/abort so Anthropic stops billing
+ * for tokens we'll never use). Idempotent — safe to call multiple times
+ * or against a streamId that already finished.
+ */
+export function useStopStream() {
+  return useMutation({
+    mutationFn: async (streamId: string): Promise<void> => {
+      // Local abort kicks the SSE fetch out of its read loop immediately
+      // so the UI can flip out of streaming state without waiting for
+      // the server's TCP RST to arrive.
+      const ctrl = inFlightStreamControllers.get(streamId);
+      if (ctrl) {
+        try {
+          ctrl.abort();
+        } catch {
+          // Ignore — abort() is idempotent and only throws on really
+          // exotic runtimes.
+        }
+      }
+      // Server-side abort is the source of truth for "the partial has
+      // been persisted with status=interrupted". Best-effort; if it
+      // fails (e.g. the server already finished) the boot recovery /
+      // /state hydration will fix the row.
+      try {
+        await abortStream(streamId);
+      } catch {
+        // Swallow — the local abort already fired.
+      }
     },
   });
 }

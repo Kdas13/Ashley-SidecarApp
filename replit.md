@@ -17,11 +17,18 @@ no DB knowledge of the conversation — the phone is the source of truth.
 - Local profile storage and profile editor
 - Local long-term memory store with full CRUD (add, edit, delete, importance
   stars, single tag)
-- Chat with real Ashley replies via stateless `POST /api/chat/reply`
-  (Anthropic Claude through the Replit AI Integrations proxy). Profile +
-  memories + recent history (last 30 turns) are sent on every request; the
-  reply is appended locally. Typing indicator + tap-to-dismiss error banner
-  on failure.
+- Chat with real Ashley replies via **streaming** `POST /api/chat/stream`
+  (SSE; Anthropic Claude through the Replit AI Integrations proxy).
+  Tokens render in-place into the Ashley bubble as they arrive. The
+  send button does an in-place swap to a stop button while a reply is
+  in flight; tapping it aborts the upstream Anthropic call server-side
+  and surfaces the partial as an "interrupted" bubble with Continue
+  (primary) / Retry (secondary) actions. Adaptive presence signals
+  ("I'm here…" after 3s, "take your time" after 12s, "connection
+  dipped…" on a 7s watchdog) are emitted by `usePresenceLoop`. See
+  `docs/presence-loop.md` for the full Stage 1 architecture. The
+  legacy non-streaming `POST /api/chat` route is still mounted as a
+  fallback for the rare unanswered-tail recovery path.
 - **Real selfies in chat (poll-based, two-call flow).** When Ashley wants
   to send a photo she emits a `[selfie: <visual vibe>]` marker. The flow
   is split across two endpoints so the chat bubble appears immediately
@@ -137,11 +144,76 @@ no DB knowledge of the conversation — the phone is the source of truth.
 
 ## Backend
 
-> **Note (May 2026):** Mobile actually calls `POST /api/chat` (stateful, writes
-> to `messagesTable`) as the primary path now, not `/api/chat/reply`. The
-> stateless route below is the V1.1 design that has since been superseded.
-> See `docs/presence-loop.md` for the current chat architecture and the
-> planned streaming/interrupt evolution.
+> **Note (May 2026 — Stage 1 streaming):** Mobile primary chat path is
+> now `POST /api/chat/stream` (SSE). The stateful non-streaming
+> `POST /api/chat` route is kept mounted purely as the fallback for
+> `useRetryUnansweredReply` when the SSE connection itself fails before
+> a meta event arrives. The stateless `/api/chat/reply` route described
+> below is the original V1.1 design and has been superseded — do not
+> add new clients to it. See `docs/presence-loop.md` for the streaming
+> architecture (SSE event types, abort protocol, continue-from-partial
+> contract, presence-signal taxonomy).
+>
+> **Streaming routes added in Stage 1:**
+>
+> - `POST /api/chat/stream` — SSE. Body either `{ userMessage }` (new
+>   turn) or `{ continueFromMessageId }` (resume an interrupted reply).
+>   Validated as exclusive in zod. Emits `meta` (with
+>   `streamId === ashleyMessage.id`, `userMessage`, `ashleyMessage`,
+>   `mode: "new" | "continue"`), then a stream of `delta` events with
+>   text chunks, terminating in `done` (clean end) or `interrupted`
+>   (server-side abort) or `error`. The Ashley DB row is inserted
+>   up-front with `status="streaming"`, then patched to
+>   `complete` / `interrupted` on the terminal event. `client-close`
+>   on the underlying socket calls `ac.abort()`.
+> - `POST /api/chat/stream/:streamId/abort` — fire-and-forget,
+>   idempotent. Resolves the streamId in `inFlightStreams: Map<string,
+>   AbortController>` and aborts. 200 even on unknown streamId.
+> - `messagesTable.status` text column (default `"complete"`, allowed
+>   values `complete | streaming | interrupted`). On boot,
+>   `index.ts` flips any orphan `status='streaming'` rows to
+>   `'interrupted'` (logs the count) so a recycled api-server doesn't
+>   leave dangling bubbles.
+> - Continue mode: server prepends the interrupted Ashley row's
+>   partial content as the final `assistant` turn in the messages
+>   array, then nudges Claude with "Continue naturally from where you
+>   were, without repeating yourself" before resuming the stream into
+>   a *new* Ashley row (the original interrupted row is left in place
+>   as the visible "before" half).
+>
+> **Mobile streaming pieces:**
+>
+> - `lib/aiClient.ts::streamAshleyReply({req, callbacks, signal})` —
+>   expo/fetch + manual SSE buffer, mirrors the existing
+>   `transcribeAudioStream` pattern. Spreads both `apiHeaders()` AND
+>   `authHeaders()` (X-API-Key + Bearer + X-Device-Id) on the POST.
+>   `abortStream(streamId)` is a small POST helper.
+> - `lib/useMessages.ts` — `useStreamMessage`, `useContinueMessage`,
+>   `useStopStream`, `useActiveStream`. A module-level
+>   `inFlightStreamControllers: Map<streamId, AbortController>` is
+>   populated in the meta callback so stop has a target the moment
+>   meta lands. Delta flushes are throttled to ~30ms intervals to
+>   avoid render storms on token-heavy bursts. Final state is
+>   persisted to AsyncStorage via the existing `persistCacheSnapshot`.
+> - `lib/usePresenceLoop.ts` — pure reducer
+>   (`idle | listening | thinking | speaking | waiting | interrupted`)
+>   plus a small hook with adaptive timers. Signals are
+>   one-shot per state-entry (re-entering thinking re-arms "I'm
+>   here…"). Watchdog tracks last delta arrival in a ref and fires
+>   `CONNECTION_DIP` when speaking goes silent ≥7s.
+> - `app/chat.tsx` — wires the reducer events
+>   (USER_TYPING/USER_CLEAR_DRAFT/USER_SEND/USER_INTERRUPT/STREAM_*)
+>   into the input + mutation lifecycle. Send button does an
+>   in-place swap to a square stop button when
+>   `activeStream != null` or state ∈ {thinking, speaking}.
+>   Interrupted Ashley bubbles render a Continue (primary) / Retry
+>   (secondary) row underneath the partial text. Streaming bubbles
+>   show a pulsing block-cursor (`▍`) at the end of the text. The
+>   `PresenceSignalsList` component renders signals as small italic
+>   muted-tone rows in the `ListHeaderComponent` slot (which sits at
+>   the visually-bottom thanks to `inverted`). Connection-dip
+>   triggers an auto-retry-once per stream via the stop+continue
+>   dance, guarded by `autoRetriedStreamRef`.
 
 The mobile app only uses one server endpoint:
 

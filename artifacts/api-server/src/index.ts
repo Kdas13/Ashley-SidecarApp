@@ -1,5 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { db, messagesTable } from "@workspace/db";
+import { eq } from "drizzle-orm";
 
 const rawPort = process.env["PORT"];
 
@@ -22,6 +24,34 @@ app.listen(port, (err) => {
   }
 
   logger.info({ port }, "Server listening");
+
+  // Presence-Loop boot recovery: any messages row left in `status='streaming'`
+  // from a previous process is an orphan — the SSE response that owned it has
+  // already disconnected, so the client will never see another delta for it.
+  // Flip those rows to `interrupted` so the UI can offer Continue / Retry on
+  // next state hydration instead of showing a forever-empty bubble.
+  void (async () => {
+    try {
+      const updated = await db
+        .update(messagesTable)
+        .set({ status: "interrupted" })
+        .where(eq(messagesTable.status, "streaming"))
+        .returning({ id: messagesTable.id });
+      if (updated.length > 0) {
+        logger.warn(
+          { count: updated.length, ids: updated.map((r) => r.id) },
+          "Recovered orphan streaming messages → interrupted",
+        );
+      } else {
+        logger.info("No orphan streaming messages to recover");
+      }
+    } catch (recoverErr) {
+      logger.error(
+        { err: recoverErr },
+        "Failed to recover orphan streaming messages on boot",
+      );
+    }
+  })();
 
   // Keepalive: Replit dev hibernates workflows after ~10min without external
   // HTTP traffic, which causes 502s mid-conversation and lost replies. Hit

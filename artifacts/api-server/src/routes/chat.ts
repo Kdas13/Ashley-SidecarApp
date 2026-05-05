@@ -1235,6 +1235,528 @@ router.post("/chat/transcribe/stream", async (req, res): Promise<void> => {
   }
 });
 
+// ===========================================================================
+// Presence Loop — Stage 1
+//
+// POST /chat/stream                       — SSE-streamed chat reply
+// POST /chat/stream/:streamId/abort       — server-side abort of a live stream
+//
+// The streaming endpoint covers BOTH the new-turn case (`userMessage`) and
+// the resume-from-interrupt case (`continueFromMessageId`). Wire format:
+//
+//   event: meta
+//   data: {"streamId":"<ashley_msg_id>","userMessage":<row|null>,
+//          "ashleyMessage":<row>,"mode":"new"|"continue"}
+//
+//   event: delta
+//   data: {"text":"…incremental chunk…"}
+//
+//   event: done
+//   data: {"content":"…final clean text…","selfieVibe":"…|null"}
+//
+//   event: interrupted
+//   data: {"partialContent":"…what we had before stop…"}
+//
+//   event: error
+//   data: {"error":"…user-facing message…"}
+//
+// Lifecycle of the Ashley row in `messagesTable`:
+//   - inserted up-front with content="" and status="streaming"
+//   - on natural finish:  content=<clean text>, status="complete"
+//   - on stop / disconnect: content=<partial>, status="interrupted"
+// Boot-time recovery in index.ts flips any orphan "streaming" rows to
+// "interrupted" so a server restart mid-stream never leaves a dead bubble.
+// ===========================================================================
+
+// In-flight stream registry. Keyed by streamId (= the Ashley row's id we
+// inserted up-front). Used by /chat/stream/:streamId/abort to cancel the
+// live Anthropic call from a different request. Entries are removed in the
+// `finally` of the streaming handler so the map never grows unboundedly.
+const inFlightStreams = new Map<string, AbortController>();
+
+const ChatStreamBodySchema = z
+  .object({
+    userMessage: z
+      .object({
+        id: z.string().min(8).max(128),
+        content: z.string().min(1).max(MAX_CONTENT_LEN),
+        replyTo: ReplyToSchema.nullish(),
+      })
+      .optional(),
+    continueFromMessageId: z.string().min(8).max(128).optional(),
+    clientNow: z.string().datetime({ offset: true }).optional(),
+    clientTimezone: z.string().min(1).max(64).optional(),
+  })
+  .refine(
+    (d) =>
+      (d.userMessage ? 1 : 0) + (d.continueFromMessageId ? 1 : 0) === 1,
+    {
+      message:
+        "Provide exactly one of `userMessage` or `continueFromMessageId`",
+    },
+  );
+
+router.post("/chat/stream", async (req, res): Promise<void> => {
+  const deviceId = getDeviceId(req);
+  const parsed = ChatStreamBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error:
+        parsed.error.issues[0]?.message ?? "Invalid /chat/stream payload",
+    });
+    return;
+  }
+  const { userMessage, continueFromMessageId, clientNow, clientTimezone } =
+    parsed.data;
+  const isContinue = Boolean(continueFromMessageId);
+
+  // ---- Continue-mode preflight: validate the interrupted row up-front so
+  //      we can return a proper 4xx before opening the SSE stream.
+  let interruptedRow: Message | null = null;
+  if (isContinue) {
+    try {
+      const found = await db
+        .select()
+        .from(messagesTable)
+        .where(
+          and(
+            eq(messagesTable.id, continueFromMessageId!),
+            eq(messagesTable.deviceId, deviceId),
+          ),
+        )
+        .limit(1);
+      if (found.length === 0) {
+        res.status(404).json({ error: "Message not found" });
+        return;
+      }
+      const row = found[0]!;
+      if (row.role !== "ashley") {
+        res
+          .status(400)
+          .json({ error: "Can only continue from an Ashley message" });
+        return;
+      }
+      if (row.status !== "interrupted") {
+        res
+          .status(409)
+          .json({ error: `Message is not interrupted (status=${row.status})` });
+        return;
+      }
+      interruptedRow = row;
+    } catch (err) {
+      req.log.error({ err }, "Continue preflight failed");
+      res.status(500).json({ error: "Could not load the message to continue" });
+      return;
+    }
+  }
+
+  // ---- New-turn mode: persist the user row idempotently (mirrors /chat).
+  let userRow: Message | null = null;
+  if (!isContinue && userMessage) {
+    const userContent = userMessage.content.trim();
+    if (!userContent) {
+      res.status(400).json({ error: "content is required" });
+      return;
+    }
+    try {
+      const inserted = await db
+        .insert(messagesTable)
+        .values({
+          id: userMessage.id,
+          deviceId,
+          role: "user",
+          content: userContent,
+          replyToId: userMessage.replyTo?.id ?? null,
+          replyToRole: userMessage.replyTo?.role ?? null,
+          replyToPreview: userMessage.replyTo?.preview ?? null,
+        })
+        .onConflictDoNothing({ target: messagesTable.id })
+        .returning();
+      if (inserted.length > 0) {
+        userRow = inserted[0]!;
+      } else {
+        const existing = await db
+          .select()
+          .from(messagesTable)
+          .where(
+            and(
+              eq(messagesTable.id, userMessage.id),
+              eq(messagesTable.deviceId, deviceId),
+            ),
+          )
+          .limit(1);
+        if (existing.length === 0) {
+          res
+            .status(409)
+            .json({ error: "Message id collides with another device" });
+          return;
+        }
+        userRow = existing[0]!;
+      }
+    } catch (err) {
+      req.log.error({ err }, "Failed to persist user message (stream)");
+      res.status(500).json({ error: "Could not save your message" });
+      return;
+    }
+  }
+
+  // ---- Load context (profile, memories, summaries, history). For continue
+  //      mode we still need the full picture so the model has identical
+  //      grounding to the original turn.
+  let profile: AshleyProfile;
+  let memories: Memory[];
+  let summaries: ConversationSummary[];
+  let history: Message[];
+  try {
+    profile = await getOrCreateProfileFor(deviceId);
+    [memories, summaries, history] = await Promise.all([
+      db.select().from(memoriesTable).where(eq(memoriesTable.deviceId, deviceId)),
+      db
+        .select()
+        .from(conversationSummariesTable)
+        .where(eq(conversationSummariesTable.deviceId, deviceId)),
+      db
+        .select()
+        .from(messagesTable)
+        .where(eq(messagesTable.deviceId, deviceId))
+        .orderBy(desc(messagesTable.createdAt))
+        .limit(HISTORY_WINDOW),
+    ]);
+    history.reverse();
+  } catch (err) {
+    req.log.error({ err }, "Failed to load chat context (stream)");
+    res.status(500).json({ error: "Could not load conversation" });
+    return;
+  }
+
+  // ---- Build the prompt.
+  //      In new-turn mode this mirrors /chat exactly. In continue mode we
+  //      drop the trailing interrupted row from the verbatim history (we'll
+  //      re-add it as the assistant turn explicitly) and append the
+  //      "continue naturally" instruction.
+  const lastUserRowForTime = isContinue
+    ? history.filter((m) => m.role === "user").slice(-1)[0] ?? null
+    : userRow;
+  let previousMessageAt: Date | null = null;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const m = history[i]!;
+    if (lastUserRowForTime && m.id === lastUserRowForTime.id) continue;
+    if (interruptedRow && m.id === interruptedRow.id) continue;
+    previousMessageAt = m.createdAt;
+    break;
+  }
+  const timeContext = buildTimeContext(
+    clientNow,
+    clientTimezone,
+    previousMessageAt,
+  );
+  const systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}`;
+
+  const claudeMessages: Array<{ role: "user" | "assistant"; content: string }> =
+    [];
+  for (const m of history) {
+    // Skip the interrupted row from verbatim history — we'll add it back
+    // explicitly as the final assistant turn so the continuation prompt
+    // ends with `assistant:<partial>`.
+    if (interruptedRow && m.id === interruptedRow.id) continue;
+    const role: "user" | "assistant" =
+      m.role === "user" ? "user" : "assistant";
+    let text = (m.content ?? "").trim();
+    if (
+      !isContinue &&
+      userRow &&
+      m.id === userRow.id &&
+      userMessage?.replyTo
+    ) {
+      const previewClean = userMessage.replyTo.preview
+        .replace(/\s+/g, " ")
+        .trim();
+      if (previewClean) {
+        const refersTo =
+          userMessage.replyTo.role === "ashley"
+            ? "your earlier message"
+            : "my earlier message";
+        text = `> Replying to ${refersTo}: "${previewClean}"\n\n${text}`;
+      }
+    }
+    if (!text) continue;
+    claudeMessages.push({ role, content: text });
+  }
+  while (claudeMessages.length > 0 && claudeMessages[0]!.role !== "user") {
+    claudeMessages.shift();
+  }
+  if (claudeMessages.length === 0 && !isContinue) {
+    claudeMessages.push({
+      role: "user",
+      content: userMessage!.content.trim(),
+    });
+  }
+
+  let continueInstruction: string | null = null;
+  if (isContinue && interruptedRow) {
+    const partial = (interruptedRow.content ?? "").trim();
+    // Re-append the partial as the final assistant turn so the model sees
+    // exactly where it left off. Anthropic auto-prefixes the next response
+    // with whatever this assistant turn ends with — that's the desired
+    // behaviour for "continue from the partial".
+    if (partial.length > 0) {
+      claudeMessages.push({ role: "assistant", content: partial });
+    }
+    // Operator-level nudge layered onto the system prompt — keeps the
+    // assistant continuation natural rather than restarting.
+    continueInstruction =
+      "The user tapped stop while you were mid-reply. Continue naturally from where you were, without repeating yourself, restarting the sentence, or apologising. Pick up the thought as if you had never paused.";
+  }
+  const finalSystemPrompt = continueInstruction
+    ? `${systemPrompt}\n\n## Continuation directive\n${continueInstruction}`
+    : systemPrompt;
+
+  // ---- Insert Ashley row up-front in `streaming` state. Its id is the
+  //      streamId we hand to the client + use for abort lookups.
+  let ashleyRow: Message;
+  try {
+    const [inserted] = await db
+      .insert(messagesTable)
+      .values({
+        id: newId(),
+        deviceId,
+        role: "ashley",
+        content: "",
+        status: "streaming",
+        selfieVibe: null,
+      })
+      .returning();
+    ashleyRow = inserted!;
+  } catch (err) {
+    req.log.error({ err }, "Failed to insert streaming Ashley row");
+    res.status(500).json({ error: "Could not start Ashley's reply" });
+    return;
+  }
+  const streamId = ashleyRow.id;
+
+  // ---- Open SSE.
+  res.status(200);
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  const writeEvent = (event: string, data: unknown): void => {
+    if (res.writableEnded) return;
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  writeEvent("meta", {
+    streamId,
+    userMessage: userRow,
+    ashleyMessage: ashleyRow,
+    mode: isContinue ? "continue" : "new",
+    continueFromMessageId: continueFromMessageId ?? null,
+  });
+
+  // ---- Register abort controller.
+  const ac = new AbortController();
+  inFlightStreams.set(streamId, ac);
+  let userAborted = false;
+  let clientDisconnected = false;
+  req.on("close", () => {
+    if (!res.writableEnded) {
+      // The browser/expo client closed the SSE connection — treat as a stop.
+      clientDisconnected = true;
+      ac.abort();
+    }
+  });
+
+  // ---- Stream from Anthropic.
+  let accumulated = "";
+  let finishedNaturally = false;
+  let upstreamErr: unknown = null;
+
+  try {
+    const stream = anthropic.messages.stream(
+      {
+        model: CHAT_MODEL,
+        max_tokens: 4096,
+        system: finalSystemPrompt,
+        messages: claudeMessages,
+      },
+      { signal: ac.signal },
+    );
+
+    for await (const ev of stream) {
+      if (
+        ev.type === "content_block_delta" &&
+        ev.delta.type === "text_delta"
+      ) {
+        const chunk = ev.delta.text;
+        if (chunk.length === 0) continue;
+        accumulated += chunk;
+        writeEvent("delta", { text: chunk });
+      }
+    }
+    finishedNaturally = true;
+  } catch (err) {
+    // Abort surfaces as APIUserAbortError (or a generic AbortError on the
+    // signal). Either way, `ac.signal.aborted` will be true. Treat it as
+    // an interruption rather than a hard error.
+    if (ac.signal.aborted) {
+      userAborted = true;
+    } else {
+      upstreamErr = err;
+      req.log.error({ err }, "Anthropic stream failed mid-flight");
+    }
+  }
+
+  // ---- Strip selfie marker on the FINAL accumulated text (mirrors /chat).
+  //      We only do this for naturally-finished replies — partials get
+  //      stored verbatim so a Continue can flow without losing the marker
+  //      that the model may complete on the next pass.
+  let finalText = accumulated;
+  let selfieVibe: string | null = null;
+  if (finishedNaturally) {
+    finalText = finalText.trim();
+    const match = finalText.match(SELFIE_MARKER_RE);
+    if (match) {
+      const vibe = match[1]!.trim();
+      if (vibe.length > 0) selfieVibe = vibe;
+      const before = finalText.slice(0, match.index).trim();
+      const after = finalText
+        .slice(match.index! + match[0].length)
+        .replace(/\[selfie:\s*[^\]]+\]/gi, "")
+        .trim();
+      const joined = [before, after].filter((s) => s.length > 0).join("\n\n");
+      finalText = joined;
+      if (!finalText) {
+        finalText = selfieVibe
+          ? "*holds up the camera* one sec…"
+          : "*tries to take a selfie but fumbles the camera* one sec — try again?";
+      }
+    }
+    // Tail-defensive: if the model produced no text at all (shouldn't
+    // normally happen), drop in the same fallback /chat uses so the row
+    // isn't empty.
+    if (!finalText) {
+      finalText =
+        "*goes quiet for a moment, then smiles softly* sorry — i lost my words there. say that again?";
+    }
+  }
+
+  // ---- Persist the final state of the Ashley row + emit terminal event.
+  try {
+    if (finishedNaturally) {
+      await db
+        .update(messagesTable)
+        .set({
+          content: finalText,
+          status: "complete",
+          selfieVibe,
+        })
+        .where(eq(messagesTable.id, streamId));
+      writeEvent("done", { content: finalText, selfieVibe });
+    } else if (userAborted) {
+      await db
+        .update(messagesTable)
+        .set({
+          content: accumulated,
+          status: "interrupted",
+        })
+        .where(eq(messagesTable.id, streamId));
+      // Only send `interrupted` if the client is still listening. If they
+      // disconnected (network drop, app backgrounded), there's no socket
+      // to write to — the DB row is the source of truth they'll re-hydrate
+      // from.
+      if (!clientDisconnected) {
+        writeEvent("interrupted", { partialContent: accumulated });
+      }
+    } else {
+      // Genuine upstream error.
+      await db
+        .update(messagesTable)
+        .set({
+          content: accumulated,
+          status: "interrupted",
+        })
+        .where(eq(messagesTable.id, streamId));
+      writeEvent("error", {
+        error: "Couldn't reach the language model — try again or continue.",
+      });
+    }
+  } catch (err) {
+    req.log.error(
+      { err, streamId, finishedNaturally, userAborted },
+      "Failed to finalise streaming Ashley row",
+    );
+    if (!res.writableEnded) {
+      writeEvent("error", { error: "Couldn't save Ashley's reply." });
+    }
+  } finally {
+    inFlightStreams.delete(streamId);
+    if (!res.writableEnded) res.end();
+  }
+
+  // Fire-and-forget memory distillation. Skip on interruption / error
+  // because the partial isn't a useful signal for memories. Skip on
+  // continue because we don't have a fresh user message paired with it.
+  if (
+    finishedNaturally &&
+    !isContinue &&
+    userRow &&
+    finalText &&
+    upstreamErr === null
+  ) {
+    void distillMemories(deviceId, userRow.content, finalText);
+    void maybeRollUpOlderMessages(deviceId);
+  }
+});
+
+router.post(
+  "/chat/stream/:streamId/abort",
+  async (req, res): Promise<void> => {
+    const deviceId = getDeviceId(req);
+    const streamId = String(req.params["streamId"] ?? "").trim();
+    if (!streamId) {
+      res.status(400).json({ error: "streamId is required" });
+      return;
+    }
+    const ac = inFlightStreams.get(streamId);
+    if (ac) {
+      // Defensive: confirm the streamId actually belongs to this device
+      // before letting an abort happen, so a stolen X-API-Key from one
+      // device can't kill another device's in-flight reply.
+      try {
+        const found = await db
+          .select({ id: messagesTable.id })
+          .from(messagesTable)
+          .where(
+            and(
+              eq(messagesTable.id, streamId),
+              eq(messagesTable.deviceId, deviceId),
+            ),
+          )
+          .limit(1);
+        if (found.length === 0) {
+          // Treat unknown-to-this-device as a no-op success (idempotent +
+          // doesn't leak existence of other devices' streams).
+          res.json({ aborted: false });
+          return;
+        }
+      } catch (err) {
+        req.log.error({ err, streamId }, "Abort device check failed");
+        res.status(500).json({ error: "Could not abort the stream" });
+        return;
+      }
+      ac.abort();
+      res.json({ aborted: true });
+      return;
+    }
+    // No live stream — already finished, never existed, or finished between
+    // the client deciding to abort and the request landing. Idempotent OK.
+    res.json({ aborted: false });
+  },
+);
+
 export default router;
 
 // ---------------------------------------------------------------------------

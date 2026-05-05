@@ -138,6 +138,18 @@ export type Message = {
   imageRemembered?: boolean | null;
   /** Quoted earlier message attached to a swipe-to-reply. */
   replyTo?: ReplyToRef | null;
+  /**
+   * Streaming-lifecycle marker for Ashley bubbles (Presence Loop, stage 1).
+   *   "complete"    — finished naturally; `content` is the final canonical text.
+   *   "streaming"   — server is still producing tokens; the bubble shows a
+   *                   pulsing cursor and the send button is in stop mode.
+   *   "interrupted" — generation was cut short (user tapped stop, network
+   *                   blip, or server boot recovery). `content` is the
+   *                   partial text we'd accumulated. The UI surfaces a
+   *                   Continue (primary) + Retry button row.
+   * User bubbles always carry "complete" (or omit the field, treated the same).
+   */
+  status?: "complete" | "streaming" | "interrupted";
 };
 
 export type ReplyToRef = {

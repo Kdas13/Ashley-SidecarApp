@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   FlatList,
   Image,
   KeyboardAvoidingView,
@@ -24,7 +25,10 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import {
   useMessages,
-  useSendMessage,
+  useStreamMessage,
+  useContinueMessage,
+  useStopStream,
+  useActiveStream,
   useSendImage,
   useMarkImageRemembered,
   useClearMessages,
@@ -32,6 +36,7 @@ import {
   useRetryUnansweredReply,
   useSelfieInFlight,
 } from "@/lib/useMessages";
+import { usePresenceLoop, type PresenceSignal } from "@/lib/usePresenceLoop";
 import { useProfile, useUpdateProfile } from "@/lib/useProfile";
 import { useVoiceRecorder, VOICE_MAX_DURATION_MS } from "@/lib/voiceInput";
 import { useTranscribeAudioStream } from "@/lib/useVoice";
@@ -124,7 +129,11 @@ export default function ChatScreen(): React.JSX.Element {
   const listRef = useRef<FlatList<Message>>(null);
 
   const messagesQuery = useMessages();
-  const sendMutation = useSendMessage();
+  const streamMutation = useStreamMessage();
+  const continueMutation = useContinueMessage();
+  const stopStreamMutation = useStopStream();
+  const activeStream = useActiveStream();
+  const presence = usePresenceLoop();
   const sendImageMutation = useSendImage();
   const markImageRemembered = useMarkImageRemembered();
   const clearMutation = useClearMessages();
@@ -183,7 +192,7 @@ export default function ChatScreen(): React.JSX.Element {
   }, [messages]);
 
   const sendError =
-    sendMutation.error instanceof Error ? sendMutation.error.message : null;
+    streamMutation.error instanceof Error ? streamMutation.error.message : null;
 
   // Auto-retry: if the latest message is from the user (Ashley never
   // replied — common when the api-server gets recycled mid-request) keep
@@ -201,12 +210,12 @@ export default function ChatScreen(): React.JSX.Element {
   const hasUnansweredTail = lastMessage?.role === "user" && !lastMessage?.imageUrl;
   const retryMutateRef = useRef(retryUnanswered.mutateAsync);
   retryMutateRef.current = retryUnanswered.mutateAsync;
-  const sendResetRef = useRef(sendMutation.reset);
-  sendResetRef.current = sendMutation.reset;
+  const sendResetRef = useRef(streamMutation.reset);
+  sendResetRef.current = streamMutation.reset;
   const inFlightRetryRef = useRef(false);
   useEffect(() => {
     if (!hasUnansweredTail) return;
-    if (sendMutation.isPending) return;
+    if (streamMutation.isPending) return;
     let cancelled = false;
     const tryOnce = () => {
       if (cancelled || inFlightRetryRef.current) return;
@@ -234,7 +243,7 @@ export default function ChatScreen(): React.JSX.Element {
       clearTimeout(initial);
       clearInterval(interval);
     };
-  }, [hasUnansweredTail, sendMutation.isPending]);
+  }, [hasUnansweredTail, streamMutation.isPending]);
 
   // Triggered when SwipeToReply commits inside a bubble. Captures a quote
   // preview, focuses the input so the keyboard stays up, and replaces any
@@ -370,30 +379,239 @@ export default function ChatScreen(): React.JSX.Element {
     void handleMicPressOut();
   }, [voice.state, voice.elapsedMs, handleMicPressOut]);
 
+  // Stable references for the presence-loop dispatch + watchdog hooks
+  // so we don't churn the streamHooks memo every keystroke.
+  const presenceDispatch = presence.dispatch;
+  const presenceNoteDelta = presence.noteDelta;
+  const streamHooks = useMemo(
+    () => ({
+      onFirstDelta: () => presenceDispatch({ type: "STREAM_FIRST_TOKEN" }),
+      onDeltaArrived: () => presenceNoteDelta(),
+    }),
+    [presenceDispatch, presenceNoteDelta],
+  );
+
+  // Outcome handler shared by send/continue/retry paths — translates
+  // the mutation result into the right presence-loop event and kicks
+  // off TTS on a clean done.
+  const handleStreamOutcome = useCallback(
+    (result: {
+      ashley: Message | null;
+      outcome: { kind: "done" | "interrupted" | "error" };
+    }) => {
+      if (result.outcome.kind === "interrupted") {
+        presenceDispatch({ type: "STREAM_INTERRUPTED_RECEIVED" });
+        return;
+      }
+      if (result.outcome.kind === "error") {
+        presenceDispatch({ type: "STREAM_INTERRUPTED_RECEIVED" });
+        return;
+      }
+      presenceDispatch({
+        type: "STREAM_END",
+        replyLength: result.ashley?.content?.length ?? 0,
+      });
+      if (!voiceReplyEnabledRef.current) return;
+      const reply = result.ashley?.content?.trim() ?? "";
+      if (reply.length === 0) return;
+      // Cap at the server's 1500-char TTS ceiling so we don't get a 400.
+      tts.speak(reply.slice(0, 1500));
+    },
+    [presenceDispatch, tts],
+  );
+
   const send = useCallback(() => {
     const content = draft.trim();
-    if (!content || sendMutation.isPending) return;
+    if (!content || streamMutation.isPending) return;
     const replyToSnapshot = replyingTo;
     setDraft("");
     setReplyingTo(null);
-    sendMutation.reset();
+    streamMutation.reset();
     // Sending a fresh message supersedes any reply Ashley is currently
     // speaking — silence her so the new turn isn't talked over.
     tts.stop();
-    sendMutation
-      .mutateAsync({ content, replyTo: replyToSnapshot })
-      .then((result) => {
-        if (!voiceReplyEnabledRef.current) return;
-        const reply = result.ashley?.content?.trim() ?? "";
-        if (reply.length === 0) return;
-        // Cap at the server's 1500-char ceiling so we don't get a 400.
-        tts.speak(reply.slice(0, 1500));
-      })
+    presenceDispatch({ type: "USER_SEND" });
+    streamMutation
+      .mutateAsync({ content, replyTo: replyToSnapshot, hooks: streamHooks })
+      .then(handleStreamOutcome)
       .catch(() => {
-        // Send errors surface via sendMutation.error — TTS doesn't need
-        // to speak anything for a failed send.
+        // Stream errors surface via streamMutation.error and the
+        // presence loop pivots to interrupted so the recovery actions
+        // (Continue / Retry) can be offered on whatever partial we
+        // captured.
+        presenceDispatch({ type: "STREAM_INTERRUPTED_RECEIVED" });
       });
-  }, [draft, sendMutation, replyingTo, tts]);
+  }, [
+    draft,
+    streamMutation,
+    replyingTo,
+    tts,
+    presenceDispatch,
+    streamHooks,
+    handleStreamOutcome,
+  ]);
+
+  // Stop the in-flight stream. The server-side abort is fire-and-forget
+  // (idempotent on the server), and the local AbortController on the
+  // SSE fetch is what actually flips us into the `interrupted` event
+  // path on the client. We dispatch USER_INTERRUPT immediately so the
+  // send/stop button swaps back the moment the user taps it, even
+  // before the SSE close round-trips.
+  const handleStop = useCallback(() => {
+    if (!activeStream) return;
+    presenceDispatch({ type: "USER_INTERRUPT" });
+    void stopStreamMutation
+      .mutateAsync(activeStream.streamId)
+      .catch(() => {
+        /* idempotent — fine if it 404s */
+      });
+  }, [activeStream, presenceDispatch, stopStreamMutation]);
+
+  // Continue from an interrupted reply — the server prepends the
+  // partial as an assistant turn and nudges Claude to pick up where
+  // she left off without restarting the sentence.
+  const handleContinue = useCallback(
+    (interruptedMessageId: string) => {
+      if (continueMutation.isPending || streamMutation.isPending) return;
+      presenceDispatch({ type: "USER_SEND" });
+      continueMutation
+        .mutateAsync({
+          continueFromMessageId: interruptedMessageId,
+          hooks: streamHooks,
+        })
+        .then(handleStreamOutcome)
+        .catch(() => {
+          presenceDispatch({ type: "STREAM_INTERRUPTED_RECEIVED" });
+        });
+    },
+    [
+      continueMutation,
+      streamMutation.isPending,
+      presenceDispatch,
+      streamHooks,
+      handleStreamOutcome,
+    ],
+  );
+
+  // Retry — the user wants Ashley to start the reply over from
+  // scratch. Look up the original user prompt that produced the
+  // interrupted bubble and re-fire it. The interrupted bubble stays
+  // visible as the "before" half; this is intentional so the user can
+  // still tap Continue if they preferred that branch.
+  const handleRetryFromInterrupted = useCallback(
+    (interruptedMessageId: string) => {
+      if (continueMutation.isPending || streamMutation.isPending) return;
+      const idx = messages.findIndex((m) => m.id === interruptedMessageId);
+      if (idx < 1) return;
+      // Walk back to the most recent user message (skipping any prior
+      // ashley bubbles, e.g. a chain of interrupted attempts).
+      let candidate: Message | null = null;
+      for (let i = idx - 1; i >= 0; i -= 1) {
+        const m = messages[i];
+        if (m && m.role === "user") {
+          candidate = m;
+          break;
+        }
+      }
+      if (!candidate) return;
+      presenceDispatch({ type: "USER_SEND" });
+      streamMutation.reset();
+      streamMutation
+        .mutateAsync({
+          content: candidate.content,
+          replyTo: candidate.replyTo ?? null,
+          hooks: streamHooks,
+        })
+        .then(handleStreamOutcome)
+        .catch(() => {
+          presenceDispatch({ type: "STREAM_INTERRUPTED_RECEIVED" });
+        });
+    },
+    [
+      messages,
+      streamMutation,
+      continueMutation.isPending,
+      presenceDispatch,
+      streamHooks,
+      handleStreamOutcome,
+    ],
+  );
+
+  // Auto-retry once on connection-dip. The watchdog fires CONNECTION_DIP
+  // when the SSE goes silent for ~7s while we're still in `speaking`.
+  // We try the stop+continue dance exactly one time per stream — if the
+  // network is genuinely down the user will see the "connection dipped…"
+  // signal stick around and can choose to manually Continue / Retry.
+  const autoRetriedStreamRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeStream) {
+      autoRetriedStreamRef.current = null;
+      return;
+    }
+    const dipped = presence.signals.some((s) => s.type === "connection_dip");
+    if (!dipped) return;
+    if (autoRetriedStreamRef.current === activeStream.streamId) return;
+    autoRetriedStreamRef.current = activeStream.streamId;
+    const interruptedId = activeStream.streamId;
+    void (async () => {
+      try {
+        await stopStreamMutation.mutateAsync(interruptedId);
+      } catch {
+        /* idempotent */
+      }
+      // Small breath so the server can flip the row to interrupted
+      // before we ask it to look the row up for the continuation.
+      await new Promise<void>((r) => setTimeout(r, 250));
+      try {
+        const result = await continueMutation.mutateAsync({
+          continueFromMessageId: interruptedId,
+          hooks: streamHooks,
+        });
+        handleStreamOutcome(result);
+      } catch {
+        presenceDispatch({ type: "STREAM_INTERRUPTED_RECEIVED" });
+      }
+    })();
+  }, [
+    presence.signals,
+    activeStream,
+    stopStreamMutation,
+    continueMutation,
+    streamHooks,
+    handleStreamOutcome,
+    presenceDispatch,
+  ]);
+
+  // Presence signals are ephemeral — they fade out after ~4s. We keep
+  // the reducer pure by handling the dismiss timer here rather than
+  // baking it into `presenceReducer`.
+  useEffect(() => {
+    if (presence.signals.length === 0) return;
+    const timers = presence.signals.map((sig) =>
+      setTimeout(() => {
+        presenceDispatch({ type: "DISMISS_SIGNAL", key: sig.key });
+      }, 4000),
+    );
+    return () => {
+      for (const t of timers) clearTimeout(t);
+    };
+  }, [presence.signals, presenceDispatch]);
+
+  // Wrap setDraft so the input change drives the listening/idle
+  // transitions in the presence loop. We do *not* mutate state when
+  // we're already mid-stream — typing the next message while she
+  // replies should not yank her out of speaking.
+  const handleDraftChange = useCallback(
+    (next: string) => {
+      setDraft(next);
+      if (next.trim().length === 0) {
+        presenceDispatch({ type: "USER_CLEAR_DRAFT" });
+      } else {
+        presenceDispatch({ type: "USER_TYPING" });
+      }
+    },
+    [presenceDispatch],
+  );
 
   const confirmClear = useCallback(() => {
     if (clearMutation.isPending) return;
@@ -541,7 +759,19 @@ export default function ChatScreen(): React.JSX.Element {
         prev.imageCategory != null;
       return (
         <>
-          <MessageBubble message={item} onSwipeReply={handleStartReply} />
+          <MessageBubble
+            message={item}
+            onSwipeReply={handleStartReply}
+            onContinue={handleContinue}
+            onRetry={handleRetryFromInterrupted}
+            continuePending={
+              continueMutation.isPending &&
+              activeStream?.mode === "continue"
+            }
+            retryPending={
+              streamMutation.isPending && activeStream?.mode === "new"
+            }
+          />
           {showRememberCard && prev ? (
             <RememberCard
               userMessageId={prev.id}
@@ -673,32 +903,46 @@ export default function ChatScreen(): React.JSX.Element {
               </View>
             }
             // With `inverted`, ListHeaderComponent renders at the
-            // visually-BOTTOM (immediately below data[0]). That's exactly
-            // where we want "Ashley is typing…" to appear. Counter-flip
-            // wrapper so the bubble itself is right-side-up.
+            // visually-BOTTOM (immediately below data[0]). That's where
+            // we surface presence signals ("I'm here…", "take your
+            // time") so they sit right under the latest message.
+            //
+            // The legacy "Ashley is typing…" indicator is only used
+            // for the non-streaming retry-unanswered fallback path —
+            // the new streaming path inserts an Ashley bubble with a
+            // pulsing cursor immediately on send, so a separate
+            // typing indicator would be redundant on the happy path.
             ListHeaderComponent={
-              sendMutation.isPending ||
-              retryUnanswered.isPending ||
-              hasUnansweredTail ? (
-                <View style={styles.invertedFix}>
+              <View style={styles.invertedFix}>
+                <PresenceSignalsList signals={presence.signals} />
+                {(retryUnanswered.isPending ||
+                  (hasUnansweredTail && !streamMutation.isPending)) ? (
                   <View style={[styles.row, styles.rowLeft]}>
-                    <View style={[styles.bubble, styles.bubbleAshley, styles.typingBubble]}>
+                    <View
+                      style={[
+                        styles.bubble,
+                        styles.bubbleAshley,
+                        styles.typingBubble,
+                      ]}
+                    >
                       <ActivityIndicator
                         size="small"
                         color={colors.light.mutedForeground}
                       />
-                      <Text style={styles.typingText}>Ashley is typing…</Text>
+                      <Text style={styles.typingText}>
+                        Ashley is typing…
+                      </Text>
                     </View>
                   </View>
-                </View>
-              ) : null
+                ) : null}
+              </View>
             }
           />
         )}
 
         {sendError && !hasUnansweredTail ? (
           <Pressable
-            onPress={() => sendMutation.reset()}
+            onPress={() => streamMutation.reset()}
             style={styles.errorBanner}
             accessibilityLabel="Dismiss error"
           >
@@ -742,10 +986,10 @@ export default function ChatScreen(): React.JSX.Element {
         <View style={[styles.inputBar, { paddingBottom: insets.bottom + 8 }]}>
           <Pressable
             onPress={openImagePicker}
-            disabled={sendMutation.isPending || sendImageMutation.isPending}
+            disabled={streamMutation.isPending || sendImageMutation.isPending}
             style={({ pressed }) => [
               styles.attachBtn,
-              (sendMutation.isPending || sendImageMutation.isPending) && {
+              (streamMutation.isPending || sendImageMutation.isPending) && {
                 opacity: 0.4,
               },
               pressed && { transform: [{ scale: 0.95 }] },
@@ -762,7 +1006,7 @@ export default function ChatScreen(): React.JSX.Element {
           <TextInput
             ref={inputRef}
             value={draft}
-            onChangeText={setDraft}
+            onChangeText={handleDraftChange}
             placeholder={
               replyingTo ? "reply to her..." : "message her..."
             }
@@ -770,7 +1014,10 @@ export default function ChatScreen(): React.JSX.Element {
             style={styles.input}
             multiline
             maxLength={4000}
-            editable={!sendMutation.isPending && !sendImageMutation.isPending}
+            // Keep the input editable during streaming so the user
+            // can prep their next message while Ashley's mid-reply.
+            // (Send is still gated by streamMutation.isPending below.)
+            editable={!sendImageMutation.isPending}
             onSubmitEditing={send}
             blurOnSubmit={false}
           />
@@ -778,14 +1025,14 @@ export default function ChatScreen(): React.JSX.Element {
             onPressIn={handleMicPressIn}
             onPressOut={handleMicPressOut}
             disabled={
-              sendMutation.isPending ||
+              streamMutation.isPending ||
               sendImageMutation.isPending ||
               transcribeMutation.isPending
             }
             style={({ pressed }) => [
               styles.micBtn,
               voice.state === "recording" && styles.micBtnRecording,
-              (sendMutation.isPending ||
+              (streamMutation.isPending ||
                 sendImageMutation.isPending ||
                 transcribeMutation.isPending) && { opacity: 0.4 },
               pressed && { transform: [{ scale: 0.95 }] },
@@ -814,18 +1061,42 @@ export default function ChatScreen(): React.JSX.Element {
               />
             )}
           </Pressable>
-          <Pressable
-            onPress={send}
-            disabled={!draft.trim() || sendMutation.isPending}
-            style={({ pressed }) => [
-              styles.sendBtn,
-              (!draft.trim() || sendMutation.isPending) && { opacity: 0.4 },
-              pressed && { transform: [{ scale: 0.95 }] },
-            ]}
-            accessibilityLabel="Send message"
-          >
-            <Feather name="send" size={18} color={colors.light.primaryForeground} />
-          </Pressable>
+          {activeStream != null ||
+          presence.state === "thinking" ||
+          presence.state === "speaking" ? (
+            // In-place stop button — same slot as send so the tap target
+            // never moves under the user's thumb when Ashley starts
+            // streaming. Tapping aborts the local SSE controller and
+            // fires the server abort endpoint.
+            <Pressable
+              onPress={handleStop}
+              style={({ pressed }) => [
+                styles.sendBtn,
+                styles.stopBtn,
+                pressed && { transform: [{ scale: 0.95 }] },
+              ]}
+              accessibilityLabel="Stop Ashley"
+            >
+              <Feather
+                name="square"
+                size={16}
+                color={colors.light.primaryForeground}
+              />
+            </Pressable>
+          ) : (
+            <Pressable
+              onPress={send}
+              disabled={!draft.trim() || streamMutation.isPending}
+              style={({ pressed }) => [
+                styles.sendBtn,
+                (!draft.trim() || streamMutation.isPending) && { opacity: 0.4 },
+                pressed && { transform: [{ scale: 0.95 }] },
+              ]}
+              accessibilityLabel="Send message"
+            >
+              <Feather name="send" size={18} color={colors.light.primaryForeground} />
+            </Pressable>
+          )}
         </View>
         {voice.state === "recording" ? (
           <View style={styles.voiceStatus} pointerEvents="none">
@@ -1181,9 +1452,17 @@ function RememberCard({
 function MessageBubble({
   message,
   onSwipeReply,
+  onContinue,
+  onRetry,
+  continuePending,
+  retryPending,
 }: {
   message: Message;
   onSwipeReply: (m: Message) => void;
+  onContinue?: (interruptedMessageId: string) => void;
+  onRetry?: (interruptedMessageId: string) => void;
+  continuePending?: boolean;
+  retryPending?: boolean;
 }): React.JSX.Element {
   const isUser = message.role === "user";
   const hasImage = !!message.imageUrl;
@@ -1419,7 +1698,83 @@ function MessageBubble({
             ]}
           >
             {message.content}
+            {message.status === "streaming" && message.role === "ashley" ? (
+              <StreamingCursor color={colors.light.bubbleAshleyText} />
+            ) : null}
           </Text>
+        ) : message.status === "streaming" && message.role === "ashley" ? (
+          // Empty Ashley bubble that just opened — render the cursor
+          // alone so the user sees something the instant the optimistic
+          // row lands, before the first delta arrives.
+          <Text
+            style={[
+              styles.bubbleText,
+              styles.bubbleAshleyText,
+            ]}
+          >
+            <StreamingCursor color={colors.light.bubbleAshleyText} />
+          </Text>
+        ) : null}
+        {message.status === "interrupted" && message.role === "ashley" ? (
+          // Recovery actions sit beneath the partial text. Continue is
+          // the primary action — same colour as the send button — and
+          // Retry is the secondary, ghost-buttoned action.
+          <View style={styles.interruptedActions}>
+            <Pressable
+              onPress={() => onContinue?.(message.id)}
+              disabled={!!continuePending || !!retryPending}
+              style={({ pressed }) => [
+                styles.continueBtn,
+                (continuePending || retryPending) && { opacity: 0.5 },
+                pressed && { transform: [{ scale: 0.97 }] },
+              ]}
+              accessibilityLabel="Continue from where she paused"
+              hitSlop={6}
+            >
+              {continuePending ? (
+                <ActivityIndicator
+                  size="small"
+                  color={colors.light.primaryForeground}
+                />
+              ) : (
+                <>
+                  <Feather
+                    name="play"
+                    size={11}
+                    color={colors.light.primaryForeground}
+                  />
+                  <Text style={styles.continueBtnText}>Continue</Text>
+                </>
+              )}
+            </Pressable>
+            <Pressable
+              onPress={() => onRetry?.(message.id)}
+              disabled={!!continuePending || !!retryPending}
+              style={({ pressed }) => [
+                styles.retryBtn,
+                (continuePending || retryPending) && { opacity: 0.5 },
+                pressed && { transform: [{ scale: 0.97 }] },
+              ]}
+              accessibilityLabel="Retry from the start"
+              hitSlop={6}
+            >
+              {retryPending ? (
+                <ActivityIndicator
+                  size="small"
+                  color={colors.light.mutedForeground}
+                />
+              ) : (
+                <>
+                  <Feather
+                    name="refresh-cw"
+                    size={11}
+                    color={colors.light.mutedForeground}
+                  />
+                  <Text style={styles.retryBtnText}>Retry</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
         ) : null}
       </View>
     </View>
@@ -1429,6 +1784,79 @@ function MessageBubble({
     <SwipeToReply direction={swipeDirection} onTrigger={handleSwipe}>
       {bubbleContent}
     </SwipeToReply>
+  );
+}
+
+/**
+ * Pulsing block-cursor rendered at the end of an in-flight Ashley
+ * bubble. Lives at module scope so its useEffect runs once per mount
+ * (re-renders of the parent bubble don't restart the loop).
+ */
+function StreamingCursor({ color }: { color: string }): React.JSX.Element {
+  const opacity = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, {
+          toValue: 0.25,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+        Animated.timing(opacity, {
+          toValue: 1,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [opacity]);
+  return (
+    <Animated.Text style={[styles.cursor, { color, opacity }]}>
+      {"▍"}
+    </Animated.Text>
+  );
+}
+
+/**
+ * Renders the adaptive presence signals — "I'm here…", "take your
+ * time", "connection dipped…" — as small italic rows under the latest
+ * message. Each row fades in on mount and is removed by the dismiss
+ * timer in `usePresenceLoop`.
+ */
+function PresenceSignalsList({
+  signals,
+}: {
+  signals: PresenceSignal[];
+}): React.JSX.Element | null {
+  if (signals.length === 0) return null;
+  return (
+    <View style={styles.signalsContainer}>
+      {signals.map((sig) => (
+        <PresenceSignalRow key={sig.key} signal={sig} />
+      ))}
+    </View>
+  );
+}
+
+function PresenceSignalRow({
+  signal,
+}: {
+  signal: PresenceSignal;
+}): React.JSX.Element {
+  const opacity = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(opacity, {
+      toValue: 1,
+      duration: 250,
+      useNativeDriver: true,
+    }).start();
+  }, [opacity]);
+  return (
+    <Animated.View style={[styles.signalRow, { opacity }]}>
+      <Text style={styles.signalText}>{signal.message}</Text>
+    </Animated.View>
   );
 }
 
@@ -1808,6 +2236,73 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 2,
+  },
+  // The stop variant inherits sendBtn's footprint so the in-place
+  // swap doesn't cause layout shift. Just a hue change to signal the
+  // destructive intent.
+  stopBtn: {
+    backgroundColor: colors.light.destructive,
+  },
+  cursor: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 15,
+    // Slight indent so the bar isn't kissed up against the last
+    // character in the same line.
+    marginLeft: 1,
+  },
+  signalsContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 4,
+    gap: 4,
+    alignItems: "flex-start",
+  },
+  signalRow: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: colors.light.muted,
+  },
+  signalText: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 12,
+    fontStyle: "italic",
+    color: colors.light.mutedForeground,
+  },
+  interruptedActions: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 8,
+    alignItems: "center",
+  },
+  continueBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: colors.light.primary,
+  },
+  continueBtnText: {
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
+    color: colors.light.primaryForeground,
+  },
+  retryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: "transparent",
+    borderWidth: 1,
+    borderColor: colors.light.border,
+  },
+  retryBtnText: {
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
+    color: colors.light.mutedForeground,
   },
   attachBtn: {
     width: 40,

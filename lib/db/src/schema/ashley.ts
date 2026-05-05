@@ -97,6 +97,19 @@ export const messagesTable = pgTable(
     deviceId: text("device_id").notNull(),
     role: text("role").notNull(), // 'user' | 'ashley'
     content: text("content").notNull(),
+    // Lifecycle marker for Ashley messages on the streaming path:
+    //   "complete"    — finished naturally (final content is the canonical text)
+    //   "streaming"   — server is still generating; clients should treat
+    //                   `content` as a partial that may grow until the SSE
+    //                   stream ends. Should never be observed by a client
+    //                   that didn't open the stream — boot recovery flips
+    //                   any orphaned "streaming" rows back to "interrupted".
+    //   "interrupted" — generation was cut short (user tapped stop, or
+    //                   client disconnected). `content` is the partial text
+    //                   we'd already accumulated. Eligible for "Continue".
+    // User messages always carry "complete". Default keeps existing rows
+    // valid without a backfill.
+    status: text("status").notNull().default("complete"),
     imageUrl: text("image_url"),
     // When Ashley emits a [selfie: ...] tag we strip it from `content` and
     // remember the visual prompt here. The selfie endpoint patches

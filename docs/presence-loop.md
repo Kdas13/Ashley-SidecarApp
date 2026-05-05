@@ -232,18 +232,31 @@ Architecture only, to make sure Stage 1 doesn't paint us into a corner.
    state and never hit `messagesTable`. Stage 3's proactive check-ins WILL
    be real messages — different concept.
 
-## Open questions (need Kane's call before we build)
+## Decisions (locked in for Stage 1)
 
-1. **Stop button affordance**: tap once on the send button area, or a separate
-   icon that appears next to the streaming bubble? (Recommend: in-place swap
-   of send → stop, like ChatGPT mobile.)
-2. **Should an interrupted reply be retryable?** ChatGPT shows a "regenerate"
-   on interrupted messages. Do we want that here, or do interrupted replies
-   just sit as final partial content?
-3. **Presence signal frequency cap**: max one per minute? Per session? Don't
-   want them to feel naggy.
-4. **Streaming on cellular**: SSE over flaky mobile networks can stall. Do we
-   want a per-stream watchdog (no delta in 8s → mark stalled, offer retry)?
+1. **Stop button**: in-place swap of send icon → stop icon (ChatGPT-style).
+2. **Interrupted replies**: keep partial content, mark `status="interrupted"`,
+   show a primary **Continue** action and a small secondary **Retry**. Default
+   is Continue, not Regenerate.
+   - **Continue protocol**: when the user taps Continue, the server takes the
+     interrupted Ashley message's partial text, prepends it as a final
+     `assistant` turn in the messages array, and adds a system-style nudge:
+     *"Continue naturally from where you were, without repeating yourself or
+     restarting the sentence."* The continuation streams as a new Ashley
+     message; the original interrupted bubble stays in place above it. This
+     preserves conversational flow and avoids restart artifacts.
+3. **Presence signals**: adaptive, not periodic.
+   - `thinking` for ~3s with no first token → "I'm here…" (one-shot).
+   - `waiting` for ~10–12s after a long Ashley reply → "take your time"
+     (one-shot).
+   - No repeats unless the state actually transitions away and back.
+4. **Stream watchdog**: per-stream, ~6–8s without a delta.
+   - Mark stream as `unstable` (NOT a hard error).
+   - Render a subtle inline "connection dipped…" status under the bubble.
+   - Auto-retry once silently — re-open the SSE with the same `streamId`
+     (server resumes by sending what's already accumulated, then continues).
+   - If the retry also stalls, fall back to surfacing Continue / Retry
+     actions on the (now interrupted) bubble — same affordance as decision 2.
 
 ## Risks
 

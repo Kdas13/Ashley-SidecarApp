@@ -182,6 +182,8 @@ type WireMessage = {
   deviceId: string;
   role: "user" | "ashley";
   content: string;
+  /** Streaming lifecycle marker — "complete" | "streaming" | "interrupted". */
+  status?: string | null;
   imageUrl: string | null;
   selfieVibe: string | null;
   imageMimeType: string | null;
@@ -247,11 +249,19 @@ function messageFromWire(m: WireMessage): Message {
     m.replyToId && m.replyToRole && m.replyToPreview
       ? { id: m.replyToId, role: m.replyToRole, preview: m.replyToPreview }
       : null;
+  // Defensive: server only emits the three known statuses, but if a future
+  // server adds another value we don't yet understand, treat it as
+  // "complete" so the UI doesn't get stuck in a streaming state.
+  const status: Message["status"] =
+    m.status === "streaming" || m.status === "interrupted"
+      ? m.status
+      : "complete";
   return {
     id: m.id,
     role: m.role,
     content: m.content,
     createdAt: m.createdAt,
+    status,
     imageUrl: m.imageUrl ?? null,
     selfieVibe: m.selfieVibe ?? null,
     imageMimeType: m.imageMimeType ?? null,
@@ -640,6 +650,285 @@ export async function sendChatMessage(
     userMessage: messageFromWire(data.userMessage),
     ashleyMessage: messageFromWire(data.ashleyMessage),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Presence Loop — Stage 1
+//
+// streamAshleyReply: open an SSE stream against POST /chat/stream and feed
+// `meta`, `delta`, `done`, `interrupted`, `error` events back to the caller
+// via the `callbacks` object. Used by useStreamMessage / useContinueMessage
+// to drive the live-typing chat bubble.
+//
+// The SSE plumbing here mirrors transcribeAudioStream above (expo/fetch +
+// hand-rolled SSE line buffer): the React Native bundled fetch buffers the
+// whole response body and breaks live updates, so we MUST use expo/fetch.
+// See the long comment in transcribeAudioStream for the gory details.
+//
+// Caller can interrupt by calling `abortStream(streamId)` (server-side) and
+// passing an AbortSignal that fires `controller.abort()` on the fetch
+// (client-side). Server-side abort is the source of truth for "the partial
+// has been persisted" — the client-side abort just lets us bail on the
+// fetch immediately so the UI is responsive.
+// ---------------------------------------------------------------------------
+
+export type StreamReplyMeta = {
+  streamId: string;
+  userMessage: Message | null;
+  ashleyMessage: Message;
+  mode: "new" | "continue";
+  continueFromMessageId: string | null;
+};
+
+export type StreamReplyDoneEvent = {
+  content: string;
+  selfieVibe: string | null;
+};
+
+export type StreamReplyCallbacks = {
+  onMeta?: (meta: StreamReplyMeta) => void;
+  onDelta?: (text: string) => void;
+  onDone?: (final: StreamReplyDoneEvent) => void;
+  onInterrupted?: (data: { partialContent: string }) => void;
+  onError?: (error: Error) => void;
+};
+
+export type StreamReplyArgs = {
+  newTurn?: ChatRequest;
+  continueFromMessageId?: string;
+};
+
+export type StreamReplyOutcome =
+  | { kind: "done"; final: StreamReplyDoneEvent; meta: StreamReplyMeta }
+  | { kind: "interrupted"; partialContent: string; meta: StreamReplyMeta }
+  | { kind: "error"; error: Error; meta: StreamReplyMeta | null };
+
+export async function streamAshleyReply(
+  args: StreamReplyArgs,
+  callbacks: StreamReplyCallbacks = {},
+  options: { signal?: AbortSignal } = {},
+): Promise<StreamReplyOutcome> {
+  if (
+    (args.newTurn ? 1 : 0) + (args.continueFromMessageId ? 1 : 0) !==
+    1
+  ) {
+    throw new Error(
+      "streamAshleyReply requires exactly one of `newTurn` or `continueFromMessageId`",
+    );
+  }
+  const base = getApiBase();
+  const url = `${base}/chat/stream`;
+
+  const body: Record<string, unknown> = {
+    clientNow: new Date().toISOString(),
+    clientTimezone:
+      (typeof Intl !== "undefined" &&
+        Intl.DateTimeFormat().resolvedOptions().timeZone) ||
+      "UTC",
+  };
+  if (args.newTurn) {
+    body["userMessage"] = {
+      id: args.newTurn.id,
+      content: args.newTurn.content,
+      ...(args.newTurn.replyTo
+        ? {
+            replyTo: {
+              id: args.newTurn.replyTo.id,
+              role: args.newTurn.replyTo.role,
+              preview: args.newTurn.replyTo.preview,
+            },
+          }
+        : {}),
+    };
+  } else {
+    body["continueFromMessageId"] = args.continueFromMessageId;
+  }
+
+  let res: Awaited<ReturnType<typeof expoFetch>>;
+  try {
+    res = await expoFetch(url, {
+      method: "POST",
+      headers: {
+        ...apiHeaders(),
+        ...authHeaders(),
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify(body),
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+  } catch (err) {
+    const error =
+      err instanceof Error ? err : new Error("Network error opening stream");
+    callbacks.onError?.(error);
+    return { kind: "error", error, meta: null };
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    const error = new Error(
+      `POST /chat/stream returned ${res.status}${
+        text ? `: ${text.slice(0, 240)}` : ""
+      }`,
+    );
+    callbacks.onError?.(error);
+    return { kind: "error", error, meta: null };
+  }
+
+  const reader = (res.body as ReadableStream<Uint8Array> | null | undefined)
+    ?.getReader?.();
+  if (!reader) {
+    const error = new Error(
+      "expo/fetch ReadableStream is unavailable on this runtime — cannot stream chat replies.",
+    );
+    callbacks.onError?.(error);
+    return { kind: "error", error, meta: null };
+  }
+
+  let meta: StreamReplyMeta | null = null;
+  let outcome: StreamReplyOutcome | null = null;
+  let buffer = "";
+  const decoder = new TextDecoder("utf-8");
+
+  const handleMessage = (raw: string): void => {
+    let event = "message";
+    const dataLines: string[] = [];
+    const normalized = raw.replace(/\r\n?/g, "\n");
+    for (const line of normalized.split("\n")) {
+      if (line.length === 0 || line.startsWith(":")) continue;
+      if (line.startsWith("event:")) {
+        event = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        const v = line.slice(5);
+        dataLines.push(v.startsWith(" ") ? v.slice(1) : v);
+      }
+    }
+    if (dataLines.length === 0) return;
+    let data: unknown;
+    try {
+      data = JSON.parse(dataLines.join("\n"));
+    } catch {
+      return;
+    }
+    if (typeof data !== "object" || data === null) return;
+    const d = data as Record<string, unknown>;
+
+    if (event === "meta") {
+      const wireUser = (d["userMessage"] ?? null) as WireMessage | null;
+      const wireAshley = d["ashleyMessage"] as WireMessage | undefined;
+      if (!wireAshley) return;
+      meta = {
+        streamId: String(d["streamId"] ?? wireAshley.id),
+        userMessage: wireUser ? messageFromWire(wireUser) : null,
+        ashleyMessage: messageFromWire(wireAshley),
+        mode: d["mode"] === "continue" ? "continue" : "new",
+        continueFromMessageId:
+          typeof d["continueFromMessageId"] === "string"
+            ? (d["continueFromMessageId"] as string)
+            : null,
+      };
+      callbacks.onMeta?.(meta);
+    } else if (event === "delta") {
+      if (typeof d["text"] === "string" && d["text"]) {
+        callbacks.onDelta?.(d["text"] as string);
+      }
+    } else if (event === "done") {
+      const final: StreamReplyDoneEvent = {
+        content: typeof d["content"] === "string" ? (d["content"] as string) : "",
+        selfieVibe:
+          typeof d["selfieVibe"] === "string" ? (d["selfieVibe"] as string) : null,
+      };
+      callbacks.onDone?.(final);
+      if (meta) outcome = { kind: "done", final, meta };
+    } else if (event === "interrupted") {
+      const partialContent =
+        typeof d["partialContent"] === "string" ? (d["partialContent"] as string) : "";
+      callbacks.onInterrupted?.({ partialContent });
+      if (meta) outcome = { kind: "interrupted", partialContent, meta };
+    } else if (event === "error") {
+      const message =
+        typeof d["error"] === "string" && d["error"]
+          ? (d["error"] as string)
+          : "Stream failed";
+      const error = new Error(message);
+      callbacks.onError?.(error);
+      outcome = { kind: "error", error, meta };
+    }
+  };
+
+  const findBoundary = (
+    buf: string,
+  ): { idx: number; len: number } | null => {
+    const nn = buf.indexOf("\n\n");
+    const rnrn = buf.indexOf("\r\n\r\n");
+    if (nn === -1 && rnrn === -1) return null;
+    if (nn === -1) return { idx: rnrn, len: 4 };
+    if (rnrn === -1) return { idx: nn, len: 2 };
+    return rnrn < nn ? { idx: rnrn, len: 4 } : { idx: nn, len: 2 };
+  };
+
+  try {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let boundary = findBoundary(buffer);
+      while (boundary !== null) {
+        const raw = buffer.slice(0, boundary.idx);
+        buffer = buffer.slice(boundary.idx + boundary.len);
+        if (raw.length > 0) handleMessage(raw);
+        boundary = findBoundary(buffer);
+      }
+    }
+    if (buffer.replace(/\s/g, "").length > 0) handleMessage(buffer);
+  } catch (err) {
+    // Caller-driven abort. Don't surface as an error — the server-side
+    // abort handler is the source of truth for the partial; the SSE
+    // socket may have closed before the server got a chance to write
+    // its `interrupted` event. The outer hook will reconcile from the
+    // /state hydration on next tick if needed.
+    const isAbort =
+      (err instanceof Error && err.name === "AbortError") ||
+      options.signal?.aborted === true;
+    if (!isAbort) {
+      const error =
+        err instanceof Error ? err : new Error("SSE read failed");
+      callbacks.onError?.(error);
+      if (!outcome) outcome = { kind: "error", error, meta };
+    } else if (!outcome && meta) {
+      // Treat caller-side abort as an interruption so the UI shows
+      // Continue / Retry. We have no partial text here; the next /state
+      // refresh will fill it in from the DB row the server persisted.
+      outcome = { kind: "interrupted", partialContent: "", meta };
+      callbacks.onInterrupted?.({ partialContent: "" });
+    }
+  }
+
+  if (!outcome) {
+    if (meta) {
+      // Stream ended without a terminal event (server crashed, proxy
+      // closed the socket, etc.). Treat as interruption so the UI can
+      // recover via Continue.
+      outcome = { kind: "interrupted", partialContent: "", meta };
+      callbacks.onInterrupted?.({ partialContent: "" });
+    } else {
+      const error = new Error("Stream ended before any meta event was sent");
+      callbacks.onError?.(error);
+      outcome = { kind: "error", error, meta: null };
+    }
+  }
+  return outcome;
+}
+
+export async function abortStream(streamId: string): Promise<void> {
+  // skipRetry: aborts are best-effort + idempotent. If the stream already
+  // finished naturally between the user tapping stop and this request
+  // landing, the server replies 200 {aborted:false}. We don't want the
+  // 60s retry deadline to leave a stale "stopping…" spinner up.
+  await fetchJSON<{ aborted: boolean }>(
+    `/chat/stream/${encodeURIComponent(streamId)}/abort`,
+    { method: "POST", skipRetry: true },
+  );
 }
 
 export async function clearChatOnServer(): Promise<void> {
