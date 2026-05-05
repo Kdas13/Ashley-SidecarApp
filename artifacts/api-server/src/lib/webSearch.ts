@@ -32,8 +32,18 @@ const MAX_SNIPPET_LEN = 320;
 // Trigger keywords/phrases per Kane's Stage 1 spec. Case-insensitive,
 // word-boundary anchored where it matters so "today" doesn't fire on
 // "todayish" and "what is" doesn't fire on "whatever".
+//
+// Coverage notes:
+//   - Single-word triggers fire on common "fresh info" topics: news,
+//     latest, today, weather, forecast, prices, stocks, scores,
+//     currently, happening.
+//   - Multi-word phrases catch the natural-question shapes: "what is",
+//     "what's" / "whats" (contractions), "current info", "right now".
+//   - We accept some false positives (e.g. "what's for dinner" fires a
+//     useless lookup) — they're cheap and Ashley is instructed to
+//     answer honestly if the results don't fit.
 const TRIGGER_REGEX =
-  /\b(latest|today|news|prices?)\b|\bcurrent\s+info\b|\bwhat\s+is\b/i;
+  /\b(latest|today|news|prices?|weather|forecast|currently|happening|stocks?|scores?)\b|\bcurrent\s+info\b|\bwhat\s+is\b|\bwhat'?s\b|\bright\s+now\b/i;
 
 export function shouldTriggerWebSearch(userMessage: string): boolean {
   return TRIGGER_REGEX.test(userMessage);
