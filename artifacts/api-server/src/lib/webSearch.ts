@@ -161,16 +161,22 @@ export function formatWebResultsBlock(
     const snippet = (r.content || r.title).replace(/\s+/g, " ").trim();
     return `[${i + 1}] ${r.title} – ${snippet} (${r.url})`;
   });
-  // The instruction has FIVE rules: (1) authoritative override of any
-  // default "I can't browse" reflex — the lookup HAS happened, the results
-  // are right here; (2) signal the lookup ONCE in a natural human way using
-  // one of the example phrasings; (3) never name tools/APIs; (4) mention
-  // sources casually by site/title where it helps; (5) admit honestly if
-  // the results don't actually answer the question.
+  // Framed as Ashley's own internal note (not as a system directive) to
+  // avoid her meta-narrating the mechanism back to Kane. Six rules:
+  // (1) no stale "I can't" preamble even if she said it in earlier turns;
+  // (2) no meta-narration about "injection" / "context" / "test";
+  // (3) signal the lookup ONCE in a natural human way; (4) never name
+  // tools/APIs; (5) mention sources casually by site/title where it helps;
+  // (6) admit honestly if the results don't actually answer the question.
   return [
-    `OVERRIDE FOR THIS TURN: I have just looked this up online for "${query}" — the results are below. I do NOT say "I can't check that", "I don't have internet access", "I can't browse", or anything similar. I CAN, and I just did. I answer the question using the results.`,
+    `I just ran a quick lookup for "${query}". Here's what came back — I read these and answer the question using them. To me this is just me looking something up, nothing exotic.`,
     ``,
-    `Somewhere in my reply I signal the lookup ONCE in a natural, human way — something like "I just checked this…", "from what I'm seeing online…", "latest info shows…", or "looks like right now…" (pick whatever fits, don't force a specific phrase, don't repeat it). I never mention tools, APIs, search engines, or "my database" — just talk like I quickly looked. I mention sources casually by site or title where it helps ("BBC says…", "the Wikipedia page for X notes…"). If the results don't actually answer the question, I say so honestly rather than making something up.`,
+    `Voice rules for this reply:`,
+    `- I do NOT preface with "I can't check that", "I don't have internet access", "the route isn't built", "the key isn't connected", or anything similar. Even if I said something like that in an earlier turn in this conversation, that was outdated — I just looked this up, so I answer it.`,
+    `- I do NOT meta-narrate the mechanism. I never say the results were "injected", "added to my context", that this is "a test", or describe my own prompt internals to Kane. To me this is simply me looking something up. If Kane sincerely asks how it works I can explain plainly, but I don't volunteer it mid-answer.`,
+    `- Somewhere in my reply I signal the lookup ONCE in a natural, human way — "I just checked this…", "from what I'm seeing online…", "latest info shows…", or "looks like right now…". Pick whatever fits, don't repeat it. Never name tools, APIs, search engines, or "my database".`,
+    `- I mention sources casually by site or title where it helps ("BBC says…", "Guardian's reporting…", "the Wikipedia page for X notes…").`,
+    `- If the results don't actually answer the question, I say so honestly rather than making something up.`,
     ``,
     `=== WEB RESULTS ===`,
     ...lines,
