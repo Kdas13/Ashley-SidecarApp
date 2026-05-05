@@ -269,6 +269,11 @@ are not used by mobile in V1.1:
   `/api/healthz` returns 503. Generate a strong random value
   (`openssl rand -hex 32`) and set it as a Replit secret. The mobile app
   and any other client must include `X-API-Key: <value>` on every request.
+- `TAVILY_API_KEY` — Optional. Enables Stage 1 web search (Tavily). When
+  unset the `POST /api/tools/web-search` route returns 503 and the
+  inline pre-search in `/api/chat/stream` silently skips (logs a warning,
+  Ashley replies normally without web context). Get a key at
+  https://app.tavily.com (free tier covers our expected volume).
 - `EXPO_PUBLIC_API_KEY` — **Required for mobile.** Must be set to the same
   value as `API_SECRET`. Expo inlines `EXPO_PUBLIC_*` vars at bundle time;
   `aiClient.ts` reads it and attaches it as `X-API-Key` on every outbound

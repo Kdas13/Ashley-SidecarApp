@@ -34,6 +34,7 @@ import {
   userImageExtForMime,
   localSelfieDir,
 } from "../lib/storage";
+import { maybeRunWebLookup } from "../lib/webSearch";
 import {
   buildImagePromptAddendum,
   type ImageAnalysisMode as ImageAnalysisModeT,
@@ -1450,7 +1451,31 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     clientTimezone,
     previousMessageAt,
   );
-  const systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}`;
+  const baseSystemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}`;
+
+  // Web lookup (Stage 1, simplest working version): if the user message
+  // matches the trigger heuristic, run a Tavily search server-side and
+  // prepend the results as a "=== WEB RESULTS ===" block on the system
+  // prompt so Ashley can use them naturally. Continue mode skips this —
+  // there's no new user prompt to classify against. All failures are
+  // silent (logged, never surfaced); web search is enrichment, never a
+  // hard dependency for the chat path.
+  let systemPrompt = baseSystemPrompt;
+  if (!isContinue && userRow) {
+    const lookup = await maybeRunWebLookup(userRow.content);
+    if (lookup) {
+      req.log.info(
+        {
+          deviceId,
+          query: lookup.query.slice(0, 80),
+          resultCount: lookup.results.length,
+          urls: lookup.results.map((r) => r.url),
+        },
+        "web lookup injected into chat/stream prompt",
+      );
+      systemPrompt = `${baseSystemPrompt}\n\n${lookup.block}`;
+    }
+  }
 
   const claudeMessages: Array<{ role: "user" | "assistant"; content: string }> =
     [];
