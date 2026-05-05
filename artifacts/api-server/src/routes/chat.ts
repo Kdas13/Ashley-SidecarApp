@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { z } from "zod";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { and, asc, desc, eq, gt } from "drizzle-orm";
@@ -442,15 +442,23 @@ router.post("/chat", async (req, res): Promise<void> => {
 // Selfie endpoints (kept as poll-based, scoped per device + per message)
 // ---------------------------------------------------------------------------
 
+// Selfie speed/quality tradeoff. Default is "fast" because gpt-image-1 at
+// quality:"low" + 1024x1024 finishes in ~6-10s vs ~25-40s at "high" + tall
+// frame. Mobile clients can opt into "quality" per-request when they want
+// the higher-res framed shot instead.
+type SelfieMode = "fast" | "quality";
+
 const ChatSelfieBodySchema = z.object({
   messageId: z.string().min(8).max(128),
   vibe: z.string().min(1).max(MAX_VIBE_LEN),
+  mode: z.enum(["fast", "quality"]).optional().default("fast"),
 });
 
 type SelfieJob =
   | {
       status: "pending";
       vibe: string;
+      mode: SelfieMode;
       deviceId: string;
       messageId: string;
       createdAt: number;
@@ -458,6 +466,7 @@ type SelfieJob =
   | {
       status: "ready";
       imageUrl: string;
+      mode: SelfieMode;
       deviceId: string;
       messageId: string;
       createdAt: number;
@@ -465,6 +474,7 @@ type SelfieJob =
   | {
       status: "failed";
       error: string;
+      mode: SelfieMode;
       deviceId: string;
       messageId: string;
       createdAt: number;
@@ -505,7 +515,13 @@ function loadSelfieJobs(): void {
         typeof job.deviceId === "string" &&
         typeof job.messageId === "string"
       ) {
-        selfieJobs.set(id, job);
+        // Backwards-compat: jobs persisted before fast/quality modes existed
+        // had no `mode` field. Default them to "fast" so they replay cleanly.
+        const withMode: SelfieJob = {
+          ...job,
+          mode: job.mode === "quality" ? "quality" : "fast",
+        };
+        selfieJobs.set(id, withMode);
       }
     }
   } catch (err) {
@@ -530,9 +546,82 @@ function pruneSelfieJobs(): void {
   if (pruned) persistSelfieJobs();
 }
 
+// ---------------------------------------------------------------------------
+// Selfie prompt cache — sha256(mode + fullPrompt) → previously-generated
+// selfie id. 24h TTL. Lets repeated vibes/scenes return instantly instead of
+// paying another 6-40s round trip to gpt-image-1. Survives server restarts
+// via selfie-cache.json on disk (sibling of selfie-jobs.json).
+// ---------------------------------------------------------------------------
+
+type CachedSelfie = { selfieId: string; createdAt: number };
+
+const SELFIE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const selfieCache = new Map<string, CachedSelfie>();
+
+// In-flight dedup: when two requests arrive with the same cache key before
+// the first one finishes generating, the second awaits the first's promise
+// instead of paying for a duplicate gpt-image-1 call. Cleared in `finally`.
+const selfieInFlight = new Map<string, Promise<string | null>>();
+
+const SELFIE_CACHE_FILE = path.join(
+  path.dirname(localSelfieDir),
+  "selfie-cache.json",
+);
+
+function selfieCacheKey(fullPrompt: string, mode: SelfieMode): string {
+  return createHash("sha256").update(`${mode}\n${fullPrompt}`).digest("hex");
+}
+
+function persistSelfieCache(): void {
+  try {
+    const obj: Record<string, CachedSelfie> = {};
+    for (const [k, v] of selfieCache) obj[k] = v;
+    const tmp = `${SELFIE_CACHE_FILE}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(obj), "utf8");
+    fs.renameSync(tmp, SELFIE_CACHE_FILE);
+  } catch (err) {
+    logger.warn({ err }, "Failed to persist selfie cache to disk");
+  }
+}
+
+function loadSelfieCache(): void {
+  try {
+    if (!fs.existsSync(SELFIE_CACHE_FILE)) return;
+    const raw = fs.readFileSync(SELFIE_CACHE_FILE, "utf8");
+    if (!raw.trim()) return;
+    const parsed = JSON.parse(raw) as Record<string, CachedSelfie>;
+    const cutoff = Date.now() - SELFIE_CACHE_TTL_MS;
+    for (const [k, v] of Object.entries(parsed)) {
+      if (
+        v &&
+        typeof v.selfieId === "string" &&
+        typeof v.createdAt === "number" &&
+        v.createdAt >= cutoff
+      ) {
+        selfieCache.set(k, v);
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, "Failed to load persisted selfie cache");
+  }
+}
+
+function pruneSelfieCache(): void {
+  const cutoff = Date.now() - SELFIE_CACHE_TTL_MS;
+  let pruned = false;
+  for (const [k, v] of selfieCache) {
+    if (v.createdAt < cutoff) {
+      selfieCache.delete(k);
+      pruned = true;
+    }
+  }
+  if (pruned) persistSelfieCache();
+}
+
 async function generateAshleySelfie(
   vibe: string,
   profile: AshleyProfile,
+  mode: SelfieMode,
 ): Promise<string | null> {
   const appearance = (profile.appearance ?? "").trim();
   const ashleyName = (profile.name ?? "Ashley").trim() || "Ashley";
@@ -552,34 +641,75 @@ async function generateAshleySelfie(
     .filter(Boolean)
     .join("\n");
 
-  let b64: string;
-  try {
-    b64 = await generateImageBase64(fullPrompt, "1024x1024");
-  } catch (err) {
-    logger.warn({ err }, "Selfie image generation failed");
-    return null;
+  // Cache check by (mode, fullPrompt). Cross-message reuse — saves 6-40s
+  // when the same vibe + appearance + mode recurs within 24h.
+  pruneSelfieCache();
+  const cacheKey = selfieCacheKey(fullPrompt, mode);
+  const cached = selfieCache.get(cacheKey);
+  if (cached) {
+    logger.info(
+      { mode, cacheKey: cacheKey.slice(0, 12), selfieId: cached.selfieId },
+      "Selfie cache hit — reusing previously generated image",
+    );
+    return `${publicBaseUrl()}/api/selfies/${cached.selfieId}.png`;
   }
 
-  const id = randomUUID();
-  try {
-    const relUrl = await saveSelfie(id, Buffer.from(b64, "base64"));
-    return `${publicBaseUrl()}${relUrl}`;
-  } catch (err) {
-    logger.warn({ err }, "Failed to persist selfie");
-    return null;
+  // In-flight dedup: if another request is already generating this exact
+  // prompt+mode, await its promise instead of paying for a duplicate call.
+  // Common case: user spam-taps retry, or boot recovery re-triggers a job
+  // whose original promise is still mid-flight.
+  const inflight = selfieInFlight.get(cacheKey);
+  if (inflight) {
+    logger.info(
+      { mode, cacheKey: cacheKey.slice(0, 12) },
+      "Selfie in-flight dedup — joining existing generation",
+    );
+    return inflight;
   }
+
+  // Mode → provider params. fast = small + low quality = ~7s, quality = tall
+  // + high quality = ~30s. See generateImageBase64 in lib/openai.ts.
+  const size: "1024x1024" | "1024x1536" =
+    mode === "quality" ? "1024x1536" : "1024x1024";
+  const quality: "low" | "high" = mode === "quality" ? "high" : "low";
+
+  const promise: Promise<string | null> = (async () => {
+    let b64: string;
+    try {
+      b64 = await generateImageBase64(fullPrompt, size, quality);
+    } catch (err) {
+      logger.warn({ err, mode }, "Selfie image generation failed");
+      return null;
+    }
+
+    const id = randomUUID();
+    try {
+      const relUrl = await saveSelfie(id, Buffer.from(b64, "base64"));
+      selfieCache.set(cacheKey, { selfieId: id, createdAt: Date.now() });
+      persistSelfieCache();
+      return `${publicBaseUrl()}${relUrl}`;
+    } catch (err) {
+      logger.warn({ err }, "Failed to persist selfie");
+      return null;
+    }
+  })().finally(() => {
+    selfieInFlight.delete(cacheKey);
+  });
+  selfieInFlight.set(cacheKey, promise);
+  return promise;
 }
 
 function startSelfieGeneration(
   jobId: string,
   vibe: string,
+  mode: SelfieMode,
   deviceId: string,
   messageId: string,
 ): void {
   void (async () => {
     try {
       const profile = await getOrCreateProfileFor(deviceId);
-      const imageUrl = await generateAshleySelfie(vibe, profile);
+      const imageUrl = await generateAshleySelfie(vibe, profile, mode);
       if (imageUrl) {
         // Patch the assistant message row so the next /state hydration
         // reflects the photo even if the client misses the poll.
@@ -602,6 +732,7 @@ function startSelfieGeneration(
         setSelfieJob(jobId, {
           status: "ready",
           imageUrl,
+          mode,
           deviceId,
           messageId,
           createdAt: Date.now(),
@@ -610,6 +741,7 @@ function startSelfieGeneration(
         setSelfieJob(jobId, {
           status: "failed",
           error: "Couldn't take that selfie — try again?",
+          mode,
           deviceId,
           messageId,
           createdAt: Date.now(),
@@ -623,6 +755,7 @@ function startSelfieGeneration(
           err instanceof Error && err.message
             ? err.message
             : "Selfie generation crashed.",
+        mode,
         deviceId,
         messageId,
         createdAt: Date.now(),
@@ -631,12 +764,17 @@ function startSelfieGeneration(
   })();
 }
 
-// Boot recovery: re-issue any pending jobs after a server restart.
+// Boot recovery: re-issue any pending jobs after a server restart, and
+// rehydrate the selfie cache from disk so cross-restart cache hits work.
 loadSelfieJobs();
+loadSelfieCache();
 for (const [id, job] of selfieJobs) {
   if (job.status === "pending") {
-    logger.info({ jobId: id }, "Resuming selfie job after server restart");
-    startSelfieGeneration(id, job.vibe, job.deviceId, job.messageId);
+    logger.info(
+      { jobId: id, mode: job.mode },
+      "Resuming selfie job after server restart",
+    );
+    startSelfieGeneration(id, job.vibe, job.mode, job.deviceId, job.messageId);
   }
 }
 
@@ -647,7 +785,7 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const { messageId, vibe } = parsed.data;
+  const { messageId, vibe, mode } = parsed.data;
 
   // Confirm the message belongs to this device — prevents using another
   // device's id with our own deviceId via header.
@@ -671,11 +809,12 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
   setSelfieJob(jobId, {
     status: "pending",
     vibe: vibe.trim(),
+    mode,
     deviceId,
     messageId,
     createdAt: Date.now(),
   });
-  startSelfieGeneration(jobId, vibe.trim(), deviceId, messageId);
+  startSelfieGeneration(jobId, vibe.trim(), mode, deviceId, messageId);
   res.status(202).json({ jobId });
 });
 

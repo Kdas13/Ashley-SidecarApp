@@ -241,12 +241,19 @@ export async function synthesizeSpeech(text: string): Promise<Buffer> {
 
 export async function generateImageBase64(
   prompt: string,
-  size: "1024x1024" | "1024x1536" | "1536x1024" = "1024x1536",
+  size: "1024x1024" | "1024x1536" | "1536x1024" = "1024x1024",
+  quality: "low" | "medium" | "high" = "low",
 ): Promise<string> {
+  // gpt-image-1 quality knob is the biggest speed lever:
+  //   low    ≈ 6–10s   (fast mode default)
+  //   medium ≈ 15–20s  (the implicit "auto" default)
+  //   high   ≈ 25–40s  (quality mode)
+  // Size also matters — 1024x1024 is meaningfully faster than 1024x1536.
   const response = await openai.images.generate({
     model: "gpt-image-1",
     prompt,
     size,
+    quality,
     n: 1,
   });
   const b64 = response.data?.[0]?.b64_json;
