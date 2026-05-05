@@ -11,7 +11,9 @@ import {
 const router: IRouter = Router();
 
 const WebSearchBodySchema = z.object({
-  query: z.string().min(1).max(500),
+  // .trim() before .min(1) so a whitespace-only query is rejected
+  // consistently with a 400 rather than producing a 200 with [].
+  query: z.string().trim().min(1).max(500),
   reason: z.string().max(200).optional(),
 });
 

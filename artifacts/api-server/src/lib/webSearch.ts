@@ -161,9 +161,12 @@ export function formatWebResultsBlock(
     const snippet = (r.content || r.title).replace(/\s+/g, " ").trim();
     return `[${i + 1}] ${r.title} – ${snippet} (${r.url})`;
   });
+  // Per Kane's spec: just a short instruction + the exact block. No
+  // markdown heading, no verbose preamble. The three rules (use naturally,
+  // mention sources casually, never leak the tool call) are encoded in one
+  // line so Ashley's voice isn't disrupted by formal scaffolding.
   return [
-    `## Live web results for this turn`,
-    `I just looked this up online for "${query}". I use these results naturally — like I quickly checked something — and mention sources casually by site or title where it helps ("according to BBC", "the Wikipedia page for X says"). I do NOT list them mechanically, do NOT say "I called a tool" / "I used a search API" / "I searched my database", and do NOT pretend the results were already in my memory. If the results don't actually answer the question, I say so honestly rather than making something up.`,
+    `I just looked this up online for "${query}" — I use these results naturally, mention sources casually by site or title where it helps, and never say I called a tool or pretend I already remembered them. If they don't actually answer the question I say so honestly.`,
     ``,
     `=== WEB RESULTS ===`,
     ...lines,
