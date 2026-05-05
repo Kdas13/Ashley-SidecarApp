@@ -155,9 +155,16 @@ export default function ChatScreen(): React.JSX.Element {
   const [customMode, setCustomMode] = useState("");
   const [showCustomInput, setShowCustomInput] = useState(false);
   const isPresetMode = RELATIONSHIP_MODE_PRESETS.includes(relationshipMode);
+  // BUILD MARKER — visible canary so Kane can confirm at a glance
+  // whether his Expo Go has actually loaded the latest bundle. If
+  // the subtitle on his phone says "Best friend mode" with no "B3"
+  // suffix, the bundle is still stale (Expo Go hasn't fetched the
+  // current Metro bundle no matter what reload/clear-cache he tries).
+  // Increment the suffix on each diagnostic push (B3 → B4 → …).
+  const BUILD_MARKER = "B3";
   const subtitleLabel = relationshipMode
-    ? `${relationshipMode} mode`
-    : "tap to set relationship mode";
+    ? `${relationshipMode} mode • ${BUILD_MARKER}`
+    : `tap to set relationship mode • ${BUILD_MARKER}`;
 
   const applyMode = useCallback(
     async (value: string) => {
