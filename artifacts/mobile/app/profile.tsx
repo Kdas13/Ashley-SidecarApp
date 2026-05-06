@@ -35,6 +35,13 @@ import {
   resetPushRegistrationCache,
   unregisterPushNotificationsAsync,
 } from "@/lib/pushRegistration";
+import {
+  applyImportedPayload,
+  describeImportPlan,
+  formatImportSummary,
+  pickAndValidateImport,
+  triggerExport,
+} from "@/lib/dataMigration";
 import colors from "@/constants/colors";
 
 type ProactiveCadence = AshleyProfile["proactiveCadence"];
@@ -1136,11 +1143,72 @@ function DeviceAndBackupSection(): React.JSX.Element {
     );
   };
 
-  const showExportPlaceholder = () => {
-    Alert.alert(
-      "Export backup (coming soon)",
-      "A one-tap export is on the way. For now, copy your Device ID — that's the only thing you need to recover this Ashley on another phone (or after Expo Go clears its storage). Use Restore below to paste it back in.",
-    );
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+
+  const onExport = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const result = await triggerExport();
+      if (result.ok) {
+        const kb = (result.bytes / 1024).toFixed(1);
+        Alert.alert(
+          "Backup exported",
+          Platform.OS === "web"
+            ? `Downloaded ${result.filename} (${kb} KB). Save it somewhere you'll find later — Files app, Google Drive, email it to yourself.`
+            : `Saved ${result.filename} (${kb} KB) and opened share sheet. Pick a destination — Files app, Drive, etc. Keep it somewhere you can find later.`,
+        );
+      } else {
+        Alert.alert("Export failed", result.reason);
+      }
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const onImport = async () => {
+    if (importing) return;
+    setImporting(true);
+    try {
+      const picked = await pickAndValidateImport();
+      if (!picked.ok) {
+        if (picked.cancelled) return;
+        Alert.alert("Import failed", picked.reason);
+        return;
+      }
+      Alert.alert(
+        "Replace this Ashley with the backup?",
+        `${describeImportPlan(picked.payload)}\n\nThis will overwrite the profile, memories, messages, and summaries currently on this device. Cannot be undone.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Replace",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                const summary = await applyImportedPayload(picked.payload);
+                qc.invalidateQueries({ queryKey: ["profile"] });
+                qc.invalidateQueries({ queryKey: ["messages"] });
+                qc.invalidateQueries({ queryKey: ["memories"] });
+                qc.invalidateQueries({ queryKey: ["summaries"] });
+                Alert.alert(
+                  "Backup restored",
+                  `Imported ${formatImportSummary(summary)}. Open chat to see her.`,
+                );
+              } catch (err) {
+                Alert.alert(
+                  "Import failed mid-write",
+                  err instanceof Error ? err.message : String(err),
+                );
+              }
+            },
+          },
+        ],
+      );
+    } finally {
+      setImporting(false);
+    }
   };
 
   return (
@@ -1180,22 +1248,54 @@ function DeviceAndBackupSection(): React.JSX.Element {
       </View>
 
       <View style={styles.backupRow}>
-        <Pressable onPress={showExportPlaceholder} style={styles.backupBtn}>
-          <Feather name="download" size={14} color={colors.light.text} />
-          <Text style={styles.backupBtnText}>Export backup</Text>
-          <Text style={styles.comingSoonPill}>Soon</Text>
+        <Pressable
+          onPress={onExport}
+          disabled={exporting}
+          style={[styles.backupBtn, exporting && { opacity: 0.5 }]}
+        >
+          {exporting ? (
+            <ActivityIndicator size="small" color={colors.light.text} />
+          ) : (
+            <Feather name="download" size={14} color={colors.light.text} />
+          )}
+          <Text style={styles.backupBtnText}>
+            {exporting ? "Exporting…" : "Export backup"}
+          </Text>
         </Pressable>
+        <Pressable
+          onPress={onImport}
+          disabled={importing}
+          style={[styles.backupBtn, importing && { opacity: 0.5 }]}
+        >
+          {importing ? (
+            <ActivityIndicator size="small" color={colors.light.text} />
+          ) : (
+            <Feather name="upload" size={14} color={colors.light.text} />
+          )}
+          <Text style={styles.backupBtnText}>
+            {importing ? "Importing…" : "Import backup"}
+          </Text>
+        </Pressable>
+      </View>
+      <Text style={[styles.hint, { marginTop: 6 }]}>
+        Backup is a JSON file with this Ashley's profile, memories, messages,
+        and summaries. Use it to move her between devices, browsers, or app
+        installs. Nothing leaves the device unless you choose where to save the
+        file.
+      </Text>
+
+      <View style={styles.backupRow}>
         <Pressable
           onPress={() => setRestoreOpen((v) => !v)}
           style={styles.backupBtn}
         >
           <Feather
-            name={restoreOpen ? "x" : "upload"}
+            name={restoreOpen ? "x" : "link"}
             size={14}
             color={colors.light.text}
           />
           <Text style={styles.backupBtnText}>
-            {restoreOpen ? "Cancel" : "Restore from Device ID"}
+            {restoreOpen ? "Cancel" : "Restore from Device ID (legacy)"}
           </Text>
         </Pressable>
       </View>
@@ -1464,16 +1564,6 @@ const styles = StyleSheet.create({
     color: colors.light.text,
     fontFamily: "Inter_500Medium",
     fontSize: 13,
-  },
-  comingSoonPill: {
-    color: colors.light.mutedForeground,
-    fontFamily: "Inter_500Medium",
-    fontSize: 10,
-    backgroundColor: colors.light.background,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-    overflow: "hidden",
   },
   restoreBox: {
     marginTop: 12,
