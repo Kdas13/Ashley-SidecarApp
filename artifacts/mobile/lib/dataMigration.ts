@@ -178,6 +178,28 @@ async function readPickedFileWeb(): Promise<string> {
 }
 
 /**
+ * Validate a JSON string pasted by the user. Same validation as the file
+ * picker path, but with zero native-module dependencies — works on any
+ * APK regardless of when it was built.
+ */
+export function parseAndValidateImportText(text: string): PickImportResult {
+  try {
+    const trimmed = text.trim();
+    if (!trimmed) return { ok: false, reason: "Nothing pasted" };
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return { ok: false, reason: "Pasted text is not valid JSON" };
+    }
+    const payload = validatePayload(parsed);
+    return { ok: true, payload, rawBytes: trimmed.length };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
  * Phase 1 of import: pick + read + validate. Does NOT write to storage.
  * Caller should show a confirmation dialog using the returned payload's
  * counts before calling applyImportedPayload.

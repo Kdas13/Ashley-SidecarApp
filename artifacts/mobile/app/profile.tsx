@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -39,8 +40,10 @@ import {
   applyImportedPayload,
   describeImportPlan,
   formatImportSummary,
+  parseAndValidateImportText,
   pickAndValidateImport,
   triggerExport,
+  type ExportPayload,
 } from "@/lib/dataMigration";
 import colors from "@/constants/colors";
 
@@ -1145,6 +1148,42 @@ function DeviceAndBackupSection(): React.JSX.Element {
 
   const [exporting, setExporting] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [pasteBusy, setPasteBusy] = useState(false);
+
+  const confirmAndApply = (payload: ExportPayload, onAfter?: () => void) => {
+    Alert.alert(
+      "Replace this Ashley with the backup?",
+      `${describeImportPlan(payload)}\n\nThis will overwrite the profile, memories, messages, and summaries currently on this device. Cannot be undone.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Replace",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const summary = await applyImportedPayload(payload);
+              qc.invalidateQueries({ queryKey: ["profile"] });
+              qc.invalidateQueries({ queryKey: ["messages"] });
+              qc.invalidateQueries({ queryKey: ["memories"] });
+              qc.invalidateQueries({ queryKey: ["summaries"] });
+              onAfter?.();
+              Alert.alert(
+                "Backup restored",
+                `Imported ${formatImportSummary(summary)}. Open chat to see her.`,
+              );
+            } catch (err) {
+              Alert.alert(
+                "Import failed mid-write",
+                err instanceof Error ? err.message : String(err),
+              );
+            }
+          },
+        },
+      ],
+    );
+  };
 
   const onExport = async () => {
     if (exporting) return;
@@ -1174,40 +1213,60 @@ function DeviceAndBackupSection(): React.JSX.Element {
       const picked = await pickAndValidateImport();
       if (!picked.ok) {
         if (picked.cancelled) return;
+        const missingPicker = /ExpoDocumentPicker|getDocumentAsync/i.test(
+          picked.reason,
+        );
+        if (missingPicker) {
+          Alert.alert(
+            "File picker unavailable",
+            "This APK was built before the file picker was added. Use Paste backup JSON instead — open the JSON file in any app, copy all the text, then paste it here.",
+            [
+              { text: "Cancel", style: "cancel" },
+              { text: "Open paste", onPress: () => setPasteOpen(true) },
+            ],
+          );
+          return;
+        }
         Alert.alert("Import failed", picked.reason);
         return;
       }
-      Alert.alert(
-        "Replace this Ashley with the backup?",
-        `${describeImportPlan(picked.payload)}\n\nThis will overwrite the profile, memories, messages, and summaries currently on this device. Cannot be undone.`,
-        [
-          { text: "Cancel", style: "cancel" },
-          {
-            text: "Replace",
-            style: "destructive",
-            onPress: async () => {
-              try {
-                const summary = await applyImportedPayload(picked.payload);
-                qc.invalidateQueries({ queryKey: ["profile"] });
-                qc.invalidateQueries({ queryKey: ["messages"] });
-                qc.invalidateQueries({ queryKey: ["memories"] });
-                qc.invalidateQueries({ queryKey: ["summaries"] });
-                Alert.alert(
-                  "Backup restored",
-                  `Imported ${formatImportSummary(summary)}. Open chat to see her.`,
-                );
-              } catch (err) {
-                Alert.alert(
-                  "Import failed mid-write",
-                  err instanceof Error ? err.message : String(err),
-                );
-              }
-            },
-          },
-        ],
-      );
+      confirmAndApply(picked.payload);
     } finally {
       setImporting(false);
+    }
+  };
+
+  const onPasteImport = async () => {
+    if (pasteBusy) return;
+    setPasteBusy(true);
+    try {
+      const result = parseAndValidateImportText(pasteText);
+      if (!result.ok) {
+        Alert.alert("Paste failed", result.reason);
+        return;
+      }
+      confirmAndApply(result.payload, () => {
+        setPasteText("");
+        setPasteOpen(false);
+      });
+    } finally {
+      setPasteBusy(false);
+    }
+  };
+
+  const onPasteBackupFromClipboard = async () => {
+    try {
+      const text = await Clipboard.getStringAsync();
+      if (!text) {
+        Alert.alert("Clipboard empty", "Copy the backup JSON first, then try again.");
+        return;
+      }
+      setPasteText(text);
+    } catch (err) {
+      Alert.alert(
+        "Clipboard read failed",
+        err instanceof Error ? err.message : String(err),
+      );
     }
   };
 
@@ -1277,11 +1336,21 @@ function DeviceAndBackupSection(): React.JSX.Element {
           </Text>
         </Pressable>
       </View>
+      <View style={styles.backupRow}>
+        <Pressable
+          onPress={() => setPasteOpen(true)}
+          style={styles.backupBtn}
+        >
+          <Feather name="clipboard" size={14} color={colors.light.text} />
+          <Text style={styles.backupBtnText}>Paste backup JSON</Text>
+        </Pressable>
+      </View>
       <Text style={[styles.hint, { marginTop: 6 }]}>
         Backup is a JSON file with this Ashley's profile, memories, messages,
         and summaries. Use it to move her between devices, browsers, or app
         installs. Nothing leaves the device unless you choose where to save the
-        file.
+        file. If the file picker shows "native module" errors on this APK,
+        use Paste instead — works on any build.
       </Text>
 
       <View style={styles.backupRow}>
@@ -1355,6 +1424,85 @@ function DeviceAndBackupSection(): React.JSX.Element {
           </View>
         </View>
       ) : null}
+
+      <Modal
+        visible={pasteOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPasteOpen(false)}
+      >
+        <View style={styles.pasteBackdrop}>
+          <View style={styles.pasteCard}>
+            <Text style={styles.pasteTitle}>Paste backup JSON</Text>
+            <Text style={styles.hint}>
+              Open the exported JSON file in any app (Files, Drive, Gmail), copy
+              all the text, then paste it here. Long-press the box below and
+              choose Paste, or tap "Paste from clipboard".
+            </Text>
+            <TextInput
+              value={pasteText}
+              onChangeText={setPasteText}
+              placeholder='{"schema":"ashley-sidecar-export", ...}'
+              placeholderTextColor={colors.light.mutedForeground}
+              multiline
+              autoCorrect={false}
+              autoCapitalize="none"
+              style={styles.pasteInput}
+            />
+            <Text style={styles.hint}>
+              {pasteText.length > 0
+                ? `${(pasteText.length / 1024).toFixed(1)} KB pasted`
+                : "Nothing pasted yet"}
+            </Text>
+            <View style={styles.backupRow}>
+              <Pressable
+                onPress={onPasteBackupFromClipboard}
+                style={styles.backupBtn}
+              >
+                <Feather name="clipboard" size={14} color={colors.light.text} />
+                <Text style={styles.backupBtnText}>Paste from clipboard</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setPasteText("")}
+                style={styles.backupBtn}
+              >
+                <Feather name="x" size={14} color={colors.light.text} />
+                <Text style={styles.backupBtnText}>Clear</Text>
+              </Pressable>
+            </View>
+            <View style={[styles.backupRow, { marginTop: 12 }]}>
+              <Pressable
+                onPress={() => {
+                  setPasteText("");
+                  setPasteOpen(false);
+                }}
+                style={styles.backupBtn}
+              >
+                <Text style={styles.backupBtnText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={onPasteImport}
+                disabled={pasteBusy || pasteText.trim().length === 0}
+                style={[
+                  styles.backupBtn,
+                  (pasteBusy || pasteText.trim().length === 0) && {
+                    opacity: 0.4,
+                  },
+                ]}
+              >
+                {pasteBusy ? (
+                  <ActivityIndicator size="small" color={colors.light.text} />
+                ) : (
+                  <Feather name="check" size={14} color={colors.light.text} />
+                )}
+                <Text style={styles.backupBtnText}>
+                  {pasteBusy ? "Validating…" : "Import"}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1564,6 +1712,37 @@ const styles = StyleSheet.create({
     color: colors.light.text,
     fontFamily: "Inter_500Medium",
     fontSize: 13,
+  },
+  pasteBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "center",
+    paddingHorizontal: 18,
+  },
+  pasteCard: {
+    backgroundColor: colors.light.card,
+    borderRadius: 16,
+    padding: 18,
+    gap: 8,
+    maxHeight: "85%",
+  },
+  pasteTitle: {
+    color: colors.light.text,
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 18,
+  },
+  pasteInput: {
+    minHeight: 140,
+    maxHeight: 260,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    borderRadius: 10,
+    padding: 10,
+    color: colors.light.text,
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+    fontSize: 12,
+    textAlignVertical: "top",
+    backgroundColor: colors.light.background,
   },
   restoreBox: {
     marginTop: 12,
