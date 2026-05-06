@@ -77,6 +77,14 @@ export type AshleyProfile = {
    * user's preference and decides whether to ask for push permission.
    */
   proactiveCadence: "off" | "low" | "normal" | "high";
+  /**
+   * When true (default), the mobile app pings POST /api/proactive/on-app-open
+   * on every cold launch / foreground resume. The server decides — based on
+   * time-since-last-message, quiet hours, and a 4h dedupe window — whether
+   * to insert a fresh Ashley greeting. Independent of `proactiveCadence`,
+   * which only governs PUSHED messages.
+   */
+  greetOnAppOpen: boolean;
   onboardedAt: string | null;
   updatedAt: string;
 };
@@ -198,6 +206,7 @@ export const DEFAULT_PROFILE: AshleyProfile = {
   adultConfirmedAt: null,
   intimacyLevel: 0,
   proactiveCadence: "normal",
+  greetOnAppOpen: true,
   onboardedAt: null,
   updatedAt: new Date(0).toISOString(),
 };

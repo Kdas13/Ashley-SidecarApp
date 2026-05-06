@@ -245,6 +245,9 @@ export default function ProfileScreen(): React.JSX.Element {
     if (typeof draft.voiceMode === "boolean") {
       payload.voiceMode = draft.voiceMode;
     }
+    if (typeof draft.greetOnAppOpen === "boolean") {
+      payload.greetOnAppOpen = draft.greetOnAppOpen;
+    }
     if (
       draft.proactiveCadence === "off" ||
       draft.proactiveCadence === "low" ||
@@ -266,6 +269,18 @@ export default function ProfileScreen(): React.JSX.Element {
   const voiceModeOn = draft.voiceMode === true;
   const toggleVoiceMode = () => {
     setDraft((prev) => ({ ...prev, voiceMode: !voiceModeOn }));
+  };
+
+  // Greet-on-open is auto-save (live) like the cadence chips: there's no
+  // intermediate state worth previewing, and the user expects flipping the
+  // switch to "stick" without hunting for the Save button.
+  const greetOnAppOpenOn = draft.greetOnAppOpen !== false;
+  const toggleGreetOnAppOpen = () => {
+    const next = !greetOnAppOpenOn;
+    setDraft((prev) => ({ ...prev, greetOnAppOpen: next }));
+    void update.mutateAsync({ greetOnAppOpen: next }).catch((err) => {
+      console.warn("[profile] greetOnAppOpen save failed", err);
+    });
   };
 
   const cadence: ProactiveCadence =
@@ -421,6 +436,35 @@ export default function ProfileScreen(): React.JSX.Element {
             </View>
             <Text style={styles.toggleLabel}>
               {voiceModeOn ? "On — spoken register" : "Off — texting register"}
+            </Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.fieldGroup}>
+          <Text style={styles.label}>Greet me when I open the app</Text>
+          <Text style={styles.hint}>
+            When ON, Ashley may drop a short hi when you open the app after
+            being away for a few hours. Quiet hours apply, and she won&apos;t
+            greet again within 4 hours of the last one. Default: ON.
+          </Text>
+          <Pressable onPress={toggleGreetOnAppOpen} style={styles.toggleRow}>
+            <View
+              style={[
+                styles.toggleTrack,
+                greetOnAppOpenOn && styles.toggleTrackOn,
+              ]}
+            >
+              <View
+                style={[
+                  styles.toggleThumb,
+                  greetOnAppOpenOn && styles.toggleThumbOn,
+                ]}
+              />
+            </View>
+            <Text style={styles.toggleLabel}>
+              {greetOnAppOpenOn
+                ? "On — she might say hi"
+                : "Off — she stays quiet on open"}
             </Text>
           </Pressable>
         </View>

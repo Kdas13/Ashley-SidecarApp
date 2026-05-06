@@ -15,6 +15,7 @@ import { db, ashleyProfileTable } from "@workspace/db";
 import { getDeviceId } from "../middleware/deviceId";
 import { getOrCreateProfileFor } from "../lib/profile";
 import { forceTickForDevice } from "../lib/proactiveScheduler";
+import { maybeGenerateAppOpenGreeting } from "../lib/appOpenGreeting";
 
 const router: IRouter = Router();
 
@@ -86,6 +87,68 @@ router.post("/proactive/debug-tick", async (req, res): Promise<void> => {
   } catch (err) {
     req.log.error({ err }, "POST /proactive/debug-tick failed");
     res.status(500).json({ error: "debug tick failed" });
+  }
+});
+
+/**
+ * POST /api/proactive/on-app-open — called by the mobile client on every
+ * cold launch / foreground resume. The server decides whether Ashley should
+ * drop a fresh "welcome back" message into chat history.
+ *
+ * Body (all optional, used only for opportunistic timezone tracking):
+ *   { clientNow?: string, clientTimezone?: string }
+ *
+ * Response:
+ *   200 { greeted: false, reason: string }    — no greeting (toggle off,
+ *                                                quiet hours, recent activity,
+ *                                                dedupe, model declined, etc)
+ *   200 { greeted: true,  message: Message }  — fresh Ashley message inserted;
+ *                                                client should invalidate the
+ *                                                messages query.
+ *
+ * Always returns 200 — failures are surfaced as `greeted: false` so a
+ * transient server hiccup never blocks the app's cold-start path.
+ */
+const OnAppOpenBodySchema = z
+  .object({
+    clientNow: z.string().max(64).optional(),
+    clientTimezone: z.string().max(64).optional(),
+  })
+  .strip();
+
+router.post("/proactive/on-app-open", async (req, res): Promise<void> => {
+  const deviceId = getDeviceId(req);
+  const parsed = OnAppOpenBodySchema.safeParse(req.body ?? {});
+  // Even if the body is malformed we still want to evaluate — the body is
+  // best-effort metadata, not gating data. Just skip the timezone update.
+  const tz = parsed.success ? parsed.data.clientTimezone : undefined;
+
+  // Opportunistically refresh timezone so quiet-hours math stays accurate.
+  if (tz && tz.length > 0) {
+    try {
+      await getOrCreateProfileFor(deviceId);
+      await db
+        .update(ashleyProfileTable)
+        .set({ timezone: tz })
+        .where(eq(ashleyProfileTable.deviceId, deviceId));
+    } catch (err) {
+      req.log.warn({ err }, "POST /proactive/on-app-open: tz update failed");
+    }
+  }
+
+  try {
+    const result = await maybeGenerateAppOpenGreeting(deviceId);
+    if (result.greeted) {
+      res.status(200).json({ greeted: true, message: result.message });
+    } else {
+      res.status(200).json({ greeted: false, reason: result.reason });
+    }
+  } catch (err) {
+    // Defence in depth: maybeGenerateAppOpenGreeting catches its own errors,
+    // but if anything ever escaped we still want a 200 so the client doesn't
+    // log a noisy boot-time failure.
+    req.log.error({ err }, "POST /proactive/on-app-open failed");
+    res.status(200).json({ greeted: false, reason: "internal_error" });
   }
 });
 

@@ -60,6 +60,7 @@ const ProfileUpdateSchema = z
     // every tick — flipping to "off" stops further proactive sends within
     // one tick (≤5min). See lib/db/src/schema/ashley.ts for cap mapping.
     proactiveCadence: z.enum(PROACTIVE_CADENCES).optional(),
+    greetOnAppOpen: z.boolean().optional(),
     markOnboarded: z.boolean().optional(),
   })
   .strict();

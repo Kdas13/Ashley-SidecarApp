@@ -12,8 +12,8 @@ import { router, Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import * as SystemUI from "expo-system-ui";
 import { StatusBar } from "expo-status-bar";
-import React, { useEffect, useState } from "react";
-import { Platform } from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import { AppState, type AppStateStatus, Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -23,8 +23,10 @@ import { queryClient } from "@/lib/queryClient";
 import { getOrCreateDeviceId } from "@/lib/deviceId";
 import {
   fetchState,
+  triggerAppOpenGreeting,
   type ServerState,
 } from "@/lib/aiClient";
+import type { Message } from "@/lib/storage";
 import { registerForPushNotificationsAsync } from "@/lib/pushRegistration";
 import {
   saveMemories,
@@ -94,6 +96,49 @@ async function bootstrap(): Promise<void> {
   if (state.profile.proactiveCadence !== "off") {
     void registerForPushNotificationsAsync().catch(() => undefined);
   }
+
+  // Ask the server whether Ashley should greet us on this open. The server
+  // enforces all the gates (toggle, quiet hours, time-since-last-message,
+  // 4h dedupe), so we can call unconditionally — but skip the round trip
+  // when the user has explicitly turned it off so a flaky network never
+  // blocks boot for the opted-out path either.
+  if (state.profile.greetOnAppOpen !== false) {
+    void runAppOpenGreeting();
+  }
+}
+
+/**
+ * Fire the on-app-open greeting check and, if the server returned a fresh
+ * Ashley message, splice it into the cached messages list so it appears
+ * without waiting for the next /state refresh. Cache update is optimistic
+ * AND idempotent — uses a functional setter that checks for the message id
+ * so a concurrent /state hydration landing in either order is safe.
+ *
+ * In-flight guard (`appOpenGreetingInFlight`) collapses concurrent callers
+ * onto a single network request. Cold start + an immediate AppState→active
+ * fire would otherwise hit the endpoint twice; the server's 4h dedupe would
+ * still do the right thing, but skipping the round trip is cleaner.
+ */
+let appOpenGreetingInFlight: Promise<void> | null = null;
+async function runAppOpenGreeting(): Promise<void> {
+  if (appOpenGreetingInFlight) return appOpenGreetingInFlight;
+  appOpenGreetingInFlight = (async () => {
+    try {
+      const result = await triggerAppOpenGreeting();
+      if (!result.greeted) return;
+      queryClient.setQueryData<Message[] | undefined>(
+        ["messages"],
+        (prev) => {
+          const list = prev ?? [];
+          if (list.some((m) => m.id === result.message.id)) return list;
+          return [...list, result.message];
+        },
+      );
+    } finally {
+      appOpenGreetingInFlight = null;
+    }
+  })();
+  return appOpenGreetingInFlight;
 }
 
 export default function RootLayout(): React.JSX.Element | null {
@@ -156,6 +201,25 @@ export default function RootLayout(): React.JSX.Element | null {
       foregroundSub.remove();
       tapSub.remove();
     };
+  }, []);
+
+  // Foreground-resume greeting: if the user backgrounds the app for a few
+  // hours and brings it back, give the server a chance to greet again. The
+  // server's 4h dedupe means a quick out-and-back won't fire a second time.
+  // We use a ref + the last AppStateStatus so we only ping on the
+  // background→active transition, not on every state change.
+  const lastAppState = useRef<AppStateStatus>(AppState.currentState);
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (next) => {
+      const prev = lastAppState.current;
+      lastAppState.current = next;
+      if (next === "active" && prev !== "active") {
+        // Best-effort — failures resolve to greeted:false inside the helper,
+        // and the splice is a no-op when nothing comes back.
+        void runAppOpenGreeting();
+      }
+    });
+    return () => sub.remove();
   }, []);
 
   useEffect(() => {

@@ -98,6 +98,14 @@ export const ashleyProfileTable = pgTable("ashley_profile", {
   //     high   → 4 / day max  (Kane's preference)
   //   Per-category caps (1/day each) and quiet hours apply on top of this.
   proactiveCadence: text("proactive_cadence").notNull().default("normal"),
+  // greetOnAppOpen: when true (default), the mobile app pings
+  // POST /api/proactive/on-app-open on every cold launch / foreground
+  // resume. The server then decides — based on time-since-last-message,
+  // quiet hours, and a 4h dedupe window — whether to insert a fresh
+  // Ashley greeting into chat history. Independent from `proactiveCadence`
+  // because that governs PUSHED messages while you're away; this one
+  // governs greetings when you're already opening the app.
+  greetOnAppOpen: boolean("greet_on_app_open").notNull().default(true),
   // Daily medical check-in eligibility input. The medical check-in feature
   // itself is NOT built yet — the scheduler scaffolds the category but the
   // medical_checkin slot is gated OFF at runtime until that feature lands.
@@ -317,6 +325,10 @@ export const PROACTIVE_TYPES = [
   "memory_nudge",
   "conversation_gap",
   "routine_support",
+  // app_open_greeting: NEVER picked by the scheduler tick — only the
+  // POST /api/proactive/on-app-open endpoint emits this category. Listed
+  // here so persisted rows + TypeScript exhaustiveness stay coherent.
+  "app_open_greeting",
 ] as const;
 export type ProactiveType = (typeof PROACTIVE_TYPES)[number];
 

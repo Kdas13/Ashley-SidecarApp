@@ -515,6 +515,12 @@ function isCategoryEligible(
       }
       return { ok: true };
     }
+
+    case "app_open_greeting": {
+      // Never scheduled — only triggered by POST /api/proactive/on-app-open.
+      // The branch exists for TypeScript exhaustiveness only.
+      return { ok: false, reason: "scheduler_disabled_for_app_open" };
+    }
   }
 }
 

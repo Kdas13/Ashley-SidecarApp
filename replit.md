@@ -42,6 +42,7 @@ A personal AI companion mobile app providing local-first, stateless AI chat with
 - **Dev-Server Resilience**: The mobile client includes retry logic for API calls that encounter Replit's dev server placeholder, ensuring a smoother development experience during server restarts.
 - **Unicode/Emoji Icons**: Instead of `expo/vector-icons`, UI icons are rendered using Unicode/emoji characters for broader device compatibility and to avoid font loading issues.
 - **Inverted FlatList for Chat**: The chat `FlatList` is `inverted` to display the newest messages at the bottom, mimicking standard chat apps and simplifying new message handling and scrolling logic.
+- **App-Open Greeting (separate from cadence)**: A "say hi when you open the app" greeting is gated by the `greetOnAppOpen` profile flag (default ON) — independent of `proactiveCadence`, which only governs PUSHED messages. The mobile pings `POST /api/proactive/on-app-open` on cold launch and on every background→active AppState transition; the server enforces all gates (toggle, quiet hours, 4h min message gap, 4h dedupe via `proactive_sends`, requires user history) and returns either `{greeted:false, reason}` or `{greeted:true, message}`. The greeting is persisted as `source="proactive"`, `proactiveType="app_open_greeting"` so it survives history reloads.
 
 ## Product
 

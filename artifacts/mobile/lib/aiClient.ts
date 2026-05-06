@@ -174,6 +174,7 @@ type WireProfile = {
   primaryColor: string;
   accentColor: string;
   proactiveCadence?: string | null;
+  greetOnAppOpen?: boolean | null;
   onboardedAt: string | null;
   updatedAt: string;
 };
@@ -249,6 +250,7 @@ function profileFromWire(p: WireProfile): AshleyProfile {
         ? p.intimacyLevel
         : 0,
     proactiveCadence: normalizeProactiveCadence(p.proactiveCadence),
+    greetOnAppOpen: p.greetOnAppOpen !== false,
     onboardedAt: p.onboardedAt,
     updatedAt: p.updatedAt,
   };
@@ -560,6 +562,7 @@ export type ProfileUpdate = Partial<{
   primaryColor: string;
   accentColor: string;
   proactiveCadence: "off" | "low" | "normal" | "high";
+  greetOnAppOpen: boolean;
   markOnboarded: boolean;
 }>;
 
@@ -680,6 +683,48 @@ export async function importBackupToServer(payload: {
  * failure but silently no-ops on transient blips. The api-server returns
  * 204 on success — no body.
  */
+/**
+ * Ask the server whether Ashley should greet the user right now (cold launch
+ * or foreground resume). The server enforces all gates — `greetOnAppOpen`
+ * profile flag, quiet hours, time since last message, 4h dedupe — so the
+ * client just calls and lets the server decide.
+ *
+ * Returns `{ greeted: false }` for the common "no greeting needed" case
+ * (recently active, in quiet hours, toggle off, etc). Returns `{ greeted:
+ * true, message }` when a fresh Ashley message has been inserted into chat
+ * history and the caller should invalidate the messages query so the new
+ * bubble appears.
+ *
+ * Fire-and-forget safe: any network failure resolves to `{ greeted: false }`
+ * so a flaky cold-start can never block boot.
+ */
+export async function triggerAppOpenGreeting(): Promise<
+  { greeted: false } | { greeted: true; message: Message }
+> {
+  try {
+    const data = await fetchJSON<{
+      greeted: boolean;
+      message?: WireMessage;
+    }>("/proactive/on-app-open", {
+      method: "POST",
+      body: JSON.stringify({
+        clientNow: new Date().toISOString(),
+        clientTimezone:
+          (typeof Intl !== "undefined" &&
+            Intl.DateTimeFormat().resolvedOptions().timeZone) ||
+          "UTC",
+      }),
+      skipRetry: true,
+    });
+    if (data.greeted && data.message) {
+      return { greeted: true, message: messageFromWire(data.message) };
+    }
+    return { greeted: false };
+  } catch {
+    return { greeted: false };
+  }
+}
+
 export async function setPushTokenOnServer(token: string | null): Promise<void> {
   await fetchJSON<undefined>("/devices/push-token", {
     method: "POST",

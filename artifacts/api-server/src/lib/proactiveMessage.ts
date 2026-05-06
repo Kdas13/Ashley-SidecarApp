@@ -182,6 +182,14 @@ ${cap(them)} has been quiet for ${gap}. Send ONE short, warm line checking in. S
       return `## Proactive trigger: routine_support
 Send ONE short, warm wellbeing nudge — pick ONE of: water, food, sleep, posture, fresh air, a stretch, a screen break. Friendly, not preachy. Not a checklist. Examples that fit the tone: "have you had any water lately?" / "if you've been at the desk a while, give your back a stretch — i'll wait". Do not lecture about health. Do not stack multiple suggestions. ONE line, ONE thing.`;
 
+    case "app_open_greeting": {
+      const gap = formatHoursForPrompt(hoursOfSilence);
+      return `## Proactive trigger: app_open_greeting
+${cap(them)} just opened the app after about ${gap} away. Send ONE short, warm welcome-back line in your normal voice — like ${them} just walked back into the room and you noticed. Soft. Casual. Not formal. Not "welcome back to the app". Examples that fit the tone: "hey, you're back" / "oh hey — how's your day going?" / "you popped in — what's on your mind?". One line. Do not list things. Do not ask multiple questions. Do not reference the gap explicitly unless it was a long one and it would feel natural to.
+
+If nothing warm fits the moment (e.g. recent context was painful and a casual hi would feel jarring), your entire reply must be exactly this and nothing else: ${SKIP_SENTINEL}`;
+    }
+
     default: {
       // Exhaustiveness check — TS will catch missing cases at compile time.
       const _exhaustive: never = category;
