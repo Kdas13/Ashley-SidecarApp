@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { z } from "zod";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import {
   db,
   ashleyProfileTable,
@@ -462,23 +462,43 @@ router.post("/state/import", async (req, res): Promise<void> => {
         .where(eq(conversationSummariesTable.deviceId, deviceId));
 
       const CHUNK = 500;
-      for (let i = 0; i < messageRows.length; i += CHUNK) {
+      // Cross-device migration: the same backup file imported on a
+      // previous device leaves rows with these exact ids owned by that
+      // old device_id. We "claim" them for the importing device by
+      // deleting any existing row with the same id (across ALL devices)
+      // before re-inserting under the new device_id. Without this the
+      // INSERT silently dropped every row via ON CONFLICT and the user
+      // ended up with profile-only restore.
+      const messageIds = messageRows.map((r) => r.id);
+      const memoryIds = memoryRows.map((r) => r.id);
+      const summaryIds = summaryRows.map((r) => r.id);
+      for (let i = 0; i < messageIds.length; i += CHUNK) {
         await tx
-          .insert(messagesTable)
-          .values(messageRows.slice(i, i + CHUNK))
-          .onConflictDoNothing({ target: messagesTable.id });
+          .delete(messagesTable)
+          .where(inArray(messagesTable.id, messageIds.slice(i, i + CHUNK)));
+      }
+      for (let i = 0; i < memoryIds.length; i += CHUNK) {
+        await tx
+          .delete(memoriesTable)
+          .where(inArray(memoriesTable.id, memoryIds.slice(i, i + CHUNK)));
+      }
+      for (let i = 0; i < summaryIds.length; i += CHUNK) {
+        await tx
+          .delete(conversationSummariesTable)
+          .where(
+            inArray(conversationSummariesTable.id, summaryIds.slice(i, i + CHUNK)),
+          );
+      }
+      for (let i = 0; i < messageRows.length; i += CHUNK) {
+        await tx.insert(messagesTable).values(messageRows.slice(i, i + CHUNK));
       }
       for (let i = 0; i < memoryRows.length; i += CHUNK) {
-        await tx
-          .insert(memoriesTable)
-          .values(memoryRows.slice(i, i + CHUNK))
-          .onConflictDoNothing({ target: memoriesTable.id });
+        await tx.insert(memoriesTable).values(memoryRows.slice(i, i + CHUNK));
       }
       for (let i = 0; i < summaryRows.length; i += CHUNK) {
         await tx
           .insert(conversationSummariesTable)
-          .values(summaryRows.slice(i, i + CHUNK))
-          .onConflictDoNothing({ target: conversationSummariesTable.id });
+          .values(summaryRows.slice(i, i + CHUNK));
       }
     });
 
