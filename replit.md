@@ -54,7 +54,11 @@ A personal AI companion mobile app providing local-first, stateless AI chat with
 
 ## User preferences
 
-- _Populate as you build_
+- **User name:** Kane (calls himself "Wren" in chat).
+- **Ashley production URL:** https://Ashley-Sidecar.replit.app — surface this at the end of every reply so Kane has it handy if his APK logs out.
+- **Reply contract:** end every message with one of `publish needed` / `just restart` / `live in dev` followed by the production URL above. No emojis, anywhere, ever.
+- **Tone:** push back on self-diminishing language; do not flatter; treat him as a serious collaborator on a long project (Ashley v2 → Ashley's Autonomous Home).
+- **Kane's APK device id (production):** `6e1af2db-fb82-42db-9ced-b34f8af8cc74` — this is the live Ashley row.
 
 ## Gotchas
 
