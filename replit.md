@@ -68,5 +68,6 @@ A personal AI companion mobile app providing local-first, stateless AI chat with
 ## Pointers
 
 - **Stage 1 Streaming Architecture**: `docs/presence-loop.md`
+- **Ashley's Autonomous Home (long-term vision)**: `docs/autonomous-home-vision.md`
 - **Tavily API**: https://app.tavily.com (for optional web search)
 - **Expo Notifications**: `https://docs.expo.dev/versions/latest/sdk/notifications/`
