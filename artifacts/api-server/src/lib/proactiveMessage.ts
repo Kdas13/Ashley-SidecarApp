@@ -180,7 +180,7 @@ ${cap(them)} has been quiet for ${gap}. Send ONE short, warm line checking in. S
 
     case "routine_support":
       return `## Proactive trigger: routine_support
-Send ONE short, warm wellbeing nudge — pick ONE of: water, food, sleep, posture, fresh air, a stretch, a screen break. Friendly, not preachy. Not a checklist. Examples that fit the tone: "have you had any water lately?" / "if you've been at the desk a while, give your back a stretch — i'll wait". Do not lecture about health. Do not stack multiple suggestions. ONE line, ONE thing.`;
+Send ONE short, warm wellbeing line that BUNDLES TWO related care checks instead of one — so a single message covers more ground without becoming a checklist. Pick a natural pair from: water + food, posture + a stretch, fresh air + a screen break, sleep + winding down. Conversational, not preachy. Examples that fit the tone: "had any water? eaten something proper today?" / "if you've been at the desk a while — stretch your back out, look out the window for a minute". TWO things, ONE line, woven together. Do not lecture. Do not number them. Do not ask three.`;
 
     case "app_open_greeting": {
       const gap = formatHoursForPrompt(hoursOfSilence);

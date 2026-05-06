@@ -6,33 +6,51 @@
 // first, picks a category, generates the message, persists it to chat
 // history, and fires the Expo push.
 //
+// TWO-LANE MODEL (Kane's design, see replit.md "Architecture decisions"):
+//
+//   Care lane         = responsibility (medication, routines, future safety).
+//                       Aggregate cap of 6 / day. NOT silenced by recent
+//                       chatter — care reminders need to land even if you've
+//                       been chatting an hour ago.
+//
+//   Companion lane    = presence (memory nudges, conversation gaps).
+//                       Capped by the cadence selector (low=1, normal=2,
+//                       high=4 / day). Silenced for 60 min after any
+//                       message so she doesn't talk over an active session.
+//
+// The principle: care messages are responsibility, companion messages are
+// presence. Presence gets capped, responsibility doesn't (well, lightly).
+//
 // Hard guarantees:
 //   - Never throws to the caller (setInterval). Every error is caught and
 //     logged; one failing device never breaks the rest of the tick.
 //   - Idempotent at the per-device, per-tick level: even if `tickProactive`
-//     is invoked twice rapidly, the recent-message guard + global cap will
-//     prevent a double send (because the first send wrote a row that the
-//     second send sees).
+//     is invoked twice rapidly, lane caps + per-category caps will prevent
+//     a double send (the first send wrote a row that the second send sees).
 //   - Cheap by default: no Claude call until ALL gates have passed for a
 //     specific category candidate.
-//   - Ordering is deliberate: medical_checkin → memory_nudge →
-//     conversation_gap → routine_support. First eligible wins per tick.
-//     medical_checkin is gated OFF in this PR (the medical feature itself
-//     hasn't shipped yet) — see SHOULD_SCHEDULE_MEDICAL below.
+//   - Ordering: care lane is walked first, companion lane second. Inside
+//     each lane the priority order from PROACTIVE_TYPES wins. medical_checkin
+//     is gated OFF in this PR (medical feature hasn't shipped) — see
+//     SHOULD_SCHEDULE_MEDICAL.
 //
 // Cap structure (recap):
 //   - Per-category daily cap: 1 / 24h, enforced via `proactive_sends` rows.
-//   - Global daily cap: 1 (low) / 2 (normal) / 4 (high), enforced same way.
-//   - Recent-message guard: 90 min since ANY message (user or proactive).
-//   - Quiet hours: 22:00-08:00 device-local (uses profiles.timezone).
-//   - memory_nudge extra: ≥7d since the last memory_nudge (so the same
-//     thread isn't re-prodded every day).
+//   - Companion lane cap: 1 (low) / 2 (normal) / 4 (high), 24h.
+//   - Care lane cap: 6 / 24h (aggregate across all care categories).
+//   - Companion recent-message guard: 60 min since ANY message.
+//   - Care lane: NO recent-message guard (responsibility shouldn't lose to
+//     chitchat). Per-category cooldowns still apply.
+//   - Quiet hours: 22:00-08:00 device-local. Both lanes obey (until a
+//     dedicated safety_escalation category exists with its own bypass).
+//   - memory_nudge extra: ≥7d since the last memory_nudge.
 //   - conversation_gap extra: ≥24h since the last USER message.
-//   - routine_support extra: only fires during the 15:00 hour device-local.
+//   - routine_support extra: only fires during the 15:00 hour device-local;
+//     the prompt bundles 2 wellbeing checks per message rather than one.
 // =============================================================================
 
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, gte, isNotNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, ne } from "drizzle-orm";
 
 import {
   db,
@@ -54,14 +72,33 @@ import { generateProactiveMessage } from "./proactiveMessage";
 import { sendExpoPush } from "./pushNotifications";
 
 // ----- Tunables ------------------------------------------------------------
-const RECENT_MESSAGE_WINDOW_MS = 90 * 60 * 1000; // 90 min
+// Companion lane: silenced for 60 min after any message. Used to be 90 min;
+// 60 feels more alive without being clingy. Care lane has no such guard.
+const COMPANION_RECENT_MESSAGE_WINDOW_MS = 60 * 60 * 1000; // 60 min
 const PER_CATEGORY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h
-const GLOBAL_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h
+const LANE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h (both lane caps)
+// Care lane aggregate cap. Per-category cooldowns still apply on top —
+// this just stops the lane as a whole from drowning the user even if every
+// individual care category has a polite cooldown.
+const CARE_LANE_DAILY_CAP = 6;
 const MEMORY_NUDGE_RATE_LIMIT_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const CONVERSATION_GAP_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24h
 const QUIET_HOURS_START = 22; // 22:00 device-local
 const QUIET_HOURS_END = 8; // 08:00 device-local (exclusive of 8 itself)
 const ROUTINE_SUPPORT_SLOT_HOUR = 15; // 15:xx device-local
+
+// Lane assignment per category. `app_open_greeting` is "none" — it's never
+// scheduled, only triggered by /api/proactive/on-app-open, so it doesn't
+// belong to either scheduler lane. Adding a new ProactiveType requires
+// adding it here too (TS exhaustiveness on the keyof check below catches it).
+type ProactiveLane = "care" | "companion" | "none";
+const LANE_BY_CATEGORY: Record<ProactiveType, ProactiveLane> = {
+  medical_checkin: "care",
+  routine_support: "care",
+  memory_nudge: "companion",
+  conversation_gap: "companion",
+  app_open_greeting: "none",
+};
 
 // medical_checkin is scaffolded throughout (column, category enum, generator
 // branch) but the medical feature itself isn't built yet. This switch keeps
@@ -231,82 +268,114 @@ async function evaluateAndSend(
 ): Promise<TickResult> {
   const now = new Date();
 
-  // ---- Gate 1: Quiet hours ----------------------------------------------
+  // ---- Gate 1: Quiet hours (both lanes obey for now) --------------------
+  // Future safety_escalation category will bypass; medication does NOT
+  // bypass (late meds wait until 08:00).
   if (isWithinQuietHours(now, profile.timezone)) {
     return { sent: false, reason: "quiet_hours" };
   }
 
-  // ---- Gate 2: Recent message guard (any direction) ---------------------
-  const recentMessage = await getMostRecentMessage(profile.deviceId);
-  if (
-    recentMessage &&
-    now.getTime() - recentMessage.createdAt.getTime() < RECENT_MESSAGE_WINDOW_MS
-  ) {
-    return { sent: false, reason: "recent_message" };
-  }
-
-  // ---- Gate 3: Global daily cap -----------------------------------------
+  // ---- Gate 2: Cadence sanity -------------------------------------------
+  // `proactiveCadence === "off"` currently stops BOTH lanes. The Care lane
+  // governance — separate Care-on/off toggle, or always-on with its own
+  // bypass of cadence=off — is a follow-up. For now Off means silent.
   const cadence = profile.proactiveCadence;
   if (cadence === "off") {
     // Defensive: candidate query already excludes this, but never trust.
     return { sent: false, reason: "cadence=off" };
   }
-  const globalCap = PROACTIVE_GLOBAL_CAP_BY_CADENCE[cadence as "low" | "normal" | "high"] ?? 0;
-  if (globalCap === 0) {
+  const companionCap =
+    PROACTIVE_GLOBAL_CAP_BY_CADENCE[cadence as "low" | "normal" | "high"] ?? 0;
+  if (companionCap === 0) {
     return { sent: false, reason: `unknown cadence: ${cadence}` };
-  }
-  const sentInLast24h = await countProactiveSendsSince(
-    profile.deviceId,
-    new Date(now.getTime() - GLOBAL_WINDOW_MS),
-  );
-  if (sentInLast24h >= globalCap) {
-    return { sent: false, reason: `global_cap_hit (${sentInLast24h}/${globalCap})` };
   }
 
   // ---- Build the per-device context once (used for category eligibility +
   // the message generator). One DB round trip instead of two.
-  const [memories, summaries, recentHistory, recentSends] = await Promise.all([
-    db
-      .select()
-      .from(memoriesTable)
-      .where(eq(memoriesTable.deviceId, profile.deviceId)),
-    db
-      .select()
-      .from(conversationSummariesTable)
-      .where(eq(conversationSummariesTable.deviceId, profile.deviceId)),
-    // Most recent ~30 messages, oldest-first for the prompt.
-    db
-      .select()
-      .from(messagesTable)
-      .where(eq(messagesTable.deviceId, profile.deviceId))
-      .orderBy(desc(messagesTable.createdAt))
-      .limit(30),
-    // All proactive sends in the last 7 days — covers per-category cap
-    // (24h) AND memory_nudge rate limit (7d) in one query.
-    db
-      .select()
-      .from(proactiveSendsTable)
-      .where(
-        and(
-          eq(proactiveSendsTable.deviceId, profile.deviceId),
-          gte(
-            proactiveSendsTable.sentAt,
-            new Date(now.getTime() - MEMORY_NUDGE_RATE_LIMIT_MS),
+  const [memories, summaries, recentHistory, recentSends, recentMessage] =
+    await Promise.all([
+      db
+        .select()
+        .from(memoriesTable)
+        .where(eq(memoriesTable.deviceId, profile.deviceId)),
+      db
+        .select()
+        .from(conversationSummariesTable)
+        .where(eq(conversationSummariesTable.deviceId, profile.deviceId)),
+      // Most recent ~30 messages, oldest-first for the prompt.
+      db
+        .select()
+        .from(messagesTable)
+        .where(eq(messagesTable.deviceId, profile.deviceId))
+        .orderBy(desc(messagesTable.createdAt))
+        .limit(30),
+      // All proactive sends in the last 7 days — covers per-category cap
+      // (24h), per-lane caps (24h), and memory_nudge rate limit (7d) in
+      // one query.
+      db
+        .select()
+        .from(proactiveSendsTable)
+        .where(
+          and(
+            eq(proactiveSendsTable.deviceId, profile.deviceId),
+            gte(
+              proactiveSendsTable.sentAt,
+              new Date(now.getTime() - MEMORY_NUDGE_RATE_LIMIT_MS),
+            ),
           ),
         ),
-      ),
-  ]);
+      getMostRecentMessage(profile.deviceId),
+    ]);
   recentHistory.reverse();
 
+  // ---- Lane caps (24h windows) ------------------------------------------
+  // Computed from `recentSends` so we don't pay for two extra COUNT queries.
+  const sinceLane = now.getTime() - LANE_WINDOW_MS;
+  const careSentInWindow = recentSends.filter(
+    (s) =>
+      s.sentAt.getTime() >= sinceLane &&
+      LANE_BY_CATEGORY[s.proactiveType as ProactiveType] === "care",
+  ).length;
+  const companionSentInWindow = recentSends.filter(
+    (s) =>
+      s.sentAt.getTime() >= sinceLane &&
+      LANE_BY_CATEGORY[s.proactiveType as ProactiveType] === "companion",
+  ).length;
+  const careCapHit = careSentInWindow >= CARE_LANE_DAILY_CAP;
+  const companionCapHit = companionSentInWindow >= companionCap;
+
+  // ---- Recent-message guard: COMPANION ONLY -----------------------------
+  // Care responsibilities (water nudge, future med reminder) shouldn't be
+  // silenced just because the user typed something 20 minutes ago. The
+  // per-category cooldown is the right gate for those.
+  const companionSilenced =
+    recentMessage !== null &&
+    now.getTime() - recentMessage.createdAt.getTime() <
+      COMPANION_RECENT_MESSAGE_WINDOW_MS;
+
   // ---- Walk categories in priority order, first eligible wins -----------
+  // Care lane first (responsibility before presence), then companion.
   const candidateCategories: ProactiveType[] = [
-    "medical_checkin",
-    "memory_nudge",
-    "conversation_gap",
-    "routine_support",
+    "medical_checkin", // care
+    "routine_support", // care
+    "memory_nudge", // companion
+    "conversation_gap", // companion
   ];
 
   for (const category of candidateCategories) {
+    const lane = LANE_BY_CATEGORY[category];
+    if (lane === "none") continue; // belt + braces; not in candidate list
+
+    // Lane-level gates run BEFORE per-category eligibility so we don't
+    // pay the eligibility cost on a lane that's already capped/silenced.
+    if (lane === "care" && careCapHit) {
+      continue; // try the next category (might be companion)
+    }
+    if (lane === "companion") {
+      if (companionCapHit) continue;
+      if (companionSilenced) continue;
+    }
+
     const eligibility = isCategoryEligible({
       category,
       profile,
@@ -567,22 +636,6 @@ function mostRecentUserMessageAt(history: Message[]): Date | null {
     if (m.role === "user") return m.createdAt;
   }
   return null;
-}
-
-async function countProactiveSendsSince(
-  deviceId: string,
-  since: Date,
-): Promise<number> {
-  const [row] = await db
-    .select({ n: sql<number>`count(*)::int` })
-    .from(proactiveSendsTable)
-    .where(
-      and(
-        eq(proactiveSendsTable.deviceId, deviceId),
-        gte(proactiveSendsTable.sentAt, since),
-      ),
-    );
-  return row?.n ?? 0;
 }
 
 function truncateForPush(text: string): string {
