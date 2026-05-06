@@ -287,6 +287,216 @@ router.delete("/summaries/:id", async (req, res): Promise<void> => {
   }
 });
 
+// Bulk import: replace this device's server-side profile + history with a
+// previously-exported payload from another device/browser. Used by the
+// "Import backup" flow in the mobile profile screen so a fresh APK can
+// pick up the user's real Ashley (otherwise the next /state hydration
+// overwrites the imported AsyncStorage data with this device's empty
+// server defaults).
+const ImportProfileSchema = z
+  .object({
+    name: z.string().max(MAX_FIELD_LEN).optional(),
+    age: z.string().max(MAX_FIELD_LEN).optional(),
+    identity: z.string().max(MAX_FIELD_LEN).optional(),
+    appearance: z.string().max(MAX_FIELD_LEN).optional(),
+    personality: z.string().max(MAX_FIELD_LEN).optional(),
+    speakingStyle: z.string().max(MAX_FIELD_LEN).optional(),
+    refersToUserAs: z.string().max(120).optional(),
+    sharedHistory: z.string().max(MAX_LARGE_FIELD_LEN).optional(),
+    replikaExcerpts: z.string().max(MAX_LARGE_FIELD_LEN).optional(),
+    replikaCarryover: z.string().max(64_000).optional(),
+    replikaCarryoverSummary: z.string().max(MAX_LARGE_FIELD_LEN).optional(),
+    relationshipMode: z.string().max(120).optional(),
+    builderAwareMode: z.boolean().optional(),
+    voiceMode: z.boolean().optional(),
+    // contentMode + intimacyLevel are intentionally NOT importable: those
+    // require the policy gate (server flag + 18+ confirmation) and an
+    // explicit user tap. Any backup that carries them is silently dropped.
+    proactiveCadence: z.enum(PROACTIVE_CADENCES).optional(),
+    onboardedAt: z.string().nullable().optional(),
+  })
+  .strip();
+
+const ImportMessageSchema = z
+  .object({
+    id: z.string().min(1).max(128),
+    role: z.enum(["user", "ashley"]),
+    content: z.string().max(64_000),
+    status: z.enum(["complete", "streaming", "interrupted"]).optional(),
+    imageUrl: z.string().max(2048).nullable().optional(),
+    selfieVibe: z.string().max(2048).nullable().optional(),
+    imageMimeType: z.string().max(120).nullable().optional(),
+    imageCategory: z.string().max(60).nullable().optional(),
+    imageCaption: z.string().max(MAX_FIELD_LEN).nullable().optional(),
+    imageAnalysisMode: z.string().max(60).nullable().optional(),
+    imageRemembered: z.boolean().nullable().optional(),
+    replyTo: z
+      .object({
+        id: z.string().max(128),
+        role: z.enum(["user", "ashley"]),
+        preview: z.string().max(MAX_FIELD_LEN),
+      })
+      .nullable()
+      .optional(),
+    createdAt: z.string(),
+  })
+  .strip();
+
+const ImportMemorySchema = z
+  .object({
+    id: z.string().min(1).max(128),
+    content: z.string().min(1).max(MAX_LARGE_FIELD_LEN),
+    tag: z.string().max(60).optional(),
+    importance: z.number().int().min(1).max(5).optional(),
+    createdAt: z.string().optional(),
+    updatedAt: z.string().optional(),
+  })
+  .strip();
+
+const ImportSummarySchema = z
+  .object({
+    id: z.string().min(1).max(128),
+    summary: z.string().min(1).max(MAX_LARGE_FIELD_LEN),
+    messageCount: z.number().int().min(0).optional(),
+    coveredThroughCreatedAt: z.string(),
+    createdAt: z.string().optional(),
+    updatedAt: z.string().optional(),
+  })
+  .strip();
+
+const ImportPayloadSchema = z
+  .object({
+    schema: z.literal("ashley-sidecar-export"),
+    version: z.number().int().min(1),
+    data: z.object({
+      profile: ImportProfileSchema,
+      messages: z.array(ImportMessageSchema).max(50_000),
+      memories: z.array(ImportMemorySchema).max(10_000),
+      summaries: z.array(ImportSummarySchema).max(10_000),
+    }),
+  })
+  .strip();
+
+function parseDateOrNow(s: string | undefined | null): Date {
+  if (!s) return new Date();
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? new Date() : d;
+}
+
+router.post("/state/import", async (req, res): Promise<void> => {
+  const deviceId = getDeviceId(req);
+  const parsed = ImportPayloadSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const { profile, messages, memories, summaries } = parsed.data.data;
+
+  try {
+    // Make sure a profile row exists for this device BEFORE the txn so the
+    // update inside the txn always has a target row.
+    await getOrCreateProfileFor(deviceId);
+
+    const profileUpdates: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(profile)) {
+      if (k === "onboardedAt") {
+        profileUpdates[k] = v ? parseDateOrNow(v as string) : null;
+      } else if (v !== undefined) {
+        profileUpdates[k] = v;
+      }
+    }
+
+    const messageRows = messages.map((m) => ({
+      id: m.id,
+      deviceId,
+      role: m.role,
+      content: m.content,
+      status: m.status ?? "complete",
+      imageUrl: m.imageUrl ?? null,
+      selfieVibe: m.selfieVibe ?? null,
+      imageMimeType: m.imageMimeType ?? null,
+      imageCategory: m.imageCategory ?? null,
+      imageCaption: m.imageCaption ?? null,
+      imageAnalysisMode: m.imageAnalysisMode ?? null,
+      imageRemembered: m.imageRemembered ?? null,
+      replyToId: m.replyTo?.id ?? null,
+      replyToRole: m.replyTo?.role ?? null,
+      replyToPreview: m.replyTo?.preview ?? null,
+      createdAt: parseDateOrNow(m.createdAt),
+    }));
+    const memoryRows = memories.map((m) => ({
+      id: m.id,
+      deviceId,
+      content: m.content,
+      tag: m.tag ?? "general",
+      importance: m.importance ?? 3,
+      createdAt: parseDateOrNow(m.createdAt),
+      updatedAt: parseDateOrNow(m.updatedAt),
+    }));
+    const summaryRows = summaries.map((s) => ({
+      id: s.id,
+      deviceId,
+      summary: s.summary,
+      messageCount: s.messageCount ?? 0,
+      coveredThroughCreatedAt: parseDateOrNow(s.coveredThroughCreatedAt),
+      createdAt: parseDateOrNow(s.createdAt),
+      updatedAt: parseDateOrNow(s.updatedAt),
+    }));
+
+    // Atomic: either everything lands or nothing does. Without this, a
+    // mid-import failure (constraint violation, network blip on a chunk)
+    // would leave the user with their history wiped server-side and no
+    // replacement, and the next /state hydration would clobber their
+    // local AsyncStorage cache too — total data loss.
+    await db.transaction(async (tx) => {
+      if (Object.keys(profileUpdates).length > 0) {
+        await tx
+          .update(ashleyProfileTable)
+          .set(profileUpdates)
+          .where(eq(ashleyProfileTable.deviceId, deviceId));
+      }
+      await tx.delete(messagesTable).where(eq(messagesTable.deviceId, deviceId));
+      await tx.delete(memoriesTable).where(eq(memoriesTable.deviceId, deviceId));
+      await tx
+        .delete(conversationSummariesTable)
+        .where(eq(conversationSummariesTable.deviceId, deviceId));
+
+      const CHUNK = 500;
+      for (let i = 0; i < messageRows.length; i += CHUNK) {
+        await tx
+          .insert(messagesTable)
+          .values(messageRows.slice(i, i + CHUNK))
+          .onConflictDoNothing({ target: messagesTable.id });
+      }
+      for (let i = 0; i < memoryRows.length; i += CHUNK) {
+        await tx
+          .insert(memoriesTable)
+          .values(memoryRows.slice(i, i + CHUNK))
+          .onConflictDoNothing({ target: memoriesTable.id });
+      }
+      for (let i = 0; i < summaryRows.length; i += CHUNK) {
+        await tx
+          .insert(conversationSummariesTable)
+          .values(summaryRows.slice(i, i + CHUNK))
+          .onConflictDoNothing({ target: conversationSummariesTable.id });
+      }
+    });
+
+    res.json({
+      ok: true,
+      counts: {
+        profile: Object.keys(profileUpdates).length > 0,
+        messages: messages.length,
+        memories: memories.length,
+        summaries: summaries.length,
+      },
+    });
+  } catch (err) {
+    req.log.error({ err }, "POST /state/import failed");
+    res.status(500).json({ error: "Could not import backup" });
+  }
+});
+
 // Force-delete this device's profile + everything else. Used by the
 // "reset companion" affordance in the app (and by tests).
 router.delete("/state", async (req, res): Promise<void> => {

@@ -15,6 +15,7 @@ import {
   type Memory,
   type Message,
 } from "./storage";
+import { importBackupToServer } from "./aiClient";
 
 export const EXPORT_SCHEMA = "ashley-sidecar-export";
 export const EXPORT_VERSION = 1;
@@ -37,6 +38,12 @@ export type ImportSummary = {
   memories: number;
   messages: number;
   summaries: number;
+  /** True if the imported payload was also pushed to the server. False
+   * means we only updated AsyncStorage — the next /state hydration will
+   * overwrite this device's local copy with whatever the server has. */
+  serverPushed: boolean;
+  /** Reason the server push didn't happen, if applicable. */
+  serverPushError?: string;
 };
 
 export type ExportResult =
@@ -254,6 +261,27 @@ export async function applyImportedPayload(
     ...payload.data.profile,
     updatedAt: new Date().toISOString(),
   };
+  // Push to the server FIRST so the source-of-truth /state endpoint will
+  // return the imported data on the next hydration. If this fails we
+  // still write to AsyncStorage so the user has *something*, but we
+  // surface the error so they know server-side data wasn't replaced.
+  let serverPushed = false;
+  let serverPushError: string | undefined;
+  try {
+    await importBackupToServer({
+      schema: payload.schema,
+      version: payload.version,
+      data: {
+        profile,
+        messages: payload.data.messages,
+        memories: payload.data.memories,
+        summaries: payload.data.summaries,
+      },
+    });
+    serverPushed = true;
+  } catch (err) {
+    serverPushError = err instanceof Error ? err.message : String(err);
+  }
   await saveProfile(profile);
   await saveMemories(payload.data.memories);
   await saveMessages(payload.data.messages);
@@ -263,6 +291,8 @@ export async function applyImportedPayload(
     memories: payload.data.memories.length,
     messages: payload.data.messages.length,
     summaries: payload.data.summaries.length,
+    serverPushed,
+    serverPushError,
   };
 }
 
@@ -287,5 +317,7 @@ export function formatImportSummary(s: ImportSummary): string {
   parts.push(`${s.memories} memor${s.memories === 1 ? "y" : "ies"}`);
   parts.push(`${s.messages} message${s.messages === 1 ? "" : "s"}`);
   parts.push(`${s.summaries} summar${s.summaries === 1 ? "y" : "ies"}`);
-  return parts.join(", ");
+  const base = parts.join(", ");
+  if (s.serverPushed) return `${base} (synced to server)`;
+  return `${base} — WARNING server push failed${s.serverPushError ? `: ${s.serverPushError}` : ""}. Will be overwritten on next hydration.`;
 }

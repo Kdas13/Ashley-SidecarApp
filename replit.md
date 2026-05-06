@@ -36,7 +36,7 @@ A personal AI companion mobile app providing local-first, stateless AI chat with
 
 ## Architecture decisions
 
-- **Local-First with Stateless AI Chat**: Profile, memories, and messages are stored locally on the device. The API server provides stateless AI chat responses, reducing server load and ensuring privacy.
+- **Hybrid storage with server source-of-truth**: AsyncStorage is a write-through cache; the server (keyed by device id) is the source of truth. `/state` hydration on every cold load overwrites local cache. Cross-device migration therefore requires pushing the imported payload to the server via `POST /api/state/import` (wholesale replace) — local-only writes get clobbered by the next hydration.
 - **Streaming AI Replies**: AI chat replies are streamed via Server-Sent Events (SSE) for a more responsive user experience, with adaptive presence signals.
 - **Two-Call Selfie Generation**: Selfie image generation is split into two API calls (`/api/chat/reply` and `/api/chat/selfie`) to provide immediate text display while the image generates in the background, sidestepping connection timeouts.
 - **Dev-Server Resilience**: The mobile client includes retry logic for API calls that encounter Replit's dev server placeholder, ensuring a smoother development experience during server restarts.

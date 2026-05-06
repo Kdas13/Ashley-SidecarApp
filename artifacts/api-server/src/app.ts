@@ -59,6 +59,9 @@ app.use((req, res, next) => {
   // *response* is SSE but the request body is identical to Stage 1.
   if (req.path === "/api/chat/transcribe/stream")
     return jsonLarge(req, res, next);
+  // Backup import payload contains the user's full message history,
+  // memories, and summaries — easily multiple MB.
+  if (req.path === "/api/state/import") return jsonLarge(req, res, next);
   return jsonSmall(req, res, next);
 });
 app.use(express.urlencoded({ extended: true }));

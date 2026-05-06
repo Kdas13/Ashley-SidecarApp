@@ -613,6 +613,65 @@ export async function updateProfileOnServer(
 }
 
 /**
+ * Push a previously-exported backup payload to the server, replacing this
+ * device's server-side profile / messages / memories / summaries wholesale.
+ * Required because /state is the source of truth: without this push the
+ * next /state hydration would overwrite imported AsyncStorage data with
+ * the device's empty server defaults.
+ */
+export async function importBackupToServer(payload: {
+  schema: string;
+  version: number;
+  data: {
+    profile: Partial<AshleyProfile>;
+    messages: Message[];
+    memories: Memory[];
+    summaries: ConversationSummary[];
+  };
+}): Promise<{
+  ok: true;
+  counts: {
+    profile: boolean;
+    messages: number;
+    memories: number;
+    summaries: number;
+  };
+}> {
+  // Reshape messages from local Message type to the wire shape the server
+  // expects. The server flattens replyTo into three columns.
+  const wireMessages = payload.data.messages.map((m) => ({
+    id: m.id,
+    role: m.role,
+    content: m.content,
+    status: m.status ?? "complete",
+    imageUrl: m.imageUrl ?? null,
+    selfieVibe: m.selfieVibe ?? null,
+    imageMimeType: m.imageMimeType ?? null,
+    imageCategory: m.imageCategory ?? null,
+    imageCaption: m.imageCaption ?? null,
+    imageAnalysisMode: m.imageAnalysisMode ?? null,
+    imageRemembered: m.imageRemembered ?? null,
+    replyTo: m.replyTo ?? null,
+    createdAt: m.createdAt,
+  }));
+  const body = {
+    schema: payload.schema,
+    version: payload.version,
+    data: {
+      profile: payload.data.profile,
+      messages: wireMessages,
+      memories: payload.data.memories,
+      summaries: payload.data.summaries,
+    },
+  };
+  return fetchJSON("/state/import", {
+    method: "POST",
+    body: JSON.stringify(body),
+    skipRetry: true,
+  });
+}
+
+/**
  * Upsert (or clear) this device's Expo push token on the server. Pass
  * a non-empty string to register, or `null` to unregister (used when the
  * user picks the "Off" cadence or denies notification permission).
