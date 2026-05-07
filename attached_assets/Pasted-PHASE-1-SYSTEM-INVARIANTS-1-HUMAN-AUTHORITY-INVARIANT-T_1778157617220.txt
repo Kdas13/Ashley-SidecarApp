@@ -1,0 +1,91 @@
+PHASE 1 SYSTEM INVARIANTS
+
+1. HUMAN AUTHORITY INVARIANT
+   The platform may support, summarize, translate, and surface concerns, but all safeguarding and clinical decisions remain with qualified humans.
+
+The AI must never:
+
+- diagnose,
+- prescribe,
+- classify clinical severity authoritatively,
+- or autonomously escalate emergency responses.
+
+---
+
+2. COMMUNICATION CLARITY INVARIANT
+   The system exists to reduce communication failure for vulnerable users.
+
+Every workflow should prioritize:
+
+- clarity,
+- simplicity,
+- low cognitive load,
+- multilingual accessibility,
+- and understanding confirmation.
+
+If a feature increases confusion or emotional dependency, remove or simplify it.
+
+---
+
+3. TRANSPARENCY INVARIANT
+   Users must always understand:
+
+- when AI is being used,
+- what is stored,
+- who can access data,
+- and what the system can/cannot do.
+
+Translations, summaries, and safeguarding prompts should be explainable and reviewable.
+
+Original wording should always be preserved alongside translated output.
+
+---
+
+4. SAFEGUARDING SUPPORT INVARIANT
+   The system may:
+
+- identify repeated distress patterns,
+- surface possible safeguarding concerns,
+- encourage seeking support,
+- and recommend human review.
+
+The system must never present observations as definitive conclusions.
+
+Outputs should remain observational and assistive, not authoritative.
+
+---
+
+5. EMOTIONAL BOUNDARY INVARIANT
+   The platform should feel:
+
+- calm,
+- supportive,
+- emotionally intelligent,
+- and welcoming.
+
+But it must never:
+
+- encourage dependency,
+- imply emotional exclusivity,
+- discourage real-world support,
+- or position itself as a replacement for human care.
+
+The emotional layer exists to improve accessibility and trust — not attachment.
+
+---
+
+6. PILOT SCOPE INVARIANT
+   Phase 1 is a pilot-ready proof of concept intended to validate:
+
+- multilingual communication support,
+- appointment preparation,
+- continuity-of-care workflows,
+- and safeguarding usability.
+
+Phase 1 is NOT:
+
+- a production medical system,
+- a regulated diagnostic platform,
+- or a fully autonomous safeguarding tool.
+
+All architecture and feature decisions should stay inside this boundary.

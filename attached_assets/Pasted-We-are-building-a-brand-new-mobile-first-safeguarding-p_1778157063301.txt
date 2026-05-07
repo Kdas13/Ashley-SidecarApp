@@ -1,0 +1,296 @@
+We are building a brand new mobile-first safeguarding platform MVP focused on refugee GP safeguarding continuity and multilingual healthcare communication.
+
+This is NOT a companion AI.
+This is NOT a diagnosis tool.
+This is NOT an emotional dependency system.
+
+The platform should feel:
+
+- calm,
+- friendly,
+- emotionally intelligent,
+- non-judgmental,
+- supportive,
+  while remaining clinically structured and safeguarding-focused.
+
+CORE PURPOSE:
+Help refugees and vulnerable migrants:
+
+- explain symptoms clearly,
+- prepare for GP appointments,
+- overcome language barriers,
+- understand healthcare instructions,
+- and maintain continuity of care after appointments.
+
+PHASE 1 MVP ONLY.
+Do NOT add unnecessary features outside scope.
+
+---
+
+TECH STACK
+
+Frontend:
+
+- React Native with Expo
+- TypeScript
+
+Backend:
+
+- Node.js + Express
+
+Database:
+
+- Supabase/PostgreSQL
+
+Authentication:
+
+- Supabase Auth
+
+AI Layer:
+
+- OpenAI API for:
+  - summarization,
+  - structured symptom extraction,
+  - safeguarding prompts,
+  - plain-language explanations
+
+Translation:
+
+- DeepL API preferred
+- Google Translate fallback
+
+Speech:
+
+- Text first for MVP
+- Voice later
+
+PDF Export:
+
+- Backend-generated PDF summary sheets
+
+---
+
+PHASE 1 FEATURES
+
+1. MULTILINGUAL ONBOARDING
+
+User selects:
+
+- native language,
+- secondary language,
+- literacy level,
+- accessibility preferences,
+- optional emergency contact,
+- consent preferences.
+
+Initial launch languages:
+
+- Ukrainian
+- Arabic
+- Urdu
+- Pashto
+- Somali
+
+Accessibility options:
+
+- larger text,
+- audio playback,
+- simplified mode,
+- slower pacing mode.
+
+---
+
+2. DAILY WELLBEING CHECK-INS
+
+Short, lightweight daily check-ins.
+
+Questions include:
+
+- How are you feeling today?
+- Are you in pain?
+- Have you eaten/drank water?
+- Have you taken medication?
+- How was your sleep?
+- Do you feel safe?
+
+AI should:
+
+- detect repeated distress,
+- notice missed check-ins,
+- identify safeguarding concerns,
+- track symptom changes over time.
+
+Do NOT diagnose.
+
+---
+
+3. APPOINTMENT PREPARATION FLOW
+
+The app should guide users through structured intake before a GP appointment.
+
+Collect:
+
+- main concern,
+- symptom duration,
+- severity,
+- medications,
+- allergies,
+- sleep,
+- appetite,
+- pain level,
+- mental health concerns,
+- safeguarding concerns.
+
+Generate:
+
+- patient summary,
+- GP clinical summary,
+- translated versions,
+- exportable consultation sheet.
+
+---
+
+4. TRANSLATION SYSTEM
+
+Bidirectional translation system.
+
+Workflow:
+Patient language -> clinician preferred language -> translated response back.
+
+Support:
+
+- text translation first,
+- voice later.
+
+Always preserve:
+
+- original wording,
+- translated wording,
+- translation confidence.
+
+Clinician may choose preferred language:
+Example:
+
+- patient speaks Ukrainian,
+- clinician prefers Urdu,
+- system translates both directions.
+
+---
+
+5. GP EXPORT SHEET
+
+Generate clean printable/exportable PDF.
+
+Include:
+
+- patient language,
+- clinician language,
+- symptoms,
+- symptom timeline,
+- medications,
+- allergies,
+- safeguarding indicators,
+- mental health indicators,
+- AI confidence warnings.
+
+Must look clinically clean and readable.
+
+---
+
+6. POST-APPOINTMENT FOLLOW-UP
+
+After appointment:
+
+- translated recap,
+- medication reminders,
+- follow-up reminders,
+- explanation of next steps,
+- escalation guidance.
+
+Example:
+“Return if chest pain worsens.”
+
+Translate clearly into patient language.
+
+---
+
+7. SAFEGUARDING LAYER
+
+Detect:
+
+- repeated distress,
+- severe sleep issues,
+- medication non-compliance,
+- missed check-ins,
+- danger/abuse language,
+- crisis indicators.
+
+System behaviour:
+
+- encourage seeking help,
+- show emergency resources,
+- optionally notify trusted contact.
+
+NO automatic emergency dispatch.
+
+---
+
+CLINICAL BOUNDARIES
+
+THE SYSTEM MUST NEVER:
+
+- diagnose conditions,
+- prescribe medication,
+- alter dosages,
+- claim certainty,
+- replace clinicians,
+- create emotional dependency,
+- pretend to be human.
+
+The app is:
+“AI-assisted safeguarding and continuity-of-care support.”
+
+---
+
+UI/UX REQUIREMENTS
+
+Design principles:
+
+- soft calming interface,
+- minimal cognitive load,
+- one question at a time,
+- large buttons,
+- multilingual-first,
+- low-literacy friendly.
+
+The tone should feel:
+
+- calm,
+- welcoming,
+- reassuring,
+- emotionally intelligent,
+  without becoming overly personal.
+
+Think:
+supportive healthcare guide.
+
+NOT:
+AI girlfriend/companion.
+
+---
+
+PHASE 1 GOAL
+
+Primary proof of concept:
+
+A refugee can:
+
+1. complete health check-ins in their own language,
+2. prepare for a GP appointment,
+3. generate a GP-ready summary,
+4. communicate through translation,
+5. receive understandable follow-up guidance.
+
+That is the entire goal of Phase 1.
+
+Do not overbuild beyond this scope.
