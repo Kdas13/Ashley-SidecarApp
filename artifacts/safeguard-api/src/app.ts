@@ -2,6 +2,7 @@ import express, { type Express, type RequestHandler } from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
 import router from "./routes";
+import publicExportsRouter from "./routes/publicExports";
 import { reminderTickHandler } from "./routes/push";
 import { logger } from "./lib/logger";
 import { apiRateLimit } from "./middleware/rateLimit";
@@ -51,6 +52,10 @@ const gate: RequestHandler = (req, res, next) => {
 // without a Clerk JWT. The handler still requires `X-Reminder-Cron-Secret`
 // to match `REMINDER_CRON_SECRET`.
 app.use("/safeguard-api", reminderTickHandler());
+// Token-gated PDF fetch for surgery scans. Mounted before the Clerk gate
+// so a phone scanning the QR doesn't need a session — auth is the opaque
+// token in the URL, see `routes/publicExports.ts`.
+app.use("/safeguard-api", publicExportsRouter);
 app.use("/safeguard-api", gate, router);
 
 export default app;

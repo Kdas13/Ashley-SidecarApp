@@ -7,6 +7,7 @@ import { RemindersOptIn } from "@/components/RemindersOptIn";
 import {
   useApi,
   type SafeguardFollowup,
+  type SafeguardExportDelivery,
   type FollowupCadence,
   type Confidence,
 } from "@/lib/api";
@@ -53,6 +54,20 @@ export default function Followup() {
     if (Array.isArray(data.followups)) return data.followups;
     return [];
   })();
+
+  // Surface "sent to surgery" status for the appointment-scoped view.
+  // The /me/followups list view doesn't carry deliveries, so this is empty
+  // there — by design, since deliveries belong to a specific appointment.
+  const deliveries: SafeguardExportDelivery[] = (() => {
+    const data = q.data as
+      | { deliveries?: SafeguardExportDelivery[] }
+      | undefined;
+    return data?.deliveries ?? [];
+  })();
+  const latestSuccessful = deliveries.find(
+    (d) => d.status === "sent" || d.status === "delivered",
+  );
+  const latestFailure = deliveries.find((d) => d.status === "failed");
 
   // Once the items have loaded, honour the deep-link: scroll the targeted
   // reminder into view, and open its original-wording disclosure if the
@@ -113,6 +128,50 @@ export default function Followup() {
       <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 text-amber-900 text-xs px-3 py-2">
         {t("ai.generatedBanner")}
       </div>
+
+      {latestSuccessful && (
+        <div
+          className="mt-4 rounded-md border border-emerald-300 bg-emerald-50 text-emerald-900 px-3 py-2 text-sm"
+          data-testid="delivery-banner-success"
+        >
+          {t("delivery.followupBanner.sent", {
+            channel: t(
+              `delivery.channel.${latestSuccessful.channel}.short`,
+            ),
+            recipient:
+              latestSuccessful.recipient ||
+              latestSuccessful.surgeryName ||
+              t("delivery.unknownSurgery"),
+            when: new Date(
+              latestSuccessful.fetchedAt ??
+                latestSuccessful.sentAt ??
+                latestSuccessful.createdAt,
+            ).toLocaleString(),
+          })}
+        </div>
+      )}
+      {!latestSuccessful && latestFailure && (
+        <div
+          className="mt-4 rounded-md border border-destructive bg-red-50 text-red-900 px-3 py-2 text-sm"
+          data-testid="delivery-banner-failed"
+        >
+          {t("delivery.followupBanner.failed", {
+            recipient:
+              latestFailure.recipient ||
+              latestFailure.surgeryName ||
+              t("delivery.unknownSurgery"),
+          })}{" "}
+          {apptId && (
+            <a
+              href={`/safeguard/appointments/${apptId}/review`}
+              className="underline"
+              data-testid="delivery-banner-retry"
+            >
+              {t("delivery.followupBanner.retry")}
+            </a>
+          )}
+        </div>
+      )}
 
       <RemindersOptIn />
 

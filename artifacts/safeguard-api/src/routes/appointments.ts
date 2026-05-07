@@ -7,6 +7,7 @@ import {
   safeguardAppointmentSummariesTable,
   safeguardAppointmentUtterancesTable,
   safeguardAppointmentExportsTable,
+  safeguardAppointmentExportDeliveriesTable,
   safeguardFollowupsTable,
   safeguardTranslationsTable,
   safeguardProfilesTable,
@@ -31,6 +32,12 @@ import {
   nthReminderAt,
   type Cadence,
 } from "../lib/reminderScheduler";
+import {
+  buildQrDelivery,
+  buildNhsAppShare,
+  isValidEmail,
+  sendExportEmail,
+} from "../lib/exportDelivery";
 
 const router: IRouter = Router();
 
@@ -200,6 +207,24 @@ router.get("/me/appointments/:id", async (req, res, next) => {
       .from(safeguardAppointmentExportsTable)
       .where(eq(safeguardAppointmentExportsTable.appointmentId, id))
       .orderBy(desc(safeguardAppointmentExportsTable.generatedAt));
+    const deliveries = await db
+      .select({
+        id: safeguardAppointmentExportDeliveriesTable.id,
+        exportId: safeguardAppointmentExportDeliveriesTable.exportId,
+        channel: safeguardAppointmentExportDeliveriesTable.channel,
+        status: safeguardAppointmentExportDeliveriesTable.status,
+        recipient: safeguardAppointmentExportDeliveriesTable.recipient,
+        surgeryName: safeguardAppointmentExportDeliveriesTable.surgeryName,
+        sentAt: safeguardAppointmentExportDeliveriesTable.sentAt,
+        fetchedAt: safeguardAppointmentExportDeliveriesTable.fetchedAt,
+        expiresAt: safeguardAppointmentExportDeliveriesTable.expiresAt,
+        errorCode: safeguardAppointmentExportDeliveriesTable.errorCode,
+        errorMessage: safeguardAppointmentExportDeliveriesTable.errorMessage,
+        createdAt: safeguardAppointmentExportDeliveriesTable.createdAt,
+      })
+      .from(safeguardAppointmentExportDeliveriesTable)
+      .where(eq(safeguardAppointmentExportDeliveriesTable.appointmentId, id))
+      .orderBy(desc(safeguardAppointmentExportDeliveriesTable.createdAt));
 
     // Pick the latest summary per audience.
     const latestPatient = summaries.find((s) => s.audience === "patient") ?? null;
@@ -214,6 +239,7 @@ router.get("/me/appointments/:id", async (req, res, next) => {
       utterances: utteranceRows,
       followups,
       exports: exports_,
+      deliveries,
     });
   } catch (err) {
     next(err);
@@ -651,6 +677,245 @@ router.get(
     }
   },
 );
+
+// ---------------------------------------------------------------------------
+// Export delivery — send the generated PDF straight to the surgery
+// ---------------------------------------------------------------------------
+
+const DeliverBody = z.discriminatedUnion("channel", [
+  z.object({
+    channel: z.literal("qr"),
+    surgeryName: z.string().min(1).max(200),
+  }),
+  z.object({
+    channel: z.literal("email"),
+    recipientEmail: z.string().min(3).max(320),
+    surgeryName: z.string().max(200).optional().default(""),
+  }),
+  z.object({
+    channel: z.literal("nhs_app"),
+    surgeryName: z.string().min(1).max(200),
+  }),
+]);
+
+router.post(
+  "/me/appointments/:id/export/:exportId/deliver",
+  async (req, res, next) => {
+    try {
+      const userId = req.auth!.userId;
+      const id = req.params.id!;
+      const exportId = req.params.exportId!;
+      if (!(await requireConsent(userId))) {
+        res.status(403).json({ error: "consent_required" });
+        return;
+      }
+      const parsed = DeliverBody.safeParse(req.body);
+      if (!parsed.success) {
+        res
+          .status(400)
+          .json({ error: "invalid_body", issues: parsed.error.issues });
+        return;
+      }
+
+      const exportRows = await db
+        .select()
+        .from(safeguardAppointmentExportsTable)
+        .where(
+          and(
+            eq(safeguardAppointmentExportsTable.id, exportId),
+            eq(safeguardAppointmentExportsTable.appointmentId, id),
+            eq(safeguardAppointmentExportsTable.userId, userId),
+          ),
+        );
+      const exportRow = exportRows[0];
+      if (!exportRow) {
+        res.status(404).json({ error: "export_not_found" });
+        return;
+      }
+
+      if (parsed.data.channel === "qr") {
+        const qr = await buildQrDelivery();
+        const [row] = await db
+          .insert(safeguardAppointmentExportDeliveriesTable)
+          .values({
+            appointmentId: id,
+            exportId,
+            userId,
+            channel: "qr",
+            status: "sent",
+            recipient: parsed.data.surgeryName,
+            surgeryName: parsed.data.surgeryName,
+            accessToken: qr.token,
+            expiresAt: qr.expiresAt,
+            sentAt: new Date(),
+          })
+          .returning();
+        res.json({
+          delivery: row,
+          qr: { publicUrl: qr.publicUrl, dataUrl: qr.qrDataUrl },
+        });
+        return;
+      }
+
+      if (parsed.data.channel === "nhs_app") {
+        const profileRows = await db
+          .select({ preferredName: safeguardProfilesTable.preferredName })
+          .from(safeguardProfilesTable)
+          .where(eq(safeguardProfilesTable.userId, userId));
+        const share = await buildNhsAppShare({
+          surgeryName: parsed.data.surgeryName,
+          patientName: profileRows[0]?.preferredName ?? "",
+        });
+        // Status starts as "queued": minting a share link is not the
+        // same as the patient actually completing the share gesture,
+        // and the OS share sheet may be cancelled. The frontend bumps
+        // this row to "sent" via the share-confirmed endpoint once
+        // navigator.share() resolves successfully. The recipient
+        // opening the link still flips it to "delivered" via the
+        // public token route, regardless of whether share-confirmed
+        // ever fired.
+        const [row] = await db
+          .insert(safeguardAppointmentExportDeliveriesTable)
+          .values({
+            appointmentId: id,
+            exportId,
+            userId,
+            channel: "nhs_app",
+            status: "queued",
+            recipient: parsed.data.surgeryName,
+            surgeryName: parsed.data.surgeryName,
+            accessToken: share.token,
+            expiresAt: share.expiresAt,
+          })
+          .returning();
+        res.json({
+          delivery: row,
+          share: {
+            publicUrl: share.publicUrl,
+            shareText: share.shareText,
+          },
+        });
+        return;
+      }
+
+      // email
+      const to = parsed.data.recipientEmail.trim();
+      if (!isValidEmail(to)) {
+        res.status(400).json({
+          error: "invalid_email",
+          message: "Enter a full surgery email address (e.g. team@surgery.nhs.uk).",
+        });
+        return;
+      }
+      const profileRows = await db
+        .select({ preferredName: safeguardProfilesTable.preferredName })
+        .from(safeguardProfilesTable)
+        .where(eq(safeguardProfilesTable.userId, userId));
+      const result = await sendExportEmail({
+        to,
+        surgeryName: parsed.data.surgeryName,
+        pdfBytes: Buffer.from(exportRow.pdfBase64, "base64"),
+        patientName: profileRows[0]?.preferredName ?? "",
+        appointmentId: id,
+      });
+      const now = new Date();
+      const [row] = await db
+        .insert(safeguardAppointmentExportDeliveriesTable)
+        .values({
+          appointmentId: id,
+          exportId,
+          userId,
+          channel: "email",
+          status: result.status,
+          recipient: to,
+          surgeryName: parsed.data.surgeryName ?? "",
+          sentAt: result.status === "sent" ? now : null,
+          errorCode: result.errorCode ?? "",
+          errorMessage: result.errorMessage ?? "",
+        })
+        .returning();
+      if (result.status === "failed") {
+        res.status(502).json({
+          delivery: row,
+          error: result.errorCode ?? "delivery_failed",
+          message: result.errorMessage ?? "Email delivery failed.",
+        });
+        return;
+      }
+      res.json({ delivery: row });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+// Bump an `nhs_app` delivery from "queued" to "sent" once the patient's
+// device confirms `navigator.share()` resolved successfully. Idempotent:
+// only "queued" rows for this user / appointment / channel are affected.
+router.post(
+  "/me/appointments/:id/deliveries/:deliveryId/share-confirmed",
+  async (req, res, next) => {
+    try {
+      const userId = req.auth!.userId;
+      const id = req.params.id!;
+      const deliveryId = req.params.deliveryId!;
+      const [row] = await db
+        .update(safeguardAppointmentExportDeliveriesTable)
+        .set({ status: "sent", sentAt: new Date() })
+        .where(
+          and(
+            eq(safeguardAppointmentExportDeliveriesTable.id, deliveryId),
+            eq(safeguardAppointmentExportDeliveriesTable.appointmentId, id),
+            eq(safeguardAppointmentExportDeliveriesTable.userId, userId),
+            eq(safeguardAppointmentExportDeliveriesTable.channel, "nhs_app"),
+            eq(safeguardAppointmentExportDeliveriesTable.status, "queued"),
+          ),
+        )
+        .returning();
+      if (!row) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      res.json({ delivery: row });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.get("/me/appointments/:id/deliveries", async (req, res, next) => {
+  try {
+    const userId = req.auth!.userId;
+    const id = req.params.id!;
+    const rows = await db
+      .select({
+        id: safeguardAppointmentExportDeliveriesTable.id,
+        exportId: safeguardAppointmentExportDeliveriesTable.exportId,
+        channel: safeguardAppointmentExportDeliveriesTable.channel,
+        status: safeguardAppointmentExportDeliveriesTable.status,
+        recipient: safeguardAppointmentExportDeliveriesTable.recipient,
+        surgeryName: safeguardAppointmentExportDeliveriesTable.surgeryName,
+        sentAt: safeguardAppointmentExportDeliveriesTable.sentAt,
+        fetchedAt: safeguardAppointmentExportDeliveriesTable.fetchedAt,
+        expiresAt: safeguardAppointmentExportDeliveriesTable.expiresAt,
+        errorCode: safeguardAppointmentExportDeliveriesTable.errorCode,
+        errorMessage: safeguardAppointmentExportDeliveriesTable.errorMessage,
+        createdAt: safeguardAppointmentExportDeliveriesTable.createdAt,
+      })
+      .from(safeguardAppointmentExportDeliveriesTable)
+      .where(
+        and(
+          eq(safeguardAppointmentExportDeliveriesTable.appointmentId, id),
+          eq(safeguardAppointmentExportDeliveriesTable.userId, userId),
+        ),
+      )
+      .orderBy(desc(safeguardAppointmentExportDeliveriesTable.createdAt));
+    res.json({ deliveries: rows });
+    return;
+  } catch (err) {
+    next(err);
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Follow-up

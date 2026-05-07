@@ -186,6 +186,59 @@
     "download": "Download PDF",
     "previousExports": "Previous PDFs"
   },
+  "delivery": {
+    "heading": "Send the summary to the surgery",
+    "body": "Pick how the surgery should receive the PDF. Nothing leaves your device unless you press the send button.",
+    "needsPdf": "Generate the PDF first, then come back to send it.",
+    "channelLabel": "How should the surgery get this?",
+    "surgeryName": "Surgery name",
+    "surgeryNamePlaceholder": "e.g. Riverside Medical Practice",
+    "email": "Surgery email address",
+    "submitQr": "Make a printable QR for the surgery",
+    "submitEmail": "Send by email to the surgery",
+    "submitNhsApp": "Share via NHS App or messenger",
+    "share": {
+      "title": "Patient summary for the surgery",
+      "opened": "Share sheet opened. Pick the NHS App, messenger, or email you want to send it through.",
+      "cancelled": "Share cancelled. Press the button again when you're ready, or copy the link from the history below.",
+      "copied": "Link copied. Paste it into the NHS App, messenger, or email you want to send it through."
+    },
+    "retry": "Try again",
+    "print": "Print",
+    "qrReady": "QR code ready.",
+    "qrInstructions": "Print this page (or show the screen at reception). The surgery scans the code and the PDF opens on their device. The link expires in 14 days and only opens this one PDF.",
+    "qrAlt": "QR code linking to the GP-export PDF",
+    "unknownSurgery": "the surgery",
+    "unknownError": "Something went wrong.",
+    "channel": {
+      "qr": {
+        "title": "Printable QR for the surgery",
+        "body": "Show this code at reception. The clinician scans it and the PDF opens on their phone or computer.",
+        "short": "QR"
+      },
+      "email": {
+        "title": "Email to the surgery",
+        "body": "Send the PDF as an attachment to the surgery's email address. Use the secure NHS-mail address if they have one.",
+        "short": "Email"
+      },
+      "nhs_app": {
+        "title": "Share via NHS App, messenger, or email",
+        "body": "Open your phone's share sheet and pick whichever app the surgery prefers — NHS App, WhatsApp, Signal, email. They tap the link and the PDF opens. The link expires in 14 days.",
+        "short": "Shared link"
+      }
+    },
+    "history": {
+      "sent": "Sent by {{channel}} to {{recipient}} at {{when}}.",
+      "delivered": "Opened by {{recipient}} at {{when}} ({{channel}}).",
+      "queued": "Share link ready for {{recipient}} ({{channel}}). Waiting for them to open it.",
+      "failed": "{{channel}} to {{recipient}} did not go through: {{reason}}"
+    },
+    "followupBanner": {
+      "sent": "Summary sent by {{channel}} to {{recipient}} at {{when}}.",
+      "failed": "Last attempt to send the summary to {{recipient}} did not go through.",
+      "retry": "Open the review screen to try again."
+    }
+  },
   "followup": {
     "title": "Reminders and follow-up",
     "intro": "What the clinician asked you to do, in your own language. Tap a reminder to mark it done. Your original notes are always kept.",

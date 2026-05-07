@@ -323,6 +323,66 @@ export const safeguardAppointmentExportsTable = pgTable(
 );
 
 /**
+ * Delivery attempts for a generated GP-export PDF. One row per attempt
+ * (so the user can retry after a failure and we still show the audit
+ * trail). `channel` records HOW it went — `qr` (printed/scanned), `email`
+ * (sent to the surgery's NHS-secure address), `nhs_app` (placeholder for
+ * a future NHS App share intent). `status` is "queued" → "sent" → either
+ * "delivered" (we have evidence the surgery fetched it, only meaningful
+ * for `qr`) or "failed". `recipient` is the surgery email/name shown back
+ * to the user as "sent to {recipient} at {time}".
+ *
+ * For `qr` deliveries `accessToken` is a short opaque token that the
+ * public PDF endpoint accepts in place of a Clerk session — so the
+ * surgery can scan and download without an account. Tokens expire at
+ * `expiresAt` and become single-shot once `fetchedAt` is set (the row
+ * stays for the audit log; subsequent scans re-fetch with the same token
+ * and update `fetchedAt` so the patient sees the most recent scan time).
+ */
+export const safeguardAppointmentExportDeliveriesTable = pgTable(
+  "safeguard_appointment_export_deliveries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appointmentId: uuid("appointment_id")
+      .notNull()
+      .references(() => safeguardAppointmentsTable.id, { onDelete: "cascade" }),
+    exportId: uuid("export_id")
+      .notNull()
+      .references(() => safeguardAppointmentExportsTable.id, {
+        onDelete: "cascade",
+      }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => safeguardUsersTable.id, { onDelete: "cascade" }),
+    // "qr" | "email" | "nhs_app"
+    channel: text("channel").notNull(),
+    // "queued" | "sent" | "delivered" | "failed"
+    status: text("status").notNull().default("queued"),
+    // Free-text label the user sees: "GP surgery email", an actual address,
+    // or the surgery name they typed for a printed QR. Never blank.
+    recipient: text("recipient").notNull().default(""),
+    surgeryName: text("surgery_name").notNull().default(""),
+    accessToken: text("access_token"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    fetchedAt: timestamp("fetched_at", { withTimezone: true }),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+    errorCode: text("error_code").notNull().default(""),
+    errorMessage: text("error_message").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("safeguard_appointment_export_deliveries_appt_idx").on(
+      t.appointmentId,
+    ),
+    uniqueIndex("safeguard_appointment_export_deliveries_token_unique").on(
+      t.accessToken,
+    ),
+  ],
+);
+
+/**
  * Post-appointment follow-up items: medication reminders, follow-up
  * appointments, and explicit escalation notes ("return if X worsens").
  * Original clinician wording AND translated patient-facing wording are

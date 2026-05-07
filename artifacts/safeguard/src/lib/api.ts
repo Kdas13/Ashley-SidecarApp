@@ -185,6 +185,38 @@ export interface SafeguardExportRef {
   byteSize: number;
 }
 
+export type SafeguardDeliveryChannel = "qr" | "email" | "nhs_app";
+export type SafeguardDeliveryStatus =
+  | "queued"
+  | "sent"
+  | "delivered"
+  | "failed";
+
+export interface SafeguardExportDelivery {
+  id: string;
+  exportId: string;
+  channel: SafeguardDeliveryChannel;
+  status: SafeguardDeliveryStatus;
+  recipient: string;
+  surgeryName: string;
+  sentAt: string | null;
+  fetchedAt: string | null;
+  expiresAt: string | null;
+  errorCode: string;
+  errorMessage: string;
+  createdAt: string;
+}
+
+export interface SafeguardDeliveryQrPayload {
+  publicUrl: string;
+  dataUrl: string;
+}
+
+export interface SafeguardDeliverySharePayload {
+  publicUrl: string;
+  shareText: string;
+}
+
 const BASE = "/safeguard-api";
 
 export function useApi() {
