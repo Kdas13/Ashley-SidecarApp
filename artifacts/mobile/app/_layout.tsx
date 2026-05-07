@@ -33,6 +33,8 @@ import {
   saveMessages,
   saveProfile,
   saveSummaries,
+  STORAGE_KEYS,
+  withStorageLock,
 } from "@/lib/storage";
 
 SplashScreen.preventAutoHideAsync();
@@ -126,6 +128,8 @@ async function runAppOpenGreeting(): Promise<void> {
     try {
       const result = await triggerAppOpenGreeting();
       if (!result.greeted) return;
+      // 1. Optimistic splice so the bubble appears without waiting for
+      //    a /state round-trip.
       queryClient.setQueryData<Message[] | undefined>(
         ["messages"],
         (prev) => {
@@ -134,6 +138,23 @@ async function runAppOpenGreeting(): Promise<void> {
           return [...list, result.message];
         },
       );
+      // 2. Persist to AsyncStorage so a kill-and-relaunch before the
+      //    next /state hydration still shows the greeting.
+      try {
+        const snapshot =
+          queryClient.getQueryData<Message[]>(["messages"]) ?? [];
+        await withStorageLock(STORAGE_KEYS.messages, () =>
+          saveMessages(snapshot),
+        );
+      } catch {
+        // Disk write is best-effort; the next /state will reconcile.
+      }
+      // 3. Invalidate to reconcile against the server. The greeting is
+      //    now persisted server-side, so the refetch is guaranteed to
+      //    include it — this also wins any race against an in-flight
+      //    chat-mount refetch that would otherwise clobber the splice
+      //    with a pre-greeting snapshot.
+      void queryClient.invalidateQueries({ queryKey: ["messages"] });
     } finally {
       appOpenGreetingInFlight = null;
     }

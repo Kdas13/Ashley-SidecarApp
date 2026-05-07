@@ -49,6 +49,17 @@ export function useMessages() {
         throw err;
       }
     },
+    // Bootstrap pre-seeds this query via `setQueryData(["messages"], …)`
+    // before the chat screen mounts. Without a staleTime, the chat
+    // screen's observer treats the seeded data as stale and immediately
+    // refetches /api/state in parallel with whatever the bootstrap is
+    // still doing (e.g. the on-app-open greeting). That parallel refetch
+    // can land AFTER the greeting splice and overwrite it with a stale
+    // server snapshot taken before the greeting was persisted. A short
+    // staleTime suppresses the redundant mount refetch while still
+    // letting deliberate invalidations (push receive, send completes,
+    // greeting splice) refresh the list.
+    staleTime: 30_000,
   });
 }
 
