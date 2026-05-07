@@ -14,11 +14,12 @@
 
 import { openai, DEFAULT_MODEL } from "./openai";
 
-export type Lang = "en" | "uk" | "ar" | "ur" | "ps" | "so";
+export type Lang = "en" | "uk" | "ar" | "pl" | "ur" | "ps" | "so";
 export const SUPPORTED_LANGS: readonly Lang[] = [
   "en",
   "uk",
   "ar",
+  "pl",
   "ur",
   "ps",
   "so",
@@ -28,6 +29,7 @@ const LANG_NAME: Record<Lang, string> = {
   en: "English",
   uk: "Ukrainian",
   ar: "Arabic",
+  pl: "Polish",
   ur: "Urdu",
   ps: "Pashto",
   so: "Somali",

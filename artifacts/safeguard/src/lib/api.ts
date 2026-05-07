@@ -10,7 +10,7 @@
 import { useAuth } from "@clerk/clerk-react";
 import { useCallback } from "react";
 
-export type Lang = "en" | "uk" | "ar" | "ur" | "ps" | "so";
+export type Lang = "en" | "uk" | "ar" | "pl" | "ur" | "ps" | "so";
 
 export interface SafeguardProfile {
   userId: string;

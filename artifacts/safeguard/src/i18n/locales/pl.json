@@ -1,0 +1,23 @@
+{
+  "_scaffolded": true,
+  "_note": "Polish bundle is a scaffold for the pilot. Only safety-critical strings are translated; everything else falls back to English with a visible badge. Full translation will be provided by a native Polish speaker before pilot.",
+  "actions": {
+    "needHelpNow": "Potrzebuję pomocy teraz",
+    "signIn": "Zaloguj się",
+    "signOut": "Wyloguj się"
+  },
+  "pilot": {
+    "notice": "Projekt pilotażowy. Niezwiązany z NHS. Nic nie jest udostępniane bez Twojej zgody."
+  },
+  "support": {
+    "title": "Jeśli potrzebujesz pomocy teraz",
+    "intro": "Safeguard nie jest usługą medyczną. Jeśli potrzebujesz pomocy teraz, zadzwoń pod jeden z poniższych numerów.",
+    "close": "Zamknij",
+    "items": {
+      "nhs111": { "name": "NHS 111", "what": "Bezpłatna brytyjska linia porad zdrowotnych, czynna całą dobę.", "number": "111" },
+      "samaritans": { "name": "Samaritans", "what": "Poufna linia wsparcia, czynna całą dobę.", "number": "116 123" },
+      "refugeeCouncil": { "name": "British Red Cross — wsparcie dla uchodźców", "what": "Praktyczna pomoc dla uchodźców.", "number": "0808 196 3651" },
+      "emergency": { "name": "Sytuacja zagrożenia życia", "what": "Policja, straż pożarna, pogotowie.", "number": "999" }
+    }
+  }
+}

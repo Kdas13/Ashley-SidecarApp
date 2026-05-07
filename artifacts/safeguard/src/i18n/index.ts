@@ -6,20 +6,22 @@ import ar from "./locales/ar.json";
 import ur from "./locales/ur.json";
 import ps from "./locales/ps.json";
 import so from "./locales/so.json";
+import pl from "./locales/pl.json";
 
-export const SUPPORTED = ["en", "uk", "ar", "ur", "ps", "so"] as const;
+export const SUPPORTED = ["en", "uk", "ar", "pl", "ur", "ps", "so"] as const;
 export type SupportedLang = (typeof SUPPORTED)[number];
 
 export const RTL_LANGS: SupportedLang[] = ["ar", "ur", "ps"];
 
 // Languages whose bundle is intentionally a scaffold — only safety-critical
 // strings translated, the rest fall back to English with a visible badge.
-export const SCAFFOLDED_LANGS: SupportedLang[] = ["ur", "ps", "so"];
+export const SCAFFOLDED_LANGS: SupportedLang[] = ["pl", "ur", "ps", "so"];
 
 export const LANG_LABEL: Record<SupportedLang, string> = {
   en: "English",
   uk: "Українська",
   ar: "العربية",
+  pl: "Polski",
   ur: "اردو",
   ps: "پښتو",
   so: "Soomaali",
@@ -30,6 +32,7 @@ void i18n.use(initReactI18next).init({
     en: { translation: en },
     uk: { translation: uk },
     ar: { translation: ar },
+    pl: { translation: pl },
     ur: { translation: ur },
     ps: { translation: ps },
     so: { translation: so },
