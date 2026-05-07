@@ -202,6 +202,37 @@
       "medication": "Medication",
       "followup": "Follow-up",
       "escalation": "Come back if things get worse"
+    },
+    "reminder": {
+      "heading": "Phone reminder",
+      "next": "Next reminder: {{when}}",
+      "muted": "Reminders muted for this item.",
+      "mute": "Mute",
+      "unmute": "Turn on",
+      "snooze1h": "Remind me in 1 hour",
+      "snooze24h": "Remind me tomorrow",
+      "cadence": {
+        "none": "No phone reminder.",
+        "once": "Will remind you once.",
+        "recurring": "{{times}}x daily for {{days}} days."
+      }
+    }
+  },
+  "reminders": {
+    "title": "Get phone reminders for these",
+    "body": "Safeguard will send a notification to this device at the right time, in your language. The clinician's exact wording is one tap away. You can turn this off here at any time.",
+    "enable": "Turn on phone reminders",
+    "disable": "Turn off",
+    "on": "Phone reminders are on for this device.",
+    "denied": "Notifications are blocked in your browser. Open browser settings to turn them on for Safeguard.",
+    "errorEnable": "Couldn't turn on reminders. Try again, or check your browser permissions.",
+    "errorDisable": "Couldn't turn off reminders.",
+    "unsupportedTitle": "Phone reminders aren't available here.",
+    "unsupportedReason": {
+      "no-sw": "This browser doesn't support background notifications.",
+      "no-push": "This browser can't receive push notifications.",
+      "no-notifications": "This browser doesn't expose a notifications API.",
+      "insecure": "Reminders only work over a secure (https) connection."
     }
   },
   "checkin": {

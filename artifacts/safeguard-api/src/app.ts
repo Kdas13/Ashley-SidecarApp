@@ -2,6 +2,7 @@ import express, { type Express, type RequestHandler } from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
 import router from "./routes";
+import { reminderTickHandler } from "./routes/push";
 import { logger } from "./lib/logger";
 import { apiRateLimit } from "./middleware/rateLimit";
 import { requireClerkUser } from "./middleware/clerkAuth";
@@ -29,7 +30,7 @@ app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
 const isPublicPath = (p: string): boolean => {
-  return p === "/healthz" || p === "/invariants";
+  return p === "/healthz" || p === "/invariants" || p === "/reminders/tick";
 };
 
 const gate: RequestHandler = (req, res, next) => {
@@ -46,6 +47,10 @@ const gate: RequestHandler = (req, res, next) => {
   });
 };
 
+// Mount the cron tick BEFORE the gate so external schedulers can reach it
+// without a Clerk JWT. The handler still requires `X-Reminder-Cron-Secret`
+// to match `REMINDER_CRON_SECRET`.
+app.use("/safeguard-api", reminderTickHandler());
 app.use("/safeguard-api", gate, router);
 
 export default app;

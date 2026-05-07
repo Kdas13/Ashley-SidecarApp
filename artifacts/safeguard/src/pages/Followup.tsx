@@ -1,10 +1,13 @@
+import { useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRoute } from "wouter";
 import { SafeguardLayout } from "@/components/SafeguardLayout";
+import { RemindersOptIn } from "@/components/RemindersOptIn";
 import {
   useApi,
   type SafeguardFollowup,
+  type FollowupCadence,
   type Confidence,
 } from "@/lib/api";
 
@@ -12,15 +15,31 @@ import {
  * Post-appointment follow-up screen. Lists translated reminders + escalations
  * for one appointment (or globally if no appointment id is in the route).
  * Each item shows BOTH the clinician's original wording and the translated
- * patient-facing wording, plus the AI-confidence indicator.
+ * patient-facing wording, the AI-confidence indicator, and (when applicable)
+ * the next scheduled phone reminder.
  */
 export default function Followup() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { request } = useApi();
   const qc = useQueryClient();
 
   const [, params] = useRoute("/appointments/:id/followup");
   const apptId = params?.id;
+
+  // Notification deep-link: `?fid=<id>` targets a specific reminder, and
+  // `?show-original=1` (set by the SW's "View clinician's words" action)
+  // tells the page to open that reminder's original wording immediately.
+  const { focusFollowupId, showOriginal } = useMemo(() => {
+    if (typeof window === "undefined") {
+      return { focusFollowupId: null as string | null, showOriginal: false };
+    }
+    const sp = new URLSearchParams(window.location.search);
+    return {
+      focusFollowupId: sp.get("fid"),
+      showOriginal: sp.get("show-original") === "1",
+    };
+  }, []);
+  const detailsRefs = useRef<Map<string, HTMLDetailsElement | null>>(new Map());
 
   const path = apptId ? `/me/appointments/${apptId}` : `/me/followups`;
   const q = useQuery({
@@ -29,16 +48,33 @@ export default function Followup() {
   });
 
   const items: SafeguardFollowup[] = (() => {
-    const data = q.data as
-      | { followups?: SafeguardFollowup[] }
-      | { followups?: SafeguardFollowup[] }
-      | undefined;
+    const data = q.data as { followups?: SafeguardFollowup[] } | undefined;
     if (!data) return [];
-    if (Array.isArray((data as { followups?: SafeguardFollowup[] }).followups)) {
-      return (data as { followups: SafeguardFollowup[] }).followups;
-    }
+    if (Array.isArray(data.followups)) return data.followups;
     return [];
   })();
+
+  // Once the items have loaded, honour the deep-link: scroll the targeted
+  // reminder into view, and open its original-wording disclosure if the
+  // notification action asked for it.
+  useEffect(() => {
+    if (!focusFollowupId || items.length === 0) return;
+    const el = document.querySelector<HTMLElement>(
+      `[data-testid="followup-${CSS.escape(focusFollowupId)}"]`,
+    );
+    el?.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (showOriginal) {
+      const det = detailsRefs.current.get(focusFollowupId);
+      if (det) det.open = true;
+    }
+  }, [focusFollowupId, showOriginal, items.length]);
+
+  const invalidate = () => {
+    void qc.invalidateQueries({
+      queryKey: apptId ? ["appointment", apptId, "followups"] : ["followups"],
+    });
+    void qc.invalidateQueries({ queryKey: ["followups"] });
+  };
 
   const complete = useMutation({
     mutationFn: (id: string) =>
@@ -46,12 +82,26 @@ export default function Followup() {
         `/me/followups/${id}/complete`,
         { method: "POST", body: "{}" },
       ),
-    onSuccess: () => {
-      void qc.invalidateQueries({
-        queryKey: apptId ? ["appointment", apptId, "followups"] : ["followups"],
-      });
-      void qc.invalidateQueries({ queryKey: ["followups"] });
-    },
+    onSuccess: invalidate,
+  });
+
+  const patch = useMutation({
+    mutationFn: ({
+      id,
+      body,
+    }: {
+      id: string;
+      body: {
+        remindersEnabled?: boolean;
+        cadence?: FollowupCadence;
+        dueAt?: string | null;
+      };
+    }) =>
+      request<{ followup: SafeguardFollowup }>(`/me/followups/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: invalidate,
   });
 
   return (
@@ -64,9 +114,9 @@ export default function Followup() {
         {t("ai.generatedBanner")}
       </div>
 
-      {q.isLoading && (
-        <p className="mt-4 text-muted-foreground">…</p>
-      )}
+      <RemindersOptIn />
+
+      {q.isLoading && <p className="mt-4 text-muted-foreground">…</p>}
 
       {items.length === 0 && !q.isLoading && (
         <p className="mt-6 text-base text-muted-foreground">
@@ -117,7 +167,35 @@ export default function Followup() {
                   {it.plainExplanation}
                 </p>
               )}
-              <details className="mt-3 text-sm">
+
+              <ReminderRow
+                followup={it}
+                locale={i18n.language}
+                onToggle={(enabled) =>
+                  patch.mutate({
+                    id: it.id,
+                    body: { remindersEnabled: enabled },
+                  })
+                }
+                onSnooze={(hours) => {
+                  const at = new Date(Date.now() + hours * 60 * 60 * 1000);
+                  patch.mutate({
+                    id: it.id,
+                    body: {
+                      cadence: { kind: "once", at: at.toISOString() },
+                    },
+                  });
+                }}
+                disabled={patch.isPending}
+              />
+
+              <details
+                className="mt-3 text-sm"
+                ref={(node) => {
+                  detailsRefs.current.set(it.id, node);
+                }}
+                data-testid={`followup-${it.id}-details`}
+              >
                 <summary className="cursor-pointer text-muted-foreground">
                   {t("followup.showOriginal")}
                 </summary>
@@ -156,6 +234,105 @@ export default function Followup() {
       </ul>
     </SafeguardLayout>
   );
+}
+
+function ReminderRow({
+  followup,
+  locale,
+  onToggle,
+  onSnooze,
+  disabled,
+}: {
+  followup: SafeguardFollowup;
+  locale: string;
+  onToggle: (enabled: boolean) => void;
+  onSnooze: (hours: number) => void;
+  disabled: boolean;
+}) {
+  const { t } = useTranslation();
+  const cadence = followup.cadence;
+  if (!cadence || cadence.kind === "none") {
+    // Escalation items + things the AI didn't schedule. No reminder UI.
+    return null;
+  }
+  const next = followup.nextReminderAt
+    ? new Date(followup.nextReminderAt)
+    : null;
+  const muted = !followup.remindersEnabled;
+  return (
+    <div
+      className="mt-3 rounded-md border border-border bg-muted/30 p-3 text-sm"
+      data-testid={`followup-${followup.id}-reminder`}
+    >
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div>
+          <div className="font-medium">{t("followup.reminder.heading")}</div>
+          <div className="mt-0.5 text-muted-foreground">
+            {describeCadence(cadence, t)}
+          </div>
+          {next && !muted && (
+            <div
+              className="mt-0.5 text-muted-foreground"
+              data-testid={`followup-${followup.id}-next-reminder`}
+            >
+              {t("followup.reminder.next", {
+                when: next.toLocaleString(locale),
+              })}
+            </div>
+          )}
+          {muted && (
+            <div
+              className="mt-0.5 text-muted-foreground"
+              data-testid={`followup-${followup.id}-muted`}
+            >
+              {t("followup.reminder.muted")}
+            </div>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => onToggle(!followup.remindersEnabled)}
+          disabled={disabled}
+          className="rounded-md bg-secondary text-secondary-foreground px-3 py-1 text-xs"
+          data-testid={`followup-${followup.id}-toggle-reminder`}
+        >
+          {muted ? t("followup.reminder.unmute") : t("followup.reminder.mute")}
+        </button>
+      </div>
+      {!muted && (
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => onSnooze(1)}
+            disabled={disabled}
+            className="rounded-md border border-border bg-background px-2.5 py-1 text-xs"
+          >
+            {t("followup.reminder.snooze1h")}
+          </button>
+          <button
+            type="button"
+            onClick={() => onSnooze(24)}
+            disabled={disabled}
+            className="rounded-md border border-border bg-background px-2.5 py-1 text-xs"
+          >
+            {t("followup.reminder.snooze24h")}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function describeCadence(
+  cadence: FollowupCadence,
+  t: (k: string, v?: Record<string, unknown>) => string,
+): string {
+  if (cadence.kind === "none") return t("followup.reminder.cadence.none");
+  if (cadence.kind === "once") return t("followup.reminder.cadence.once");
+  return t("followup.reminder.cadence.recurring", {
+    times: cadence.timesPerDay,
+    days: cadence.durationDays,
+  });
 }
 
 function Pill({ level }: { level: Confidence }) {

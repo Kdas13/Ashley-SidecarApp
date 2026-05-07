@@ -6,6 +6,7 @@ import observationsRouter from "./observations";
 import invariantsRouter from "./invariants";
 import translateRouter from "./translate";
 import appointmentsRouter from "./appointments";
+import pushRouter from "./push";
 
 const router: IRouter = Router();
 
@@ -16,5 +17,6 @@ router.use(checkinsRouter);
 router.use(observationsRouter);
 router.use(translateRouter);
 router.use(appointmentsRouter);
+router.use(pushRouter);
 
 export default router;

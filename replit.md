@@ -16,6 +16,10 @@ A personal AI companion mobile app providing local-first, stateless AI chat with
     - `API_SECRET` (generate with `openssl rand -hex 32`, set as Replit secret)
     - `EXPO_PUBLIC_API_KEY` (must match `API_SECRET`, set in `.env` or Replit secret)
     - `TAVILY_API_KEY` (Optional, enables web search)
+    - **Safeguard reminders** (set on the Safeguard API artifact):
+        - `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` — generate with `pnpm dlx web-push generate-vapid-keys`. Without these the reminder worker logs a warning and stays idle; the public key is also exposed by `GET /safeguard-api/me/push/public-key`.
+        - `VAPID_SUBJECT` — `mailto:` or `https://` URL for the push service to contact (defaults to `mailto:safeguard-pilot@example.org`).
+        - `REMINDER_CRON_SECRET` — required to call `POST /safeguard-api/reminders/tick` from an external scheduler. Without it the endpoint returns 503 (the in-process 60s tick still runs).
 
 ## Stack
 

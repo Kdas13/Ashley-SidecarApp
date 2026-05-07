@@ -26,10 +26,46 @@ import {
   generateGpExportPdf,
   type PdfCheckinTrend,
 } from "../lib/pdfExport";
+import {
+  parseCadence,
+  nthReminderAt,
+  type Cadence,
+} from "../lib/reminderScheduler";
 
 const router: IRouter = Router();
 
 const LangSchema = z.enum(SUPPORTED_LANGS as unknown as [Lang, ...Lang[]]);
+
+/**
+ * Convert the AI-emitted cadence draft (relative offsets) into a concrete
+ * cadence (absolute timestamps) anchored on `baseDate`. Anything we don't
+ * recognise becomes `{ kind: "none" }` so we never schedule a phantom
+ * reminder.
+ */
+function draftToCadence(
+  draft:
+    | { kind?: string; startsInHours?: number; timesPerDay?: number; durationDays?: number }
+    | undefined,
+  baseDate: Date,
+): Cadence {
+  if (!draft || draft.kind === "none") return { kind: "none" };
+  const startsInHours = Math.max(0, Math.round(draft.startsInHours ?? 24));
+  const startAt = new Date(baseDate.getTime() + startsInHours * 60 * 60 * 1000);
+  if (draft.kind === "once") {
+    return { kind: "once", at: startAt.toISOString() };
+  }
+  if (draft.kind === "recurring") {
+    const tpd = Math.max(1, Math.min(6, Math.round(draft.timesPerDay ?? 3)));
+    const dd = Math.max(1, Math.min(60, Math.round(draft.durationDays ?? 5)));
+    return {
+      kind: "recurring",
+      startAt: startAt.toISOString(),
+      timesPerDay: tpd,
+      durationDays: dd,
+    };
+  }
+  return { kind: "none" };
+}
 
 /**
  * Hard consent gate. Identical to the one in checkins.ts — duplicated
@@ -651,9 +687,14 @@ router.post("/me/appointments/:id/followup", async (req, res, next) => {
       patientLang: appt.patientLang as Lang,
     });
 
-    // Persist the recap as a follow-up "recap" item (kind=followup, no due).
+    // Persist each follow-up. Convert the AI's cadence draft (relative
+    // hours) into a concrete cadence (absolute timestamps) at write-time
+    // so the worker only ever has to read one shape.
     const inserted: Array<typeof safeguardFollowupsTable.$inferSelect> = [];
+    const now = new Date();
     for (const it of result.items) {
+      const cadence = draftToCadence(it.cadence, now);
+      const firstAt = nthReminderAt(cadence, 0);
       const [row] = await db
         .insert(safeguardFollowupsTable)
         .values({
@@ -668,6 +709,10 @@ router.post("/me/appointments/:id/followup", async (req, res, next) => {
           detailTranslated: it.detailTranslated,
           plainExplanation: it.plainExplanation,
           confidence: it.confidence,
+          cadence,
+          dueAt: firstAt,
+          nextReminderAt: firstAt,
+          remindersEnabled: true,
         })
         .returning();
       if (row) inserted.push(row);
@@ -715,7 +760,84 @@ router.post("/me/followups/:id/complete", async (req, res, next) => {
     const id = req.params.id!;
     const [row] = await db
       .update(safeguardFollowupsTable)
-      .set({ completedAt: new Date() })
+      .set({
+        completedAt: new Date(),
+        // Stop the worker from firing further reminders once the patient
+        // has marked it done.
+        nextReminderAt: null,
+      })
+      .where(
+        and(
+          eq(safeguardFollowupsTable.id, id),
+          eq(safeguardFollowupsTable.userId, userId),
+        ),
+      )
+      .returning();
+    if (!row) {
+      res.status(404).json({ error: "not_found" });
+      return;
+    }
+    res.json({ followup: row });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Edit a follow-up's reminder schedule. Used by the patient to mute, push
+// out, or change the cadence of their reminders.
+const CadenceSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("none") }),
+  z.object({ kind: z.literal("once"), at: z.string().datetime() }),
+  z.object({
+    kind: z.literal("recurring"),
+    startAt: z.string().datetime(),
+    timesPerDay: z.number().int().min(1).max(6),
+    durationDays: z.number().int().min(1).max(60),
+  }),
+]);
+const PatchFollowupBody = z.object({
+  cadence: CadenceSchema.optional(),
+  remindersEnabled: z.boolean().optional(),
+  dueAt: z.string().datetime().nullable().optional(),
+});
+
+router.patch("/me/followups/:id", async (req, res, next) => {
+  try {
+    const userId = req.auth!.userId;
+    const id = req.params.id!;
+    const parsed = PatchFollowupBody.safeParse(req.body);
+    if (!parsed.success) {
+      res
+        .status(400)
+        .json({ error: "invalid_body", issues: parsed.error.issues });
+      return;
+    }
+    const updates: Partial<typeof safeguardFollowupsTable.$inferInsert> = {};
+    if (parsed.data.remindersEnabled !== undefined) {
+      updates.remindersEnabled = parsed.data.remindersEnabled;
+    }
+    if (parsed.data.cadence !== undefined) {
+      const cadence = parseCadence(parsed.data.cadence);
+      updates.cadence = cadence as Record<string, unknown>;
+      // Re-anchor the next reminder to slot 0 of the new cadence; user
+      // edits implicitly reset the count so durationDays is honoured from
+      // "now" rather than from the original creation time.
+      updates.nextReminderAt = nthReminderAt(cadence, 0);
+      updates.reminderCount = 0;
+      if (parsed.data.dueAt === undefined) {
+        updates.dueAt = nthReminderAt(cadence, 0);
+      }
+    }
+    if (parsed.data.dueAt !== undefined) {
+      updates.dueAt = parsed.data.dueAt ? new Date(parsed.data.dueAt) : null;
+    }
+    if (Object.keys(updates).length === 0) {
+      res.status(400).json({ error: "no_updates" });
+      return;
+    }
+    const [row] = await db
+      .update(safeguardFollowupsTable)
+      .set(updates)
       .where(
         and(
           eq(safeguardFollowupsTable.id, id),

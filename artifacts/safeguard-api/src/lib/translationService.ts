@@ -76,11 +76,20 @@ export interface AppointmentSummaryResult {
   model: string;
 }
 
+export interface FollowupCadenceDraft {
+  kind: "none" | "once" | "recurring";
+  /** Hours from now until the reminder. Used to compute `at`/`startAt`. */
+  startsInHours?: number;
+  timesPerDay?: number;
+  durationDays?: number;
+}
+
 export interface FollowupItemDraft {
   kind: "medication" | "followup" | "escalation";
   titleOriginal: string;
   detailOriginal: string;
   plainExplanation: string;
+  cadence?: FollowupCadenceDraft;
 }
 
 export interface FollowupSummaryResult {
@@ -545,7 +554,20 @@ export async function summarizeFollowup(args: {
           `plain-language reason in ${LANG_NAME[args.patientLang]}; for ` +
           `escalation, the explicit "return if X worsens" clause in ` +
           `${LANG_NAME[args.patientLang]}.\n` +
-          `    "confidence": "high" | "medium" | "low".`,
+          `    "confidence": "high" | "medium" | "low".\n` +
+          `    "cadence": object describing when to remind the patient. ` +
+          `Use exactly one of these shapes — pick conservatively, never ` +
+          `invent a schedule the clinician did not state:\n` +
+          `      { "kind": "none" } — for escalation items, or when no ` +
+          `time was given.\n` +
+          `      { "kind": "once", "startsInHours": <integer> } — for a ` +
+          `single follow-up like "return in 2 weeks" (336 hours). Round ` +
+          `to whole hours; daytime appointments default to 9am local but ` +
+          `you only need to give the offset.\n` +
+          `      { "kind": "recurring", "timesPerDay": 1..6, ` +
+          `"durationDays": 1..60, "startsInHours": <integer> } — for ` +
+          `medication like "3x daily for 5 days". Set startsInHours so the ` +
+          `first dose is within the next few hours (e.g. 1).`,
       },
       { role: "user", content: args.clinicianText },
     ],
@@ -559,6 +581,45 @@ export async function summarizeFollowup(args: {
     detailTranslated?: unknown;
     plainExplanation?: unknown;
     confidence?: unknown;
+    cadence?: unknown;
+  };
+  const parseCadenceDraft = (
+    raw: unknown,
+    _kindHint: FollowupItemDraft["kind"],
+  ): FollowupCadenceDraft => {
+    // Anything we can't recognise becomes "no reminder" — we never want to
+    // invent a schedule the clinician didn't ask for. Escalation items
+    // also default to no cadence; they appear in the list for awareness
+    // and the patient acts on them ad hoc.
+    if (!raw || typeof raw !== "object") return { kind: "none" };
+    const r = raw as Record<string, unknown>;
+    const startsInHours =
+      typeof r["startsInHours"] === "number"
+        ? Math.max(0, Math.min(24 * 60, Math.round(r["startsInHours"])))
+        : undefined;
+    if (r["kind"] === "once") {
+      return {
+        kind: "once",
+        startsInHours: startsInHours ?? 24,
+      };
+    }
+    if (r["kind"] === "recurring") {
+      const tpd =
+        typeof r["timesPerDay"] === "number"
+          ? Math.max(1, Math.min(6, Math.round(r["timesPerDay"])))
+          : 3;
+      const dd =
+        typeof r["durationDays"] === "number"
+          ? Math.max(1, Math.min(60, Math.round(r["durationDays"])))
+          : 5;
+      return {
+        kind: "recurring",
+        timesPerDay: tpd,
+        durationDays: dd,
+        startsInHours: startsInHours ?? 1,
+      };
+    }
+    return { kind: "none" };
   };
   let parsed: {
     recapOriginal?: unknown;
@@ -598,6 +659,7 @@ export async function summarizeFollowup(args: {
                 ? it.plainExplanation
                 : "",
             confidence: conf(it.confidence),
+            cadence: parseCadenceDraft(it.cadence, kind),
           };
         })
         .filter((it) => it.titleOriginal.length > 0 || it.detailOriginal.length > 0)

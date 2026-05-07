@@ -18,6 +18,7 @@ import {
   boolean,
   uuid,
   index,
+  uniqueIndex,
   jsonb,
 } from "drizzle-orm/pg-core";
 
@@ -349,7 +350,24 @@ export const safeguardFollowupsTable = pgTable(
     // medication/followup it is the plain-language explanation of why.
     plainExplanation: text("plain_explanation").notNull().default(""),
     confidence: text("confidence").notNull().default("medium"),
+    // Single absolute time the next reminder should fire. For one-shot
+    // follow-ups this equals `dueAt`; for recurring (medication) it slides
+    // forward each tick by the cadence rule. NULL = never schedule.
     dueAt: timestamp("due_at", { withTimezone: true }),
+    nextReminderAt: timestamp("next_reminder_at", { withTimezone: true }),
+    // Structured cadence rule. AI-extracted, user-editable. See
+    // `reminderScheduler.ts` for the supported shapes:
+    //   { kind: "none" }
+    //   { kind: "once", at: ISOString }
+    //   { kind: "recurring", timesPerDay: 1..6, durationDays: 1..60,
+    //     startAt: ISOString }
+    cadence: jsonb("cadence").$type<Record<string, unknown>>(),
+    // Number of reminders fired so far. Used to terminate recurring
+    // schedules once `timesPerDay * durationDays` is reached.
+    reminderCount: integer("reminder_count").notNull().default(0),
+    // User-controlled mute for an individual reminder without losing the
+    // cadence. Default ON so AI-extracted cadences fire by default.
+    remindersEnabled: boolean("reminders_enabled").notNull().default(true),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -357,6 +375,77 @@ export const safeguardFollowupsTable = pgTable(
   },
   (t) => [
     index("safeguard_followups_user_created_idx").on(t.userId, t.createdAt),
+    index("safeguard_followups_next_reminder_idx").on(t.nextReminderAt),
+  ],
+);
+
+/**
+ * Browser Web-Push subscriptions. One row per (userId, endpoint). A user
+ * can register multiple devices/browsers. Endpoint is the push service URL
+ * issued by the browser; p256dh and auth are the encryption keys we send
+ * back to the push service.
+ */
+export const safeguardPushSubscriptionsTable = pgTable(
+  "safeguard_push_subscriptions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => safeguardUsersTable.id, { onDelete: "cascade" }),
+    endpoint: text("endpoint").notNull(),
+    p256dh: text("p256dh").notNull(),
+    auth: text("auth").notNull(),
+    // Language to render notification body in. Snapshotted at subscribe-
+    // time; refreshed when the same endpoint re-subscribes.
+    lang: text("lang").notNull().default("en"),
+    userAgent: text("user_agent").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("safeguard_push_subscriptions_user_idx").on(t.userId),
+    index("safeguard_push_subscriptions_endpoint_idx").on(t.endpoint),
+  ],
+);
+
+/**
+ * Audit log of every reminder send attempt. Lets us de-duplicate (one row
+ * per followup per scheduled slot) and surface failures back to the user.
+ */
+export const safeguardReminderSendsTable = pgTable(
+  "safeguard_reminder_sends",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    followupId: uuid("followup_id")
+      .notNull()
+      .references(() => safeguardFollowupsTable.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => safeguardUsersTable.id, { onDelete: "cascade" }),
+    // The scheduled `nextReminderAt` slot this send covered — used as a
+    // dedup key so a re-run of the tick doesn't double-send.
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+    sentAt: timestamp("sent_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    success: boolean("success").notNull().default(false),
+    deliveredCount: integer("delivered_count").notNull().default(0),
+    errorMessage: text("error_message").notNull().default(""),
+  },
+  (t) => [
+    index("safeguard_reminder_sends_followup_idx").on(t.followupId),
+    index("safeguard_reminder_sends_user_idx").on(t.userId),
+    // Atomic dedup: only one row per (followup, scheduled slot). The
+    // worker relies on Postgres rejecting the duplicate INSERT instead of
+    // a check-then-insert race.
+    uniqueIndex("safeguard_reminder_sends_slot_unique").on(
+      t.followupId,
+      t.scheduledFor,
+    ),
   ],
 );
 

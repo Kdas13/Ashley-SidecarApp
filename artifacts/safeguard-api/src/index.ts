@@ -1,5 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { startReminderWorker } from "./lib/reminderWorker";
 
 const rawPort = process.env["PORT"];
 if (!rawPort) {
@@ -16,4 +17,5 @@ app.listen(port, (err) => {
     process.exit(1);
   }
   logger.info({ port }, "Safeguard API listening");
+  startReminderWorker();
 });

@@ -147,6 +147,16 @@ export interface SafeguardUtterance {
   translation: SafeguardTranslation | null;
 }
 
+export type FollowupCadence =
+  | { kind: "none" }
+  | { kind: "once"; at: string }
+  | {
+      kind: "recurring";
+      startAt: string;
+      timesPerDay: number;
+      durationDays: number;
+    };
+
 export interface SafeguardFollowup {
   id: string;
   appointmentId: string;
@@ -161,6 +171,10 @@ export interface SafeguardFollowup {
   plainExplanation: string;
   confidence: Confidence;
   dueAt: string | null;
+  nextReminderAt: string | null;
+  cadence: FollowupCadence | null;
+  reminderCount: number;
+  remindersEnabled: boolean;
   completedAt: string | null;
   createdAt: string;
 }
