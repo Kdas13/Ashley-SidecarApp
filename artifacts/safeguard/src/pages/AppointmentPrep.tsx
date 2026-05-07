@@ -119,65 +119,10 @@ export default function AppointmentPrep({
   });
 
   // -------------------------------------------------------------------------
-  // Step 0: language pair
-  // -------------------------------------------------------------------------
-  if (step === 0) {
-    return (
-      <SafeguardLayout>
-        <h1 className="text-2xl font-semibold">{t("appointment.title")}</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          {t("appointment.intro")}
-        </p>
-
-        <div className="mt-6 rounded-xl border border-border bg-card p-4">
-          <div className="text-sm">
-            {t("appointment.yourLang")}: <strong>{LANG_LABEL[patientLang]}</strong>
-          </div>
-          <div className="mt-4 text-sm font-medium">
-            {t("appointment.clinicianLangQ")}
-          </div>
-          <div className="mt-2 grid grid-cols-2 gap-2">
-            {SUPPORTED.map((l) => (
-              <button
-                key={l}
-                type="button"
-                onClick={() => setClinicianLang(l)}
-                aria-pressed={clinicianLang === l}
-                className={`rounded-lg border p-3 text-left ${
-                  clinicianLang === l
-                    ? "border-primary bg-primary/5"
-                    : "border-border bg-card"
-                }`}
-                data-testid={`appt-clinician-lang-${l}`}
-              >
-                {LANG_LABEL[l]}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="mt-6 flex justify-end">
-          <button
-            type="button"
-            onClick={() => create.mutate()}
-            disabled={create.isPending}
-            className="rounded-md bg-primary text-primary-foreground px-5 py-2 font-medium disabled:opacity-50"
-            data-testid="button-appt-create"
-          >
-            {t("actions.continue")}
-          </button>
-        </div>
-        {create.isError && (
-          <p className="mt-3 text-destructive text-sm">
-            {(create.error as Error).message}
-          </p>
-        )}
-      </SafeguardLayout>
-    );
-  }
-
-  // -------------------------------------------------------------------------
-  // Step 1..N: one-question intake. After last step → submit & show summary.
+  // Intake question list. Defined up-front (before any early return) so the
+  // hooks order stays stable across re-renders — calling useMemo only after
+  // step > 0 would trigger React's "Rendered more hooks than during the
+  // previous render" guard the moment the user advances past step 0.
   // -------------------------------------------------------------------------
   interface Q {
     id: keyof IntakeForm;
@@ -249,6 +194,68 @@ export default function AppointmentPrep({
     [t],
   );
 
+  // -------------------------------------------------------------------------
+  // Step 0: language pair
+  // -------------------------------------------------------------------------
+  if (step === 0) {
+    return (
+      <SafeguardLayout>
+        <h1 className="text-2xl font-semibold">{t("appointment.title")}</h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          {t("appointment.intro")}
+        </p>
+
+        <div className="mt-6 rounded-xl border border-border bg-card p-4">
+          <div className="text-sm">
+            {t("appointment.yourLang")}: <strong>{LANG_LABEL[patientLang]}</strong>
+          </div>
+          <div className="mt-4 text-sm font-medium">
+            {t("appointment.clinicianLangQ")}
+          </div>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            {SUPPORTED.map((l) => (
+              <button
+                key={l}
+                type="button"
+                onClick={() => setClinicianLang(l)}
+                aria-pressed={clinicianLang === l}
+                className={`rounded-lg border p-3 text-left ${
+                  clinicianLang === l
+                    ? "border-primary bg-primary/5"
+                    : "border-border bg-card"
+                }`}
+                data-testid={`appt-clinician-lang-${l}`}
+              >
+                {LANG_LABEL[l]}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-6 flex justify-end">
+          <button
+            type="button"
+            onClick={() => create.mutate()}
+            disabled={create.isPending}
+            className="rounded-md bg-primary text-primary-foreground px-5 py-2 font-medium disabled:opacity-50"
+            data-testid="button-appt-create"
+          >
+            {t("actions.continue")}
+          </button>
+        </div>
+        {create.isError && (
+          <p className="mt-3 text-destructive text-sm">
+            {(create.error as Error).message}
+          </p>
+        )}
+      </SafeguardLayout>
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Step 1..N: one-question intake. After last step → submit & show summary.
+  // (Question list is hoisted above the step===0 early return — see above.)
+  // -------------------------------------------------------------------------
   const total = questions.length;
   const intakeStep = step - 1;
   const isReview = intakeStep >= total;

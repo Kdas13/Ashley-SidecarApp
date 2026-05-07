@@ -99,7 +99,7 @@ export default function Onboarding({
         body: JSON.stringify(form),
       });
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       localStorage.setItem(
         "safeguard.largeText",
         form.accessibilityLargeText ? "1" : "0",
@@ -116,7 +116,10 @@ export default function Onboarding({
         "high-contrast",
         form.accessibilityHighContrast,
       );
-      void qc.invalidateQueries({ queryKey: ["profile"] });
+      // Seed the profile cache synchronously with the freshly-saved row
+      // so the Authed gate on /home doesn't see the stale `{profile: null}`
+      // and bounce us back to /onboarding before the refetch lands.
+      qc.setQueryData(["profile"], { profile: data.profile });
       navigate("/home");
     },
   });
