@@ -148,6 +148,7 @@ export async function registerForPushNotificationsAsync(): Promise<RegisterResul
       // Step 1 — must be a real device. Notifications never deliver to
       // simulators (iOS) and the token call fails on the Android emulator
       // when Google Play services aren't present.
+      console.log("[push] isDevice", Device.isDevice);
       if (!Device.isDevice) {
         return null;
       }
@@ -173,43 +174,41 @@ export async function registerForPushNotificationsAsync(): Promise<RegisterResul
 
       // Step 3 — permission. If already granted, skip the prompt.
       const existing = await Notifications.getPermissionsAsync();
-      let status = existing.status;
-      if (status !== "granted") {
+      const existingStatus = existing.status;
+      console.log("[push] permission existing", existingStatus);
+      let finalStatus = existingStatus;
+      if (finalStatus !== "granted") {
         const requested = await Notifications.requestPermissionsAsync();
-        status = requested.status;
+        finalStatus = requested.status;
       }
-      if (status !== "granted") {
+      console.log("[push] permission final", finalStatus);
+      if (finalStatus !== "granted") {
         // Best-effort: clear any previously saved token so the server
         // stops trying to push to a device that just opted out.
         await setPushTokenOnServer(null).catch(() => undefined);
         return null;
       }
 
-      // Step 4 — exchange device for an Expo push token.
+      // Step 4 + 5 — exchange device for a push token, then upsert it
+      // to the server. Wrapped together so any failure (token fetch
+      // OR upload) surfaces with the same shape in logs.
       const projectId = resolveProjectId();
-      let token: string | null = null;
+      console.log("[push] projectId", projectId);
       try {
-        const res = await Notifications.getExpoPushTokenAsync(
+        const token = await Notifications.getExpoPushTokenAsync(
           projectId ? { projectId } : undefined,
         );
-        token = typeof res.data === "string" ? res.data : null;
+        console.log("[push] token result", token?.data);
+        if (!token?.data || typeof token.data !== "string") {
+          return null;
+        }
+        await setPushTokenOnServer(token.data);
+        console.log("[push] registered", token.data);
+        return token.data;
       } catch (err) {
-        console.warn("[push] getExpoPushTokenAsync failed", err);
+        console.error("[push] registration failed", err);
         return null;
       }
-      if (!token) {
-        return null;
-      }
-
-      // Step 5 — upsert to the server. Don't fail registration if the
-      // upload errors — the next launch will try again.
-      try {
-        await setPushTokenOnServer(token);
-      } catch (err) {
-        console.warn("[push] setPushTokenOnServer failed", err);
-      }
-
-      return token;
     } catch (err) {
       console.warn("[push] registerForPushNotificationsAsync threw", err);
       return null;
