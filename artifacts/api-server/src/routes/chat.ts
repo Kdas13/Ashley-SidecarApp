@@ -1471,13 +1471,13 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   );
   const baseSystemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}`;
 
-  // Web lookup (Stage 1, simplest working version): if the user message
-  // matches the trigger heuristic, run a Tavily search server-side and
-  // prepend the results as a "=== WEB RESULTS ===" block on the system
-  // prompt so Ashley can use them naturally. Continue mode skips this —
-  // there's no new user prompt to classify against. All failures are
-  // silent (logged, never surfaced); web search is enrichment, never a
-  // hard dependency for the chat path.
+  // Web lookup (Stage 1+): if the user message matches the trigger
+  // heuristic, run a Tavily search server-side and inject a
+  // "=== WEB LOOKUP: <status> ===" block into the system prompt so Ashley
+  // always knows the outcome — success, empty, failed, or unavailable.
+  // Continue mode skips this (no new user prompt to classify). When the
+  // trigger doesn't fire, no block is injected and Section 9 of the Core
+  // Spec tells Ashley not to present fresh facts as if she'd just checked.
   let systemPrompt = baseSystemPrompt;
   if (!isContinue && userRow) {
     const builderAware = profile.builderAwareMode !== false;
@@ -1487,11 +1487,13 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
         {
           deviceId,
           query: lookup.query.slice(0, 80),
-          resultCount: lookup.results.length,
-          urls: lookup.results.map((r) => r.url),
+          outcome: lookup.kind,
+          resultCount: lookup.kind === "success" ? lookup.results.length : 0,
+          urls: lookup.kind === "success" ? lookup.results.map((r) => r.url) : [],
+          reason: lookup.kind === "failed" ? lookup.reason : undefined,
           builderAware,
         },
-        "web lookup injected into chat/stream prompt",
+        "web lookup outcome injected into chat/stream prompt",
       );
       systemPrompt = `${baseSystemPrompt}\n\n${lookup.block}`;
     }
