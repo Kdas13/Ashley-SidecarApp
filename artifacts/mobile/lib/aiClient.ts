@@ -747,12 +747,13 @@ export async function setPushTokenOnServerWithStatus(
   token: string | null,
 ): Promise<{ status: number; ok: boolean; bodyPreview: string }> {
   const url = `${getApiBase()}/devices/push-token`;
+  // Same header composition as fetchJSON — apiHeaders() supplies the
+  // X-API-Key gate and Content-Type, authHeaders() supplies the Bearer
+  // (the API key) and X-Device-Id. Earlier I swapped these and the
+  // server returned 401, which is what the diagnostic panel surfaced.
   const res = await fetch(url, {
     method: "POST",
-    headers: apiHeaders({
-      Authorization: `Bearer ${getDeviceIdSync()}`,
-      "X-Device-Id": getDeviceIdSync(),
-    }),
+    headers: { ...apiHeaders(), ...authHeaders() },
     body: JSON.stringify({ token }),
   });
   let bodyPreview = "";
