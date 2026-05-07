@@ -63,6 +63,7 @@ export type GreetingResult =
 export async function maybeGenerateAppOpenGreeting(
   deviceId: string,
 ): Promise<GreetingResult> {
+  logger.info({ deviceId }, "appOpenGreeting: ENTRY");
   let profile;
   try {
     [profile] = await db
@@ -74,8 +75,12 @@ export async function maybeGenerateAppOpenGreeting(
     logger.warn({ err, deviceId }, "appOpenGreeting: profile lookup failed");
     return { greeted: false, reason: "profile_lookup_failed" };
   }
-  if (!profile) return { greeted: false, reason: "no_profile" };
+  if (!profile) {
+    logger.info({ deviceId }, "appOpenGreeting: SKIP no_profile");
+    return { greeted: false, reason: "no_profile" };
+  }
   if (profile.greetOnAppOpen === false) {
+    logger.info({ deviceId }, "appOpenGreeting: SKIP toggle_off");
     return { greeted: false, reason: "toggle_off" };
   }
 
@@ -83,6 +88,10 @@ export async function maybeGenerateAppOpenGreeting(
 
   // Quiet hours — same wrap-midnight logic the scheduler uses.
   if (isWithinQuietHours(now, profile.timezone)) {
+    logger.info(
+      { deviceId, tz: profile.timezone },
+      "appOpenGreeting: SKIP quiet_hours",
+    );
     return { greeted: false, reason: "quiet_hours" };
   }
 
@@ -103,6 +112,10 @@ export async function maybeGenerateAppOpenGreeting(
       )
       .limit(1);
     if (recentGreeting) {
+      logger.info(
+        { deviceId, lastGreetingAt: recentGreeting.sentAt },
+        "appOpenGreeting: SKIP greeting_dedupe",
+      );
       return { greeted: false, reason: "greeting_dedupe" };
     }
   } catch (err) {
@@ -143,6 +156,16 @@ export async function maybeGenerateAppOpenGreeting(
     mostRecent &&
     now.getTime() - mostRecent.createdAt.getTime() < MIN_MESSAGE_GAP_MS
   ) {
+    logger.info(
+      {
+        deviceId,
+        mostRecentAt: mostRecent.createdAt,
+        ageMin: Math.round(
+          (now.getTime() - mostRecent.createdAt.getTime()) / 60000,
+        ),
+      },
+      "appOpenGreeting: SKIP recent_activity",
+    );
     return { greeted: false, reason: "recent_activity" };
   }
 
@@ -150,8 +173,20 @@ export async function maybeGenerateAppOpenGreeting(
   // the app for the first time and immediately get a "welcome back".
   const hasUserMessage = recentHistory.some((m) => m.role === "user");
   if (!hasUserMessage) {
+    logger.info(
+      { deviceId, historyCount: recentHistory.length },
+      "appOpenGreeting: SKIP no_user_history",
+    );
     return { greeted: false, reason: "no_user_history" };
   }
+  logger.info(
+    {
+      deviceId,
+      historyCount: recentHistory.length,
+      mostRecentAt: mostRecent?.createdAt,
+    },
+    "appOpenGreeting: ALL GATES PASSED, calling generator",
+  );
 
   // Generator wants oldest-first.
   recentHistory.reverse();
@@ -169,8 +204,13 @@ export async function maybeGenerateAppOpenGreeting(
     hoursOfSilence,
   });
   if (!text) {
+    logger.info({ deviceId }, "appOpenGreeting: SKIP model_declined");
     return { greeted: false, reason: "model_declined" };
   }
+  logger.info(
+    { deviceId, textPreview: text.slice(0, 60) },
+    "appOpenGreeting: GENERATED message",
+  );
 
   const messageId = randomUUID();
   let inserted: Message | undefined;
