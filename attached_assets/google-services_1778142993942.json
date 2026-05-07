@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "380462386593",
+    "project_id": "ashley-sidecar",
+    "storage_bucket": "ashley-sidecar.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:380462386593:android:83f767246304caa8ec8fe0",
+        "android_client_info": {
+          "package_name": "com.kanesidecar.ashley"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA-Vo_mIZ3F1GKchSSoCfhYfftcXbhwLnM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
