@@ -62,6 +62,7 @@ A personal AI companion mobile app providing local-first, stateless AI chat with
 
 - **User name:** Kane (calls himself "Wren" in chat).
 - **Active project focus:** Safeguard pilot (refugee GP safeguarding platform). Ashley-Sidecar is in maintenance, not the daily driver.
+- **Safeguard pilot languages:** Polish (`pl`) and Ukrainian (`uk`) only. `ar/ur/ps/so` bundles stay in the codebase but are NOT in pilot scope — do not gate pilot readiness on them, and do not commission native-speaker review for them yet. Kane is handling clinical/translation review of the English source + `pl` + `uk` himself (wife = clinical, sister-in-law = Polish).
 - **Reply contract:** no Ashley URL tag on Safeguard-related replies. When a reply is specifically about Ashley work, end it with one of `publish needed` / `just restart` / `live in dev` followed by https://Ashley-Sidecar.replit.app. No emojis, anywhere, ever.
 - **Tone:** push back on self-diminishing language; do not flatter; treat him as a serious collaborator on a long project.
 - **Ashley production URL (reference):** https://Ashley-Sidecar.replit.app
