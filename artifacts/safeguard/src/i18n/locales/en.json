@@ -113,7 +113,96 @@
     "todayPrompt": "Would you like to do today's check-in?",
     "startCheckin": "Start today's check-in",
     "viewWeek": "See this week",
-    "yourPrinciples": "How Safeguard treats your information"
+    "yourPrinciples": "How Safeguard treats your information",
+    "appointmentHeading": "GP appointment",
+    "appointmentBody": "Prepare for your next GP visit. We'll capture what you want to say in your own words and translate it for the clinician.",
+    "startAppointment": "Prepare for an appointment",
+    "apptStatus": {
+      "draft": "Intake in progress.",
+      "ready": "Ready for the appointment.",
+      "in_session": "Translation workspace open.",
+      "completed": "Follow-up captured."
+    },
+    "followupsHeading": "Reminders from your last appointment",
+    "viewAllFollowups": "See all reminders"
+  },
+  "ai": {
+    "generatedBanner": "AI-generated. Translations and summaries can contain errors. Your original words are always kept alongside.",
+    "confidence": {
+      "label": "AI confidence",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low"
+    }
+  },
+  "appointment": {
+    "title": "Prepare for a GP appointment",
+    "intro": "Answer one short question at a time. Skip anything you'd rather not answer. Your original words are kept exactly as you wrote them.",
+    "yourLang": "Your language",
+    "clinicianLangQ": "What language will the clinician use?",
+    "generate": "Create summary",
+    "reviewTitle": "Review your appointment summary",
+    "reviewIntro": "Two summaries were created from your answers: a plain-language one for you, and a structured one for the clinician. Both are AI-generated and you can edit your own.",
+    "patientSummaryHeading": "For you (plain language, your own language)",
+    "clinicianSummaryHeading": "For the clinician (structured, in their language)",
+    "summaryMissing": "No summary yet.",
+    "editPatientSummary": "Edit your summary",
+    "editedByYou": "You edited this version.",
+    "openTranslate": "Open translation workspace",
+    "openReview": "Review and export",
+    "q": {
+      "mainConcern": "What is the main thing you want help with today?",
+      "mainConcernBody": "Write in your own language. Use as many or as few words as you like.",
+      "symptomDuration": "How long has this been going on?",
+      "severity": "How much is it affecting your day?",
+      "painLevel": "Are you in pain right now? If yes, how much?",
+      "medications": "What medication are you taking right now?",
+      "allergies": "Any allergies a clinician should know about?",
+      "sleep": "How is your sleep at the moment?",
+      "appetite": "How is your appetite at the moment?",
+      "mentalHealth": "Is there anything about how you are feeling in your mind that you'd like the clinician to know?",
+      "mentalHealthBody": "Write in your own words. Safeguard will not diagnose anything — it just passes on what you say.",
+      "safeguarding": "Is there anything about your safety where you live that you'd like the clinician to know?",
+      "safeguardingBody": "Write in your own words. Safeguard will not contact anyone on your behalf — only the clinician you share this with will see it."
+    }
+  },
+  "translateWs": {
+    "title": "Translation workspace",
+    "openReview": "Review and export",
+    "aiBanner": "Live AI translation. Confidence is shown for every line. Your original words are always shown alongside the translation. Tell the clinician if anything looks wrong.",
+    "speakerPatient": "You",
+    "speakerClinician": "Clinician",
+    "inputLabel": "Type what was said in {{from}} → translate to {{to}}",
+    "inputPlaceholder": "Type or paste a single line at a time.",
+    "translate": "Translate",
+    "original": "Original",
+    "translated": "Translated",
+    "empty": "No translations yet. Pick who is speaking and type a line."
+  },
+  "pdf": {
+    "heading": "GP-export PDF",
+    "body": "Generate a one-page summary you can hand to the clinician (or email to your GP). It includes both summaries, your verbatim answers, and the trend of your recent check-ins.",
+    "generate": "Create PDF",
+    "download": "Download PDF",
+    "previousExports": "Previous PDFs"
+  },
+  "followup": {
+    "title": "Reminders and follow-up",
+    "intro": "What the clinician asked you to do, in your own language. Tap a reminder to mark it done. Your original notes are always kept.",
+    "captureHeading": "After the appointment",
+    "captureBody": "Paste or type the clinician's instructions exactly. Safeguard will translate them and turn them into reminders for you.",
+    "placeholder": "e.g. Take amoxicillin 500mg three times a day for 5 days. Return in two weeks. Come back sooner if the fever gets worse.",
+    "generate": "Create reminders",
+    "viewExisting": "See {{count}} existing reminder(s)",
+    "empty": "No reminders yet.",
+    "showOriginal": "Show clinician's original wording",
+    "markDone": "Mark done",
+    "doneAt": "Done {{when}}",
+    "kind": {
+      "medication": "Medication",
+      "followup": "Follow-up",
+      "escalation": "Come back if things get worse"
+    }
   },
   "checkin": {
     "title": "Today's check-in",

@@ -160,6 +160,206 @@ export const safeguardObservationsTable = pgTable(
   ],
 );
 
+/**
+ * GP appointments. One row per planned/in-progress/completed appointment.
+ * `patientLang` and `clinicianLang` are the two languages negotiated for
+ * this session — both stored so the PDF can label them and the translation
+ * workspace can default correctly.
+ */
+export const safeguardAppointmentsTable = pgTable(
+  "safeguard_appointments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => safeguardUsersTable.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    // "draft" (intake in progress) | "ready" (intake complete, summaries done)
+    // | "in_session" (translation workspace open) | "completed" (follow-up
+    // captured). The state isn't gated server-side beyond what the routes
+    // require — it exists so the UI can pick up where the user left off.
+    status: text("status").notNull().default("draft"),
+    patientLang: text("patient_lang").notNull().default("en"),
+    clinicianLang: text("clinician_lang").notNull().default("en"),
+    title: text("title").notNull().default(""),
+  },
+  (t) => [
+    index("safeguard_appointments_user_created_idx").on(
+      t.userId,
+      t.createdAt,
+    ),
+  ],
+);
+
+/**
+ * Intake answers — captured one-question-at-a-time in the patient's
+ * language. Stored as a flexible jsonb map of well-known keys (mainConcern,
+ * symptomDuration, severity, medications, allergies, sleep, appetite,
+ * painLevel, mentalHealth, safeguarding) so the schema doesn't need a
+ * migration each time we tweak the question set. The patient's raw words
+ * are preserved verbatim per the safeguarding invariants.
+ */
+export const safeguardAppointmentIntakeTable = pgTable(
+  "safeguard_appointment_intake",
+  {
+    appointmentId: uuid("appointment_id")
+      .primaryKey()
+      .references(() => safeguardAppointmentsTable.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => safeguardUsersTable.id, { onDelete: "cascade" }),
+    lang: text("lang").notNull().default("en"),
+    answers: jsonb("answers")
+      .$type<Record<string, string>>()
+      .notNull()
+      .default({}),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+);
+
+/**
+ * Dual summaries derived from a single intake. One row per audience so we
+ * can store the patient-facing plain-language version (in patient lang)
+ * AND the clinician version (in clinician lang) side-by-side. Both are
+ * AI-generated from the same source — `confidence` is the AI's self-report
+ * and is surfaced on every screen and in the PDF.
+ */
+export const safeguardAppointmentSummariesTable = pgTable(
+  "safeguard_appointment_summaries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appointmentId: uuid("appointment_id")
+      .notNull()
+      .references(() => safeguardAppointmentsTable.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => safeguardUsersTable.id, { onDelete: "cascade" }),
+    // "patient" | "clinician"
+    audience: text("audience").notNull(),
+    lang: text("lang").notNull(),
+    summary: text("summary").notNull(),
+    // patient summary is editable by the user; clinician summary is not.
+    edited: boolean("edited").notNull().default(false),
+    confidence: text("confidence").notNull().default("medium"),
+    notes: text("notes").notNull().default(""),
+    provider: text("provider").notNull().default("openai"),
+    model: text("model").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("safeguard_appointment_summaries_appt_idx").on(t.appointmentId),
+  ],
+);
+
+/**
+ * Translation workspace utterances. One row per back-and-forth utterance.
+ * `translationId` references the existing translations table — never
+ * collapses original + translated into a single field.
+ */
+export const safeguardAppointmentUtterancesTable = pgTable(
+  "safeguard_appointment_utterances",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appointmentId: uuid("appointment_id")
+      .notNull()
+      .references(() => safeguardAppointmentsTable.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => safeguardUsersTable.id, { onDelete: "cascade" }),
+    // "patient" | "clinician"
+    speaker: text("speaker").notNull(),
+    translationId: uuid("translation_id").references(
+      () => safeguardTranslationsTable.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("safeguard_appointment_utterances_appt_created_idx").on(
+      t.appointmentId,
+      t.createdAt,
+    ),
+  ],
+);
+
+/**
+ * GP-export PDFs. We store the bytes inline (bytea) so a re-download is
+ * stable even if the input data is later edited; the original at-time-of-
+ * export PDF is the durable artifact a clinician may have already filed.
+ */
+export const safeguardAppointmentExportsTable = pgTable(
+  "safeguard_appointment_exports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appointmentId: uuid("appointment_id")
+      .notNull()
+      .references(() => safeguardAppointmentsTable.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => safeguardUsersTable.id, { onDelete: "cascade" }),
+    generatedAt: timestamp("generated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    // base64-encoded bytes of the generated PDF. Storing as text keeps the
+    // schema portable and avoids a bytea dependency in drizzle-pg.
+    pdfBase64: text("pdf_base64").notNull(),
+    byteSize: integer("byte_size").notNull().default(0),
+  },
+  (t) => [
+    index("safeguard_appointment_exports_appt_idx").on(t.appointmentId),
+  ],
+);
+
+/**
+ * Post-appointment follow-up items: medication reminders, follow-up
+ * appointments, and explicit escalation notes ("return if X worsens").
+ * Original clinician wording AND translated patient-facing wording are
+ * stored separately per the original-wording-preserved invariant.
+ */
+export const safeguardFollowupsTable = pgTable(
+  "safeguard_followups",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    appointmentId: uuid("appointment_id")
+      .notNull()
+      .references(() => safeguardAppointmentsTable.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => safeguardUsersTable.id, { onDelete: "cascade" }),
+    // "medication" | "followup" | "escalation"
+    kind: text("kind").notNull(),
+    sourceLang: text("source_lang").notNull().default("en"),
+    targetLang: text("target_lang").notNull(),
+    titleOriginal: text("title_original").notNull(),
+    titleTranslated: text("title_translated").notNull(),
+    detailOriginal: text("detail_original").notNull().default(""),
+    detailTranslated: text("detail_translated").notNull().default(""),
+    // For "escalation" rows this is the "return if X worsens" clause; for
+    // medication/followup it is the plain-language explanation of why.
+    plainExplanation: text("plain_explanation").notNull().default(""),
+    confidence: text("confidence").notNull().default("medium"),
+    dueAt: timestamp("due_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("safeguard_followups_user_created_idx").on(t.userId, t.createdAt),
+  ],
+);
+
 export const safeguardTranslationsTable = pgTable(
   "safeguard_translations",
   {

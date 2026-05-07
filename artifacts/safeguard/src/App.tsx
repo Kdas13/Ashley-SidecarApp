@@ -14,6 +14,10 @@ import Onboarding from "@/pages/Onboarding";
 import Home from "@/pages/Home";
 import CheckIn from "@/pages/CheckIn";
 import Week from "@/pages/Week";
+import AppointmentPrep from "@/pages/AppointmentPrep";
+import TranslationWorkspace from "@/pages/TranslationWorkspace";
+import AppointmentReview from "@/pages/AppointmentReview";
+import Followup from "@/pages/Followup";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
@@ -63,6 +67,46 @@ function AppShell() {
       <Route path="/week">
         <SignedIn>
           <Authed>{() => <Week />}</Authed>
+        </SignedIn>
+        <SignedOut>
+          <Redirect to="/" />
+        </SignedOut>
+      </Route>
+      <Route path="/appointments/new">
+        <SignedIn>
+          <Authed>{(p) => <AppointmentPrep profile={p} />}</Authed>
+        </SignedIn>
+        <SignedOut>
+          <Redirect to="/" />
+        </SignedOut>
+      </Route>
+      <Route path="/appointments/:id/translate">
+        <SignedIn>
+          <Authed>{() => <TranslationWorkspace />}</Authed>
+        </SignedIn>
+        <SignedOut>
+          <Redirect to="/" />
+        </SignedOut>
+      </Route>
+      <Route path="/appointments/:id/review">
+        <SignedIn>
+          <Authed>{() => <AppointmentReview />}</Authed>
+        </SignedIn>
+        <SignedOut>
+          <Redirect to="/" />
+        </SignedOut>
+      </Route>
+      <Route path="/appointments/:id/followup">
+        <SignedIn>
+          <Authed>{() => <Followup />}</Authed>
+        </SignedIn>
+        <SignedOut>
+          <Redirect to="/" />
+        </SignedOut>
+      </Route>
+      <Route path="/followups">
+        <SignedIn>
+          <Authed>{() => <Followup />}</Authed>
         </SignedIn>
         <SignedOut>
           <Redirect to="/" />

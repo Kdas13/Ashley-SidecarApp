@@ -78,6 +78,99 @@ export interface SafeguardTrend {
   windowEnd: string;
 }
 
+// ---------------------------------------------------------------------------
+// Appointments / translation workspace / follow-up types
+// ---------------------------------------------------------------------------
+
+export type AppointmentStatus =
+  | "draft"
+  | "ready"
+  | "in_session"
+  | "completed";
+
+export interface SafeguardAppointment {
+  id: string;
+  userId: string;
+  createdAt: string;
+  updatedAt: string;
+  status: AppointmentStatus;
+  patientLang: Lang;
+  clinicianLang: Lang;
+  title: string;
+}
+
+export type Audience = "patient" | "clinician";
+export type Confidence = "high" | "medium" | "low";
+
+export interface SafeguardAppointmentSummary {
+  id: string;
+  appointmentId: string;
+  audience: Audience;
+  lang: Lang;
+  summary: string;
+  edited: boolean;
+  confidence: Confidence;
+  notes: string;
+  provider: string;
+  model: string;
+  createdAt: string;
+}
+
+export interface SafeguardAppointmentIntake {
+  appointmentId: string;
+  lang: Lang;
+  answers: Record<string, string>;
+  updatedAt: string;
+}
+
+export interface SafeguardTranslation {
+  id: string;
+  sourceLang: Lang;
+  targetLang: Lang;
+  sourceText: string;
+  translatedText: string;
+  confidence: Confidence;
+  notes: string;
+  provider: string;
+  model: string;
+  createdAt: string;
+}
+
+export interface SafeguardUtterance {
+  utterance: {
+    id: string;
+    appointmentId: string;
+    speaker: "patient" | "clinician";
+    translationId: string | null;
+    createdAt: string;
+  };
+  translation: SafeguardTranslation | null;
+}
+
+export interface SafeguardFollowup {
+  id: string;
+  appointmentId: string;
+  userId: string;
+  kind: "medication" | "followup" | "escalation";
+  sourceLang: Lang;
+  targetLang: Lang;
+  titleOriginal: string;
+  titleTranslated: string;
+  detailOriginal: string;
+  detailTranslated: string;
+  plainExplanation: string;
+  confidence: Confidence;
+  dueAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+}
+
+export interface SafeguardExportRef {
+  id: string;
+  generatedAt: string;
+  byteSize: number;
+}
+
 const BASE = "/safeguard-api";
 
 export function useApi() {
