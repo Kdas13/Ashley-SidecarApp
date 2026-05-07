@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/safeguard/"
+title = "Safeguard"
+version = "1.0.0"
+id = "artifacts/safeguard"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/safeguard/" ]
+localPort = 21464
+
+[services.development]
+run = "pnpm --filter @workspace/safeguard run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/safeguard", "run", "build" ]
+publicDir = "artifacts/safeguard/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "21464"
+BASE_PATH = "/safeguard/"

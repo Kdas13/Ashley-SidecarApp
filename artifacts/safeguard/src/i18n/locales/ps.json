@@ -1,0 +1,23 @@
+{
+  "_scaffolded": true,
+  "_note": "Pashto bundle is a scaffold for the pilot. Only safety-critical strings are translated.",
+  "actions": {
+    "needHelpNow": "زه اوس مرستې ته اړتیا لرم",
+    "signIn": "ننوتل",
+    "signOut": "وتل"
+  },
+  "pilot": {
+    "notice": "ازموینه. د NHS سره تړاو نلري. هیڅ شی ستاسو د عمل پرته نه شریکیږي."
+  },
+  "support": {
+    "title": "که اوس مرستې ته اړتیا لرئ",
+    "intro": "Safeguard کلینیکي خدمت نه دی. د بیړنۍ مرستې لپاره دغو شمېرو ته زنګ ووهئ.",
+    "close": "بندول",
+    "items": {
+      "nhs111": { "name": "NHS 111", "what": "د بریتانیې وړیا روغتیایي مشورې کرښه، ۲۴ ساعته.", "number": "111" },
+      "samaritans": { "name": "Samaritans", "what": "محرمه اوریدونکې کرښه، ۲۴ ساعته.", "number": "116 123" },
+      "refugeeCouncil": { "name": "British Red Cross — د کډوالو ملاتړ", "what": "د کډوالو لپاره عملي مرسته.", "number": "0808 196 3651" },
+      "emergency": { "name": "بیړنۍ (د ژوند ګواښ)", "what": "پولیس، اور وژنه، امبولانس.", "number": "999" }
+    }
+  }
+}

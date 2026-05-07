@@ -1,0 +1,23 @@
+{
+  "_scaffolded": true,
+  "_note": "Somali bundle is a scaffold for the pilot. Only safety-critical strings are translated.",
+  "actions": {
+    "needHelpNow": "Waxaan u baahanahay caawimaad hadda",
+    "signIn": "Gal",
+    "signOut": "Ka bax"
+  },
+  "pilot": {
+    "notice": "Tijaabo. Lama xidhiidhsana NHS. Wax aan tallaabadaada lahayn lama wadaago."
+  },
+  "support": {
+    "title": "Haddii aad hadda u baahantahay caawimaad",
+    "intro": "Safeguard ma aha adeeg caafimaad. Haddii aad hadda u baahantahay caawimaad, fadlan la xidhiidh kuwan.",
+    "close": "Xidh",
+    "items": {
+      "nhs111": { "name": "NHS 111", "what": "Khadka talo-bixinta caafimaad ee bilaashka ah ee UK, 24 saac.", "number": "111" },
+      "samaritans": { "name": "Samaritans", "what": "Khad sirta ah oo dhageysiga, 24 saac.", "number": "116 123" },
+      "refugeeCouncil": { "name": "British Red Cross — Taageero Qaxooti", "what": "Caawimaad la taaban karo qaxootiga.", "number": "0808 196 3651" },
+      "emergency": { "name": "Degdeg (khatar nolol)", "what": "Booliis, dab-damis, ambalaas.", "number": "999" }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+kind = "api"
+previewPath = "/safeguard-api"
+title = "Safeguard API"
+version = "1.0.0"
+id = "safeguard-api"
+
+[[services]]
+localPort = 8092
+name = "Safeguard API"
+paths = ["/safeguard-api"]
+
+[services.development]
+run = "pnpm --filter @workspace/safeguard-api run dev"
+
+[services.production]
+
+[services.production.build]
+args = ["pnpm", "--filter", "@workspace/safeguard-api", "run", "build"]
+
+[services.production.build.env]
+NODE_ENV = "production"
+
+[services.production.run]
+args = ["node", "--enable-source-maps", "artifacts/safeguard-api/dist/index.mjs"]
+
+[services.production.run.env]
+PORT = "8092"
+NODE_ENV = "production"
+
+[services.production.health.startup]
+path = "/safeguard-api/healthz"

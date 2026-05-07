@@ -1,0 +1,216 @@
+{
+  "app": {
+    "name": "Safeguard",
+    "tagline": "A calm place to keep your health story straight."
+  },
+  "pilot": {
+    "notice": "Pilot. Not affiliated with the NHS. Not a clinical record system. Nothing is shared without an action you take."
+  },
+  "actions": {
+    "continue": "Continue",
+    "back": "Back",
+    "save": "Save",
+    "cancel": "Cancel",
+    "skip": "Skip",
+    "signIn": "Sign in",
+    "signUp": "Create account",
+    "signOut": "Sign out",
+    "submit": "Submit",
+    "needHelpNow": "I need help now",
+    "yes": "Yes",
+    "no": "No"
+  },
+  "languages": {
+    "label": "Language",
+    "scaffoldedNotice": "This language is partly translated. Some text still shows in English while we finish the translation."
+  },
+  "landing": {
+    "title": "A calm place to keep your health story straight.",
+    "intro": "Safeguard helps you record how you are feeling each day, in your own language. A clinician you choose can read what you wrote, in plain English, when you decide to share it.",
+    "principlesTitle": "How Safeguard works"
+  },
+  "onboarding": {
+    "title": "Set up Safeguard",
+    "subtitle": "We will ask a few questions so a future GP can pick up where your last clinician left off. You can edit any of this later.",
+    "stepLanguage": "Choose your language",
+    "stepIdentity": "About you",
+    "stepGp": "Your GP (if you have one)",
+    "stepConcerns": "What is on your mind",
+    "stepAccess": "Accessibility and trusted contact",
+    "stepConsent": "Your consent",
+    "q": {
+      "language": "Which language would you like to use Safeguard in?",
+      "languageBody": "You can change this any time from settings.",
+      "preferredName": "What would you like Safeguard to call you?",
+      "nativeLanguage": "What is your first language?",
+      "nativeLanguageBody": "A clinician may need this to book an interpreter.",
+      "secondaryLanguage": "Is there another language you are comfortable in?",
+      "secondaryLanguageBody": "Optional. Choose 'None' if you would rather not say.",
+      "literacy": "How comfortable are you with reading and writing in your language?",
+      "literacyBody": "There is no better or worse answer. This just helps us show information in a way that suits you.",
+      "country": "Country of origin",
+      "dob": "Date of birth",
+      "dobBody": "The year alone is fine if you prefer.",
+      "gpName": "Your GP's name (if you know it)",
+      "gpNameBody": "You can skip this if you do not have a GP yet.",
+      "gpSurgery": "GP surgery or clinic name (if known)",
+      "concerns": "Are there any health concerns you want a clinician to know about?",
+      "concernsBody": "Write in your own language. It is okay to leave this blank.",
+      "medications": "What medication do you currently take?",
+      "medicationsBody": "Name and dose if you know them. You can skip this.",
+      "largeText": "Would you like larger text?",
+      "highContrast": "Would you like higher contrast?",
+      "audio": "Would you like text read out loud?",
+      "simplified": "Would you like simpler wording?",
+      "slowerPacing": "Would you like one question at a time, no rush?",
+      "trustedName": "Trusted contact name (optional)",
+      "trustedNameBody": "Safeguard will never contact them automatically. Their name and number only appear on the 'I need help now' screen.",
+      "trustedRelation": "How are they related to you? (e.g. friend, sister)",
+      "trustedPhone": "Phone number",
+      "consentStorage": "Do you agree to your answers being stored on the Safeguard server?",
+      "consentStorageBody": "This is needed so a clinician you choose can read them later.",
+      "consentAi": "Do you agree to an AI tool reading your answers to write a short observational summary in English?",
+      "consentAiBody": "Safeguard never gives medical advice. The summary just describes what you wrote."
+    },
+    "fields": {
+      "preferredName": "What would you like Safeguard to call you?",
+      "countryOfOrigin": "Country of origin",
+      "dateOfBirth": "Date of birth (year is enough if you prefer)",
+      "nativeLanguage": "Your first language",
+      "secondaryLanguage": "Other language you are comfortable in (optional)",
+      "none": "None",
+      "literacy": "How comfortable are you with reading and writing in your language?",
+      "literacyLow": "Not very comfortable",
+      "literacyMedium": "Reasonably comfortable",
+      "literacyHigh": "Very comfortable",
+      "gpName": "GP name (if known)",
+      "gpSurgery": "GP surgery / clinic (if known)",
+      "ongoingConcerns": "Health concerns you want a clinician to know about",
+      "currentMedications": "Medication you currently take (name and dose if known)",
+      "largeText": "Use larger text",
+      "highContrast": "Use higher contrast",
+      "audio": "Read text out loud (audio assistance)",
+      "simplified": "Use simpler wording",
+      "slowerPacing": "Show one question at a time, no rush",
+      "trustedContactName": "Trusted contact name (optional)",
+      "trustedContactRelation": "Relationship (e.g. friend, sister)",
+      "trustedContactPhone": "Phone number",
+      "consentStorage": "I understand my answers will be stored on the Safeguard server so a clinician I choose can read them later.",
+      "consentAi": "I understand an AI tool will read my answers to write a short observational summary in English. Safeguard never gives medical advice."
+    },
+    "consent": {
+      "iAgree": "Yes, I agree",
+      "notYet": "Not yet"
+    },
+    "trustedContactIntro": "If you would like, give us one person you trust. Safeguard will only show you their name and number on the Need-help-now screen — it will never contact them automatically.",
+    "consentIntro": "Both consents are required to save the profile and check in. You can withdraw consent at any time by deleting your account.",
+    "consentRequired": "Both consents are required to continue.",
+    "complete": "Save and continue"
+  },
+  "home": {
+    "greeting": "Welcome back, {{name}}.",
+    "todayDone": "You have already checked in today. Thank you.",
+    "todayPrompt": "Would you like to do today's check-in?",
+    "startCheckin": "Start today's check-in",
+    "viewWeek": "See this week",
+    "yourPrinciples": "How Safeguard treats your information"
+  },
+  "checkin": {
+    "title": "Today's check-in",
+    "intro": "Take your time. There are no right answers. Skip anything you would rather not answer.",
+    "skipHint": "Do not want to answer this one? Just press Continue.",
+    "scaleNormal": "0 = worst, 10 = best",
+    "scaleInverted": "0 = none, 10 = worst it has been",
+    "scores": {
+      "generalFeeling": "How are you feeling in general today?",
+      "pain": "How much pain are you in today?",
+      "foodWater": "Have you been able to eat and drink water today?",
+      "medication": "Have you been able to take your medication as planned today?",
+      "sleep": "How well did you sleep last night?",
+      "safety": "Do you feel safe where you are right now?",
+      "low": "Low",
+      "high": "High",
+      "none": "None",
+      "alot": "A lot",
+      "generalFeelingShort": "General feeling",
+      "painShort": "Pain",
+      "foodWaterShort": "Food and water",
+      "medicationShort": "Medication",
+      "sleepShort": "Sleep",
+      "safetyShort": "Felt safety"
+    },
+    "freeText": "Anything else you want a clinician to know about today? Write in your own language.",
+    "freeTextPlaceholder": "It is okay to leave this blank.",
+    "submit": "Save today's check-in",
+    "thanks": "Saved. Safeguard wrote a short observational summary for a future clinician. You can read it below.",
+    "summaryHeading": "Observational summary (auto-generated, in English)",
+    "rawHeading": "What you wrote (kept exactly as you wrote it)",
+    "translatedNote": "Auto-translated from {{from}} to English."
+  },
+  "week": {
+    "title": "This week",
+    "empty": "No check-ins yet this week. That is okay.",
+    "flagged": "Safety flag — please tell someone you trust.",
+    "trendsHeading": "Patterns Safeguard noticed",
+    "trendKind": {
+      "trend_repeated_distress": "Repeated distress signal",
+      "trend_missed_checkin": "No check-in in a few days"
+    }
+  },
+  "support": {
+    "title": "If you need help now",
+    "intro": "Safeguard is not a clinical service. If you need help now, please contact one of these instead. They have people who answer in many languages.",
+    "items": {
+      "nhs111": {
+        "name": "NHS 111",
+        "what": "Free UK health advice line. Open 24 hours. Translators available.",
+        "number": "111"
+      },
+      "samaritans": {
+        "name": "Samaritans",
+        "what": "Free, confidential listening line for any kind of distress. Open 24 hours.",
+        "number": "116 123"
+      },
+      "refugeeCouncil": {
+        "name": "British Red Cross — Refugee Support",
+        "what": "Practical help and signposting for people seeking asylum or with refugee status.",
+        "number": "0808 196 3651"
+      },
+      "emergency": {
+        "name": "Emergency (life-threatening)",
+        "what": "Police, fire, or ambulance for an immediate emergency.",
+        "number": "999"
+      }
+    },
+    "close": "Close"
+  },
+  "auth": {
+    "signedOut": "You have been signed out."
+  },
+  "principles": {
+    "human_authority": {
+      "title": "Humans make the medical decisions",
+      "rule": "Safeguard never gives medical advice. It records what you write so a clinician you choose can read it."
+    },
+    "communication_clarity": {
+      "title": "Plain language, in your language",
+      "rule": "Everything is in the language you choose. Translations are clearly labelled. Your original words are always kept."
+    },
+    "transparency": {
+      "title": "You can see everything Safeguard stores",
+      "rule": "Anything saved about you is shown back to you, with a one-line reason. Nothing is hidden."
+    },
+    "safeguarding_support": {
+      "title": "Help is always one tap away",
+      "rule": "Every screen has an 'I need help now' button with non-clinical UK support numbers."
+    },
+    "emotional_boundary": {
+      "title": "Companion, not friend",
+      "rule": "Safeguard speaks calmly and clinically. It does not pretend to be a friend or to remember you personally."
+    },
+    "pilot_scope": {
+      "title": "Pilot scope is honest",
+      "rule": "Safeguard is a pilot. It is not the NHS. Nothing is shared without an action you take."
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "_scaffolded": true,
+  "_note": "Urdu bundle is a scaffold for the pilot. Only safety-critical strings are translated; everything else falls back to English with a visible badge.",
+  "actions": {
+    "needHelpNow": "مجھے ابھی مدد چاہیے",
+    "signIn": "سائن ان",
+    "signOut": "سائن آؤٹ"
+  },
+  "pilot": {
+    "notice": "آزمائشی پروجیکٹ۔ NHS سے وابستہ نہیں۔ کوئی چیز آپ کی اجازت کے بغیر شیئر نہیں کی جاتی۔"
+  },
+  "support": {
+    "title": "اگر آپ کو ابھی مدد چاہیے",
+    "intro": "Safeguard ایک طبی سروس نہیں ہے۔ اگر ابھی مدد چاہیے تو ان میں سے کسی کو کال کریں۔",
+    "close": "بند کریں",
+    "items": {
+      "nhs111": { "name": "NHS 111", "what": "مفت برطانوی صحت مشورہ لائن، 24 گھنٹے۔", "number": "111" },
+      "samaritans": { "name": "Samaritans", "what": "خفیہ سننے والی لائن، 24 گھنٹے۔", "number": "116 123" },
+      "refugeeCouncil": { "name": "British Red Cross — پناہ گزین معاونت", "what": "پناہ گزینوں کے لیے عملی مدد۔", "number": "0808 196 3651" },
+      "emergency": { "name": "ہنگامی (جان کا خطرہ)", "what": "پولیس، فائر، ایمبولینس۔", "number": "999" }
+    }
+  }
+}
