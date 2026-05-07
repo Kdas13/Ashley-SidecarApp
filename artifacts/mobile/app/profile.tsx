@@ -36,6 +36,7 @@ import {
   resetPushRegistrationCache,
   unregisterPushNotificationsAsync,
 } from "@/lib/pushRegistration";
+import { usePushStatus } from "@/lib/pushStatus";
 import {
   applyImportedPayload,
   describeImportPlan,
@@ -511,6 +512,8 @@ export default function ProfileScreen(): React.JSX.Element {
           <Text style={styles.successText}>Saved</Text>
         ) : null}
 
+        <PushDiagnosticsSection />
+
         <CarryoverSection
           existingCarryover={profileQuery.data.replikaCarryover}
           existingSummary={profileQuery.data.replikaCarryoverSummary}
@@ -523,6 +526,163 @@ export default function ProfileScreen(): React.JSX.Element {
     </KeyboardAvoidingView>
   );
 }
+
+// -----------------------------------------------------------------------------
+// PushDiagnosticsSection
+// -----------------------------------------------------------------------------
+// Mirrors the [push] console logs to a small panel so we can see why push
+// registration is silently failing in a release APK without needing
+// `adb logcat`. Updated live by `pushRegistration.ts` via the
+// `pushStatus` observable. Manual "Re-run check" button forces a fresh
+// attempt (clears the in-process cache first so a previous bail doesn't
+// short-circuit).
+// -----------------------------------------------------------------------------
+function PushDiagnosticsSection(): React.JSX.Element {
+  const status = usePushStatus();
+  const [running, setRunning] = useState(false);
+
+  const onRecheck = async (): Promise<void> => {
+    if (running) return;
+    setRunning(true);
+    try {
+      resetPushRegistrationCache();
+      await registerForPushNotificationsAsync().catch(() => undefined);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const fmt = (v: string | boolean | null): string =>
+    v === null ? "—" : typeof v === "boolean" ? (v ? "yes" : "no") : v;
+
+  const tokenLine =
+    status.token != null
+      ? `${status.token.slice(0, 28)}…`
+      : status.tokenStatus
+        ? status.tokenStatus
+        : "—";
+
+  return (
+    <View style={styles.settingsSection}>
+      <Text style={styles.sectionTitle}>Push status (diagnostics)</Text>
+      <Text style={styles.hint}>
+        Live mirror of the push registration steps. Updated automatically on
+        every cold launch and whenever you tap re-run.
+      </Text>
+
+      <View style={pushDiagStyles.row}>
+        <Text style={pushDiagStyles.k}>Real device</Text>
+        <Text style={pushDiagStyles.v}>{fmt(status.isDevice)}</Text>
+      </View>
+      <View style={pushDiagStyles.row}>
+        <Text style={pushDiagStyles.k}>Permission</Text>
+        <Text style={pushDiagStyles.v}>{fmt(status.permission)}</Text>
+      </View>
+      <View style={pushDiagStyles.row}>
+        <Text style={pushDiagStyles.k}>Project ID</Text>
+        <Text style={pushDiagStyles.v}>
+          {status.projectId ? "found" : status.updatedAt ? "missing" : "—"}
+        </Text>
+      </View>
+      <View style={pushDiagStyles.row}>
+        <Text style={pushDiagStyles.k}>Token</Text>
+        <Text style={pushDiagStyles.v} numberOfLines={1}>
+          {tokenLine}
+        </Text>
+      </View>
+      <View style={pushDiagStyles.row}>
+        <Text style={pushDiagStyles.k}>Server upload</Text>
+        <Text style={pushDiagStyles.v}>{fmt(status.uploadStatus)}</Text>
+      </View>
+      {status.lastError ? (
+        <View style={pushDiagStyles.errBox}>
+          <Text style={pushDiagStyles.errLabel}>Last error</Text>
+          <Text style={pushDiagStyles.errText}>{status.lastError}</Text>
+        </View>
+      ) : null}
+      {status.updatedAt ? (
+        <Text style={pushDiagStyles.ts}>
+          updated {new Date(status.updatedAt).toLocaleTimeString()}
+        </Text>
+      ) : null}
+
+      <Pressable
+        onPress={onRecheck}
+        disabled={running}
+        style={({ pressed }) => [
+          pushDiagStyles.btn,
+          (pressed || running) && pushDiagStyles.btnPressed,
+        ]}
+      >
+        <Text style={pushDiagStyles.btnText}>
+          {running ? "Re-running…" : "Re-run check"}
+        </Text>
+      </Pressable>
+    </View>
+  );
+}
+
+const pushDiagStyles = StyleSheet.create({
+  row: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 4,
+  },
+  k: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_500Medium",
+    fontSize: 13,
+  },
+  v: {
+    color: colors.light.text,
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 13,
+    flexShrink: 1,
+    marginLeft: 12,
+    textAlign: "right",
+  },
+  errBox: {
+    marginTop: 8,
+    backgroundColor: "#fde7e7",
+    borderRadius: 10,
+    padding: 10,
+    gap: 4,
+  },
+  errLabel: {
+    color: "#a02020",
+    fontFamily: "Inter_700Bold",
+    fontSize: 11,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  errText: {
+    color: "#7a1818",
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
+  },
+  ts: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_400Regular",
+    fontSize: 11,
+    marginTop: 4,
+  },
+  btn: {
+    marginTop: 10,
+    backgroundColor: colors.light.muted,
+    borderRadius: 12,
+    paddingVertical: 10,
+    alignItems: "center",
+  },
+  btnPressed: {
+    opacity: 0.6,
+  },
+  btnText: {
+    color: colors.light.text,
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 14,
+  },
+});
 
 function CarryoverSection({
   existingCarryover,

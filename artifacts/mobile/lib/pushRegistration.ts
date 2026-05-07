@@ -18,7 +18,11 @@ import * as Device from "expo-device";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
 
-import { setPushTokenOnServer } from "./aiClient";
+import {
+  setPushTokenOnServer,
+  setPushTokenOnServerWithStatus,
+} from "./aiClient";
+import { resetPushStatus, setPushStatus } from "./pushStatus";
 
 // -----------------------------------------------------------------------------
 // Expo Go gate
@@ -144,12 +148,15 @@ export async function registerForPushNotificationsAsync(): Promise<RegisterResul
   }
 
   inFlight = (async (): Promise<string | null> => {
+    resetPushStatus();
     try {
       // Step 1 — must be a real device. Notifications never deliver to
       // simulators (iOS) and the token call fails on the Android emulator
       // when Google Play services aren't present.
       console.log("[push] isDevice", Device.isDevice);
+      setPushStatus({ isDevice: Device.isDevice });
       if (!Device.isDevice) {
+        setPushStatus({ lastError: "not a real device" });
         return null;
       }
 
@@ -182,7 +189,9 @@ export async function registerForPushNotificationsAsync(): Promise<RegisterResul
         finalStatus = requested.status;
       }
       console.log("[push] permission final", finalStatus);
+      setPushStatus({ permission: finalStatus });
       if (finalStatus !== "granted") {
+        setPushStatus({ lastError: `permission=${finalStatus}` });
         // Best-effort: clear any previously saved token so the server
         // stops trying to push to a device that just opted out.
         await setPushTokenOnServer(null).catch(() => undefined);
@@ -194,23 +203,57 @@ export async function registerForPushNotificationsAsync(): Promise<RegisterResul
       // OR upload) surfaces with the same shape in logs.
       const projectId = resolveProjectId();
       console.log("[push] projectId", projectId);
+      setPushStatus({ projectId: projectId ?? null });
+      let tokenValue: string;
       try {
         const token = await Notifications.getExpoPushTokenAsync(
           projectId ? { projectId } : undefined,
         );
         console.log("[push] token result", token?.data);
         if (!token?.data || typeof token.data !== "string") {
+          setPushStatus({
+            tokenStatus: "fail",
+            lastError: "getExpoPushTokenAsync returned no data",
+          });
           return null;
         }
-        await setPushTokenOnServer(token.data);
-        console.log("[push] registered", token.data);
-        return token.data;
+        tokenValue = token.data;
+        setPushStatus({ tokenStatus: "ok", token: tokenValue });
       } catch (err) {
-        console.error("[push] registration failed", err);
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[push] token fetch failed", err);
+        setPushStatus({ tokenStatus: "fail", lastError: msg });
+        return null;
+      }
+
+      // Upload the token to the server, capturing HTTP status so the
+      // diagnostic banner can show whether the API actually accepted it.
+      try {
+        const upload = await setPushTokenOnServerWithStatus(tokenValue);
+        console.log(
+          "[push] upload status",
+          upload.status,
+          upload.bodyPreview,
+        );
+        setPushStatus({
+          uploadStatus: upload.ok ? "ok" : "fail",
+          lastError: upload.ok
+            ? null
+            : `HTTP ${upload.status} ${upload.bodyPreview}`,
+        });
+        if (!upload.ok) return null;
+        console.log("[push] registered", tokenValue);
+        return tokenValue;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[push] upload threw", err);
+        setPushStatus({ uploadStatus: "fail", lastError: msg });
         return null;
       }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
       console.warn("[push] registerForPushNotificationsAsync threw", err);
+      setPushStatus({ lastError: msg });
       return null;
     }
   })();

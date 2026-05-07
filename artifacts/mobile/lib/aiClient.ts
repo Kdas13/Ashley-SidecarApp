@@ -738,6 +738,33 @@ export async function setPushTokenOnServer(token: string | null): Promise<void> 
   });
 }
 
+/**
+ * Variant of setPushTokenOnServer that returns the raw HTTP status so
+ * the profile-screen push diagnostic banner can display the upload
+ * result. Throws on network failure (no response at all).
+ */
+export async function setPushTokenOnServerWithStatus(
+  token: string | null,
+): Promise<{ status: number; ok: boolean; bodyPreview: string }> {
+  const url = `${getApiBase()}/devices/push-token`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: apiHeaders({
+      Authorization: `Bearer ${getDeviceIdSync()}`,
+      "X-Device-Id": getDeviceIdSync(),
+    }),
+    body: JSON.stringify({ token }),
+  });
+  let bodyPreview = "";
+  try {
+    const text = await res.text();
+    bodyPreview = text.slice(0, 200);
+  } catch {
+    bodyPreview = "(unreadable body)";
+  }
+  return { status: res.status, ok: res.ok, bodyPreview };
+}
+
 export type ChatRequest = {
   /** Client-generated stable id; server is idempotent on it. */
   id: string;
