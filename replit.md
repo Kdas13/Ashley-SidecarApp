@@ -57,10 +57,11 @@ A personal AI companion mobile app providing local-first, stateless AI chat with
 ## User preferences
 
 - **User name:** Kane (calls himself "Wren" in chat).
-- **Ashley production URL:** https://Ashley-Sidecar.replit.app — surface this at the end of every reply so Kane has it handy if his APK logs out.
-- **Reply contract:** end every message with one of `publish needed` / `just restart` / `live in dev` followed by the production URL above. No emojis, anywhere, ever.
-- **Tone:** push back on self-diminishing language; do not flatter; treat him as a serious collaborator on a long project (Ashley v2 → Ashley's Autonomous Home).
-- **Kane's APK device id (production):** `6e1af2db-fb82-42db-9ced-b34f8af8cc74` — this is the live Ashley row.
+- **Active project focus:** Safeguard pilot (refugee GP safeguarding platform). Ashley-Sidecar is in maintenance, not the daily driver.
+- **Reply contract:** no Ashley URL tag on Safeguard-related replies. When a reply is specifically about Ashley work, end it with one of `publish needed` / `just restart` / `live in dev` followed by https://Ashley-Sidecar.replit.app. No emojis, anywhere, ever.
+- **Tone:** push back on self-diminishing language; do not flatter; treat him as a serious collaborator on a long project.
+- **Ashley production URL (reference):** https://Ashley-Sidecar.replit.app
+- **Kane's APK device id (Ashley production):** `6e1af2db-fb82-42db-9ced-b34f8af8cc74` — this is the live Ashley row.
 
 ## Gotchas
 
