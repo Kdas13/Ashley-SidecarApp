@@ -1,6 +1,6 @@
 {
   "_scaffolded": true,
-  "_note": "Somali bundle is a scaffold for the pilot. Only safety-critical strings are translated.",
+  "_note": "Somali bundle is a scaffold for the pilot. Safety-critical strings and the appointment / follow-up flow are translated; remaining base UI still falls back to English.",
   "actions": {
     "needHelpNow": "Waxaan u baahanahay caawimaad hadda",
     "signIn": "Gal",
@@ -8,6 +8,97 @@
   },
   "pilot": {
     "notice": "Tijaabo. Lama xidhiidhsana NHS. Wax aan tallaabadaada lahayn lama wadaago."
+  },
+  "home": {
+    "appointmentHeading": "Ballanta GP",
+    "appointmentBody": "U diyaargarow booqashadaada xigta ee GP. Waxaan diiwaan-gelin doonnaa waxaad rabto inaad sheegto erayadaada gaarka ah waxaanan u tarjumi doonnaa dhakhtarka.",
+    "startAppointment": "U diyaargarow ballan",
+    "apptStatus": {
+      "draft": "Diyaarintu way socotaa.",
+      "ready": "Diyaar u ah ballanta.",
+      "in_session": "Goobta tarjumaaddu way furan tahay.",
+      "completed": "Raac-raac waa la diiwaan-geliyay."
+    },
+    "followupsHeading": "Xusuusinta ballantaadii ugu dambeysay",
+    "viewAllFollowups": "Eeg dhammaan xusuusinta"
+  },
+  "ai": {
+    "generatedBanner": "Waxa sameeyay AI. Tarjumaadda iyo soo-koobiddu way khaldami karaan. Erayadaada asalka ah waa lagu hayaa dhinaca.",
+    "confidence": {
+      "label": "Kalsoonida AI",
+      "high": "Sare",
+      "medium": "Dhexdhexaad",
+      "low": "Hooseeya"
+    }
+  },
+  "appointment": {
+    "title": "U diyaargarowga ballanta GP",
+    "intro": "Mar walba ka jawaab hal su'aal oo gaaban. Iska dhaaf waxaad jeclaan lahayd inaadan ka jawaabin. Erayadaada asalka ah waa lagu hayaa sida aad u qortay.",
+    "yourLang": "Luuqaddaada",
+    "clinicianLangQ": "Luuqadda dhakhtarku adeegsan doono?",
+    "generate": "Samee soo-koobid",
+    "reviewTitle": "Dib u eeg soo-koobida ballanta",
+    "reviewIntro": "Laba soo-koobid ayaa jawaabahaaga laga sameeyay: mid luuqad fudud kuu yeer adiga, mid kale oo qaab habaysan u ah dhakhtarka. Labaduba waa AI; midkaaga waa wax ka beddeli kartaa.",
+    "patientSummaryHeading": "Adiga (luuqad fudud, luuqaddaada)",
+    "clinicianSummaryHeading": "Dhakhtarka (qaab habaysan, luuqaddiisa)",
+    "summaryMissing": "Soo-koobid weli ma jirto.",
+    "editPatientSummary": "Wax ka beddel soo-koobidaada",
+    "editedByYou": "Adiga ayaa wax ka beddelay nuqulkan.",
+    "openTranslate": "Fur goobta tarjumaadda",
+    "openReview": "Dib u eeg oo dhoofi",
+    "q": {
+      "mainConcern": "Waa maxay shayga ugu muhiimsan ee aad maanta caawimaad u rabto?",
+      "mainConcernBody": "Ku qor luuqaddaada. Isticmaal eray badan ama yar sida aad rabto.",
+      "symptomDuration": "Intee in le'eg ayey arrintani socotay?",
+      "severity": "Intee le'eg ayey saamaynaysaa maalintaada?",
+      "painLevel": "Hadda xanuun ma qabtaa? Haddii haa, intee?",
+      "medications": "Daawooyinkee ayaad hadda qaadanaysaa?",
+      "allergies": "Cilad xasaasiyad ah oo dhakhtarku ogaado?",
+      "sleep": "Sidee ayaa hurdadaadu hadda u tahay?",
+      "appetite": "Sidee ayaa cuntaynta hadda kuu tahay?",
+      "mentalHealth": "Wax ku saabsan sida aad maskaxda u dareemayso oo aad rabto in dhakhtarku ogaado?",
+      "mentalHealthBody": "Ku qor erayadaada. Safeguard waxba ma cilminayo — kaliya wuxuu gudbinayaa waxa aad sheegto.",
+      "safeguarding": "Wax ku saabsan badbaadadaada meesha aad ku noolahay oo aad rabto in dhakhtarku ogaado?",
+      "safeguardingBody": "Ku qor erayadaada. Safeguard cidna kuuma soo wici doono — kaliya dhakhtarka aad la wadaagto ayaa arki doona."
+    }
+  },
+  "translateWs": {
+    "title": "Goobta tarjumaadda",
+    "openReview": "Dib u eeg oo dhoofi",
+    "aiBanner": "Tarjumaad AI oo toos ah. Heerka kalsoonida ayaa loo muujiyaa sadar walba. Erayadaada asalka ah marwalba ayaa la muujiyaa tarjumaadda dhinaceeda. U sheeg dhakhtarka haddii wax khaldan u eg yihiin.",
+    "speakerPatient": "Adiga",
+    "speakerClinician": "Dhakhtarka",
+    "inputLabel": "Qor waxa lagu yidhi {{from}} ← u tarjun {{to}}",
+    "inputPlaceholder": "Mar walba qor ama ku dheji hal sadar.",
+    "translate": "Tarjun",
+    "original": "Asalka",
+    "translated": "La tarjumay",
+    "empty": "Tarjumaad weli ma jirto. Dooro qofka hadlaya oo qor sadar."
+  },
+  "pdf": {
+    "heading": "PDF u ah GP",
+    "body": "Samee soo-koobid hal bog ah oo aad siin karto dhakhtarka (ama u dirto GP-gaaga iimaylkii). Waxay ka kooban tahay labada soo-koobidood, jawaabahaagii saxda ahaa, iyo isbeddelka diiwaanka aad ugu dambeyn samaysay.",
+    "generate": "Samee PDF",
+    "download": "Soo dejiso PDF",
+    "previousExports": "PDF-yadii hore"
+  },
+  "followup": {
+    "title": "Xusuusin iyo raac-raac",
+    "intro": "Waxa dhakhtarku kaa codsaday inaad sameyso, luuqaddaada. Taabo xusuusin si aad u calaamadiso in la sameeyay. Qoraalladaada asalka ah marwalba waa la hayaa.",
+    "captureHeading": "Ballanta ka dib",
+    "captureBody": "Ku dheji ama ku qor tilmaamaha dhakhtarka sida ay yihiin. Safeguard wuu tarjumi doonaa wuxuuna kuu beddeli doonaa xusuusin.",
+    "placeholder": "Tusaale: Qaado amoxicillin 500mg saddex jeer maalintii muddo 5 maalmood ah. Ku noqo laba toddobaad gudahood. Ka soo noqo si dhakhso ah haddii qandhadu sii xumaato.",
+    "generate": "Samee xusuusin",
+    "viewExisting": "Eeg {{count}} xusuusin oo jira",
+    "empty": "Xusuusin weli ma jirto.",
+    "showOriginal": "Muuji erayada asalka ah ee dhakhtarka",
+    "markDone": "Calaamadi sida la sameeyay",
+    "doneAt": "La sameeyay {{when}}",
+    "kind": {
+      "medication": "Daawo",
+      "followup": "Raac-raac",
+      "escalation": "Ku noqo haddii xaaladdu sii xumaato"
+    }
   },
   "support": {
     "title": "Haddii aad hadda u baahantahay caawimaad",
