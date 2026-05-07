@@ -4,7 +4,11 @@
   "actions": {
     "needHelpNow": "Waxaan u baahanahay caawimaad hadda",
     "signIn": "Gal",
-    "signOut": "Ka bax"
+    "signOut": "Ka bax",
+    "continue": "Sii wad",
+    "back": "Dib u noqo",
+    "save": "Kaydi",
+    "cancel": "Jooji"
   },
   "pilot": {
     "notice": "Tijaabo. Lama xidhiidhsana NHS. Wax aan tallaabadaada lahayn lama wadaago."
@@ -98,6 +102,20 @@
       "medication": "Daawo",
       "followup": "Raac-raac",
       "escalation": "Ku noqo haddii xaaladdu sii xumaato"
+    },
+    "reminder": {
+      "heading": "Xusuusin telefoon",
+      "next": "Xusuusinta xigta: {{when}}",
+      "muted": "Xusuusinta shaygan waa la aamusiyay.",
+      "mute": "Aamusi",
+      "unmute": "Shidi",
+      "snooze1h": "Igu xusuusi 1 saac kadib",
+      "snooze24h": "Igu xusuusi berri",
+      "cadence": {
+        "none": "Ma jirto xusuusin telefoon.",
+        "once": "Hal mar baan kuu xusuusin doonaa.",
+        "recurring": "{{times}} jeer maalintii muddo {{days}} maalmood."
+      }
     }
   },
   "support": {
