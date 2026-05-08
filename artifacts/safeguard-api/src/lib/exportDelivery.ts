@@ -28,7 +28,7 @@
 
 import crypto from "node:crypto";
 import QRCode from "qrcode";
-import nodemailer from "nodemailer";
+import nodemailer, { type Transporter } from "nodemailer";
 import { logger } from "./logger";
 
 export const QR_TTL_MS = 1000 * 60 * 60 * 24 * 14; // 14 days
@@ -90,10 +90,92 @@ export function isValidEmail(input: string): boolean {
   return EMAIL_RE.test(input.trim());
 }
 
+export type EmailDeliveryErrorCode =
+  | "transport_not_configured"
+  | "transport_unverified"
+  | "recipient_rejected"
+  | "auth_failed"
+  | "smtp_error";
+
 export interface EmailDeliveryResult {
   status: "sent" | "failed";
-  errorCode?: string;
+  errorCode?: EmailDeliveryErrorCode;
   errorMessage?: string;
+  messageId?: string;
+}
+
+/**
+ * Cache the nodemailer transport across requests so we aren't paying TCP +
+ * TLS handshake costs on every send. The cache key is the SMTP URL itself —
+ * if an operator rotates SAFEGUARD_DELIVERY_SMTP_URL we transparently
+ * rebuild on the next call instead of holding a stale connection pool.
+ */
+let cachedTransport: { url: string; tx: Transporter } | null = null;
+
+function getTransport(url: string): Transporter {
+  if (cachedTransport && cachedTransport.url === url) {
+    return cachedTransport.tx;
+  }
+  // Note: nodemailer's URL-form constructor takes its connection-pool
+  // settings via URL query params (e.g. `smtps://u:p@host:465/?pool=true`),
+  // not via a second argument — the second arg to createTransport(url, …)
+  // is per-message defaults, not transport options. We just cache the
+  // built transport so repeated sends reuse the underlying socket.
+  const tx = nodemailer.createTransport(url);
+  cachedTransport = { url, tx };
+  return tx;
+}
+
+/**
+ * Test-only: drop the cached transport so unit tests don't carry a mocked
+ * transport from one test file into another.
+ */
+export function _resetEmailTransportCache(): void {
+  cachedTransport = null;
+  verifiedTransports.clear();
+}
+
+/**
+ * Map nodemailer's loosely-typed error shape onto our small set of API
+ * error codes so the mobile UI can render a useful retry path. We look at
+ * `err.code` (nodemailer's machine-readable code) and `err.responseCode`
+ * (the SMTP reply code) — anything 5xx on RCPT TO is a rejected recipient
+ * (bad address) rather than a transport failure the operator should chase.
+ */
+function classifySmtpError(err: unknown): {
+  code: EmailDeliveryErrorCode;
+  message: string;
+} {
+  const e = err as {
+    code?: string;
+    responseCode?: number;
+    command?: string;
+    message?: string;
+  };
+  const message = e?.message || "Unknown SMTP error.";
+  if (e?.code === "EAUTH") {
+    return {
+      code: "auth_failed",
+      message:
+        "Surgery email transport rejected the configured credentials. Operator needs to update SAFEGUARD_DELIVERY_SMTP_URL.",
+    };
+  }
+  if (
+    e?.code === "EENVELOPE" ||
+    (typeof e?.responseCode === "number" &&
+      e.responseCode >= 500 &&
+      e.responseCode < 600 &&
+      (e.command === "RCPT TO" || /recipient|mailbox/i.test(message)))
+  ) {
+    return {
+      code: "recipient_rejected",
+      message: `Surgery rejected the address: ${message}`,
+    };
+  }
+  return {
+    code: "smtp_error",
+    message: `Email could not be delivered: ${message}`,
+  };
 }
 
 /**
@@ -107,7 +189,13 @@ export interface EmailDeliveryResult {
  *   smtp://user:pass@smtp.example.org:587
  * The `from` address falls back to `SAFEGUARD_DELIVERY_FROM` and finally
  * to a noreply identity that includes the patient's preferred name.
+ *
+ * On the first call against a given transport URL we run `transport.verify()`
+ * so misconfigured credentials surface as `auth_failed` / `transport_unverified`
+ * instead of a generic send failure mid-handshake.
  */
+const verifiedTransports = new Set<string>();
+
 export async function sendExportEmail(args: {
   to: string;
   surgeryName: string;
@@ -115,8 +203,8 @@ export async function sendExportEmail(args: {
   patientName: string;
   appointmentId: string;
 }): Promise<EmailDeliveryResult> {
-  const transport = process.env.SAFEGUARD_DELIVERY_SMTP_URL;
-  if (!transport) {
+  const transportUrl = process.env.SAFEGUARD_DELIVERY_SMTP_URL;
+  if (!transportUrl) {
     logger.warn(
       { appointmentId: args.appointmentId },
       "export email requested but SAFEGUARD_DELIVERY_SMTP_URL is unset",
@@ -144,9 +232,41 @@ export async function sendExportEmail(args: {
     ``,
     `Reference: appointment ${args.appointmentId}`,
   ].join("\n");
+
+  const tx = getTransport(transportUrl);
+
+  if (!verifiedTransports.has(transportUrl)) {
+    try {
+      await tx.verify();
+      verifiedTransports.add(transportUrl);
+      logger.info(
+        { appointmentId: args.appointmentId },
+        "export email transport verified",
+      );
+    } catch (err) {
+      const classified = classifySmtpError(err);
+      logger.error(
+        { err, appointmentId: args.appointmentId },
+        "export email transport verify failed",
+      );
+      return {
+        status: "failed",
+        errorCode:
+          classified.code === "auth_failed"
+            ? "auth_failed"
+            : "transport_unverified",
+        errorMessage:
+          classified.code === "auth_failed"
+            ? classified.message
+            : `Surgery email transport could not be reached: ${
+                err instanceof Error ? err.message : "unknown error"
+              }`,
+      };
+    }
+  }
+
   try {
-    const tx = nodemailer.createTransport(transport);
-    await tx.sendMail({
+    const info = await tx.sendMail({
       from,
       to: args.to,
       subject,
@@ -159,17 +279,32 @@ export async function sendExportEmail(args: {
         },
       ],
     });
-    return { status: "sent" };
+    const messageId =
+      (info as { messageId?: string } | undefined)?.messageId ?? undefined;
+    logger.info(
+      {
+        appointmentId: args.appointmentId,
+        to: args.to,
+        messageId,
+      },
+      "export email sent",
+    );
+    return { status: "sent", messageId };
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown SMTP error.";
+    const classified = classifySmtpError(err);
     logger.error(
-      { err, appointmentId: args.appointmentId, to: args.to },
+      {
+        err,
+        appointmentId: args.appointmentId,
+        to: args.to,
+        errorCode: classified.code,
+      },
       "export email send failed",
     );
     return {
       status: "failed",
-      errorCode: "smtp_error",
-      errorMessage: `Email could not be delivered: ${message}`,
+      errorCode: classified.code,
+      errorMessage: classified.message,
     };
   }
 }

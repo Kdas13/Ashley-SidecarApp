@@ -835,7 +835,14 @@ router.post(
         })
         .returning();
       if (result.status === "failed") {
-        res.status(502).json({
+        // recipient_rejected = the surgery's mail server said "no such
+        // mailbox" — that's a user-fixable typo, surface as 400 so the
+        // mobile UI can prompt the patient to re-enter the address rather
+        // than offering a "retry" that will keep failing the same way.
+        // Everything else is operator-side and gets 502 + retry.
+        const httpStatus =
+          result.errorCode === "recipient_rejected" ? 400 : 502;
+        res.status(httpStatus).json({
           delivery: row,
           error: result.errorCode ?? "delivery_failed",
           message: result.errorMessage ?? "Email delivery failed.",

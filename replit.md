@@ -20,6 +20,10 @@ A personal AI companion mobile app providing local-first, stateless AI chat with
         - `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` — generate with `pnpm dlx web-push generate-vapid-keys`. Without these the reminder worker logs a warning and stays idle; the public key is also exposed by `GET /safeguard-api/me/push/public-key`.
         - `VAPID_SUBJECT` — `mailto:` or `https://` URL for the push service to contact (defaults to `mailto:safeguard-pilot@example.org`).
         - `REMINDER_CRON_SECRET` — required to call `POST /safeguard-api/reminders/tick` from an external scheduler. Without it the endpoint returns 503 (the in-process 60s tick still runs).
+    - **Safeguard surgery-email delivery** (set on the Safeguard API artifact):
+        - `SAFEGUARD_DELIVERY_SMTP_URL` — nodemailer transport URL, e.g. `smtps://user:pass@smtp.nhs.net:465` or `smtp://user:pass@smtp.example.org:587`. Without it the deliver endpoint returns `transport_not_configured` and the UI shows a retry button instead of pretending the email went out.
+        - `SAFEGUARD_DELIVERY_FROM` — RFC 5322 from-address for the outbound email (e.g. `Safeguard <noreply@safeguard.nhs.uk>`). Defaults to `Safeguard <noreply@safeguard.local>`, which most surgery mail servers will reject — set this in production.
+        - `SAFEGUARD_PUBLIC_BASE_URL` (or `PUBLIC_BASE_URL`) — absolute base URL the QR / NHS-app share tokens resolve against (e.g. `https://safeguard.example.org`). Required in production; minting a QR throws otherwise.
 
 ## Stack
 
