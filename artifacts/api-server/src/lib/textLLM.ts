@@ -19,7 +19,7 @@ const ANTHROPIC_CHAT_MODEL = "claude-sonnet-4-6";
 const GEMINI_CHAT_MODEL = "gemini-2.5-flash";
 
 export function activeChatProvider(): ChatProvider {
-  return process.env.ASHLEY_TEXT_PROVIDER === "gemini" ? "gemini" : "anthropic";
+  return process.env.ASHLEY_TEXT_PROVIDER === "anthropic" ? "anthropic" : "gemini";
 }
 
 function toGeminiContents(messages: LLMMessage[]) {
