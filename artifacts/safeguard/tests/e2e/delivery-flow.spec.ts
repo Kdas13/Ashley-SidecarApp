@@ -144,9 +144,21 @@ test("Surgery delivery: QR end-to-end + email failure surfaces retry", async ({
   const qrBlock = section.getByTestId("delivery-qr");
   await expect(qrBlock).toBeVisible({ timeout: 15_000 });
   const publicUrl = (await qrBlock.locator("p.break-all").innerText()).trim();
-  expect(publicUrl).toMatch(/\/safeguard-api\/public\/exports\/[^/]+\.pdf$/);
+  // The QR now lands on an HTML preview page (no `.pdf` suffix); the PDF
+  // is served from the same token URL with `?pdf=1`.
+  expect(publicUrl).toMatch(/\/safeguard-api\/public\/exports\/[^/.?]+$/);
 
-  const pdfRes = await fetchPublicPdf(request, publicUrl);
+  // Hitting the bare token URL must return the friendly landing page,
+  // NOT the PDF — and viewing the landing page must not stamp fetchedAt.
+  const landingRes = await request.get(publicUrl);
+  expect(landingRes.status()).toBe(200);
+  expect(landingRes.headers()["content-type"] ?? "").toContain("text/html");
+  const landingHtml = await landingRes.text();
+  expect(landingHtml).toContain("Patient summary");
+  expect(landingHtml).toContain("Riverside Medical Practice");
+  expect(landingHtml).toContain("?pdf=1");
+
+  const pdfRes = await fetchPublicPdf(request, `${publicUrl}?pdf=1`);
   expect(pdfRes.status()).toBe(200);
   const ct = pdfRes.headers()["content-type"] ?? "";
   expect(ct).toContain("application/pdf");
@@ -193,10 +205,15 @@ test("Surgery delivery: QR end-to-end + email failure surfaces retry", async ({
   };
   expect(shareJson.delivery.channel).toBe("nhs_app");
   const sharePublicUrl = shareJson.share?.publicUrl ?? "";
+  // NHS-app share URLs land on the same friendly preview page as the
+  // QR — surgery audience is identical, so behaviour is identical.
   expect(sharePublicUrl).toMatch(
-    /\/safeguard-api\/public\/exports\/[^/]+\.pdf$/,
+    /\/safeguard-api\/public\/exports\/[^/.?]+$/,
   );
-  const sharePdf = await fetchPublicPdf(request, sharePublicUrl);
+  const shareLanding = await request.get(sharePublicUrl);
+  expect(shareLanding.status()).toBe(200);
+  expect(shareLanding.headers()["content-type"] ?? "").toContain("text/html");
+  const sharePdf = await fetchPublicPdf(request, `${sharePublicUrl}?pdf=1`);
   expect(sharePdf.status()).toBe(200);
   expect(sharePdf.headers()["content-type"] ?? "").toContain("application/pdf");
   const shareBody = await sharePdf.body();

@@ -51,7 +51,11 @@ function publicUrlForToken(token: string): string {
     process.env.SAFEGUARD_PUBLIC_BASE_URL?.replace(/\/$/, "") ||
     process.env.PUBLIC_BASE_URL?.replace(/\/$/, "") ||
     "";
-  const path = `/safeguard-api/public/exports/${token}.pdf`;
+  // Land at the HTML preview page (no `.pdf`) so the surgery sees a
+  // friendly "Patient summary for X — open PDF" landing card before the
+  // raw PDF opens. The PDF itself is still served from the same token
+  // route via the `?pdf=1` query flag.
+  const path = `/safeguard-api/public/exports/${token}`;
   if (!base) {
     if (process.env.NODE_ENV === "production") {
       // A relative URL inside a QR code is useless to an external
@@ -329,7 +333,12 @@ export async function buildNhsAppShare(args: {
   const publicUrl = publicUrlForToken(token);
   const who = args.patientName ? args.patientName : "a patient";
   const surgery = args.surgeryName || "the surgery";
-  const shareText = `Pre-appointment summary from ${who} for ${surgery}. Opens the PDF directly: ${publicUrl}`;
+  // The link now opens a small preview page (patient name, appointment
+  // date, language pair) with a one-tap "Open PDF" button, rather than
+  // the raw PDF — same surgery audience as the QR scan, same landing
+  // page. Reflect that in the share text so the recipient knows what
+  // they're about to see.
+  const shareText = `Pre-appointment summary from ${who} for ${surgery}. Opens a preview with a one-tap link to the PDF: ${publicUrl}`;
   return {
     token,
     publicUrl,
