@@ -366,6 +366,11 @@ export const safeguardAppointmentExportDeliveriesTable = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     fetchedAt: timestamp("fetched_at", { withTimezone: true }),
     sentAt: timestamp("sent_at", { withTimezone: true }),
+    // Patient-initiated take-back. When set, the public token route
+    // returns 410 immediately, regardless of `expiresAt`. We keep the
+    // row (and the token) so the audit list can show "Revoked at {when}"
+    // instead of pretending the share never happened.
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
     errorCode: text("error_code").notNull().default(""),
     errorMessage: text("error_message").notNull().default(""),
     createdAt: timestamp("created_at", { withTimezone: true })

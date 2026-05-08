@@ -231,7 +231,12 @@
       "sent": "Sent by {{channel}} to {{recipient}} at {{when}}.",
       "delivered": "Opened by {{recipient}} at {{when}} ({{channel}}).",
       "queued": "Share link ready for {{recipient}} ({{channel}}). Waiting for them to open it.",
-      "failed": "{{channel}} to {{recipient}} did not go through: {{reason}}"
+      "failed": "{{channel}} to {{recipient}} did not go through: {{reason}}",
+      "revoked": "Revoked at {{when}} — {{channel}} to {{recipient}} no longer opens."
+    },
+    "revoke": {
+      "action": "Revoke",
+      "confirm": "Revoke this share? The link will stop working straight away. Anyone who already opened the PDF can still keep their copy."
     },
     "followupBanner": {
       "sent": "Summary sent by {{channel}} to {{recipient}} at {{when}}.",

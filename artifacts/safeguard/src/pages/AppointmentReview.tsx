@@ -437,10 +437,14 @@ export default function AppointmentReview() {
                 {deliveriesForLatest.map((d) => (
                   <li
                     key={d.id}
-                    className="rounded-md border border-border bg-muted/20 p-2 text-sm"
+                    className="rounded-md border border-border bg-muted/20 p-2 text-sm flex items-start justify-between gap-3"
                     data-testid={`delivery-${d.id}`}
                   >
                     <DeliveryStatusLine delivery={d} />
+                    <RevokeDeliveryButton
+                      appointmentId={id}
+                      delivery={d}
+                    />
                   </li>
                 ))}
               </ul>
@@ -517,6 +521,17 @@ function DeliveryStatusLine({
     delivery.recipient || delivery.surgeryName || t("delivery.unknownSurgery");
   const when = delivery.sentAt ?? delivery.createdAt;
   const channelLabel = t(`delivery.channel.${delivery.channel}.short`);
+  if (delivery.revokedAt) {
+    return (
+      <span data-testid="delivery-revoked-line">
+        {t("delivery.history.revoked", {
+          channel: channelLabel,
+          recipient,
+          when: new Date(delivery.revokedAt).toLocaleString(),
+        })}
+      </span>
+    );
+  }
   if (delivery.status === "failed") {
     return (
       <span className="text-destructive">
@@ -557,5 +572,54 @@ function DeliveryStatusLine({
         when: new Date(when).toLocaleString(),
       })}
     </span>
+  );
+}
+
+function RevokeDeliveryButton({
+  appointmentId,
+  delivery,
+}: {
+  appointmentId: string;
+  delivery: SafeguardExportDelivery;
+}) {
+  const { t } = useTranslation();
+  const { request } = useApi();
+  const qc = useQueryClient();
+  const revoke = useMutation({
+    mutationFn: () =>
+      request<{ delivery: SafeguardExportDelivery }>(
+        `/me/appointments/${appointmentId}/deliveries/${delivery.id}/revoke`,
+        { method: "POST", body: "{}" },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["appointment", appointmentId] });
+    },
+  });
+  // Already revoked, or this channel never minted a recallable token
+  // (email PDFs are out of our hands once nodemailer accepts them).
+  if (delivery.revokedAt) return null;
+  if (delivery.channel !== "qr" && delivery.channel !== "nhs_app") return null;
+  const expired =
+    delivery.expiresAt &&
+    new Date(delivery.expiresAt).getTime() < Date.now();
+  if (expired) return null;
+  return (
+    <button
+      type="button"
+      disabled={revoke.isPending}
+      onClick={() => {
+        if (
+          typeof window !== "undefined" &&
+          !window.confirm(t("delivery.revoke.confirm"))
+        ) {
+          return;
+        }
+        revoke.mutate();
+      }}
+      className="shrink-0 rounded-md border border-border bg-background px-2 py-1 text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+      data-testid={`delivery-revoke-${delivery.id}`}
+    >
+      {revoke.isPending ? "…" : t("delivery.revoke.action")}
+    </button>
   );
 }

@@ -49,6 +49,7 @@ const router: IRouter = Router();
 interface TokenRow {
   deliveryId: string;
   expiresAt: Date | null;
+  revokedAt: Date | null;
   channel: string;
   recipient: string | null;
   surgeryName: string | null;
@@ -65,6 +66,7 @@ async function loadByToken(token: string): Promise<TokenRow | null> {
     .select({
       deliveryId: safeguardAppointmentExportDeliveriesTable.id,
       expiresAt: safeguardAppointmentExportDeliveriesTable.expiresAt,
+      revokedAt: safeguardAppointmentExportDeliveriesTable.revokedAt,
       channel: safeguardAppointmentExportDeliveriesTable.channel,
       recipient: safeguardAppointmentExportDeliveriesTable.recipient,
       surgeryName: safeguardAppointmentExportDeliveriesTable.surgeryName,
@@ -326,6 +328,19 @@ const handler: RequestHandler = async (req, res, next) => {
     const row = await loadByToken(parsed.token);
     if (!row) {
       res.status(404).type("text/plain").send("Not found");
+      return;
+    }
+    if (row.revokedAt) {
+      if (parsed.legacyPdfSuffix || wantsPdf(req)) {
+        res.status(410).json({ error: "revoked" });
+        return;
+      }
+      res
+        .status(410)
+        .type("text/plain")
+        .send(
+          "This link has been revoked by the patient. Please ask them to share a new one.",
+        );
       return;
     }
     if (row.expiresAt && row.expiresAt.getTime() < Date.now()) {

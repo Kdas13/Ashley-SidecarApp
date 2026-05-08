@@ -202,6 +202,7 @@ export interface SafeguardExportDelivery {
   sentAt: string | null;
   fetchedAt: string | null;
   expiresAt: string | null;
+  revokedAt: string | null;
   errorCode: string;
   errorMessage: string;
   createdAt: string;

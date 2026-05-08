@@ -218,6 +218,7 @@ router.get("/me/appointments/:id", async (req, res, next) => {
         sentAt: safeguardAppointmentExportDeliveriesTable.sentAt,
         fetchedAt: safeguardAppointmentExportDeliveriesTable.fetchedAt,
         expiresAt: safeguardAppointmentExportDeliveriesTable.expiresAt,
+        revokedAt: safeguardAppointmentExportDeliveriesTable.revokedAt,
         errorCode: safeguardAppointmentExportDeliveriesTable.errorCode,
         errorMessage: safeguardAppointmentExportDeliveriesTable.errorMessage,
         createdAt: safeguardAppointmentExportDeliveriesTable.createdAt,
@@ -890,6 +891,66 @@ router.post(
   },
 );
 
+// Patient take-back. Flips `revokedAt` to now so the public token route
+// returns 410 immediately and the audit row renders as "Revoked at
+// {when}". Idempotent: re-revoking a row keeps the original timestamp.
+// Only the row's owner can revoke, scoped to the appointment in the URL
+// to keep the route shape consistent with the other delivery endpoints.
+router.post(
+  "/me/appointments/:id/deliveries/:deliveryId/revoke",
+  async (req, res, next) => {
+    try {
+      const userId = req.auth!.userId;
+      const id = req.params.id!;
+      const deliveryId = req.params.deliveryId!;
+      const [existing] = await db
+        .select()
+        .from(safeguardAppointmentExportDeliveriesTable)
+        .where(
+          and(
+            eq(safeguardAppointmentExportDeliveriesTable.id, deliveryId),
+            eq(safeguardAppointmentExportDeliveriesTable.appointmentId, id),
+            eq(safeguardAppointmentExportDeliveriesTable.userId, userId),
+          ),
+        );
+      if (!existing) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      // Email deliveries don't mint a token we control — once nodemailer
+      // accepts the message the PDF is in the surgery's inbox and we
+      // can't recall it. Reject revoke for those channels server-side
+      // (the UI already hides the button) so the API surface matches the
+      // product intent.
+      if (
+        existing.channel !== "qr" &&
+        existing.channel !== "nhs_app"
+      ) {
+        res.status(400).json({ error: "channel_not_revocable" });
+        return;
+      }
+      if (existing.revokedAt) {
+        res.json({ delivery: existing });
+        return;
+      }
+      const [row] = await db
+        .update(safeguardAppointmentExportDeliveriesTable)
+        .set({ revokedAt: new Date() })
+        .where(
+          and(
+            eq(safeguardAppointmentExportDeliveriesTable.id, deliveryId),
+            eq(safeguardAppointmentExportDeliveriesTable.appointmentId, id),
+            eq(safeguardAppointmentExportDeliveriesTable.userId, userId),
+          ),
+        )
+        .returning();
+      res.json({ delivery: row });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 router.get("/me/appointments/:id/deliveries", async (req, res, next) => {
   try {
     const userId = req.auth!.userId;
@@ -905,6 +966,7 @@ router.get("/me/appointments/:id/deliveries", async (req, res, next) => {
         sentAt: safeguardAppointmentExportDeliveriesTable.sentAt,
         fetchedAt: safeguardAppointmentExportDeliveriesTable.fetchedAt,
         expiresAt: safeguardAppointmentExportDeliveriesTable.expiresAt,
+        revokedAt: safeguardAppointmentExportDeliveriesTable.revokedAt,
         errorCode: safeguardAppointmentExportDeliveriesTable.errorCode,
         errorMessage: safeguardAppointmentExportDeliveriesTable.errorMessage,
         createdAt: safeguardAppointmentExportDeliveriesTable.createdAt,
