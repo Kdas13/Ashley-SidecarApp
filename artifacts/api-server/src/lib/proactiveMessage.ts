@@ -15,7 +15,7 @@
 // same tick" (e.g. memory_nudge with no real referenced item).
 // =============================================================================
 
-import { anthropic } from "@workspace/integrations-anthropic-ai";
+import { generateChatText } from "./textLLM";
 import type {
   AshleyProfile,
   ConversationSummary,
@@ -97,14 +97,11 @@ export async function generateProactiveMessage(
 
   let text = "";
   try {
-    const reply = await anthropic.messages.create({
-      model: PROACTIVE_MODEL,
-      max_tokens: PROACTIVE_MAX_TOKENS,
+    text = await generateChatText({
       system: systemPrompt,
       messages: claudeMessages,
+      maxTokens: PROACTIVE_MAX_TOKENS,
     });
-    const block = reply.content[0];
-    text = block && block.type === "text" ? block.text.trim() : "";
   } catch (err) {
     logger.warn(
       { err, category, deviceId: profile.deviceId },

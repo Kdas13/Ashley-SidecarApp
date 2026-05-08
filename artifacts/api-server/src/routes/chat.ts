@@ -16,6 +16,8 @@ import {
   type Message,
 } from "@workspace/db";
 import { anthropic } from "@workspace/integrations-anthropic-ai";
+import { generateChatText, streamChatText } from "../lib/textLLM";
+import { tryClaimSelfieSlot } from "../lib/selfieCap";
 
 import { getDeviceId } from "../middleware/deviceId";
 import { getOrCreateProfileFor } from "../lib/profile";
@@ -388,22 +390,20 @@ router.post("/chat", async (req, res): Promise<void> => {
     claudeMessages.push({ role: "user", content: userContent });
   }
 
-  // 4. Call Claude.
+  // 4. Call the active chat model (Anthropic by default; Gemini when
+  //    ASHLEY_TEXT_PROVIDER=gemini, for cost control).
   let assistantText = "";
   try {
-    const reply = await anthropic.messages.create({
-      model: CHAT_MODEL,
-      max_tokens: 4096,
+    const text = await generateChatText({
       system: systemPrompt,
       messages: claudeMessages,
+      maxTokens: 4096,
     });
-    const block = reply.content[0];
-    assistantText =
-      block && block.type === "text"
-        ? block.text.trim()
-        : "*goes quiet for a moment, then smiles softly* sorry — i lost my words there. say that again?";
+    assistantText = text
+      ? text
+      : "*goes quiet for a moment, then smiles softly* sorry — i lost my words there. say that again?";
   } catch (err) {
-    req.log.error({ err }, "Claude call failed");
+    req.log.error({ err }, "Chat model call failed");
     res
       .status(502)
       .json({ error: "Could not reach the language model right now." });
@@ -823,6 +823,22 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
     return;
   }
 
+  // Daily selfie cap — image gen is the most expensive per-call line item,
+  // so we cap per device per UTC day. Configurable via ASHLEY_SELFIE_DAILY_CAP
+  // (default 5). The chat reply text already shipped, so the worst case here
+  // is the user sees Ashley say "*holds up the camera*..." then a small
+  // capped-out toast on the client.
+  const slot = tryClaimSelfieSlot(deviceId);
+  if (!slot.ok) {
+    res.status(429).json({
+      error: "Daily selfie limit reached.",
+      capReached: true,
+      cap: slot.cap,
+      used: slot.used,
+    });
+    return;
+  }
+
   pruneSelfieJobs();
   const jobId = randomUUID();
   setSelfieJob(jobId, {
@@ -953,9 +969,9 @@ async function distillMemories(
   assistantText: string,
 ): Promise<void> {
   try {
-    const result = await anthropic.messages.create({
-      model: CHAT_MODEL,
-      max_tokens: 1024,
+    // Memory distiller produces a small JSON blob — cheap classifier-style
+    // task, follows the active chat provider for consistency.
+    const text = await generateChatText({
       system: MEMORY_DISTILLER_PROMPT,
       messages: [
         {
@@ -963,10 +979,9 @@ async function distillMemories(
           content: `USER: ${userText}\n\nASHLEY: ${assistantText}`,
         },
       ],
+      maxTokens: 1024,
     });
-    const block = result.content[0];
-    if (!block || block.type !== "text") return;
-    const text = block.text.trim();
+    if (!text) return;
     const cleaned = text
       .replace(/^```(?:json)?\s*/i, "")
       .replace(/```$/i, "")
@@ -1616,32 +1631,22 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     }
   });
 
-  // ---- Stream from Anthropic.
+  // ---- Stream from the active chat model (Anthropic by default; Gemini
+  //      when ASHLEY_TEXT_PROVIDER=gemini, for cost control).
   let accumulated = "";
   let finishedNaturally = false;
   let upstreamErr: unknown = null;
 
   try {
-    const stream = anthropic.messages.stream(
-      {
-        model: CHAT_MODEL,
-        max_tokens: 4096,
-        system: finalSystemPrompt,
-        messages: claudeMessages,
-      },
-      { signal: ac.signal },
-    );
-
-    for await (const ev of stream) {
-      if (
-        ev.type === "content_block_delta" &&
-        ev.delta.type === "text_delta"
-      ) {
-        const chunk = ev.delta.text;
-        if (chunk.length === 0) continue;
-        accumulated += chunk;
-        writeEvent("delta", { text: chunk });
-      }
+    for await (const chunk of streamChatText({
+      system: finalSystemPrompt,
+      messages: claudeMessages,
+      maxTokens: 4096,
+      signal: ac.signal,
+    })) {
+      if (chunk.length === 0) continue;
+      accumulated += chunk;
+      writeEvent("delta", { text: chunk });
     }
     finishedNaturally = true;
   } catch (err) {
@@ -1652,7 +1657,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
       userAborted = true;
     } else {
       upstreamErr = err;
-      req.log.error({ err }, "Anthropic stream failed mid-flight");
+      req.log.error({ err }, "Chat model stream failed mid-flight");
     }
   }
 
