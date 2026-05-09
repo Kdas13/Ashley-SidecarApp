@@ -23,3 +23,9 @@ id = "CrIW7d43T5xQpQfvzgiB-"
 uri = "file://.local/share/ashley_qr.png"
 type = "image"
 title = "Scan with Expo Go (Android) — Ashley-Sidecar"
+
+[[outputs]]
+id = "Hjuzj-clZwPzv8j99wk8R"
+uri = "file://docs/architecture.md"
+type = "text"
+title = "Ashley-Sidecar Architecture Reference"
