@@ -76,7 +76,6 @@ externalPort = 4200
 [userenv.shared]
 EXPO_PUBLIC_API_KEY = "fe9a7925f7760de79e4bd40df25122f80ad4a8bb5d0ba7613ffa85c38f664226"
 API_AUTH_KEY = "fe9a7925f7760de79e4bd40df25122f80ad4a8bb5d0ba7613ffa85c38f664226"
-DATABASE_URL_NEON = "postgresql://neondb_owner:npg_qtX4Su2pDZJO@ep-snowy-field-abe1spfr-pooler.eu-west-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 
 [userenv.development]
 ASHLEY_MATURE_MODE_AVAILABLE = "true"
