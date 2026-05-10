@@ -99,6 +99,18 @@ export async function generateChatText(opts: GenerateOpts): Promise<string> {
           model: openrouterModel(),
           messages: toOpenAIMessages(opts),
           max_tokens: opts.maxTokens,
+          // OpenRouter-specific: server-side prompt compression. Many
+          // RP-tuned models on OpenRouter (Magnum, Dolphin, Lumimaid,
+          // Euryale, Anubis...) are served with a 16k context cap even
+          // when the base architecture supports more. Kane's chat
+          // payload runs ~60k tokens with summaries + history, so
+          // every request 400s without this. Middle-out drops the
+          // middle of the message list (preserving system + recent
+          // turns) until it fits the model's served window.
+          // See https://openrouter.ai/docs/transforms
+          transforms: ["middle-out"],
+        } as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming & {
+          transforms?: string[];
         },
         { signal: ac.signal },
       );
@@ -142,6 +154,10 @@ export async function* streamChatText(
         messages: toOpenAIMessages(opts),
         max_tokens: opts.maxTokens,
         stream: true,
+        // See generateChatText() above for why middle-out is required.
+        transforms: ["middle-out"],
+      } as OpenAI.Chat.ChatCompletionCreateParamsStreaming & {
+        transforms?: string[];
       },
       { signal: opts.signal },
     );
