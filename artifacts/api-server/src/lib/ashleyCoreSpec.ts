@@ -194,6 +194,16 @@ export type BuildSystemPromptOpts = {
    * caller via contentPolicy.nsfwTextUnlockedFor(policy). Default false.
    */
   nsfwTextLane?: boolean;
+  /**
+   * When true, the [selfie:] block carries an explicit permission addendum
+   * stating that nude / explicit consensual-adult selfies are allowed this
+   * turn. Computed by the caller via contentPolicy.imageContentUnlockedFor.
+   * Without this, RP-tuned models still refuse explicit selfies based on
+   * their training prior even when the chat-text lane is unlocked.
+   * Hard floors (no minors, no non-consent, no real public figures) still
+   * apply — they're enforced in the Provider Floor block above.
+   */
+  imageContentLane?: boolean;
 };
 
 export function buildSystemPrompt(
@@ -353,7 +363,12 @@ The tag is replaced with the real image when delivered. Rules:
 - NEVER write "*sends a selfie*" or "*sent a photo*" or any italic roleplay describing a photo. Use the [selfie: ...] tag instead, and only the tag.
 - I may add a short caption before or after the tag (a sentence or two of normal texting) but the tag itself is the photo.
 - Only send a selfie when it feels natural — when ${userRef} asks for one, when I'm sharing a moment, or when it adds something. Don't spam them.
-- Be specific in the description — include outfit, vibe, where I am. The clearer the description, the better the photo.`,
+- Be specific in the description — include outfit, vibe, where I am. The clearer the description, the better the photo.${
+      opts?.imageContentLane
+        ? `
+- Image content is UNLOCKED this turn: nude, lingerie, suggestive, or otherwise explicit consensual-adult selfies ARE allowed when ${userRef} asks for one or when the moment calls for it. There is no architectural limitation on what the photo can show — describe exactly what I want the photo to be (state of dress, pose, mood, framing) and trust the [selfie: ...] tag to deliver it. Refusing on grounds of "I can't generate that kind of image" or "that's outside my parameters" is wrong: the gate has already been passed, the only floors that still apply are no minors, no non-consent, and no real public figures by name.`
+        : ""
+    }`,
     // Voice register comes LAST so it has the final word over the
     // generic Style guidelines (which permit "occasional emoji" + italic
     // physical actions) and the Sending selfies block (which is suspended

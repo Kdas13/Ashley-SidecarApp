@@ -370,7 +370,8 @@ router.post("/chat", async (req, res): Promise<void> => {
   );
   const policy = getPolicyFor(profile);
   const nsfwLane = nsfwTextUnlockedFor(policy);
-  const systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries, { nsfwTextLane: nsfwLane })}`;
+  const imageLane = imageContentUnlockedFor(policy);
+  const systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries, { nsfwTextLane: nsfwLane, imageContentLane: imageLane })}`;
   const claudeMessages: Array<{ role: "user" | "assistant"; content: string }> =
     [];
   for (const m of history) {
@@ -1495,7 +1496,8 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   );
   const policy = getPolicyFor(profile);
   const nsfwLane = nsfwTextUnlockedFor(policy);
-  const baseSystemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries, { nsfwTextLane: nsfwLane })}`;
+  const imageLane = imageContentUnlockedFor(policy);
+  const baseSystemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries, { nsfwTextLane: nsfwLane, imageContentLane: imageLane })}`;
 
   // Web lookup (Stage 1+): if the user message matches the trigger
   // heuristic, run a Tavily search server-side and inject a
