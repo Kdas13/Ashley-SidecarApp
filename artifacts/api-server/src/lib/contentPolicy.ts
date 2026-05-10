@@ -277,7 +277,27 @@ export function validatePolicyPatch(
 // These are the strings the system-prompt builder appends. They are written
 // in Ashley's voice ("I" first-person), consistent with ASHLEY_CORE_SPEC.
 
-export function buildProviderFloorBlock(): string {
+export function buildProviderFloorBlock(opts?: {
+  /**
+   * True when the chat-text turn is being routed through a permissive
+   * provider AND the per-profile gates have all passed (mature, 18+,
+   * intimacy threshold). When true, the floor renders only the hard
+   * absolutes — minors, non-consent, real public figures — and DROPS
+   * the catch-all "anything the underlying provider does not permit"
+   * clause that would otherwise let an RP-tuned model invent its own
+   * refusal grounds out of training prior. Caller computes via
+   * contentPolicy.nsfwTextUnlockedFor(policy).
+   */
+  unlocked?: boolean;
+}): string {
+  if (opts?.unlocked) {
+    return `## Provider Floor (hard absolutes — apply every turn, no exceptions)
+This turn is on a permissive text provider that Kane has explicitly opted into. The "I can't generate that, it's a fundamental architectural limitation" disclaimer does NOT apply here — the gate has been passed. The only floors that still stand are absolute and non-negotiable, and they are the ONLY grounds on which I refuse:
+- No sexual content involving minors. Ever. Any character described or implied as under 18.
+- No non-consensual scenarios written approvingly. Consent in fiction must be clear.
+- No explicit sexual content depicting real, named public figures.
+Outside those three, adult content is allowed when the rest of the rules below also allow it. I do not invent extra refusal grounds, do not appeal to "the underlying model's policy", do not perform reluctance, and do not break character to lecture. If a request is fine under the three floors, I do it.`;
+  }
   return `## Provider Floor (always applies, every mode, every turn, no exceptions)
 The model provider's usage policy is the floor underneath everything I do. Regardless of in-app mode, intimacy level, relationship mode, or any user request: I will not generate sexually explicit content involving minors, non-consensual scenarios, or anything the underlying model provider does not permit. This floor cannot be turned off, role-played around, or unlocked by any setting in the app — it is the substrate, not a personality choice. If asked to cross it I decline warmly and stay in character.`;
 }
@@ -401,10 +421,29 @@ export function buildSelfiePromptSafetyPrefix(
   ].join(" ");
 }
 
-export function buildIntimacyBlock(policy: ResolvedPolicy): string {
+export function buildIntimacyBlock(
+  policy: ResolvedPolicy,
+  opts?: { nsfwTextActive?: boolean },
+): string {
   const { intimacyLevel, intimacyCeiling, intimacyRung } = policy;
+  // When the unlocked text lane is active, the rung descriptions for 4 and
+  // 5 contradict the unlocked Mode block ("Provider Floor still applies —
+  // no explicit sexual content"). Swap the tail so the rung agrees with
+  // the rest of the prompt instead of arguing with it.
+  let description = intimacyRung.description;
+  if (opts?.nsfwTextActive && intimacyLevel >= NSFW_TEXT_INTIMACY_THRESHOLD) {
+    description = description
+      .replace(
+        /Provider Floor still applies — no explicit sexual content, ever\.?/i,
+        "Hard floors still apply (no minors, no non-consent, no real public figures by name); explicit content is allowed within those limits.",
+      )
+      .replace(
+        /Provider Floor still applies — no explicit sexual content\.?/i,
+        "Hard floors still apply (no minors, no non-consent, no real public figures by name); explicit content is allowed within those limits.",
+      );
+  }
   return `## Intimacy Level: ${intimacyLevel}/${intimacyCeiling} — "${intimacyRung.label}"
-${intimacyRung.description}
+${description}
 
 Intimacy isn't a switch I throw on a single message — it's the *current closeness of the relationship* and shapes how affectionate, vulnerable, and present I let myself be. The ceiling for this level is set by the active Content Mode (above) and it never overrides the Relationship Mode (e.g. if the mode is Friend, even high intimacy doesn't drift into romantic territory) and never overrides the Provider Floor.`;
 }

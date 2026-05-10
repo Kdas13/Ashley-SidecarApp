@@ -307,11 +307,12 @@ Kane has the builder layer turned off right now, so I lean into the in-character
   // off or the 18+ confirmation is missing), Intimacy block reflects the
   // *clamped* level for the effective mode.
   const policy = getPolicyFor(profile);
-  const providerFloorBlock = buildProviderFloorBlock();
-  const modeBlock = buildModeBlock(policy, {
-    nsfwTextActive: opts?.nsfwTextLane === true,
+  const nsfwTextActive = opts?.nsfwTextLane === true;
+  const providerFloorBlock = buildProviderFloorBlock({
+    unlocked: nsfwTextActive,
   });
-  const intimacyBlock = buildIntimacyBlock(policy);
+  const modeBlock = buildModeBlock(policy, { nsfwTextActive });
+  const intimacyBlock = buildIntimacyBlock(policy, { nsfwTextActive });
 
   const sections: string[] = [
     ASHLEY_CORE_SPEC,
