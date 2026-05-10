@@ -87,12 +87,25 @@ export async function generateChatText(opts: GenerateOpts): Promise<string> {
   const provider = opts.provider ?? activeChatProvider();
 
   if (provider === "openrouter") {
-    const response = await getOpenrouter().chat.completions.create({
-      model: openrouterModel(),
-      messages: toOpenAIMessages(opts),
-      max_tokens: opts.maxTokens,
-    });
-    return (response.choices[0]?.message?.content ?? "").trim();
+    // OpenRouter routes through many upstream providers; some can stall
+    // for minutes. Hard 60s deadline so a hung request can't pin a chat
+    // turn open forever. The streaming path uses the caller-provided
+    // AbortSignal for the same purpose.
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 60_000);
+    try {
+      const response = await getOpenrouter().chat.completions.create(
+        {
+          model: openrouterModel(),
+          messages: toOpenAIMessages(opts),
+          max_tokens: opts.maxTokens,
+        },
+        { signal: ac.signal },
+      );
+      return (response.choices[0]?.message?.content ?? "").trim();
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   if (provider === "gemini") {

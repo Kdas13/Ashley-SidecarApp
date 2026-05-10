@@ -26,6 +26,7 @@ import { buildSystemPrompt } from "../lib/ashleyCoreSpec";
 import {
   buildSelfiePromptSafetyPrefix,
   getPolicyFor,
+  imageContentUnlockedFor,
   nsfwTextUnlockedFor,
 } from "../lib/contentPolicy";
 import { generateSelfieImageBase64 } from "../lib/imageProvider";
@@ -701,7 +702,9 @@ async function generateAshleySelfie(
   const promise: Promise<string | null> = (async () => {
     let b64: string;
     try {
-      b64 = await generateSelfieImageBase64(fullPrompt, size, quality);
+      b64 = await generateSelfieImageBase64(fullPrompt, size, quality, {
+        unlocked: imageContentUnlockedFor(policy),
+      });
     } catch (err) {
       logger.warn({ err, mode }, "Selfie image generation failed");
       return null;

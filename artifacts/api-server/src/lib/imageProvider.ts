@@ -22,19 +22,38 @@ export type ImageProvider = "openai" | "pollinations";
 export type ImageSize = "1024x1024" | "1024x1536" | "1536x1024";
 export type ImageQuality = "low" | "medium" | "high";
 
+/**
+ * Operator-configured image provider. Reflects only ASHLEY_IMAGE_PROVIDER —
+ * does NOT consult policy. Use `selectImageProvider({ unlocked })` for the
+ * actual routing decision; this getter is for diagnostics / logging only.
+ */
 export function imageProviderName(): ImageProvider {
   return process.env.ASHLEY_IMAGE_PROVIDER === "pollinations"
     ? "pollinations"
     : "openai";
 }
 
+export type GenerateSelfieOpts = {
+  /**
+   * Image content unlocked for this profile (mature mode + 18+ confirmed +
+   * permissive provider operator-enabled). Computed by the caller via
+   * contentPolicy.imageContentUnlockedFor(policy). When FALSE the adapter
+   * forces the OpenAI path regardless of ASHLEY_IMAGE_PROVIDER, so a locked
+   * profile cannot be routed through a permissive provider just because the
+   * operator switch is flipped on for another profile.
+   */
+  unlocked: boolean;
+};
+
 export async function generateSelfieImageBase64(
   prompt: string,
-  size: ImageSize = "1024x1024",
-  quality: ImageQuality = "low",
+  size: ImageSize,
+  quality: ImageQuality,
+  opts: GenerateSelfieOpts,
 ): Promise<string> {
-  const provider = imageProviderName();
-  if (provider === "pollinations") {
+  // Permissive provider only when BOTH operator switch AND per-profile gate
+  // agree. This is the routing chokepoint — env alone is not enough.
+  if (opts.unlocked && imageProviderName() === "pollinations") {
     return generatePollinationsImage(prompt, size);
   }
   return generateOpenAIImage(prompt, size, quality);
