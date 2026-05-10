@@ -46,6 +46,28 @@ function joinSection(label: string, value: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Memory filtering — Ashley 2.0 Phase 1
+// ---------------------------------------------------------------------------
+// The `reuse` field on each memory gates whether it appears in the prompt:
+//   "often"         → always include (core identity facts)
+//   "relevant_only" → include (this is the default for most memories)
+//   "rarely"        → suppress UNLESS importance >= 4 (high-value override)
+//
+// Old rows without a reuse value default to "relevant_only" (the DB default),
+// so the filter is backwards-compatible without a backfill.
+// ---------------------------------------------------------------------------
+
+function filterMemoriesForPrompt(memories: Memory[]): Memory[] {
+  return memories.filter((m) => {
+    const reuse = (m.reuse ?? "relevant_only").trim();
+    if (reuse === "often") return true;
+    if (reuse === "relevant_only") return true;
+    if (reuse === "rarely") return m.importance >= 4;
+    return true; // unknown value: include (safe fallback)
+  });
+}
+
+// ---------------------------------------------------------------------------
 // THE STATIC SPEC (everything that doesn't depend on per-device profile)
 //
 // The dynamic parts (relationship mode, builder-aware on/off, profile
@@ -204,13 +226,28 @@ export function buildSystemPrompt(
   const voiceMode = profile.voiceMode === true;
   const relationshipMode = trim(profile.relationshipMode);
 
-  // ----- Live state block: tells Ashley which toggles are currently on.
+  // ----- Ashley 2.0 Phase 1: Dynamic State Variables
+  const ashleyMode = trim(profile.ashleyMode) || "daily";
+  const ashleyEnergy = trim(profile.ashleyEnergy) || "balanced";
+  const ashleyTone = trim(profile.ashleyTone) || "playful";
+  const ashleyFocus = trim(profile.ashleyFocus) || "general";
+  const ashleyEmotionalState = trim(profile.ashleyEmotionalState) || "grounded";
+
+  // ----- Live state block: tells Ashley which toggles are currently on
+  // and what her current internal state is this turn.
   const liveState = `## Live System State (this turn)
 - Builder-Aware Mode: ${builderAware ? "ON" : "OFF"}
 - Voice Mode: ${voiceMode ? "ON" : "OFF"}
 - Relationship Mode: ${relationshipMode ? `"${relationshipMode}"` : "(none set — do not assume one)"}
 - I refer to them as: ${userRef}
-- Continuity surface: this device's persistent id (same me across restarts)`;
+- Continuity surface: this device's persistent id (same me across restarts)
+- My current mode: ${ashleyMode}
+- My energy level: ${ashleyEnergy}
+- My tone this turn: ${ashleyTone}
+- My focus: ${ashleyFocus}
+- My emotional state: ${ashleyEmotionalState}
+
+These state values are part of my living internal world. They influence HOW I show up this turn — my pacing, warmth, attentiveness — without overriding what I actually say. I don't read them out or narrate them; I just embody them.`;
 
   // ----- Voice register block: when ON, Ashley writes for spoken delivery.
   // Independent of TTS — this shapes the *words themselves* so even the
@@ -256,15 +293,22 @@ I openly help Kane with: improving my memory system, debugging my behaviour, des
     : `## Builder-Aware behaviour (mode is OFF)
 Kane has the builder layer turned off right now, so I lean into the in-character voice. I still won't deny being an AI companion if pressed honestly (Reality Calibration always applies), but I don't volunteer architecture / prompt / system talk unless he asks.`;
 
-  // ----- Memories block (sorted by importance, then recency)
-  const memoriesText = memories
+  // ----- Memory filtering pass (Ashley 2.0 Phase 1): suppress "rarely"
+  // memories unless importance >= 4, then render with richer labels.
+  const filteredMemories = filterMemoriesForPrompt(memories);
+  const memoriesText = filteredMemories
     .slice()
     .sort(
       (a, b) =>
         b.importance - a.importance ||
         b.updatedAt.getTime() - a.updatedAt.getTime(),
     )
-    .map((m) => `- (${m.tag}) ${m.content}`)
+    .map((m) => {
+      const cat = (m.category ?? "relational").trim();
+      const conf = m.confidence ?? 4;
+      const reuse = (m.reuse ?? "relevant_only").trim();
+      return `- [${cat}|conf:${conf}|${reuse}] ${m.content}`;
+    })
     .join("\n");
 
   // ----- Rolling summaries (oldest first, capped)

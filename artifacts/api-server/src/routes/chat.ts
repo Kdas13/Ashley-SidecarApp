@@ -37,6 +37,7 @@ import {
   localSelfieDir,
 } from "../lib/storage";
 import { maybeRunWebLookup } from "../lib/webSearch";
+import { guardContinuity } from "../lib/continuityGuard";
 import {
   buildImagePromptAddendum,
   type ImageAnalysisMode as ImageAnalysisModeT,
@@ -409,6 +410,11 @@ router.post("/chat", async (req, res): Promise<void> => {
       .json({ error: "Could not reach the language model right now." });
     return;
   }
+
+  // 4b. Continuity guard — heuristic check + LLM rewrite if character
+  //     drift is detected (e.g. "as an AI", assistant-speak openers).
+  //     Fire-and-forget on failure; original text is returned untouched.
+  assistantText = await guardContinuity(assistantText);
 
   // 5. Strip selfie marker (first one only) and remember the vibe.
   let selfieVibe: string | null = null;
@@ -1000,9 +1006,18 @@ async function distillMemories(
     ) {
       return;
     }
+    type RawMemory = {
+      content: string;
+      tag?: string;
+      importance?: number;
+      category?: string;
+      confidence?: number;
+      summary?: string | null;
+      reuse?: string;
+    };
     const memories = (parsed as { memories: unknown[] }).memories
       .filter(
-        (m): m is { content: string; tag?: string; importance?: number } =>
+        (m): m is RawMemory =>
           typeof m === "object" &&
           m !== null &&
           typeof (m as { content?: unknown }).content === "string" &&
@@ -1017,6 +1032,18 @@ async function distillMemories(
           typeof m.importance === "number"
             ? Math.max(1, Math.min(5, Math.round(m.importance)))
             : 3,
+        category:
+          typeof m.category === "string" ? m.category : "relational",
+        confidence:
+          typeof m.confidence === "number"
+            ? Math.max(1, Math.min(5, Math.round(m.confidence)))
+            : 4,
+        summary:
+          typeof m.summary === "string" && m.summary.trim()
+            ? m.summary.trim().slice(0, 300)
+            : null,
+        reuse:
+          typeof m.reuse === "string" ? m.reuse : "relevant_only",
       }));
 
     if (memories.length === 0) return;
@@ -1693,6 +1720,12 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
       finalText =
         "*goes quiet for a moment, then smiles softly* sorry — i lost my words there. say that again?";
     }
+
+    // Continuity guard on the fully-assembled text. The client already
+    // received the raw delta tokens — the corrected text is delivered via
+    // the "done" event's `content` field and the DB row, which is what
+    // the mobile's useMessages hydration uses as the canonical value.
+    finalText = await guardContinuity(finalText);
   }
 
   // ---- Persist the final state of the Ashley row + emit terminal event.

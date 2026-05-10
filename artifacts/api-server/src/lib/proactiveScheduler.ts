@@ -94,6 +94,7 @@ const ROUTINE_SUPPORT_SLOT_HOUR = 15; // 15:xx device-local
 type ProactiveLane = "care" | "companion" | "none";
 const LANE_BY_CATEGORY: Record<ProactiveType, ProactiveLane> = {
   medical_checkin: "care",
+  morning_checkin: "care",
   routine_support: "care",
   memory_nudge: "companion",
   conversation_gap: "companion",
@@ -105,6 +106,12 @@ const LANE_BY_CATEGORY: Record<ProactiveType, ProactiveLane> = {
 // the scheduler from ever picking the category until that lands. Flip to
 // true the moment the medical workflow ships.
 const SHOULD_SCHEDULE_MEDICAL = false;
+
+// morning_checkin: Care lane, fires 07:00-10:00 device-local. A gentle
+// good-morning / how-are-you-today from Ashley to start the day. Once-per-24h
+// cap enforced by the standard per-category window.
+const MORNING_CHECKIN_START = 7;  // 07:00 device-local (inclusive)
+const MORNING_CHECKIN_END = 10;   // 10:00 device-local (exclusive)
 
 // Push notification UX limits.
 const PUSH_TITLE = "Ashley";
@@ -356,9 +363,10 @@ async function evaluateAndSend(
   // ---- Walk categories in priority order, first eligible wins -----------
   // Care lane first (responsibility before presence), then companion.
   const candidateCategories: ProactiveType[] = [
-    "medical_checkin", // care
-    "routine_support", // care
-    "memory_nudge", // companion
+    "medical_checkin",  // care
+    "morning_checkin",  // care — 07:00-10:00 slot, once/day
+    "routine_support",  // care
+    "memory_nudge",     // companion
     "conversation_gap", // companion
   ];
 
@@ -532,6 +540,24 @@ function isCategoryEligible(
       // is null OR before today (device-local). For now this branch is
       // unreachable.
       return { ok: false, reason: "medical_feature_not_built" };
+    }
+
+    case "morning_checkin": {
+      // Fires once per day, 07:00–10:00 device-local. The standard
+      // per-category 24h cooldown (above) handles the once-per-day cap.
+      // Requires at least one prior user message so Ashley isn't the first
+      // thing a brand-new user sees.
+      if (!mostRecentUserMessageAt) {
+        return { ok: false, reason: "no_user_history" };
+      }
+      const hour = deviceLocalHour(now, args.profile.timezone);
+      if (hour < MORNING_CHECKIN_START || hour >= MORNING_CHECKIN_END) {
+        return {
+          ok: false,
+          reason: `morning_slot (now=${hour}, window=${MORNING_CHECKIN_START}-${MORNING_CHECKIN_END})`,
+        };
+      }
+      return { ok: true };
     }
 
     case "memory_nudge": {

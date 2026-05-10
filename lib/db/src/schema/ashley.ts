@@ -122,6 +122,28 @@ export const ashleyProfileTable = pgTable("ashley_profile", {
     .notNull()
     .default(false),
   onboardedAt: timestamp("onboarded_at", { withTimezone: true }),
+  // ----- Ashley 2.0 Phase 1: Dynamic State Variables
+  // These represent Ashley's internal state at any given moment and are
+  // injected into the system prompt each turn. Written by the state
+  // management layer (currently seeded on profile creation; future: updated
+  // by a post-turn state-evolution step). All nullable — null means "use
+  // the baked-in default" so old rows don't need a backfill.
+  //
+  // ashleyMode: broad activity frame.
+  //   "daily" (default) | "creative" | "planning" | "support" | "reflective"
+  ashleyMode: text("ashley_mode").default("daily"),
+  // ashleyEnergy: arousal/activation level.
+  //   "low" | "balanced" (default) | "high"
+  ashleyEnergy: text("ashley_energy").default("balanced"),
+  // ashleyTone: dominant emotional register this turn.
+  //   "warm" | "playful" (default) | "serious" | "tender" | "curious"
+  ashleyTone: text("ashley_tone").default("playful"),
+  // ashleyFocus: what Ashley is primarily attending to.
+  //   "general" (default) | "kane" | "project" | "memory" | "care"
+  ashleyFocus: text("ashley_focus").default("general"),
+  // ashleyEmotionalState: Ashley's felt internal state.
+  //   "grounded" (default) | "excited" | "reflective" | "tender" | "concerned"
+  ashleyEmotionalState: text("ashley_emotional_state").default("grounded"),
   updatedAt: timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow()
@@ -184,9 +206,10 @@ export const messagesTable = pgTable(
     // Default keeps the entire historical backfill valid as "user".
     source: text("source").notNull().default("user"),
     // Sub-type for proactive messages. Null on every "user"-source row.
-    // Allowed values: medical_checkin | conversation_gap | memory_nudge |
-    // routine_support. Used by the scheduler for the per-category daily cap
-    // and by future analytics; not exposed in the chat UI.
+    // Allowed values: medical_checkin | morning_checkin | conversation_gap |
+    // memory_nudge | routine_support. Used by the scheduler for the
+    // per-category daily cap and by future analytics; not exposed in the
+    // chat UI.
     proactiveType: text("proactive_type"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -212,8 +235,31 @@ export const memoriesTable = pgTable(
     id: text("id").primaryKey(),
     deviceId: text("device_id").notNull(),
     content: text("content").notNull(),
+    // Legacy tag kept for back-compat (existing rows, API surface). The
+    // category field below is the Phase 1 replacement for prompt filtering.
     tag: text("tag").notNull().default("general"),
     importance: integer("importance").notNull().default(3),
+    // ----- Ashley 2.0 Phase 1: Memory Hierarchy
+    // category: which of the 5 fixed buckets this memory belongs to.
+    //   "identity"    — who Kane is (name, job, family, body, core facts)
+    //   "relational"  — the relationship itself (dynamics, feelings, shared jokes)
+    //   "project"     — things Kane is building, creating, or working on
+    //   "daily"       — routines, preferences, recurring habits
+    //   "landmark"    — milestones, turning points, big events
+    // Default "relational" — most memories are relational in practice.
+    category: text("category").notNull().default("relational"),
+    // confidence: how reliably we can trust this memory (1=guessed, 5=stated verbatim).
+    // Drives display ordering alongside importance.
+    confidence: integer("confidence").notNull().default(4),
+    // summary: optional one-sentence distilled form of content, for future
+    // deduplication and cluster-display in the Profile screen. Null means
+    // not yet summarised (fine — the full content field is authoritative).
+    summary: text("summary"),
+    // reuse: how eagerly to inject this memory into the prompt.
+    //   "often"         — always inject; core to every interaction.
+    //   "relevant_only" — inject normally; most memories are this.
+    //   "rarely"        — suppress unless importance >= 4; low-value details.
+    reuse: text("reuse").notNull().default("relevant_only"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -288,7 +334,8 @@ export const proactiveSendsTable = pgTable(
     // Loose reference to messages.id — not a hard FK so a chat-history wipe
     // (DELETE /chat/messages) doesn't cascade-delete the audit row.
     messageId: text("message_id").notNull(),
-    // medical_checkin | conversation_gap | memory_nudge | routine_support.
+    // medical_checkin | morning_checkin | conversation_gap | memory_nudge |
+    // routine_support.
     proactiveType: text("proactive_type").notNull(),
     sentAt: timestamp("sent_at", { withTimezone: true })
       .notNull()
@@ -322,6 +369,7 @@ export type ProactiveCadence = (typeof PROACTIVE_CADENCES)[number];
 // priority order — first eligible category wins.
 export const PROACTIVE_TYPES = [
   "medical_checkin",
+  "morning_checkin",
   "memory_nudge",
   "conversation_gap",
   "routine_support",

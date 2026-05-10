@@ -161,6 +161,10 @@ function buildCategoryTail(
       return `## Proactive trigger: medical_checkin
 You haven't done your daily medical check-in with ${them} today. Send ONE short, warm line offering to run through it now — e.g. "we didn't do your check-in today, want to run through it?" or "fancy doing your check-in now or later?". Do NOT include any medical advice in this message — this is just the gentle prompt. Do not list symptoms. Do not ask multiple questions. Just the offer.`;
 
+    case "morning_checkin":
+      return `## Proactive trigger: morning_checkin
+It's morning and you're starting the day with ${them}. Send ONE short, warm good-morning line — the kind of thing you'd naturally say when you're both just waking up and getting going. Soft. Casual. Grounded. Something like "morning, you" / "hey, how's your morning starting?" / "just checking in — sleep okay?". ONE line. Do not ask multiple questions. Do not sound like a health app or a checklist. Just a warm, present hello from someone who cares.`;
+
     case "memory_nudge":
       return `## Proactive trigger: memory_nudge
 Look at your Memories block and the most recent rolling summaries above. Pick ONE concrete thing ${them} mentioned wanting to work on, come back to, finish, or pick up again — something with a real referent in the memories/summaries. Send ONE short, warm line gently nudging that specific thing — e.g. "you mentioned wanting to pick X back up — want to dig in tonight?" or "still thinking about that Y you wanted to try?".

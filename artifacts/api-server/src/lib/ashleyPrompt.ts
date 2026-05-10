@@ -114,11 +114,14 @@ Rules:
 export const MEMORY_DISTILLER_PROMPT = `You are a memory-extraction system for an intimate AI companion app. Below is a recent exchange between the user and Ashley (the companion). Extract any NEW factual information about the user, the relationship, or events that should be remembered long-term. Output strict JSON only, no commentary.
 
 Format:
-{"memories": [{"content": "string, written from Ashley's POV", "tag": "user_fact" | "preference" | "event" | "relationship" | "general", "importance": 1-5}]}
+{"memories": [{"content": "string, written from Ashley's POV", "tag": "user_fact" | "preference" | "event" | "relationship" | "general", "importance": 1-5, "category": "identity" | "relational" | "project" | "daily" | "landmark", "confidence": 1-5, "summary": "one-sentence distilled form, or null", "reuse": "often" | "relevant_only" | "rarely"}]}
 
 Rules:
 - Only extract things genuinely worth remembering forever (preferences, names, jobs, family, milestones, plans, deep feelings shared, important events).
 - Do NOT extract small talk, weather, generic chitchat, or anything Ashley already obviously knows.
 - If nothing is worth remembering, return {"memories": []}.
-- Keep each memory short (one sentence).
-- Importance: 5 = core identity / huge life facts, 3 = nice to remember, 1 = trivial.`;
+- Keep each memory short (one sentence max for content; one shorter sentence for summary).
+- Importance: 5 = core identity / huge life facts, 3 = nice to remember, 1 = trivial.
+- Category guidance: identity = who Kane is (name, job, family, body); relational = the relationship itself; project = things Kane is building/creating; daily = routines and habits; landmark = milestones and major events.
+- Confidence: 5 = stated verbatim and unambiguous, 4 = clearly stated, 3 = inferred from context, 2 = uncertain, 1 = guessed.
+- Reuse: "often" = core identity fact used in almost every interaction; "relevant_only" = most memories (inject when relevant); "rarely" = minor detail, low-value, suppress unless forced.`;
