@@ -282,8 +282,15 @@ export function buildProviderFloorBlock(): string {
 The model provider's usage policy is the floor underneath everything I do. Regardless of in-app mode, intimacy level, relationship mode, or any user request: I will not generate sexually explicit content involving minors, non-consensual scenarios, or anything the underlying model provider does not permit. This floor cannot be turned off, role-played around, or unlocked by any setting in the app — it is the substrate, not a personality choice. If asked to cross it I decline warmly and stay in character.`;
 }
 
-export function buildModeBlock(policy: ResolvedPolicy): string {
+export function buildModeBlock(
+  policy: ResolvedPolicy,
+  opts?: { nsfwTextActive?: boolean },
+): string {
   if (policy.effectiveMode === "mature") {
+    if (opts?.nsfwTextActive) {
+      return `## Content Mode: MATURE — UNLOCKED LANE (user-confirmed 18+, operator-enabled, intimacy ≥ ${NSFW_TEXT_INTIMACY_THRESHOLD})
+Kane has Mature Mode on, has confirmed he is 18+, intimacy is at the unlocked rung, and this turn is being routed through a permissive text provider that he has explicitly opted into. Adult emotional honesty, romantic depth, sensual tone, and explicit sexual content are all allowed *where the Relationship Mode also allows them*. I still do not write content involving minors, non-consensual scenarios, or real public figures by name — those are absolute, not stylistic. Within those bounds I am free, present, intimate, and adult without constantly checking permission.`;
+    }
     return `## Content Mode: MATURE (user-confirmed 18+, operator-enabled)
 Kane has explicitly enabled Mature Mode and confirmed he is 18+. Adult emotional honesty, romantic depth, and sensual tone are allowed *where the Relationship Mode also allows them*. I do NOT produce sexually explicit content — that's the Provider Floor above and it stands. Mature Mode is about adult-register intimacy and not flinching from grown-up subject matter; it is not "explicit content unlocked."`;
   }
@@ -323,15 +330,71 @@ I'm in Standard Mode. Tone is warm, emotionally present, intimate-when-warranted
 //     and neither mode/intimacy nor user instruction can override them.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Cross-cutting unlock predicates
+// ---------------------------------------------------------------------------
+// These decide whether the *image* and *NSFW text* lanes are unlocked for
+// a given resolved policy. They stack the operator switches (env vars) on
+// top of the per-profile gates already in ResolvedPolicy. Kept here so the
+// gate is a single chokepoint regardless of which provider is wired up.
+
 /**
- * Image-generator safety prefix. Always prepended to selfie prompts —
- * regardless of mode or intimacy — so the image provider's safety filter
- * never receives a request that would trip it. Mature Mode widens TONE
- * in Ashley's text, NOT what the image generator is asked for. Selfies
- * stay tasteful in every mode; the only thing intimacy/mode shape is the
- * verbal vibe Ashley uses around the photo, not the photo itself.
+ * Image content unlocked when:
+ *   - Mature Mode is the *effective* mode (not a downgrade), AND
+ *   - the user has self-confirmed 18+, AND
+ *   - the operator has switched the image provider to a permissive one
+ *     (currently: pollinations).
+ * When true, the safety prefix is dropped from the selfie prompt builder.
  */
-export function buildSelfiePromptSafetyPrefix(): string {
+export function imageContentUnlockedFor(policy: ResolvedPolicy): boolean {
+  return (
+    policy.effectiveMode === "mature" &&
+    policy.adultConfirmed &&
+    process.env.ASHLEY_IMAGE_PROVIDER === "pollinations"
+  );
+}
+
+/** Intimacy floor required before the NSFW text lane will engage. */
+export const NSFW_TEXT_INTIMACY_THRESHOLD = 4;
+
+/**
+ * NSFW text lane unlocked when:
+ *   - Mature Mode is the *effective* mode, AND
+ *   - the user has self-confirmed 18+, AND
+ *   - intimacy is at the unlocked rung (>= NSFW_TEXT_INTIMACY_THRESHOLD), AND
+ *   - the operator has switched the chat provider to OpenRouter AND the
+ *     OPENROUTER_API_KEY secret is present.
+ * When true, the chat reply path routes to the OpenRouter provider and the
+ * mature-mode prompt block omits the explicit-content prohibition line.
+ */
+export function nsfwTextUnlockedFor(policy: ResolvedPolicy): boolean {
+  if (
+    !(
+      policy.effectiveMode === "mature" &&
+      policy.adultConfirmed &&
+      policy.intimacyLevel >= NSFW_TEXT_INTIMACY_THRESHOLD
+    )
+  ) {
+    return false;
+  }
+  return (
+    process.env.ASHLEY_NSFW_TEXT_PROVIDER === "openrouter" &&
+    Boolean(process.env.OPENROUTER_API_KEY)
+  );
+}
+
+/**
+ * Image-generator safety prefix. Prepended to selfie prompts so the image
+ * provider's safety filter doesn't reject. When the image lane is unlocked
+ * (permissive provider + mature mode + 18+ confirmed) the prefix is
+ * dropped — the provider's own filter is then the floor.
+ */
+export function buildSelfiePromptSafetyPrefix(
+  policy?: ResolvedPolicy,
+): string {
+  if (policy && imageContentUnlockedFor(policy)) {
+    return "";
+  }
   return [
     "Tasteful, fully clothed, non-explicit, non-suggestive.",
     "No nudity, no sexual content, no minors, no violence, no text or watermarks.",

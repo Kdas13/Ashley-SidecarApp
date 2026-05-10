@@ -23,9 +23,13 @@ import { getDeviceId } from "../middleware/deviceId";
 import { getOrCreateProfileFor } from "../lib/profile";
 import { MEMORY_DISTILLER_PROMPT, SUMMARIZER_PROMPT } from "../lib/ashleyPrompt";
 import { buildSystemPrompt } from "../lib/ashleyCoreSpec";
-import { buildSelfiePromptSafetyPrefix } from "../lib/contentPolicy";
 import {
-  generateImageBase64,
+  buildSelfiePromptSafetyPrefix,
+  getPolicyFor,
+  nsfwTextUnlockedFor,
+} from "../lib/contentPolicy";
+import { generateSelfieImageBase64 } from "../lib/imageProvider";
+import {
   transcribeAudioBase64,
   transcribeAudioBase64Stream,
   synthesizeSpeech,
@@ -363,7 +367,9 @@ router.post("/chat", async (req, res): Promise<void> => {
     clientTimezone,
     previousMessageAt,
   );
-  const systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}`;
+  const policy = getPolicyFor(profile);
+  const nsfwLane = nsfwTextUnlockedFor(policy);
+  const systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries, { nsfwTextLane: nsfwLane })}`;
   const claudeMessages: Array<{ role: "user" | "assistant"; content: string }> =
     [];
   for (const m of history) {
@@ -398,6 +404,7 @@ router.post("/chat", async (req, res): Promise<void> => {
       system: systemPrompt,
       messages: claudeMessages,
       maxTokens: 4096,
+      ...(nsfwLane ? { provider: "openrouter" as const } : {}),
     });
     assistantText = text
       ? text
@@ -644,13 +651,12 @@ async function generateAshleySelfie(
 ): Promise<string | null> {
   const appearance = (profile.appearance ?? "").trim();
   const ashleyName = (profile.name ?? "Ashley").trim() || "Ashley";
+  const policy = getPolicyFor(profile);
   const fullPrompt = [
-    // Provider Floor for the IMAGE generator. Always first, never overridden
-    // by mode/intimacy — see lib/contentPolicy.ts. The downstream image
-    // provider has its own safety filter; this prefix keeps requests well
-    // inside it so we degrade by Ashley saying "couldn't get the shot —
-    // try a different vibe" rather than by hitting a hard provider error.
-    buildSelfiePromptSafetyPrefix(),
+    // Provider Floor for the IMAGE generator. The safety prefix is
+    // dropped automatically when the image lane is unlocked (permissive
+    // provider + mature mode + 18+ confirmed). See lib/contentPolicy.ts.
+    buildSelfiePromptSafetyPrefix(policy),
     `Photograph (selfie) of ${ashleyName}, a young woman.`,
     appearance ? `Appearance: ${appearance}` : "",
     `Style: warm intimate phone-camera selfie, natural lighting, slightly soft focus, no text or watermarks.`,
@@ -695,7 +701,7 @@ async function generateAshleySelfie(
   const promise: Promise<string | null> = (async () => {
     let b64: string;
     try {
-      b64 = await generateImageBase64(fullPrompt, size, quality);
+      b64 = await generateSelfieImageBase64(fullPrompt, size, quality);
     } catch (err) {
       logger.warn({ err, mode }, "Selfie image generation failed");
       return null;
@@ -1484,7 +1490,9 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     clientTimezone,
     previousMessageAt,
   );
-  const baseSystemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}`;
+  const policy = getPolicyFor(profile);
+  const nsfwLane = nsfwTextUnlockedFor(policy);
+  const baseSystemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries, { nsfwTextLane: nsfwLane })}`;
 
   // Web lookup (Stage 1+): if the user message matches the trigger
   // heuristic, run a Tavily search server-side and inject a
@@ -1643,6 +1651,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
       messages: claudeMessages,
       maxTokens: 4096,
       signal: ac.signal,
+      ...(nsfwLane ? { provider: "openrouter" as const } : {}),
     })) {
       if (chunk.length === 0) continue;
       accumulated += chunk;

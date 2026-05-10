@@ -1,3 +1,4 @@
+import OpenAI from "openai";
 import { anthropic } from "@workspace/integrations-anthropic-ai";
 import { getGemini } from "./gemini";
 
@@ -7,19 +8,65 @@ export type GenerateOpts = {
   system: string;
   messages: LLMMessage[];
   maxTokens: number;
+  /** Explicit provider override. When unset, falls back to activeChatProvider(). */
+  provider?: ChatProvider;
 };
 
 export type StreamOpts = GenerateOpts & {
   signal?: AbortSignal;
 };
 
-export type ChatProvider = "anthropic" | "gemini";
+export type ChatProvider = "anthropic" | "gemini" | "openrouter";
 
 const ANTHROPIC_CHAT_MODEL = "claude-sonnet-4-6";
 const GEMINI_CHAT_MODEL = "gemini-2.5-flash";
+const DEFAULT_OPENROUTER_MODEL = "sao10k/l3.3-euryale-70b";
 
+/** Default provider for non-routed calls (proactive, distiller, etc). */
 export function activeChatProvider(): ChatProvider {
-  return process.env.ASHLEY_TEXT_PROVIDER === "anthropic" ? "anthropic" : "gemini";
+  return process.env.ASHLEY_TEXT_PROVIDER === "anthropic"
+    ? "anthropic"
+    : "gemini";
+}
+
+/**
+ * Whether OpenRouter is configured (env + key). Used by the policy module
+ * (contentPolicy.nsfwTextUnlockedFor) to decide whether the NSFW text lane
+ * is actually live. Kept here so the env contract for OpenRouter is owned
+ * in one file alongside the client construction.
+ */
+export function openrouterAvailable(): boolean {
+  return (
+    process.env.ASHLEY_NSFW_TEXT_PROVIDER === "openrouter" &&
+    Boolean(process.env.OPENROUTER_API_KEY)
+  );
+}
+
+function openrouterModel(): string {
+  const m = process.env.ASHLEY_NSFW_TEXT_MODEL;
+  return m && m.trim().length > 0 ? m.trim() : DEFAULT_OPENROUTER_MODEL;
+}
+
+let _openrouterClient: OpenAI | null = null;
+function getOpenrouter(): OpenAI {
+  if (!process.env.OPENROUTER_API_KEY) {
+    throw new Error(
+      "OPENROUTER_API_KEY not set — cannot route to OpenRouter. Set the secret or unset ASHLEY_NSFW_TEXT_PROVIDER.",
+    );
+  }
+  if (!_openrouterClient) {
+    _openrouterClient = new OpenAI({
+      apiKey: process.env.OPENROUTER_API_KEY,
+      baseURL: "https://openrouter.ai/api/v1",
+      defaultHeaders: {
+        // OpenRouter uses these for attribution / leaderboard. Optional but
+        // good citizenship.
+        "HTTP-Referer": "https://Ashley-Sidecar.replit.app",
+        "X-Title": "Ashley-Sidecar",
+      },
+    });
+  }
+  return _openrouterClient;
 }
 
 function toGeminiContents(messages: LLMMessage[]) {
@@ -29,8 +76,26 @@ function toGeminiContents(messages: LLMMessage[]) {
   }));
 }
 
+function toOpenAIMessages(opts: GenerateOpts) {
+  return [
+    { role: "system" as const, content: opts.system },
+    ...opts.messages.map((m) => ({ role: m.role, content: m.content })),
+  ];
+}
+
 export async function generateChatText(opts: GenerateOpts): Promise<string> {
-  if (activeChatProvider() === "gemini") {
+  const provider = opts.provider ?? activeChatProvider();
+
+  if (provider === "openrouter") {
+    const response = await getOpenrouter().chat.completions.create({
+      model: openrouterModel(),
+      messages: toOpenAIMessages(opts),
+      max_tokens: opts.maxTokens,
+    });
+    return (response.choices[0]?.message?.content ?? "").trim();
+  }
+
+  if (provider === "gemini") {
     const result = await getGemini().models.generateContent({
       model: GEMINI_CHAT_MODEL,
       contents: toGeminiContents(opts.messages),
@@ -41,6 +106,7 @@ export async function generateChatText(opts: GenerateOpts): Promise<string> {
     });
     return (result.text ?? "").trim();
   }
+
   const reply = await anthropic.messages.create({
     model: ANTHROPIC_CHAT_MODEL,
     max_tokens: opts.maxTokens,
@@ -54,7 +120,31 @@ export async function generateChatText(opts: GenerateOpts): Promise<string> {
 export async function* streamChatText(
   opts: StreamOpts,
 ): AsyncGenerator<string, void, void> {
-  if (activeChatProvider() === "gemini") {
+  const provider = opts.provider ?? activeChatProvider();
+
+  if (provider === "openrouter") {
+    const stream = await getOpenrouter().chat.completions.create(
+      {
+        model: openrouterModel(),
+        messages: toOpenAIMessages(opts),
+        max_tokens: opts.maxTokens,
+        stream: true,
+      },
+      { signal: opts.signal },
+    );
+    for await (const chunk of stream) {
+      if (opts.signal?.aborted) {
+        const err = new Error("aborted");
+        err.name = "AbortError";
+        throw err;
+      }
+      const delta = chunk.choices[0]?.delta?.content;
+      if (typeof delta === "string" && delta.length > 0) yield delta;
+    }
+    return;
+  }
+
+  if (provider === "gemini") {
     const stream = await getGemini().models.generateContentStream({
       model: GEMINI_CHAT_MODEL,
       contents: toGeminiContents(opts.messages),
@@ -74,6 +164,7 @@ export async function* streamChatText(
     }
     return;
   }
+
   const stream = anthropic.messages.stream(
     {
       model: ANTHROPIC_CHAT_MODEL,

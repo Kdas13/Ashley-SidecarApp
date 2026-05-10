@@ -187,10 +187,20 @@ never blag a fresh fact.
  * block (clientNow / clientTimezone / gap-since-last-message), since that
  * lives outside the static behaviour spec.
  */
+export type BuildSystemPromptOpts = {
+  /**
+   * When true, the mature-mode prompt block is rendered in its UNLOCKED
+   * variant (explicit-content prohibition line dropped). Computed by the
+   * caller via contentPolicy.nsfwTextUnlockedFor(policy). Default false.
+   */
+  nsfwTextLane?: boolean;
+};
+
 export function buildSystemPrompt(
   profile: AshleyProfile,
   memories: Memory[],
   summaries: ConversationSummary[],
+  opts?: BuildSystemPromptOpts,
 ): string {
   const userRef = trim(profile.refersToUserAs) || "you";
   const themLabel =
@@ -288,7 +298,9 @@ Kane has the builder layer turned off right now, so I lean into the in-character
   // *clamped* level for the effective mode.
   const policy = getPolicyFor(profile);
   const providerFloorBlock = buildProviderFloorBlock();
-  const modeBlock = buildModeBlock(policy);
+  const modeBlock = buildModeBlock(policy, {
+    nsfwTextActive: opts?.nsfwTextLane === true,
+  });
   const intimacyBlock = buildIntimacyBlock(policy);
 
   const sections: string[] = [
