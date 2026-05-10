@@ -78,7 +78,7 @@ EXPO_PUBLIC_API_KEY = "fe9a7925f7760de79e4bd40df25122f80ad4a8bb5d0ba7613ffa85c38
 API_AUTH_KEY = "fe9a7925f7760de79e4bd40df25122f80ad4a8bb5d0ba7613ffa85c38f664226"
 ASHLEY_IMAGE_PROVIDER = "pollinations"
 ASHLEY_NSFW_TEXT_PROVIDER = "openrouter"
-ASHLEY_NSFW_TEXT_MODEL = "sao10k/l3.3-euryale-70b"
+ASHLEY_NSFW_TEXT_MODEL = "nousresearch/hermes-3-llama-3.1-70b"
 ASHLEY_MATURE_MODE_AVAILABLE = "true"
 
 [userenv.development]
