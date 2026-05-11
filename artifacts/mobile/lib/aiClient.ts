@@ -1343,7 +1343,7 @@ export async function markImageRemembered(
 // We use the JSON envelope (audioBase64 + mimeType) rather than streaming
 // binary because RN's FileSystem.writeAsStringAsync with base64 encoding
 // is the path-of-least-resistance for getting bytes onto disk; the ~33%
-// size inflation is irrelevant for ≤1500 chars of TTS audio (10-30 KB).
+// size inflation is acceptable for TTS audio.
 //
 // The caller (lib/voiceOutput.ts → useTtsPlayback) is responsible for
 // cleaning up the file after playback completes.

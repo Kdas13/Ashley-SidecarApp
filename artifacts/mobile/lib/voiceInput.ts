@@ -69,10 +69,10 @@ import {
 } from "expo-audio";
 import * as FileSystem from "expo-file-system/legacy";
 
-// Keep push-to-talk clips short. Whisper handles much longer, but a
-// 60s ceiling keeps uploads quick on cellular and prevents the user
-// accidentally leaving the mic open for minutes.
-export const VOICE_MAX_DURATION_MS = 60_000;
+// Push-to-talk ceiling. Whisper handles long clips well; 150s (2.5 min)
+// gives enough headroom for an extended thought while keeping uploads
+// manageable on cellular and preventing accidental open-mic marathons.
+export const VOICE_MAX_DURATION_MS = 150_000;
 
 export type RecordedAudio = {
   audioBase64: string;

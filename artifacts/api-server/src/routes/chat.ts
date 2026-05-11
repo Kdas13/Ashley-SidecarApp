@@ -2330,14 +2330,15 @@ router.post("/messages/:id/remember", async (req, res): Promise<void> => {
 // JSON envelope rather than streaming binary because React Native's
 // FileSystem.writeAsStringAsync(..., { encoding: 'base64' }) is the
 // path-of-least-resistance for getting bytes onto disk; the ~33% size
-// inflation is irrelevant for ≤1500 chars of TTS audio (~10-30 KB).
+// inflation is irrelevant for short TTS audio.
 //
 // Safety posture:
 //   • Auth + deviceId + rate-limit = same chokepoint as every other
 //     /chat/* route. No new prompt-bypass surface — this is pure
 //     output rendering of text Ashley already produced.
-//   • Text capped at 1500 chars upstream so cost ($0.60/M chars on
-//     gpt-4o-mini-tts) and latency are bounded.
+//   • Text capped at 4096 chars (the OpenAI TTS API hard limit) so cost
+//     ($0.60/M chars on gpt-4o-mini-tts) and latency are bounded.
+//     At ~150 words/min that covers ~2.5 minutes of continuous speech.
 //   • TTS failure must NEVER break the chat UX — the client swallows
 //     errors here silently (Kane just won't hear that one reply).
 //
@@ -2353,7 +2354,7 @@ const TtsBodySchema = z.object({
   text: z
     .string()
     .min(1, "text is required")
-    .max(1500, "text exceeds 1500-char TTS cap"),
+    .max(4096, "text exceeds 4096-char TTS cap"),
 });
 
 router.post("/chat/tts", async (req, res): Promise<void> => {

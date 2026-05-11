@@ -421,8 +421,8 @@ export default function ChatScreen(): React.JSX.Element {
       if (!voiceReplyEnabledRef.current) return;
       const reply = result.ashley?.content?.trim() ?? "";
       if (reply.length === 0) return;
-      // Cap at the server's 1500-char TTS ceiling so we don't get a 400.
-      tts.speak(reply.slice(0, 1500));
+      // Cap at the OpenAI TTS API hard limit (4096 chars) so we don't get a 400.
+      tts.speak(reply.slice(0, 4096));
     },
     [presenceDispatch, tts],
   );
