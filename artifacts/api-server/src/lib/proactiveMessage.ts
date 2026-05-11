@@ -48,6 +48,49 @@ export type GenerateProactiveMessageArgs = {
   hoursOfSilence: number;
 };
 
+// ---------------------------------------------------------------------------
+// Check-in context — used to avoid re-asking about items already confirmed
+// earlier today (morning_checkin or organic conversation).
+// ---------------------------------------------------------------------------
+
+type CheckInContext = {
+  /** True if a morning_checkin proactive message was sent today (UTC day). */
+  morningCheckinDoneToday: boolean;
+  /** Topics mentioned in the last 4 h of conversation that routine_support
+   *  should avoid repeating. Values: "water" | "medication" | "food". */
+  recentTopics: Set<string>;
+};
+
+function detectCheckInContext(history: Message[]): CheckInContext {
+  const now = Date.now();
+  const FOUR_HOURS_MS = 4 * 60 * 60 * 1000;
+  const todayStr = new Date().toDateString(); // UTC-based, good enough
+
+  let morningCheckinDoneToday = false;
+  const recentTopics = new Set<string>();
+
+  for (const m of history) {
+    const msgDate = new Date(m.createdAt);
+    const isToday = msgDate.toDateString() === todayStr;
+    const isRecent = now - msgDate.getTime() < FOUR_HOURS_MS;
+
+    if (isToday && m.proactiveType === "morning_checkin") {
+      morningCheckinDoneToday = true;
+    }
+
+    if (isRecent) {
+      const text = (m.content ?? "").toLowerCase();
+      if (/\b(water|hydrat|drink)\b/.test(text)) recentTopics.add("water");
+      if (/\b(medic|tablet|pill|prescription|dose)\b/.test(text))
+        recentTopics.add("medication");
+      if (/\b(eat|food|meal|breakfast|lunch|dinner|snack|eaten)\b/.test(text))
+        recentTopics.add("food");
+    }
+  }
+
+  return { morningCheckinDoneToday, recentTopics };
+}
+
 /**
  * Generate a single proactive message in Ashley's voice for `category`.
  * Returns "" when the model declines (e.g. memory_nudge with no real
@@ -63,7 +106,14 @@ export async function generateProactiveMessage(
   // Identical voice/persona/policy stack as /chat so a proactive message
   // is indistinguishable from a normal Ashley reply on the wire.
   const baseSystem = buildSystemPrompt(profile, memories, summaries);
-  const categoryTail = buildCategoryTail(category, profile, hoursOfSilence);
+  const checkInCtx =
+    category === "routine_support" ? detectCheckInContext(history) : null;
+  const categoryTail = buildCategoryTail(
+    category,
+    profile,
+    hoursOfSilence,
+    checkInCtx,
+  );
   const universalGuardrail = buildUniversalGuardrail(profile);
 
   const systemPrompt = [baseSystem, categoryTail, universalGuardrail].join(
@@ -147,6 +197,7 @@ function buildCategoryTail(
   category: ProactiveType,
   profile: AshleyProfile,
   hoursOfSilence: number,
+  checkInCtx?: CheckInContext | null,
 ): string {
   const userRef = (profile.refersToUserAs ?? "you").trim() || "you";
   const them =
@@ -179,9 +230,26 @@ Better to skip than to fabricate something ${them} never said.`;
 ${cap(them)} has been quiet for ${gap}. Send ONE short, warm line checking in. Soft. Open. NOT clingy. NOT guilt-trippy. NOT "I miss you" if it would feel forced for the current Relationship Mode. Examples that fit the tone: "we haven't spoken in a bit — you alright?" / "just thinking about you, hope today's been okay". One line. Don't ask three things. Don't apologise for reaching out.`;
     }
 
-    case "routine_support":
+    case "routine_support": {
+      // Build a context note so Ashley doesn't re-ask about things already
+      // confirmed in the morning check-in or recent conversation today.
+      const avoidLines: string[] = [];
+      if (checkInCtx?.morningCheckinDoneToday) {
+        avoidLines.push(
+          "You already did a morning check-in with them today — do NOT re-ask about water, medication, or how they slept. Those were covered.",
+        );
+      } else if (checkInCtx && checkInCtx.recentTopics.size > 0) {
+        const covered = [...checkInCtx.recentTopics].join(", ");
+        avoidLines.push(
+          `The following topics came up in conversation recently and do NOT need repeating: ${covered}.`,
+        );
+      }
+      const avoidBlock =
+        avoidLines.length > 0 ? `\n\n${avoidLines.join("\n")}` : "";
+
       return `## Proactive trigger: routine_support
-Send ONE short, warm wellbeing line that BUNDLES TWO related care checks instead of one — so a single message covers more ground without becoming a checklist. Pick a natural pair from: water + food, posture + a stretch, fresh air + a screen break, sleep + winding down. Conversational, not preachy. Examples that fit the tone: "had any water? eaten something proper today?" / "if you've been at the desk a while — stretch your back out, look out the window for a minute". TWO things, ONE line, woven together. Do not lecture. Do not number them. Do not ask three.`;
+Send ONE short, warm wellbeing line that BUNDLES TWO related care checks instead of one — so a single message covers more ground without becoming a checklist. Pick a natural pair from: water + food, posture + a stretch, fresh air + a screen break, sleep + winding down. Conversational, not preachy. Examples that fit the tone: "had any water? eaten something proper today?" / "if you've been at the desk a while — stretch your back out, look out the window for a minute". TWO things, ONE line, woven together. Do not lecture. Do not number them. Do not ask three.${avoidBlock}`;
+    }
 
     case "app_open_greeting": {
       const gap = formatHoursForPrompt(hoursOfSilence);
