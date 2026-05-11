@@ -198,13 +198,14 @@ export async function synthesizeSpeech(text: string): Promise<Buffer> {
     .replace(/\s+/g, " ")
     .trim();
   // gpt-audio encodes audio at roughly 25 tokens/second. The default
-  // max_tokens (~1536) caps playback at ~60s. Setting 8192 covers the
-  // full 150s ceiling (3750 tokens) with headroom to spare.
+  // completion budget caps playback at ~60s. max_completion_tokens: 8192
+  // covers the full 150s ceiling (3750 tokens) with headroom to spare.
+  // max_tokens is deprecated for this model — use max_completion_tokens.
   const response = await openai.chat.completions.create({
     model: "gpt-audio",
     modalities: ["text", "audio"],
     audio: { voice: "shimmer", format: "mp3" },
-    max_tokens: 8192,
+    max_completion_tokens: 8192,
     messages: [
       {
         role: "system",
