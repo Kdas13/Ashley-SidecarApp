@@ -2376,11 +2376,32 @@ router.post("/chat/tts", async (req, res): Promise<void> => {
     // We keep the inner words so nothing is lost — e.g. "*smiles softly*"
     // becomes "smiles softly" rather than disappearing entirely. Any lone
     // stray asterisks are removed. Leading/trailing whitespace is trimmed.
-    const ttsText = parsed.data.text
+    const stripped = parsed.data.text
       .replace(/\*([^*]*)\*/g, "$1")
       .replace(/\*/g, "")
       .replace(/\s{2,}/g, " ")
       .trim();
+    // Cap the text sent to the model. gpt-audio generates the full audio
+    // buffer before returning, so longer text = longer API wait before the
+    // client hears anything. 600 chars ≈ 40-50s of speech at natural pace.
+    // Cut at the last sentence boundary so the clip ends cleanly.
+    const TTS_CHAR_CAP = 600;
+    let ttsText = stripped;
+    if (stripped.length > TTS_CHAR_CAP) {
+      const window = stripped.slice(0, TTS_CHAR_CAP);
+      const lastBoundary = Math.max(
+        window.lastIndexOf(". "),
+        window.lastIndexOf("! "),
+        window.lastIndexOf("? "),
+        window.lastIndexOf(".\n"),
+        window.lastIndexOf("!\n"),
+        window.lastIndexOf("?\n"),
+      );
+      ttsText =
+        lastBoundary > TTS_CHAR_CAP / 2
+          ? window.slice(0, lastBoundary + 1).trimEnd()
+          : window.trimEnd();
+    }
     const buf = await synthesizeSpeech(ttsText);
     res.json({
       audioBase64: buf.toString("base64"),
