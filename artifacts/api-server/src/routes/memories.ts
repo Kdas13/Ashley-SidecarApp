@@ -8,18 +8,30 @@ import { getDeviceId } from "../middleware/deviceId";
 const router: IRouter = Router();
 
 const MAX_MEMORY_LEN = 500;
+const MAX_SUMMARY_LEN = 300;
+
+const MEMORY_CATEGORIES = ["identity", "relational", "project", "daily", "landmark"] as const;
+const MEMORY_REUSE = ["often", "relevant_only", "rarely"] as const;
 
 const CreateMemorySchema = z.object({
   id: z.string().min(8).max(128),
   content: z.string().min(1).max(MAX_MEMORY_LEN),
   tag: z.string().max(60).optional().default("general"),
   importance: z.number().int().min(1).max(5).optional().default(3),
+  category: z.enum(MEMORY_CATEGORIES).optional().default("relational"),
+  confidence: z.number().int().min(1).max(5).optional().default(4),
+  summary: z.string().max(MAX_SUMMARY_LEN).nullable().optional(),
+  reuse: z.enum(MEMORY_REUSE).optional().default("relevant_only"),
 });
 
 const UpdateMemorySchema = z.object({
   content: z.string().min(1).max(MAX_MEMORY_LEN).optional(),
   tag: z.string().max(60).optional(),
   importance: z.number().int().min(1).max(5).optional(),
+  category: z.enum(MEMORY_CATEGORIES).optional(),
+  confidence: z.number().int().min(1).max(5).optional(),
+  summary: z.string().max(MAX_SUMMARY_LEN).nullable().optional(),
+  reuse: z.enum(MEMORY_REUSE).optional(),
 });
 
 router.post("/memories", async (req, res): Promise<void> => {
@@ -38,6 +50,10 @@ router.post("/memories", async (req, res): Promise<void> => {
         content: parsed.data.content.trim(),
         tag: parsed.data.tag,
         importance: parsed.data.importance,
+        category: parsed.data.category,
+        confidence: parsed.data.confidence,
+        summary: parsed.data.summary ?? null,
+        reuse: parsed.data.reuse,
       })
       .onConflictDoNothing({ target: memoriesTable.id })
       .returning();
@@ -78,6 +94,14 @@ router.patch("/memories/:id", async (req, res): Promise<void> => {
     if (parsed.data.tag !== undefined) updates.tag = parsed.data.tag;
     if (parsed.data.importance !== undefined)
       updates.importance = parsed.data.importance;
+    if (parsed.data.category !== undefined)
+      updates.category = parsed.data.category;
+    if (parsed.data.confidence !== undefined)
+      updates.confidence = parsed.data.confidence;
+    if (parsed.data.summary !== undefined)
+      updates.summary = parsed.data.summary;
+    if (parsed.data.reuse !== undefined)
+      updates.reuse = parsed.data.reuse;
     if (Object.keys(updates).length === 0) {
       res.status(400).json({ error: "No fields to update" });
       return;

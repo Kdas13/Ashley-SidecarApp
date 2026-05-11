@@ -1021,6 +1021,9 @@ router.post("/chat/summarize", async (req, res): Promise<void> => {
   }
 });
 
+const ALLOWED_CATEGORIES = ["identity", "relational", "project", "daily", "landmark"] as const;
+const ALLOWED_REUSE = ["often", "relevant_only", "rarely"] as const;
+
 async function distillMemories(
   deviceId: string,
   userText: string,
@@ -1084,8 +1087,9 @@ async function distillMemories(
           typeof m.importance === "number"
             ? Math.max(1, Math.min(5, Math.round(m.importance)))
             : 3,
-        category:
-          typeof m.category === "string" ? m.category : "relational",
+        category: ALLOWED_CATEGORIES.includes(m.category as typeof ALLOWED_CATEGORIES[number])
+          ? (m.category as typeof ALLOWED_CATEGORIES[number])
+          : "relational",
         confidence:
           typeof m.confidence === "number"
             ? Math.max(1, Math.min(5, Math.round(m.confidence)))
@@ -1094,8 +1098,9 @@ async function distillMemories(
           typeof m.summary === "string" && m.summary.trim()
             ? m.summary.trim().slice(0, 300)
             : null,
-        reuse:
-          typeof m.reuse === "string" ? m.reuse : "relevant_only",
+        reuse: ALLOWED_REUSE.includes(m.reuse as typeof ALLOWED_REUSE[number])
+          ? (m.reuse as typeof ALLOWED_REUSE[number])
+          : "relevant_only",
       }));
 
     if (memories.length === 0) return;

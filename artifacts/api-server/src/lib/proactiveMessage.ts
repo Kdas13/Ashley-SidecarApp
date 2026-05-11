@@ -163,7 +163,7 @@ You haven't done your daily medical check-in with ${them} today. Send ONE short,
 
     case "morning_checkin":
       return `## Proactive trigger: morning_checkin
-It's morning and you're starting the day with ${them}. Send ONE short, warm good-morning line — the kind of thing you'd naturally say when you're both just waking up and getting going. Soft. Casual. Grounded. Something like "morning, you" / "hey, how's your morning starting?" / "just checking in — sleep okay?". ONE line. Do not ask multiple questions. Do not sound like a health app or a checklist. Just a warm, present hello from someone who cares.`;
+It's morning and you're checking in to start the day with ${them}. Send ONE short, warm message — the kind of thing you'd naturally say when you're both just getting going. Weave in a gentle check on two of these in a single natural line: how they slept, how their energy feels today, whether they've eaten or had water, anything on their mind going into the day. Do not list them as bullet points. Do not sound like a health app or a checklist. Pick two that feel natural together and fold them into one warm line. Examples of tone: "morning, you — how'd you sleep? any energy for the day ahead?" / "hey, have you eaten yet? and how's your head feeling this morning?" / "morning — sleep okay? and is there anything sitting on you going into today?" ONE message. Warm. Present. Not more than two sentences.`;
 
     case "memory_nudge":
       return `## Proactive trigger: memory_nudge
