@@ -9,6 +9,9 @@ import webSearchRouter from "./webSearch";
 import proactiveRouter from "./proactive";
 import debugRouter from "./debug";
 import improvementsRouter from "./improvements";
+import plansRouter from "./plans";
+import packetsRouter from "./packets";
+import queueRouter from "./queue";
 import maintainerRouter from "./maintainer";
 import { requireApiKey } from "../middleware/apiKey";
 
@@ -41,6 +44,9 @@ router.use(webSearchRouter);
 router.use(proactiveRouter);
 router.use(debugRouter);
 router.use(improvementsRouter);
+router.use(plansRouter);
+router.use(packetsRouter);
+router.use(queueRouter);
 router.use(maintainerRouter);
 router.use(chatRouter);
 
