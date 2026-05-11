@@ -4,8 +4,13 @@
  * NO imports from lib/aiClient, lib/voiceInput, lib/voiceOutput,
  * lib/audioState, or any Ashley-specific code. Every call is inlined.
  *
- * Purpose: prove whether Android STT and TTS work at all in this app,
- * independent of Ashley's chat stack.
+ * Purpose: prove whether raw STT and raw TTS actually work together
+ * on Android in isolation, independent of Ashley's chat stack.
+ *
+ * State panel shows every field Kane requested:
+ *   mic permission | STT active | STT error | transcript
+ *   TTS speaking   | TTS error  | last lifecycle event
+ *   last failure reason | recovery count
  */
 import React, { useCallback, useRef, useState } from "react";
 import {
@@ -28,11 +33,11 @@ import {
 import * as FileSystem from "expo-file-system/legacy";
 
 // ---------------------------------------------------------------------------
-// Inline API helpers — no Ashley lib imports
+// Inline API helpers — zero Ashley lib imports
 // ---------------------------------------------------------------------------
 
 const EXPO_API_KEY = process.env.EXPO_PUBLIC_API_KEY ?? "";
-const EXPO_DOMAIN = process.env.EXPO_PUBLIC_DOMAIN ?? "";
+const EXPO_DOMAIN  = process.env.EXPO_PUBLIC_DOMAIN  ?? "";
 
 function apiBase(): string {
   const raw = (EXPO_DOMAIN || "").replace(/\/+$/, "");
@@ -51,31 +56,35 @@ function apiHeaders(): Record<string, string> {
 }
 
 // ---------------------------------------------------------------------------
-// State shape — everything visible on screen
+// State shape
 // ---------------------------------------------------------------------------
 
 type MicPerm = "unknown" | "granted" | "denied";
 
 type S = {
-  micPermission: MicPerm;
-  sttListening: boolean;
-  sttResult: string;
-  sttError: string | null;
-  ttsSpeaking: boolean;
-  ttsError: string | null;
-  lastEvent: string;
-  lastEventAt: string | null;
+  micPermission:     MicPerm;
+  sttActive:         boolean;   // recording in progress
+  sttError:          string | null;
+  sttResult:         string;    // transcript
+  ttsSpeaking:       boolean;
+  ttsError:          string | null;
+  lastEvent:         string;
+  lastEventAt:       string | null;
+  lastFailureReason: string | null;  // most recent failure message from any step
+  recoveryCount:     number;         // how many times Recover Audio has been tapped
 };
 
 const INIT: S = {
-  micPermission: "unknown",
-  sttListening: false,
-  sttResult: "",
-  sttError: null,
-  ttsSpeaking: false,
-  ttsError: null,
-  lastEvent: "idle",
-  lastEventAt: null,
+  micPermission:     "unknown",
+  sttActive:         false,
+  sttError:          null,
+  sttResult:         "",
+  ttsSpeaking:       false,
+  ttsError:          null,
+  lastEvent:         "idle",
+  lastEventAt:       null,
+  lastFailureReason: null,
+  recoveryCount:     0,
 };
 
 // ---------------------------------------------------------------------------
@@ -86,10 +95,9 @@ export default function VoiceTestScreen(): React.JSX.Element {
   const insets = useSafeAreaInsets();
   const [s, setS] = useState<S>(INIT);
 
-  // Single recorder instance — useAudioRecorder returns a stable recorder.
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-  const playerRef = useRef<AudioPlayer | null>(null);
-  const playerUriRef = useRef<string | null>(null);
+  const recorder      = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const playerRef     = useRef<AudioPlayer | null>(null);
+  const playerUriRef  = useRef<string | null>(null);
 
   // -----------------------------------------------------------------------
   // Helpers
@@ -104,6 +112,57 @@ export default function VoiceTestScreen(): React.JSX.Element {
   const patch = useCallback((p: Partial<S>): void => {
     setS((prev) => ({ ...prev, ...p }));
   }, []);
+
+  /** Record a failure: sets the specific error field AND lastFailureReason. */
+  const fail = useCallback((field: "sttError" | "ttsError", msg: string): void => {
+    const ts = new Date().toISOString();
+    console.log(`[VoiceTest] ${ts}  FAIL(${field}): ${msg}`);
+    setS((prev) => ({
+      ...prev,
+      [field]:          msg,
+      lastFailureReason: msg,
+      lastEvent:        `FAIL: ${msg}`,
+      lastEventAt:      ts,
+    }));
+  }, []);
+
+  // -----------------------------------------------------------------------
+  // Recover Audio — hard audio-focus reset, no state wipe
+  // -----------------------------------------------------------------------
+
+  const handleRecover = useCallback(async (): Promise<void> => {
+    log("RECOVER: stopping player and releasing audio focus...");
+
+    // Kill any live player.
+    const prevPlayer = playerRef.current;
+    playerRef.current = null;
+    if (prevPlayer) {
+      try { prevPlayer.pause();  } catch { /* ignore */ }
+      try { prevPlayer.remove(); } catch { /* ignore */ }
+    }
+    const prevUri = playerUriRef.current;
+    playerUriRef.current = null;
+    if (prevUri) {
+      FileSystem.deleteAsync(prevUri, { idempotent: true }).catch(() => {/* ignore */});
+    }
+
+    // Force audio mode back to neutral.
+    try {
+      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: false });
+      log("RECOVER: setAudioModeAsync neutral OK");
+    } catch (err) {
+      log(`RECOVER: setAudioModeAsync FAILED (continuing): ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    setS((prev) => ({
+      ...prev,
+      sttActive:   false,
+      ttsSpeaking: false,
+      recoveryCount: prev.recoveryCount + 1,
+      lastEvent:    `recovered (total: ${prev.recoveryCount + 1})`,
+      lastEventAt:  new Date().toISOString(),
+    }));
+  }, [log]);
 
   // -----------------------------------------------------------------------
   // STT — Start Listening
@@ -121,24 +180,23 @@ export default function VoiceTestScreen(): React.JSX.Element {
       log(`mic permission → ${granted ? "granted" : "DENIED"}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      patch({ micPermission: "denied", sttError: `permission: ${msg}` });
-      log(`PERMISSION ERROR: ${msg}`);
+      patch({ micPermission: "denied" });
+      fail("sttError", `permission: ${msg}`);
       return;
     }
 
     if (!granted) {
-      patch({ sttError: "Microphone permission denied" });
+      fail("sttError", "Microphone permission denied");
       return;
     }
 
     try {
-      log("setAudioModeAsync allowsRecording=true...");
+      log("setAudioModeAsync allowsRecording=true playsInSilentMode=true...");
       await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
       log("setAudioModeAsync OK");
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log(`setAudioModeAsync FAILED (continuing): ${msg}`);
-      // Non-fatal on Android — continue.
+      // Non-fatal on Android — log and continue.
+      log(`setAudioModeAsync FAILED (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     }
 
     try {
@@ -147,28 +205,26 @@ export default function VoiceTestScreen(): React.JSX.Element {
       log("prepareToRecordAsync OK");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      patch({ sttError: `prepareToRecordAsync: ${msg}` });
-      log(`prepareToRecordAsync FAILED: ${msg}`);
+      fail("sttError", `prepareToRecordAsync: ${msg}`);
       return;
     }
 
     try {
       recorder.record();
-      patch({ sttListening: true });
-      log("recorder.record() called — listening");
+      patch({ sttActive: true });
+      log("recorder.record() — listening");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      patch({ sttError: `recorder.record(): ${msg}` });
-      log(`recorder.record() FAILED: ${msg}`);
+      fail("sttError", `recorder.record(): ${msg}`);
     }
-  }, [recorder, log, patch]);
+  }, [recorder, log, patch, fail]);
 
   // -----------------------------------------------------------------------
   // STT — Stop and Transcribe
   // -----------------------------------------------------------------------
 
   const handleStopListening = useCallback(async (): Promise<void> => {
-    patch({ sttListening: false });
+    patch({ sttActive: false });
     log("recorder.stop()...");
 
     try {
@@ -176,8 +232,7 @@ export default function VoiceTestScreen(): React.JSX.Element {
       log("recorder.stop() OK");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      patch({ sttError: `recorder.stop(): ${msg}` });
-      log(`recorder.stop() FAILED: ${msg}`);
+      fail("sttError", `recorder.stop(): ${msg}`);
       return;
     }
 
@@ -188,26 +243,24 @@ export default function VoiceTestScreen(): React.JSX.Element {
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
       log("setAudioModeAsync allowsRecording=false OK");
     } catch (err) {
-      log(`setAudioModeAsync release FAILED (continuing): ${err instanceof Error ? err.message : String(err)}`);
+      log(`setAudioModeAsync release FAILED (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     }
 
     if (!uri) {
-      patch({ sttError: "recorder.uri is null after stop — no audio captured" });
-      log("FAIL: recorder.uri null");
+      fail("sttError", "recorder.uri is null after stop — no audio captured");
       return;
     }
 
     let audioBase64: string;
     try {
-      log("FileSystem.readAsStringAsync (Base64)...");
+      log("FileSystem.readAsStringAsync Base64...");
       audioBase64 = await FileSystem.readAsStringAsync(uri, {
         encoding: FileSystem.EncodingType.Base64,
       });
       log(`audio file read: ${audioBase64.length} base64 chars`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      patch({ sttError: `file read: ${msg}` });
-      log(`file read FAILED: ${msg}`);
+      fail("sttError", `file read: ${msg}`);
       return;
     }
 
@@ -215,9 +268,9 @@ export default function VoiceTestScreen(): React.JSX.Element {
     log(`POST ${base}/chat/transcribe...`);
     try {
       const resp = await fetch(`${base}/chat/transcribe`, {
-        method: "POST",
+        method:  "POST",
         headers: apiHeaders(),
-        body: JSON.stringify({ audioBase64, mimeType: "audio/m4a" }),
+        body:    JSON.stringify({ audioBase64, mimeType: "audio/m4a" }),
       });
       log(`transcribe HTTP ${resp.status}`);
       if (!resp.ok) {
@@ -230,10 +283,9 @@ export default function VoiceTestScreen(): React.JSX.Element {
       log(`transcript: "${transcript}"`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      patch({ sttError: `transcribe: ${msg}` });
-      log(`transcribe FAILED: ${msg}`);
+      fail("sttError", `transcribe: ${msg}`);
     }
-  }, [recorder, log, patch]);
+  }, [recorder, log, patch, fail]);
 
   // -----------------------------------------------------------------------
   // TTS — Speak Test Reply
@@ -246,8 +298,8 @@ export default function VoiceTestScreen(): React.JSX.Element {
     const prevPlayer = playerRef.current;
     playerRef.current = null;
     if (prevPlayer) {
-      try { prevPlayer.pause(); } catch { /* already stopped */ }
-      try { prevPlayer.remove(); } catch { /* already removed */ }
+      try { prevPlayer.pause();  } catch { /* ignore */ }
+      try { prevPlayer.remove(); } catch { /* ignore */ }
     }
     const prevUri = playerUriRef.current;
     playerUriRef.current = null;
@@ -256,22 +308,22 @@ export default function VoiceTestScreen(): React.JSX.Element {
     }
 
     try {
-      log("setAudioModeAsync for playback...");
+      log("setAudioModeAsync for playback allowsRecording=false playsInSilentMode=true...");
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
       log("setAudioModeAsync playback OK");
     } catch (err) {
-      log(`setAudioModeAsync playback FAILED (continuing): ${err instanceof Error ? err.message : String(err)}`);
+      log(`setAudioModeAsync playback FAILED (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     }
 
     const base = apiBase();
-    log(`POST ${base}/chat/tts with "Voice test successful."...`);
+    log(`POST ${base}/chat/tts text="Voice test successful."...`);
 
     let fileUri: string;
     try {
       const resp = await fetch(`${base}/chat/tts`, {
-        method: "POST",
+        method:  "POST",
         headers: apiHeaders(),
-        body: JSON.stringify({ text: "Voice test successful." }),
+        body:    JSON.stringify({ text: "Voice test successful." }),
       });
       log(`TTS HTTP ${resp.status}`);
       if (!resp.ok) {
@@ -281,9 +333,7 @@ export default function VoiceTestScreen(): React.JSX.Element {
       const data = (await resp.json()) as { audioBase64?: string; mimeType?: string };
       const b64 = data.audioBase64 ?? "";
       log(`TTS audio received: ${b64.length} base64 chars`);
-      if (!b64) {
-        throw new Error("response has empty audioBase64");
-      }
+      if (!b64) throw new Error("response has empty audioBase64");
 
       const dir = FileSystem.cacheDirectory;
       if (!dir) throw new Error("FileSystem.cacheDirectory is null");
@@ -292,11 +342,10 @@ export default function VoiceTestScreen(): React.JSX.Element {
         encoding: FileSystem.EncodingType.Base64,
       });
       playerUriRef.current = fileUri;
-      log(`wrote audio file: ${fileUri}`);
+      log(`wrote audio file → ${fileUri}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      patch({ ttsError: `fetch/write: ${msg}` });
-      log(`TTS FAILED before playback: ${msg}`);
+      fail("ttsError", `fetch/write: ${msg}`);
       return;
     }
 
@@ -308,10 +357,10 @@ export default function VoiceTestScreen(): React.JSX.Element {
 
       player.addListener("playbackStatusUpdate", (status) => {
         if (status.didJustFinish) {
-          log("didJustFinish — playback complete");
+          log("didJustFinish — TTS playback complete");
           patch({ ttsSpeaking: false });
           playerRef.current = null;
-          try { player.remove(); } catch { /* already removed */ }
+          try { player.remove(); } catch { /* ignore */ }
           playerUriRef.current = null;
           FileSystem.deleteAsync(fileUri, { idempotent: true }).catch(() => {/* ignore */});
         }
@@ -321,10 +370,10 @@ export default function VoiceTestScreen(): React.JSX.Element {
       log("player.play() called");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      patch({ ttsError: `playback: ${msg}`, ttsSpeaking: false });
-      log(`TTS PLAYBACK FAILED: ${msg}`);
+      fail("ttsError", `playback: ${msg}`);
+      patch({ ttsSpeaking: false });
     }
-  }, [log, patch]);
+  }, [log, patch, fail]);
 
   // -----------------------------------------------------------------------
   // Render
@@ -337,7 +386,7 @@ export default function VoiceTestScreen(): React.JSX.Element {
         style={styles.root}
         contentContainerStyle={[
           styles.content,
-          { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 32 },
+          { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 40 },
         ]}
       >
         <Pressable onPress={() => router.back()} style={styles.backBtn}>
@@ -352,24 +401,20 @@ export default function VoiceTestScreen(): React.JSX.Element {
         {/* ---- Step 1: STT ---- */}
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Step 1 — Speech to Text</Text>
-          <View style={styles.row}>
+          <View style={styles.btnRow}>
             <Pressable
               onPress={handleStartListening}
-              disabled={s.sttListening}
-              style={[
-                styles.btn,
-                s.sttListening && styles.btnRecording,
-                !s.sttListening ? null : null,
-              ]}
+              disabled={s.sttActive}
+              style={[styles.btn, s.sttActive && styles.btnRecording, s.sttActive && styles.btnDimmed]}
             >
               <Text style={styles.btnText}>
-                {s.sttListening ? "Recording…" : "Start Listening"}
+                {s.sttActive ? "Recording…" : "Start Listening"}
               </Text>
             </Pressable>
             <Pressable
               onPress={handleStopListening}
-              disabled={!s.sttListening}
-              style={[styles.btn, styles.btnStop, !s.sttListening && styles.btnDimmed]}
+              disabled={!s.sttActive}
+              style={[styles.btn, styles.btnStop, !s.sttActive && styles.btnDimmed]}
             >
               <Text style={styles.btnText}>Stop + Transcribe</Text>
             </Pressable>
@@ -385,29 +430,37 @@ export default function VoiceTestScreen(): React.JSX.Element {
             style={[styles.btn, styles.btnSpeak, s.ttsSpeaking && styles.btnSpeaking]}
           >
             <Text style={styles.btnText}>
-              {s.ttsSpeaking ? 'Speaking "Voice test successful."…' : "Speak Test Reply"}
+              {s.ttsSpeaking
+                ? 'Speaking "Voice test successful."…'
+                : "Speak Test Reply"}
             </Text>
           </Pressable>
         </View>
 
+        {/* ---- Recover ---- */}
+        <Pressable onPress={handleRecover} style={[styles.btn, styles.btnRecover]}>
+          <Text style={styles.btnText}>Recover Audio</Text>
+        </Pressable>
+
         {/* ---- State panel ---- */}
         <View style={styles.stateCard}>
           <Text style={styles.stateTitle}>Audio State</Text>
-          <StateRow label="mic permission" value={s.micPermission} />
+
+          <StateRow label="mic permission"      value={s.micPermission} />
           <StateRow
-            label="STT listening"
-            value={s.sttListening ? "true" : "false"}
-            highlight={s.sttListening}
-          />
-          <StateRow
-            label="STT result"
-            value={s.sttResult.length > 0 ? `"${s.sttResult}"` : "(none)"}
-            highlight={s.sttResult.length > 0}
+            label="STT active"
+            value={s.sttActive ? "true" : "false"}
+            highlight={s.sttActive}
           />
           <StateRow
             label="STT error"
             value={s.sttError ?? "(none)"}
             isError={!!s.sttError}
+          />
+          <StateRow
+            label="transcript"
+            value={s.sttResult.length > 0 ? `"${s.sttResult}"` : "(none)"}
+            highlight={s.sttResult.length > 0}
           />
           <StateRow
             label="TTS speaking"
@@ -419,15 +472,25 @@ export default function VoiceTestScreen(): React.JSX.Element {
             value={s.ttsError ?? "(none)"}
             isError={!!s.ttsError}
           />
-          <StateRow label="last event" value={s.lastEvent} />
-          <StateRow label="timestamp" value={s.lastEventAt ?? "(never)"} />
+          <StateRow label="last lifecycle event" value={s.lastEvent} />
+          <StateRow label="last event at"        value={s.lastEventAt ?? "(never)"} />
+          <StateRow
+            label="last failure reason"
+            value={s.lastFailureReason ?? "(none)"}
+            isError={!!s.lastFailureReason}
+          />
+          <StateRow
+            label="recovery count"
+            value={String(s.recoveryCount)}
+            highlight={s.recoveryCount > 0}
+          />
         </View>
 
         {/* ---- Reset ---- */}
         <Pressable
           onPress={() => {
-            patch(INIT);
-            log("state reset by user");
+            setS(INIT);
+            log("full state reset by user");
           }}
           style={styles.resetBtn}
         >
@@ -435,7 +498,7 @@ export default function VoiceTestScreen(): React.JSX.Element {
         </Pressable>
 
         <Text style={styles.footer}>
-          All events are logged to console with [VoiceTest] prefix.
+          All events logged to console with [VoiceTest] prefix + timestamp.
         </Text>
       </ScrollView>
     </>
@@ -452,21 +515,21 @@ function StateRow({
   highlight,
   isError,
 }: {
-  label: string;
-  value: string;
+  label:      string;
+  value:      string;
   highlight?: boolean;
-  isError?: boolean;
+  isError?:   boolean;
 }): React.JSX.Element {
   return (
-    <View style={stateRowStyles.row}>
-      <Text style={stateRowStyles.label}>{label}</Text>
+    <View style={rowStyles.row}>
+      <Text style={rowStyles.label}>{label}</Text>
       <Text
         style={[
-          stateRowStyles.value,
-          highlight && stateRowStyles.highlight,
-          isError && stateRowStyles.error,
+          rowStyles.value,
+          highlight && rowStyles.highlight,
+          isError   && rowStyles.error,
         ]}
-        numberOfLines={3}
+        numberOfLines={4}
       >
         {value}
       </Text>
@@ -478,125 +541,141 @@ function StateRow({
 // Styles
 // ---------------------------------------------------------------------------
 
-const stateRowStyles = StyleSheet.create({
+const rowStyles = StyleSheet.create({
   row: {
-    flexDirection: "row",
-    justifyContent: "space-between",
+    flexDirection:   "row",
+    justifyContent:  "space-between",
     paddingVertical: 6,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(255,255,255,0.07)",
+    borderBottomWidth:  StyleSheet.hairlineWidth,
+    borderBottomColor:  "rgba(255,255,255,0.07)",
   },
   label: {
-    color: "rgba(255,255,255,0.4)",
-    fontSize: 12,
+    color:      "rgba(255,255,255,0.4)",
+    fontSize:   12,
     fontFamily: "Inter_400Regular",
-    flex: 1,
+    flex:       1,
   },
   value: {
-    color: "rgba(255,255,255,0.8)",
-    fontSize: 12,
+    color:      "rgba(255,255,255,0.8)",
+    fontSize:   12,
     fontFamily: "Inter_500Medium",
-    flex: 2,
-    textAlign: "right",
+    flex:       2,
+    textAlign:  "right",
   },
   highlight: { color: "#4ade80" },
-  error: { color: "#f87171" },
+  error:     { color: "#f87171" },
 });
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#0a0a0a" },
-  content: { paddingHorizontal: 20, gap: 16 },
-  backBtn: { marginBottom: 4 },
+  root:    { flex: 1, backgroundColor: "#0a0a0a" },
+  content: { paddingHorizontal: 20, gap: 14 },
+
+  backBtn:  { marginBottom: 2 },
   backText: {
-    color: "rgba(255,255,255,0.4)",
-    fontSize: 14,
+    color:      "rgba(255,255,255,0.4)",
+    fontSize:   14,
     fontFamily: "Inter_400Regular",
   },
+
   title: {
-    color: "#ffffff",
-    fontSize: 24,
+    color:      "#ffffff",
+    fontSize:   24,
     fontFamily: "Inter_700Bold",
-    marginBottom: 4,
+    marginBottom: 2,
   },
   subtitle: {
-    color: "rgba(255,255,255,0.35)",
-    fontSize: 12,
+    color:      "rgba(255,255,255,0.35)",
+    fontSize:   12,
     fontFamily: "Inter_400Regular",
-    marginBottom: 8,
+    marginBottom: 4,
   },
+
   card: {
     backgroundColor: "rgba(255,255,255,0.05)",
-    borderRadius: 14,
-    padding: 16,
-    gap: 12,
+    borderRadius:    14,
+    padding:         16,
+    gap:             12,
   },
   cardTitle: {
-    color: "rgba(255,255,255,0.6)",
-    fontSize: 13,
+    color:      "rgba(255,255,255,0.6)",
+    fontSize:   13,
     fontFamily: "Inter_600SemiBold",
   },
-  row: { flexDirection: "row", gap: 10 },
+
+  btnRow: { flexDirection: "row", gap: 10 },
+
   btn: {
-    flex: 1,
-    backgroundColor: "rgba(255,255,255,0.10)",
-    borderRadius: 10,
-    paddingVertical: 14,
+    flex:             1,
+    backgroundColor:  "rgba(255,255,255,0.10)",
+    borderRadius:     10,
+    paddingVertical:  14,
     paddingHorizontal: 12,
-    alignItems: "center",
-    justifyContent: "center",
+    alignItems:       "center",
+    justifyContent:   "center",
   },
   btnRecording: {
     backgroundColor: "rgba(74,222,128,0.15)",
-    borderWidth: 1,
-    borderColor: "#4ade80",
+    borderWidth:     1,
+    borderColor:     "#4ade80",
   },
-  btnStop: { backgroundColor: "rgba(239,68,68,0.15)", borderWidth: 1, borderColor: "#ef4444" },
+  btnStop: {
+    backgroundColor: "rgba(239,68,68,0.15)",
+    borderWidth:     1,
+    borderColor:     "#ef4444",
+  },
   btnDimmed: { opacity: 0.3 },
   btnSpeak: {
-    flex: 0,
-    alignSelf: "stretch",
-    backgroundColor: "rgba(139,92,246,0.2)",
-    borderWidth: 1,
-    borderColor: "#8b5cf6",
+    flex:             0,
+    alignSelf:        "stretch",
+    backgroundColor:  "rgba(139,92,246,0.2)",
+    borderWidth:      1,
+    borderColor:      "#8b5cf6",
   },
-  btnSpeaking: {
-    backgroundColor: "rgba(139,92,246,0.35)",
+  btnSpeaking: { backgroundColor: "rgba(139,92,246,0.35)" },
+  btnRecover: {
+    flex:             0,
+    backgroundColor:  "rgba(251,146,60,0.15)",
+    borderWidth:      1,
+    borderColor:      "#fb923c",
   },
   btnText: {
-    color: "#ffffff",
-    fontSize: 14,
+    color:      "#ffffff",
+    fontSize:   14,
     fontFamily: "Inter_500Medium",
-    textAlign: "center",
+    textAlign:  "center",
   },
+
   stateCard: {
     backgroundColor: "rgba(255,255,255,0.04)",
-    borderRadius: 14,
-    padding: 16,
+    borderRadius:    14,
+    padding:         16,
   },
   stateTitle: {
-    color: "rgba(255,255,255,0.35)",
-    fontSize: 10,
-    fontFamily: "Inter_600SemiBold",
-    textTransform: "uppercase",
-    letterSpacing: 1,
-    marginBottom: 8,
+    color:          "rgba(255,255,255,0.35)",
+    fontSize:       10,
+    fontFamily:     "Inter_600SemiBold",
+    textTransform:  "uppercase",
+    letterSpacing:  1,
+    marginBottom:   8,
   },
+
   resetBtn: {
-    backgroundColor: "rgba(255,255,255,0.07)",
-    borderRadius: 10,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderRadius:    10,
     paddingVertical: 12,
-    alignItems: "center",
+    alignItems:      "center",
   },
   resetBtnText: {
-    color: "rgba(255,255,255,0.5)",
-    fontSize: 13,
+    color:      "rgba(255,255,255,0.4)",
+    fontSize:   13,
     fontFamily: "Inter_500Medium",
   },
+
   footer: {
-    color: "rgba(255,255,255,0.2)",
-    fontSize: 11,
+    color:      "rgba(255,255,255,0.18)",
+    fontSize:   11,
     fontFamily: "Inter_400Regular",
-    textAlign: "center",
-    marginTop: 8,
+    textAlign:  "center",
+    marginTop:  4,
   },
 });
