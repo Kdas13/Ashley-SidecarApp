@@ -52,8 +52,9 @@ const jsonLarge = express.json({ limit: "12mb" });
 const jsonSmall = express.json({ limit: "1mb" });
 app.use((req, res, next) => {
   if (req.path === "/api/chat/image") return jsonLarge(req, res, next);
-  // Voice push-to-talk uploads ship base64 audio in JSON. A 60s recording
-  // is comfortably under 12mb at our recording quality preset.
+  // Voice push-to-talk uploads ship base64 audio in JSON. A 150s recording
+  // at HIGH_QUALITY (m4a/aac ~128kbps) is ~2.4MB raw, ~3.2MB base64 —
+  // comfortably under the 12MB cap.
   if (req.path === "/api/chat/transcribe") return jsonLarge(req, res, next);
   // Stage 2 streaming variant ships the same base64 audio in JSON; the
   // *response* is SSE but the request body is identical to Stage 1.
