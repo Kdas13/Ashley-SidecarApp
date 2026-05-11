@@ -57,7 +57,7 @@ function joinSection(label: string, value: string): string {
 // so the filter is backwards-compatible without a backfill.
 // ---------------------------------------------------------------------------
 
-function filterMemoriesForPrompt(memories: Memory[]): Memory[] {
+export function filterMemoriesForPrompt(memories: Memory[]): Memory[] {
   return memories.filter((m) => {
     const reuse = (m.reuse ?? "relevant_only").trim();
     if (reuse === "often") return true;

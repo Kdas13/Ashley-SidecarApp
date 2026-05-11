@@ -37,9 +37,10 @@ import {
   localSelfieDir,
 } from "../lib/storage";
 import { maybeRunWebLookup } from "../lib/webSearch";
-import { guardContinuity } from "../lib/continuityGuard";
+import { guardContinuity, guardContinuityDetailed } from "../lib/continuityGuard";
 import {
   buildImagePromptAddendum,
+  filterMemoriesForPrompt,
   type ImageAnalysisMode as ImageAnalysisModeT,
   type ImageCategory as ImageCategoryT,
 } from "../lib/ashleyCoreSpec";
@@ -76,6 +77,7 @@ const ChatBodySchema = z.object({
   }),
   clientNow: z.string().datetime({ offset: true }).optional(),
   clientTimezone: z.string().min(1).max(64).optional(),
+  debug: z.boolean().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -223,7 +225,7 @@ router.post("/chat", async (req, res): Promise<void> => {
     return;
   }
   const { id: userId, content, replyTo } = parsed.data.userMessage;
-  const { clientNow, clientTimezone } = parsed.data;
+  const { clientNow, clientTimezone, debug: debugMode = false } = parsed.data;
   const userContent = content.trim();
   if (!userContent) {
     res.status(400).json({ error: "content is required" });
@@ -413,8 +415,9 @@ router.post("/chat", async (req, res): Promise<void> => {
 
   // 4b. Continuity guard — heuristic check + LLM rewrite if character
   //     drift is detected (e.g. "as an AI", assistant-speak openers).
-  //     Fire-and-forget on failure; original text is returned untouched.
-  assistantText = await guardContinuity(assistantText);
+  //     Always run detailed version so diagnostics are available.
+  const guardResult = await guardContinuityDetailed(assistantText);
+  assistantText = guardResult.text;
 
   // 5. Strip selfie marker (first one only) and remember the vibe.
   let selfieVibe: string | null = null;
@@ -459,6 +462,55 @@ router.post("/chat", async (req, res): Promise<void> => {
   // 7. Fire-and-forget: distill memories + maybe roll up older messages.
   void distillMemories(deviceId, userContent, assistantText);
   void maybeRollUpOlderMessages(deviceId);
+
+  // 8. Build response. In debug mode include _debug block with Phase 1
+  //    diagnostics. Normal clients never see it (they don't pass debug:true).
+  if (debugMode) {
+    const filteredMemories = filterMemoriesForPrompt(memories);
+    const KNOWN_CATEGORIES = ["identity", "relational", "project", "daily", "landmark"] as const;
+    type KnownCat = (typeof KNOWN_CATEGORIES)[number];
+
+    const categoriesSearched = KNOWN_CATEGORIES.filter((c) =>
+      memories.some((m) => (m.category ?? "relational").trim() === c),
+    );
+
+    const memoriesSelected = filteredMemories
+      .slice()
+      .sort((a, b) => b.importance - a.importance || b.updatedAt.getTime() - a.updatedAt.getTime())
+      .map((m) => ({
+        category: (m.category ?? "relational").trim(),
+        confidence: m.confidence ?? 4,
+        reuse: (m.reuse ?? "relevant_only").trim(),
+        importance: m.importance,
+        content: m.content.slice(0, 120) + (m.content.length > 120 ? "…" : ""),
+      }));
+
+    const ashleyState = {
+      mode: (profile.ashleyMode ?? "").trim() || "daily",
+      energy: (profile.ashleyEnergy ?? "").trim() || "balanced",
+      tone: (profile.ashleyTone ?? "").trim() || "playful",
+      focus: (profile.ashleyFocus ?? "").trim() || "general",
+      emotionalState: (profile.ashleyEmotionalState ?? "").trim() || "grounded",
+    };
+
+    const _debug = {
+      memoryCategoriesSearched: categoriesSearched,
+      memoriesTotal: memories.length,
+      memoriesAfterFilter: filteredMemories.length,
+      memoriesSelected,
+      ashleyState,
+      continuityProtection: {
+        ran: true,
+        triggered: guardResult.diag.triggered,
+        modified: guardResult.diag.modified,
+        triggers: guardResult.diag.triggers,
+        risks: guardResult.diag.risks,
+      },
+    };
+
+    res.json({ userMessage: userRow, ashleyMessage: ashleyRow, _debug });
+    return;
+  }
 
   res.json({ userMessage: userRow, ashleyMessage: ashleyRow });
 });
