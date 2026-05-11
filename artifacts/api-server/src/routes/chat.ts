@@ -1040,7 +1040,7 @@ async function distillMemories(
           content: `USER: ${userText}\n\nASHLEY: ${assistantText}`,
         },
       ],
-      maxTokens: 1024,
+      maxTokens: 2048,
     });
     if (!text) return;
     const cleaned = text
