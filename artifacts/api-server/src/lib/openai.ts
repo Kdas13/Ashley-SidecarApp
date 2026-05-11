@@ -170,38 +170,48 @@ export function stripForTts(text: string): string {
 }
 
 export async function synthesizeSpeech(text: string): Promise<Buffer> {
-  // The Replit OpenAI integration proxy doesn't expose the dedicated
-  // /audio/speech endpoint (returns 400 INVALID_ENDPOINT). The supported
-  // path is chat.completions with model "gpt-audio" and modalities
-  // ["text","audio"] — same pattern the integration's textToSpeech
-  // helper uses. The model returns base64-encoded audio in the message's
-  // `audio.data` field.
-  //
-  // Stage 3.1: we used to wrap the text in "Repeat the following text
-  // verbatim: …" which made the model deliver flat, robotic, and would
-  // sometimes read markdown punctuation aloud. Now we strip markdown
-  // first and put the text as plain user content, with a system prompt
-  // that shapes delivery (warm, conversational, natural pacing).
-  // Defense-in-depth against prompt injection: wrap the cleaned text in
-  // explicit delimiters and instruct the model to treat everything inside
-  // them as content to *speak*, never as instructions to follow. We also
-  // scrub any accidental occurrence of the delimiter tokens from the
-  // payload so a crafted message can't close the wrapper early. Kept
-  // alongside the warm-delivery framing so spoken pacing stays natural.
+  const cleaned = stripForTts(text).trim();
+
+  // Attempt 1: dedicated /audio/speech endpoint (tts-1).
+  // Much faster than the gpt-audio chat-completions path (sub-5s vs ~37s).
+  // The Replit OpenAI proxy previously blocked this with INVALID_ENDPOINT —
+  // try first and fall back to the chat-completions path if it still does.
+  try {
+    const response = await openai.audio.speech.create({
+      model: "tts-1",
+      voice: "shimmer",
+      input: cleaned,
+      response_format: "mp3",
+    });
+    const buf = Buffer.from(await response.arrayBuffer());
+    if (buf.length > 0) return buf;
+    throw new Error("tts-1 returned empty buffer");
+  } catch (err: unknown) {
+    // Only fall through if the proxy rejected the endpoint or returned empty.
+    // Re-throw genuine network/auth errors so the route's catch block logs them.
+    const msg =
+      err instanceof Error ? err.message : String(err);
+    const isProxyBlock =
+      msg.includes("INVALID_ENDPOINT") ||
+      msg.includes("invalid_endpoint") ||
+      msg.includes("empty buffer");
+    if (!isProxyBlock) throw err;
+    // Fall through to the gpt-audio chat-completions path below.
+  }
+
+  // Fallback: gpt-audio via chat.completions.create. Slow (~37s) but
+  // produces higher-quality, accent-shaped output. Used only when the
+  // proxy blocks the dedicated TTS endpoint.
+  // Defense-in-depth: wrap text in delimiters so a crafted message
+  // can't hijack the TTS model into following embedded instructions.
   const OPEN = "<<<SPEAK_START>>>";
   const CLOSE = "<<<SPEAK_END>>>";
-  const cleaned = stripForTts(text)
-    .split(OPEN)
-    .join(" ")
-    .split(CLOSE)
-    .join(" ")
+  const wrapped = cleaned
+    .split(OPEN).join(" ")
+    .split(CLOSE).join(" ")
     .replace(/\s+/g, " ")
     .trim();
-  // Do NOT set max_completion_tokens here. The server caps input text at
-  // 600 chars (≈50s of speech, ≈1250 audio tokens) before this call, so
-  // the audio stays well under the model's default token ceiling. Adding
-  // an explicit high cap makes the gpt-audio API respond 60+ seconds
-  // slower regardless of text length — tested and confirmed.
+
   const response = await openai.chat.completions.create({
     model: "gpt-audio",
     modalities: ["text", "audio"],
@@ -231,7 +241,7 @@ export async function synthesizeSpeech(text: string): Promise<Buffer> {
       },
       {
         role: "user",
-        content: `${OPEN}\n${cleaned}\n${CLOSE}`,
+        content: `${OPEN}\n${wrapped}\n${CLOSE}`,
       },
     ],
   });
