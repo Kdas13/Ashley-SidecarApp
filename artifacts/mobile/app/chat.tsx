@@ -41,6 +41,7 @@ import { useProfile, useUpdateProfile } from "@/lib/useProfile";
 import { useVoiceRecorder, VOICE_MAX_DURATION_MS } from "@/lib/voiceInput";
 import { useTranscribeAudioStream } from "@/lib/useVoice";
 import { useTtsPlayback } from "@/lib/voiceOutput";
+import { useAudioState, patchAudioState } from "@/lib/audioState";
 import type {
   ImageAnalysisMode,
   ImageCategory,
@@ -311,6 +312,7 @@ export default function ChatScreen(): React.JSX.Element {
   // state so the send-mutation closure can read the current value without
   // being reconstructed on every toggle flip.
   const tts = useTtsPlayback();
+  const audioState = useAudioState();
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false);
   const voiceReplyEnabledRef = useRef(false);
   useEffect(() => {
@@ -348,9 +350,12 @@ export default function ChatScreen(): React.JSX.Element {
     setVoiceError(null);
     setVoicePartial("");
     voicePartialRef.current = "";
-    // Barge-in: re-opening the mic silences any in-flight spoken reply
-    // so Kane isn't talking over Ashley.
-    tts.stop();
+    // Barge-in: re-opening the mic silences any in-flight spoken reply.
+    // MUST await stopAsync so TTS teardown and its setAudioModeAsync reset
+    // complete before voice.start() requests recording audio focus — the
+    // original race between these two setAudioModeAsync calls is what was
+    // killing both TTS and STT after the first message.
+    await tts.stopAsync();
     try {
       const granted = await voice.ensurePermission();
       if (!granted) {
@@ -405,6 +410,37 @@ export default function ChatScreen(): React.JSX.Element {
       setVoiceError(e instanceof Error ? e.message : "Couldn't transcribe");
     }
   }, [voice, transcribeMutation]);
+
+  // Hard reset of the entire audio pipeline. Stops both TTS and STT,
+  // resets audio state, and updates recovery counters so the debug panel
+  // shows what happened and when.
+  const recoverAudio = useCallback(
+    async (reason: string) => {
+      patchAudioState({
+        lastRecoveryAttemptAt: Date.now(),
+        recoveryCount: audioState.recoveryCount + 1,
+        lastRecoveryReason: reason,
+      });
+      console.log(`[Audio][recoverAudio] reason=${reason}`);
+      // Stop both pipelines. Order: TTS first (releases playback focus),
+      // then STT cancel (releases recording focus).
+      try {
+        await tts.stopAsync();
+      } catch {
+        // ignore — we're recovering anyway
+      }
+      try {
+        await voice.cancel();
+      } catch {
+        // ignore
+      }
+      setVoiceError(null);
+      setVoicePartial("");
+      voicePartialRef.current = "";
+      console.log("[Audio][recoverAudio] done");
+    },
+    [tts, voice, audioState.recoveryCount],
+  );
 
   // Auto-stop recording at the hard ceiling so the user can't accidentally
   // leave the mic open. We just call the same handler the press-out path uses.
@@ -1171,6 +1207,60 @@ export default function ChatScreen(): React.JSX.Element {
             <Text style={styles.voiceErrorText}>{voiceError}</Text>
             <Pressable onPress={() => setVoiceError(null)} hitSlop={8}>
               <Feather name="x" size={14} color={colors.light.mutedForeground} />
+            </Pressable>
+          </View>
+        ) : null}
+
+        {voiceReplyEnabled ? (
+          <View style={styles.audioDebugPanel}>
+            <View style={styles.audioDebugRow}>
+              <Text style={styles.audioDebugLabel}>TTS</Text>
+              <Text
+                style={[
+                  styles.audioDebugValue,
+                  audioState.ttsSpeaking && styles.audioDebugActive,
+                  !audioState.ttsReady && styles.audioDebugBusy,
+                ]}
+              >
+                {audioState.ttsSpeaking
+                  ? "speaking"
+                  : audioState.ttsReady
+                    ? "ready"
+                    : "fetching…"}
+              </Text>
+              <Text style={styles.audioDebugLabel}>STT</Text>
+              <Text
+                style={[
+                  styles.audioDebugValue,
+                  audioState.sttListening && styles.audioDebugActive,
+                ]}
+              >
+                {audioState.sttListening ? "listening" : "idle"}
+              </Text>
+              <Text style={styles.audioDebugLabel}>mic</Text>
+              <Text style={styles.audioDebugValue}>{audioState.micPermission}</Text>
+              <Text style={styles.audioDebugLabel}>focus</Text>
+              <Text style={styles.audioDebugValue}>{audioState.audioFocusState}</Text>
+            </View>
+            {audioState.lastAudioError ? (
+              <Text style={styles.audioDebugError} numberOfLines={2}>
+                {audioState.lastAudioError}
+              </Text>
+            ) : null}
+            {audioState.recoveryCount > 0 ? (
+              <Text style={styles.audioDebugMeta}>
+                resets: {audioState.recoveryCount}
+                {audioState.lastRecoveryReason
+                  ? `  reason: ${audioState.lastRecoveryReason}`
+                  : ""}
+              </Text>
+            ) : null}
+            <Pressable
+              onPress={() => void recoverAudio("manual_user_reset")}
+              style={styles.audioResetBtn}
+              hitSlop={8}
+            >
+              <Text style={styles.audioResetBtnText}>Reset Voice</Text>
             </Pressable>
           </View>
         ) : null}
@@ -2384,6 +2474,60 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_500Medium",
     fontSize: 12,
     flex: 1,
+  },
+  audioDebugPanel: {
+    backgroundColor: "rgba(0,0,0,0.82)",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 4,
+  },
+  audioDebugRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 4,
+  },
+  audioDebugLabel: {
+    color: "rgba(255,255,255,0.45)",
+    fontFamily: "Inter_400Regular",
+    fontSize: 10,
+    textTransform: "uppercase",
+  },
+  audioDebugValue: {
+    color: "rgba(255,255,255,0.75)",
+    fontFamily: "Inter_500Medium",
+    fontSize: 10,
+    marginRight: 6,
+  },
+  audioDebugActive: {
+    color: "#4ade80",
+  },
+  audioDebugBusy: {
+    color: "#facc15",
+  },
+  audioDebugError: {
+    color: "#f87171",
+    fontFamily: "Inter_400Regular",
+    fontSize: 10,
+  },
+  audioDebugMeta: {
+    color: "rgba(255,255,255,0.40)",
+    fontFamily: "Inter_400Regular",
+    fontSize: 10,
+  },
+  audioResetBtn: {
+    alignSelf: "flex-start",
+    marginTop: 2,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.25)",
+  },
+  audioResetBtnText: {
+    color: "rgba(255,255,255,0.75)",
+    fontFamily: "Inter_500Medium",
+    fontSize: 10,
   },
   imagePickerCard: {
     backgroundColor: colors.light.background,
