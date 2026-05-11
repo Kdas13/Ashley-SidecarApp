@@ -118,6 +118,34 @@ function buildReplyPreview(message: Message): ReplyToRef {
   return { id: message.id, role: message.role, preview };
 }
 
+// How many characters to pass to TTS. At ~12 chars/sec of natural speech
+// this is roughly 50 seconds — a full, natural conversational chunk.
+// Keeping it short matters: the gpt-audio model generates the full audio
+// buffer before returning it, so longer text = longer API wait before
+// playback starts. We cut at the last sentence boundary (. ! ?) before the
+// cap so the spoken clip never ends mid-word or mid-clause.
+const TTS_CHAR_CAP = 600;
+
+function truncateForTts(text: string): string {
+  if (text.length <= TTS_CHAR_CAP) return text;
+  const window = text.slice(0, TTS_CHAR_CAP);
+  // Find the last sentence-ending punctuation within the window.
+  const lastBoundary = Math.max(
+    window.lastIndexOf(". "),
+    window.lastIndexOf("! "),
+    window.lastIndexOf("? "),
+    window.lastIndexOf(".\n"),
+    window.lastIndexOf("!\n"),
+    window.lastIndexOf("?\n"),
+  );
+  if (lastBoundary > TTS_CHAR_CAP / 2) {
+    // +1 to include the punctuation mark itself.
+    return window.slice(0, lastBoundary + 1).trimEnd();
+  }
+  // No good sentence boundary — hard-cut at the cap.
+  return window.trimEnd();
+}
+
 export default function ChatScreen(): React.JSX.Element {
   const insets = useSafeAreaInsets();
   const [draft, setDraft] = useState("");
@@ -421,8 +449,9 @@ export default function ChatScreen(): React.JSX.Element {
       if (!voiceReplyEnabledRef.current) return;
       const reply = result.ashley?.content?.trim() ?? "";
       if (reply.length === 0) return;
-      // Cap at the OpenAI TTS API hard limit (4096 chars) so we don't get a 400.
-      tts.speak(reply.slice(0, 4096));
+      // Truncate to a speakable chunk at a sentence boundary — keeps API
+      // latency under ~10s and playback natural. See truncateForTts above.
+      tts.speak(truncateForTts(reply));
     },
     [presenceDispatch, tts],
   );
