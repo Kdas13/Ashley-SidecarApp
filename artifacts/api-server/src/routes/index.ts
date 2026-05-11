@@ -8,6 +8,8 @@ import carryoverRouter from "./carryover";
 import webSearchRouter from "./webSearch";
 import proactiveRouter from "./proactive";
 import debugRouter from "./debug";
+import improvementsRouter from "./improvements";
+import maintainerRouter from "./maintainer";
 import { requireApiKey } from "../middleware/apiKey";
 
 const router: IRouter = Router();
@@ -38,6 +40,8 @@ router.use(carryoverRouter);
 router.use(webSearchRouter);
 router.use(proactiveRouter);
 router.use(debugRouter);
+router.use(improvementsRouter);
+router.use(maintainerRouter);
 router.use(chatRouter);
 
 export default router;
