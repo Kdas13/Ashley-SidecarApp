@@ -2370,7 +2370,17 @@ router.post("/chat/tts", async (req, res): Promise<void> => {
     return;
   }
   try {
-    const buf = await synthesizeSpeech(parsed.data.text);
+    // Strip asterisk markup before synthesis. The TTS engine silently skips
+    // text wrapped in asterisks (*like this*), cutting words from the audio.
+    // We keep the inner words so nothing is lost — e.g. "*smiles softly*"
+    // becomes "smiles softly" rather than disappearing entirely. Any lone
+    // stray asterisks are removed. Leading/trailing whitespace is trimmed.
+    const ttsText = parsed.data.text
+      .replace(/\*([^*]*)\*/g, "$1")
+      .replace(/\*/g, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    const buf = await synthesizeSpeech(ttsText);
     res.json({
       audioBase64: buf.toString("base64"),
       mimeType: "audio/mpeg",
