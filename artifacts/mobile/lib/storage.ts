@@ -170,8 +170,10 @@ export type Message = {
    * User bubbles always carry "complete" (or omit the field, treated the same).
    */
   status?: "complete" | "streaming" | "interrupted";
+  /** Local-only: URI of the cached TTS audio file for this message. Not persisted. */
+  audioUrl?: string | null;
   /** Local-only: TTS playback status for the per-message Speak button. Not persisted. */
-  audioStatus?: "idle" | "loading" | "ready" | "error" | null;
+  audioStatus?: "none" | "loading" | "ready" | "error" | null;
 };
 
 export type ReplyToRef = {

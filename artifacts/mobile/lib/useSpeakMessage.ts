@@ -17,7 +17,7 @@ import * as FileSystem from "expo-file-system/legacy";
 import { fetchSpeechForMessage } from "./aiClient";
 import type { TtsPlayback } from "./voiceOutput";
 
-export type SpeakStatus = "idle" | "loading" | "error";
+export type SpeakStatus = "none" | "loading" | "error";
 
 export function useSpeakMessage(tts: TtsPlayback): {
   speakMessage: (messageId: string, text: string) => void;
@@ -54,9 +54,10 @@ export function useSpeakMessage(tts: TtsPlayback): {
           await FileSystem.writeAsStringAsync(cachedUri, data.audioBase64, {
             encoding: FileSystem.EncodingType.Base64,
           });
-          setStatuses((prev) => ({ ...prev, [messageId]: "idle" }));
+          setStatuses((prev) => ({ ...prev, [messageId]: "none" }));
           tts.speakUri(cachedUri);
-        } catch {
+        } catch (err) {
+          console.warn("[useSpeakMessage] TTS synthesis failed:", err);
           setStatuses((prev) => ({ ...prev, [messageId]: "error" }));
         }
       })();
@@ -65,7 +66,7 @@ export function useSpeakMessage(tts: TtsPlayback): {
   );
 
   const getSpeakStatus = useCallback(
-    (messageId: string): SpeakStatus => statuses[messageId] ?? "idle",
+    (messageId: string): SpeakStatus => statuses[messageId] ?? "none",
     [statuses],
   );
 
