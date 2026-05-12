@@ -256,18 +256,17 @@ router.post("/chat", async (req, res): Promise<void> => {
   }
 
   // Diagnostic mode — structured report, no LLM, no personality.
-  // Triggered by "run diagnostics" or "maintainer mode" (case-insensitive).
-  if (/run diagnostics|maintainer mode/i.test(userContent)) {
+  // Triggered by exact phrase "run diagnostics" only (case-insensitive, leading/trailing whitespace allowed).
+  if (/^\s*run diagnostics\s*$/i.test(userContent)) {
     try {
       const allTickets = await db.select().from(ashleyTicketsTable);
-      const byStatus: Record<string, typeof allTickets> = {};
-      for (const t of allTickets) {
-        (byStatus[t.status] ??= []).push(t);
-      }
-      const fmt = (tickets: typeof allTickets | undefined) =>
-        (tickets ?? []).length === 0
+      const openTickets = allTickets.filter((t) => t.status === "OPEN");
+      const inProgressTickets = allTickets.filter((t) => t.status === "IN_PROGRESS");
+      const resolvedTickets = allTickets.filter((t) => t.status === "RESOLVED");
+      const fmt = (tickets: typeof allTickets) =>
+        tickets.length === 0
           ? "  (none)"
-          : (tickets ?? [])
+          : tickets
               .map((t) => `  [${t.ticketId}] ${t.summary} (${t.severity}) — ${t.category}`)
               .join("\n");
 
@@ -288,13 +287,13 @@ router.post("/chat", async (req, res): Promise<void> => {
         "=== ASHLEY DIAGNOSTIC REPORT ===",
         "",
         "New Tickets (OPEN):",
-        fmt(byStatus["OPEN"]),
+        fmt(openTickets),
         "",
-        "In Progress:",
-        fmt(byStatus["IN_PROGRESS"]),
+        "In Progress (IN_PROGRESS):",
+        fmt(inProgressTickets),
         "",
         "Resolved:",
-        fmt(byStatus["RESOLVED"]),
+        fmt(resolvedTickets),
         "",
         "Recurring Issues (exact summary match):",
         recurringUniq.length === 0
@@ -307,7 +306,7 @@ router.post("/chat", async (req, res): Promise<void> => {
               .join("\n"),
         "",
         "Recommended Priorities:",
-        (byStatus["OPEN"] ?? [])
+        openTickets
           .filter((t) => t.severity === "high")
           .map((t) => `  HIGH: [${t.ticketId}] ${t.summary}`)
           .join("\n") || "  (no high-severity open tickets)",
@@ -1602,17 +1601,16 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     }
 
     // Diagnostic mode (stream path) — returns JSON, never opens SSE.
-    if (/run diagnostics|maintainer mode/i.test(userContent)) {
+    if (/^\s*run diagnostics\s*$/i.test(userContent)) {
       try {
         const allTickets = await db.select().from(ashleyTicketsTable);
-        const byStatus: Record<string, typeof allTickets> = {};
-        for (const t of allTickets) {
-          (byStatus[t.status] ??= []).push(t);
-        }
-        const fmt = (tickets: typeof allTickets | undefined) =>
-          (tickets ?? []).length === 0
+        const openTickets = allTickets.filter((t) => t.status === "OPEN");
+        const inProgressTickets = allTickets.filter((t) => t.status === "IN_PROGRESS");
+        const resolvedTickets = allTickets.filter((t) => t.status === "RESOLVED");
+        const fmt = (tickets: typeof allTickets) =>
+          tickets.length === 0
             ? "  (none)"
-            : (tickets ?? [])
+            : tickets
                 .map((t) => `  [${t.ticketId}] ${t.summary} (${t.severity}) — ${t.category}`)
                 .join("\n");
         const summaryCount: Record<string, number> = {};
@@ -1628,13 +1626,13 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
           "=== ASHLEY DIAGNOSTIC REPORT ===",
           "",
           "New Tickets (OPEN):",
-          fmt(byStatus["OPEN"]),
+          fmt(openTickets),
           "",
-          "In Progress:",
-          fmt(byStatus["IN_PROGRESS"]),
+          "In Progress (IN_PROGRESS):",
+          fmt(inProgressTickets),
           "",
           "Resolved:",
-          fmt(byStatus["RESOLVED"]),
+          fmt(resolvedTickets),
           "",
           "Recurring Issues (exact summary match):",
           recurringUniq.length === 0
@@ -1642,7 +1640,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
             : recurringUniq.map((t) => `  [x${summaryCount[t.summary] ?? 1}] ${t.summary}`).join("\n"),
           "",
           "Recommended Priorities:",
-          (byStatus["OPEN"] ?? []).filter((t) => t.severity === "high")
+          openTickets.filter((t) => t.severity === "high")
             .map((t) => `  HIGH: [${t.ticketId}] ${t.summary}`).join("\n") ||
             "  (no high-severity open tickets)",
           "",
