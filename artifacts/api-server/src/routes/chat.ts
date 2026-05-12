@@ -1030,9 +1030,17 @@ async function distillMemories(
   assistantText: string,
 ): Promise<void> {
   try {
-    // Memory distiller produces a small JSON blob — cheap classifier-style
-    // task, follows the active chat provider for consistency.
-    const text = await generateChatText({
+    // Memory distillation always uses Claude regardless of ASHLEY_TEXT_PROVIDER.
+    // Documented invariant in replit.md: "Stays on Claude regardless of the env
+    // switch: the summariser...and the memory distiller — quality matters for
+    // long-term memory continuity and cost is small."
+    // Using generateChatText (the routing adapter) here incorrectly sent this
+    // to Gemini when ASHLEY_TEXT_PROVIDER=gemini. Gemini rate-limit errors on
+    // the distiller were silently swallowed, causing Ashley to permanently lose
+    // facts from recent conversations (the #ASHLEY-MEM-002 regression).
+    const distillResult = await anthropic.messages.create({
+      model: CHAT_MODEL,
+      max_tokens: 2048,
       system: MEMORY_DISTILLER_PROMPT,
       messages: [
         {
@@ -1040,8 +1048,12 @@ async function distillMemories(
           content: `USER: ${userText}\n\nASHLEY: ${assistantText}`,
         },
       ],
-      maxTokens: 2048,
     });
+    const distillBlock = distillResult.content[0];
+    const text =
+      distillBlock && distillBlock.type === "text"
+        ? distillBlock.text.trim()
+        : "";
     if (!text) return;
     const cleaned = text
       .replace(/^```(?:json)?\s*/i, "")

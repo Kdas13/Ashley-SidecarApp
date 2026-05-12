@@ -115,20 +115,17 @@ export function useTtsPlayback(): TtsPlayback {
         }
       }
 
-      // Reset audio mode to a neutral state so the recorder can later
-      // call setAudioModeAsync({ allowsRecording: true }) without fighting
-      // a lingering playback audio-focus claim from this player.
-      try {
-        await setAudioModeAsync({
-          allowsRecording: false,
-          playsInSilentMode: true,
-        });
-        patchAudioState({ audioFocusState: "none" });
-        audioLog("TTS.teardown.audioModeReset", { reason });
-      } catch (err) {
-        audioError("TTS.teardown.setAudioMode", err, { reason });
-        // Non-fatal — audio mode reset failure is annoying but not blocking.
-      }
+      // Do NOT call setAudioModeAsync here. The pre-regression version of
+      // this file never called setAudioModeAsync inside useTtsPlayback at all;
+      // adding it to teardown caused 3+ rapid calls per TTS cycle on Android
+      // (teardown-on-start + explicit-for-playback + teardown-on-finish) which
+      // corrupted the Android audio focus state and produced the full audio
+      // regression. The OS releases playback focus when the player is removed
+      // above. The next deliberate setAudioModeAsync call will come from
+      // speak() (before creating the next player) or voice.start() (before
+      // recording) — both set the correct mode for their context.
+      patchAudioState({ audioFocusState: "none" });
+      audioLog("TTS.teardown.complete", { reason });
     },
     [clearWatchdog],
   );
