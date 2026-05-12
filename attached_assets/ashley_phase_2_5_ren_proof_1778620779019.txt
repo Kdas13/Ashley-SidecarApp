@@ -1,0 +1,65 @@
+ASHLEY PHASE 2.5 — REN-PROOF SPEC
+
+IMPLEMENTATION CONTRACT
+- Follow this spec exactly
+- Do not refactor, rename, merge, or reinterpret
+- Do not replace persistence with in-memory solutions
+- If unclear: ask Kane, do not assume
+- Priority: Persistence → Prompt Injection → Approval Gate → Diagnostics
+
+1. DATABASE (REQUIRED)
+Table: ashley_tickets
+Fields:
+ticket_id (PK), created_at, updated_at, status, severity, category,
+summary, description, impact, proposed_fix, source, created_by,
+approved (bool), approved_by, approved_at, resolution_notes, resolved_at
+Must persist across restarts.
+
+2. API (REQUIRED)
+POST /api/tickets
+GET /api/tickets?status=OPEN,IN_PROGRESS
+PATCH /api/tickets/:ticket_id
+POST /api/tickets/:ticket_id/approve
+No alternative routes.
+
+3. PROMPT INJECTION (REQUIRED)
+Inject OPEN tickets into Ashley prompt:
+Format: [ID] Summary (Severity)
+Rules:
+- May reference tickets
+- Must not claim resolution unless RESOLVED
+- Must not invent progress
+
+4. TICKET CREATION (REQUIRED)
+Ashley must:
+- detect issue
+- ask for confirmation
+- output structured proposal
+- wait for approval
+No auto-creation.
+
+5. APPROVAL GATE (REQUIRED)
+User input: APPROVE: TICKET_ID
+System sets approved fields.
+Ashley cannot bypass.
+
+6. DIAGNOSTIC MODE (REQUIRED)
+Output:
+- New Tickets
+- In Progress
+- Resolved
+- Recurring Issues
+- Recommended Priorities
+
+7. MAINTAINER MODE (REQUIRED)
+Triggers: “run diagnostics”, “maintainer mode”
+Behavior: no personality, structured only
+
+8. CONSTRAINTS
+Ashley must not:
+- modify code
+- resolve tickets without approval
+- fabricate changes
+- claim autonomy
+
+SUCCESS = ALL ABOVE WORKING EXACTLY AS DEFINED
