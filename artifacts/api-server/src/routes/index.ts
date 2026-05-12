@@ -13,6 +13,7 @@ import plansRouter from "./plans";
 import packetsRouter from "./packets";
 import queueRouter from "./queue";
 import maintainerRouter from "./maintainer";
+import systemEventsRouter from "./systemEvents";
 import { requireApiKey } from "../middleware/apiKey";
 
 const router: IRouter = Router();
@@ -48,6 +49,7 @@ router.use(plansRouter);
 router.use(packetsRouter);
 router.use(queueRouter);
 router.use(maintainerRouter);
+router.use(systemEventsRouter);
 router.use(chatRouter);
 
 export default router;

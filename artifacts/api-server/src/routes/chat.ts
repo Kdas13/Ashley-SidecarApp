@@ -23,6 +23,7 @@ import { getDeviceId } from "../middleware/deviceId";
 import { getOrCreateProfileFor } from "../lib/profile";
 import { MEMORY_DISTILLER_PROMPT, SUMMARIZER_PROMPT } from "../lib/ashleyPrompt";
 import { buildSystemPrompt } from "../lib/ashleyCoreSpec";
+import { buildSystemEventsSection } from "../lib/systemEvents";
 import { buildSelfiePromptSafetyPrefix } from "../lib/contentPolicy";
 import {
   generateImageBase64,
@@ -366,7 +367,7 @@ router.post("/chat", async (req, res): Promise<void> => {
     clientTimezone,
     previousMessageAt,
   );
-  const systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}`;
+  const systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}${buildSystemEventsSection()}`;
   const claudeMessages: Array<{ role: "user" | "assistant"; content: string }> =
     [];
   for (const m of history) {
@@ -1580,7 +1581,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     clientTimezone,
     previousMessageAt,
   );
-  const baseSystemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}`;
+  const baseSystemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}${buildSystemEventsSection()}`;
 
   // Web lookup (Stage 1+): if the user message matches the trigger
   // heuristic, run a Tavily search server-side and inject a
@@ -2117,7 +2118,7 @@ router.post("/chat/image", async (req, res): Promise<void> => {
     caption,
     userRef,
   });
-  const systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}\n\n${imageAddendum}`;
+  const systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}${buildSystemEventsSection()}\n\n${imageAddendum}`;
 
   // 5. Build Claude messages: history as text-only (older images become a
   //    "[user shared a photo]" placeholder so we don't blow context).
