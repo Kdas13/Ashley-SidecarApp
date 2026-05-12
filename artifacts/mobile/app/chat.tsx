@@ -41,7 +41,6 @@ import { useProfile, useUpdateProfile } from "@/lib/useProfile";
 import { useVoiceRecorder, VOICE_MAX_DURATION_MS } from "@/lib/voiceInput";
 import { useTranscribeAudioStream } from "@/lib/useVoice";
 import { useTtsPlayback } from "@/lib/voiceOutput";
-import { useAudioState, patchAudioState } from "@/lib/audioState";
 import type {
   ImageAnalysisMode,
   ImageCategory,
@@ -63,10 +62,6 @@ const RELATIONSHIP_MODE_PRESETS = [
 // Maximum length of the quote preview we capture from a swiped message.
 // Keeps storage and the on-screen quote header from getting unwieldy.
 const REPLY_PREVIEW_MAX = 140;
-
-// Stage 3 — local-only preference for spoken replies. No server roundtrip;
-// pure UX toggle persisted per-device.
-const VOICE_REPLY_STORAGE_KEY = "ashley.voiceReplyEnabled";
 
 // Image picker — visible labels for category + analysis-mode chips.
 const IMAGE_CATEGORIES: { value: ImageCategory; label: string }[] = [
@@ -117,34 +112,6 @@ function buildReplyPreview(message: Message): ReplyToRef {
       ? `${collapsed.slice(0, REPLY_PREVIEW_MAX - 1).trimEnd()}…`
       : collapsed;
   return { id: message.id, role: message.role, preview };
-}
-
-// How many characters to pass to TTS. At ~12 chars/sec of natural speech
-// this is roughly 50 seconds — a full, natural conversational chunk.
-// Keeping it short matters: the gpt-audio model generates the full audio
-// buffer before returning it, so longer text = longer API wait before
-// playback starts. We cut at the last sentence boundary (. ! ?) before the
-// cap so the spoken clip never ends mid-word or mid-clause.
-const TTS_CHAR_CAP = 600;
-
-function truncateForTts(text: string): string {
-  if (text.length <= TTS_CHAR_CAP) return text;
-  const window = text.slice(0, TTS_CHAR_CAP);
-  // Find the last sentence-ending punctuation within the window.
-  const lastBoundary = Math.max(
-    window.lastIndexOf(". "),
-    window.lastIndexOf("! "),
-    window.lastIndexOf("? "),
-    window.lastIndexOf(".\n"),
-    window.lastIndexOf("!\n"),
-    window.lastIndexOf("?\n"),
-  );
-  if (lastBoundary > TTS_CHAR_CAP / 2) {
-    // +1 to include the punctuation mark itself.
-    return window.slice(0, lastBoundary + 1).trimEnd();
-  }
-  // No good sentence boundary — hard-cut at the cap.
-  return window.trimEnd();
 }
 
 export default function ChatScreen(): React.JSX.Element {
@@ -307,40 +274,7 @@ export default function ChatScreen(): React.JSX.Element {
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [voicePartial, setVoicePartial] = useState("");
 
-  // Stage 3 — spoken replies. Toggle persisted per-device in AsyncStorage,
-  // default OFF so Kane never gets ambushed by audio. The ref mirrors the
-  // state so the send-mutation closure can read the current value without
-  // being reconstructed on every toggle flip.
   const tts = useTtsPlayback();
-  const audioState = useAudioState();
-  const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false);
-  const voiceReplyEnabledRef = useRef(false);
-  useEffect(() => {
-    let cancelled = false;
-    AsyncStorage.getItem(VOICE_REPLY_STORAGE_KEY)
-      .then((v) => {
-        if (cancelled) return;
-        const enabled = v === "true";
-        voiceReplyEnabledRef.current = enabled;
-        setVoiceReplyEnabled(enabled);
-      })
-      .catch(() => {
-        // Silent — default OFF is the safe fallback.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  const toggleVoiceReply = useCallback(() => {
-    const next = !voiceReplyEnabledRef.current;
-    voiceReplyEnabledRef.current = next;
-    setVoiceReplyEnabled(next);
-    void AsyncStorage.setItem(VOICE_REPLY_STORAGE_KEY, next ? "true" : "false");
-    if (!next) {
-      // Toggling off mid-playback should silence her immediately.
-      tts.stop();
-    }
-  }, [tts]);
   // Buffer the partial text in a ref too so the onDelta callback (created
   // once per call below) can accumulate without going stale between
   // renders. The setVoicePartial call is just for UI redraw.
@@ -411,37 +345,6 @@ export default function ChatScreen(): React.JSX.Element {
     }
   }, [voice, transcribeMutation]);
 
-  // Hard reset of the entire audio pipeline. Stops both TTS and STT,
-  // resets audio state, and updates recovery counters so the debug panel
-  // shows what happened and when.
-  const recoverAudio = useCallback(
-    async (reason: string) => {
-      patchAudioState({
-        lastRecoveryAttemptAt: Date.now(),
-        recoveryCount: audioState.recoveryCount + 1,
-        lastRecoveryReason: reason,
-      });
-      console.log(`[Audio][recoverAudio] reason=${reason}`);
-      // Stop both pipelines. Order: TTS first (releases playback focus),
-      // then STT cancel (releases recording focus).
-      try {
-        await tts.stopAsync();
-      } catch {
-        // ignore — we're recovering anyway
-      }
-      try {
-        await voice.cancel();
-      } catch {
-        // ignore
-      }
-      setVoiceError(null);
-      setVoicePartial("");
-      voicePartialRef.current = "";
-      console.log("[Audio][recoverAudio] done");
-    },
-    [tts, voice, audioState.recoveryCount],
-  );
-
   // Auto-stop recording at the hard ceiling so the user can't accidentally
   // leave the mic open. We just call the same handler the press-out path uses.
   useEffect(() => {
@@ -482,14 +385,8 @@ export default function ChatScreen(): React.JSX.Element {
         type: "STREAM_END",
         replyLength: result.ashley?.content?.length ?? 0,
       });
-      if (!voiceReplyEnabledRef.current) return;
-      const reply = result.ashley?.content?.trim() ?? "";
-      if (reply.length === 0) return;
-      // Truncate to a speakable chunk at a sentence boundary — keeps API
-      // latency under ~10s and playback natural. See truncateForTts above.
-      tts.speak(truncateForTts(reply));
     },
-    [presenceDispatch, tts],
+    [presenceDispatch],
   );
 
   const send = useCallback(() => {
@@ -836,6 +733,7 @@ export default function ChatScreen(): React.JSX.Element {
             onSwipeReply={handleStartReply}
             onContinue={handleContinue}
             onRetry={handleRetryFromInterrupted}
+            onSpeak={(text) => tts.speak(text)}
             continuePending={
               continueMutation.isPending &&
               activeStream?.mode === "continue"
@@ -855,7 +753,7 @@ export default function ChatScreen(): React.JSX.Element {
         </>
       );
     },
-    [handleStartReply, messages, onRemember, markImageRemembered.isPending],
+    [handleStartReply, messages, onRemember, markImageRemembered.isPending, tts],
   );
 
   return (
@@ -895,25 +793,6 @@ export default function ChatScreen(): React.JSX.Element {
               style={{ marginLeft: 3 }}
             />
           </View>
-        </Pressable>
-        <Pressable
-          onPress={toggleVoiceReply}
-          style={styles.iconBtn}
-          accessibilityLabel={
-            voiceReplyEnabled
-              ? "Turn off spoken replies"
-              : "Turn on spoken replies"
-          }
-        >
-          <Feather
-            name={voiceReplyEnabled ? "volume-2" : "volume-x"}
-            size={18}
-            color={
-              voiceReplyEnabled
-                ? colors.light.primary
-                : colors.light.mutedForeground
-            }
-          />
         </Pressable>
         <Pressable
           onPress={confirmClear}
@@ -1211,59 +1090,6 @@ export default function ChatScreen(): React.JSX.Element {
           </View>
         ) : null}
 
-        {voiceReplyEnabled ? (
-          <View style={styles.audioDebugPanel}>
-            <View style={styles.audioDebugRow}>
-              <Text style={styles.audioDebugLabel}>TTS</Text>
-              <Text
-                style={[
-                  styles.audioDebugValue,
-                  audioState.ttsSpeaking && styles.audioDebugActive,
-                  !audioState.ttsReady && styles.audioDebugBusy,
-                ]}
-              >
-                {audioState.ttsSpeaking
-                  ? "speaking"
-                  : audioState.ttsReady
-                    ? "ready"
-                    : "fetching…"}
-              </Text>
-              <Text style={styles.audioDebugLabel}>STT</Text>
-              <Text
-                style={[
-                  styles.audioDebugValue,
-                  audioState.sttListening && styles.audioDebugActive,
-                ]}
-              >
-                {audioState.sttListening ? "listening" : "idle"}
-              </Text>
-              <Text style={styles.audioDebugLabel}>mic</Text>
-              <Text style={styles.audioDebugValue}>{audioState.micPermission}</Text>
-              <Text style={styles.audioDebugLabel}>focus</Text>
-              <Text style={styles.audioDebugValue}>{audioState.audioFocusState}</Text>
-            </View>
-            {audioState.lastAudioError ? (
-              <Text style={styles.audioDebugError} numberOfLines={2}>
-                {audioState.lastAudioError}
-              </Text>
-            ) : null}
-            {audioState.recoveryCount > 0 ? (
-              <Text style={styles.audioDebugMeta}>
-                resets: {audioState.recoveryCount}
-                {audioState.lastRecoveryReason
-                  ? `  reason: ${audioState.lastRecoveryReason}`
-                  : ""}
-              </Text>
-            ) : null}
-            <Pressable
-              onPress={() => void recoverAudio("manual_user_reset")}
-              style={styles.audioResetBtn}
-              hitSlop={8}
-            >
-              <Text style={styles.audioResetBtnText}>Reset Voice</Text>
-            </Pressable>
-          </View>
-        ) : null}
       </KeyboardAvoidingView>
 
       <Modal
@@ -1588,6 +1414,7 @@ function MessageBubble({
   onSwipeReply,
   onContinue,
   onRetry,
+  onSpeak,
   continuePending,
   retryPending,
 }: {
@@ -1595,6 +1422,7 @@ function MessageBubble({
   onSwipeReply: (m: Message) => void;
   onContinue?: (interruptedMessageId: string) => void;
   onRetry?: (interruptedMessageId: string) => void;
+  onSpeak?: (text: string) => void;
   continuePending?: boolean;
   retryPending?: boolean;
 }): React.JSX.Element {
@@ -1848,6 +1676,20 @@ function MessageBubble({
           >
             <StreamingCursor color={colors.light.bubbleAshleyText} />
           </Text>
+        ) : null}
+        {message.role === "ashley" && hasText && message.status !== "streaming" ? (
+          <Pressable
+            onPress={() => onSpeak?.(message.content)}
+            style={({ pressed }) => [
+              styles.speakBtn,
+              pressed && { opacity: 0.6 },
+            ]}
+            hitSlop={8}
+            accessibilityLabel="Speak this message"
+          >
+            <Feather name="volume-2" size={12} color={colors.light.mutedForeground} />
+            <Text style={styles.speakBtnText}>Speak</Text>
+          </Pressable>
         ) : null}
         {message.status === "interrupted" && message.role === "ashley" ? (
           // Recovery actions sit beneath the partial text. Continue is
@@ -2475,59 +2317,22 @@ const styles = StyleSheet.create({
     fontSize: 12,
     flex: 1,
   },
-  audioDebugPanel: {
-    backgroundColor: "rgba(0,0,0,0.82)",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    gap: 4,
-  },
-  audioDebugRow: {
+  speakBtn: {
+    alignSelf: "flex-start",
+    marginTop: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.light.border,
     flexDirection: "row",
     alignItems: "center",
-    flexWrap: "wrap",
     gap: 4,
   },
-  audioDebugLabel: {
-    color: "rgba(255,255,255,0.45)",
+  speakBtnText: {
     fontFamily: "Inter_400Regular",
-    fontSize: 10,
-    textTransform: "uppercase",
-  },
-  audioDebugValue: {
-    color: "rgba(255,255,255,0.75)",
-    fontFamily: "Inter_500Medium",
-    fontSize: 10,
-    marginRight: 6,
-  },
-  audioDebugActive: {
-    color: "#4ade80",
-  },
-  audioDebugBusy: {
-    color: "#facc15",
-  },
-  audioDebugError: {
-    color: "#f87171",
-    fontFamily: "Inter_400Regular",
-    fontSize: 10,
-  },
-  audioDebugMeta: {
-    color: "rgba(255,255,255,0.40)",
-    fontFamily: "Inter_400Regular",
-    fontSize: 10,
-  },
-  audioResetBtn: {
-    alignSelf: "flex-start",
-    marginTop: 2,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.25)",
-  },
-  audioResetBtnText: {
-    color: "rgba(255,255,255,0.75)",
-    fontFamily: "Inter_500Medium",
-    fontSize: 10,
+    fontSize: 11,
+    color: colors.light.mutedForeground,
   },
   imagePickerCard: {
     backgroundColor: colors.light.background,
