@@ -115,8 +115,8 @@ export function buildSystemEventsSection(): string {
 // Format (populated): ## ASHLEY_OPEN_TICKETS\n[ID] Summary (Severity)\n...
 // Format (empty):     ## ASHLEY_OPEN_TICKETS\n(none)
 //
-// "Open" here means status is OPEN or IN_PROGRESS — anything that is still
-// live and visible to Ashley as her backlog.
+// Only OPEN tickets are injected into the system prompt per the Phase 2.5 spec.
+// IN_PROGRESS and other statuses are visible via GET /api/tickets but not injected.
 // ---------------------------------------------------------------------------
 
 export interface OpenTicketSummary {

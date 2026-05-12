@@ -440,7 +440,7 @@ router.post("/chat", async (req, res): Promise<void> => {
     return;
   }
 
-  // Fetch open/in-progress tickets for prompt injection (Phase 2.5).
+  // Fetch OPEN tickets for prompt injection (Phase 2.5). Non-fatal.
   // Non-fatal: a DB error here never blocks the chat reply.
   let openTickets: Array<{ ticketId: string; summary: string; severity: string; status: string }> = [];
   try {
@@ -1728,7 +1728,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     return;
   }
 
-  // Fetch open/in-progress tickets for prompt injection (Phase 2.5). Non-fatal.
+  // Fetch OPEN tickets for prompt injection (Phase 2.5). Non-fatal.
   let openTickets: Array<{ ticketId: string; summary: string; severity: string; status: string }> = [];
   try {
     openTickets = await db
@@ -2281,7 +2281,7 @@ router.post("/chat/image", async (req, res): Promise<void> => {
     return;
   }
 
-  // Fetch open/in-progress tickets for prompt injection (Phase 2.5). Non-fatal.
+  // Fetch OPEN tickets for prompt injection (Phase 2.5). Non-fatal.
   let openTickets: Array<{ ticketId: string; summary: string; severity: string; status: string }> = [];
   try {
     openTickets = await db
