@@ -107,3 +107,32 @@ export function buildSystemEventsSection(): string {
   const block = buildSystemEventsBlock(getSystemEvents());
   return block ? `\n\n${block}` : "";
 }
+
+// ---------------------------------------------------------------------------
+// Open Ticket Feed — Phase 2.5 Conversational Ticket System
+// ---------------------------------------------------------------------------
+// Always emitted in the system prompt, even when empty.
+// Format (populated): ## ASHLEY_OPEN_TICKETS\n[ID] Summary (Severity)\n...
+// Format (empty):     ## ASHLEY_OPEN_TICKETS\n(none)
+//
+// "Open" here means status is OPEN or IN_PROGRESS — anything that is still
+// live and visible to Ashley as her backlog.
+// ---------------------------------------------------------------------------
+
+export interface OpenTicketSummary {
+  ticketId: string;
+  summary: string;
+  severity: string;
+  status: string;
+}
+
+export function buildOpenTicketsBlock(tickets: OpenTicketSummary[]): string {
+  const header = `## ASHLEY_OPEN_TICKETS`;
+  if (tickets.length === 0) {
+    return `${header}\n(none)`;
+  }
+  const lines = tickets.map(
+    (t) => `[${t.ticketId}] ${t.summary} (${t.severity})`,
+  );
+  return `${header}\n${lines.join("\n")}`;
+}

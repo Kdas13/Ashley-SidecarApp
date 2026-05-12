@@ -3,10 +3,11 @@ import { z } from "zod";
 import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { and, asc, desc, eq, gt } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray } from "drizzle-orm";
 import {
   db,
   ashleyProfileTable,
+  ashleyTicketsTable,
   conversationSummariesTable,
   memoriesTable,
   messagesTable,
@@ -23,8 +24,9 @@ import { getDeviceId } from "../middleware/deviceId";
 import { getOrCreateProfileFor } from "../lib/profile";
 import { MEMORY_DISTILLER_PROMPT, SUMMARIZER_PROMPT } from "../lib/ashleyPrompt";
 import { buildSystemPrompt } from "../lib/ashleyCoreSpec";
-import { buildSystemEventsSection } from "../lib/systemEvents";
+import { buildSystemEventsSection, buildOpenTicketsBlock } from "../lib/systemEvents";
 import { buildSelfiePromptSafetyPrefix } from "../lib/contentPolicy";
+import { approveTicketById } from "./tickets";
 import {
   generateImageBase64,
   transcribeAudioBase64,
@@ -233,6 +235,95 @@ router.post("/chat", async (req, res): Promise<void> => {
     return;
   }
 
+  // APPROVE gate — processed before LLM and before message persistence.
+  // Matches "APPROVE: <ticket_id>" (case-insensitive). Ashley is not involved.
+  const approveMatch = userContent.match(/^APPROVE:\s*(\S+)/i);
+  if (approveMatch) {
+    const ticketId = approveMatch[1]!;
+    try {
+      const result = await approveTicketById(ticketId);
+      if ("error" in result) {
+        res.status(400).json({ approved: false, error: result.error, ticket_id: ticketId });
+      } else {
+        req.log.info({ ticket_id: ticketId }, "chat: APPROVE gate processed");
+        res.json({ approved: true, ticket_id: ticketId, status: "APPROVED" });
+      }
+    } catch (err) {
+      req.log.error({ err, ticket_id: ticketId }, "chat: APPROVE gate failed");
+      res.status(500).json({ approved: false, error: "Failed to process approval", ticket_id: ticketId });
+    }
+    return;
+  }
+
+  // Diagnostic mode — structured report, no LLM, no personality.
+  // Triggered by "run diagnostics" or "maintainer mode" (case-insensitive).
+  if (/run diagnostics|maintainer mode/i.test(userContent)) {
+    try {
+      const allTickets = await db.select().from(ashleyTicketsTable);
+      const byStatus: Record<string, typeof allTickets> = {};
+      for (const t of allTickets) {
+        (byStatus[t.status] ??= []).push(t);
+      }
+      const fmt = (tickets: typeof allTickets | undefined) =>
+        (tickets ?? []).length === 0
+          ? "  (none)"
+          : (tickets ?? [])
+              .map((t) => `  [${t.ticketId}] ${t.summary} (${t.severity}) — ${t.category}`)
+              .join("\n");
+
+      // Recurring issues: exact summary match with count > 1 occurrence.
+      const summaryCount: Record<string, number> = {};
+      for (const t of allTickets) summaryCount[t.summary] = (summaryCount[t.summary] ?? 0) + 1;
+      const recurring = allTickets.filter(
+        (t) => (summaryCount[t.summary] ?? 0) > 1,
+      );
+      const seen = new Set<string>();
+      const recurringUniq = recurring.filter((t) => {
+        if (seen.has(t.summary)) return false;
+        seen.add(t.summary);
+        return true;
+      });
+
+      const report = [
+        "=== ASHLEY DIAGNOSTIC REPORT ===",
+        "",
+        "New Tickets (OPEN):",
+        fmt(byStatus["OPEN"]),
+        "",
+        "In Progress:",
+        fmt(byStatus["IN_PROGRESS"]),
+        "",
+        "Resolved:",
+        fmt(byStatus["RESOLVED"]),
+        "",
+        "Recurring Issues (exact summary match):",
+        recurringUniq.length === 0
+          ? "  (none)"
+          : recurringUniq
+              .map(
+                (t) =>
+                  `  [x${summaryCount[t.summary] ?? 1}] ${t.summary}`,
+              )
+              .join("\n"),
+        "",
+        "Recommended Priorities:",
+        (byStatus["OPEN"] ?? [])
+          .filter((t) => t.severity === "high")
+          .map((t) => `  HIGH: [${t.ticketId}] ${t.summary}`)
+          .join("\n") || "  (no high-severity open tickets)",
+        "",
+        "=== END REPORT ===",
+      ].join("\n");
+
+      req.log.info({ ticket_count: allTickets.length }, "chat: diagnostic mode response");
+      res.json({ diagnostic: true, report });
+    } catch (err) {
+      req.log.error({ err }, "chat: diagnostic mode failed");
+      res.status(500).json({ error: "Diagnostic query failed" });
+    }
+    return;
+  }
+
   // 1. Persist the user message immediately. Idempotent on id so a retry
   //    of the same client-generated id doesn't double-insert.
   let userRow: Message;
@@ -349,6 +440,23 @@ router.post("/chat", async (req, res): Promise<void> => {
     return;
   }
 
+  // Fetch open/in-progress tickets for prompt injection (Phase 2.5).
+  // Non-fatal: a DB error here never blocks the chat reply.
+  let openTickets: Array<{ ticketId: string; summary: string; severity: string; status: string }> = [];
+  try {
+    openTickets = await db
+      .select({
+        ticketId: ashleyTicketsTable.ticketId,
+        summary: ashleyTicketsTable.summary,
+        severity: ashleyTicketsTable.severity,
+        status: ashleyTicketsTable.status,
+      })
+      .from(ashleyTicketsTable)
+      .where(inArray(ashleyTicketsTable.status, ["OPEN", "IN_PROGRESS"]));
+  } catch (err) {
+    req.log.warn({ err }, "Failed to fetch open tickets for prompt (non-fatal)");
+  }
+
   // 3. Build the prompt. The just-saved user message is included as the
   //    final user turn so we don't need to append it separately. We DO
   //    rewrite that turn to include the swipe-to-reply quote when present.
@@ -367,7 +475,7 @@ router.post("/chat", async (req, res): Promise<void> => {
     clientTimezone,
     previousMessageAt,
   );
-  const systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}${buildSystemEventsSection()}`;
+  const systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}${buildSystemEventsSection()}\n\n${buildOpenTicketsBlock(openTickets)}`;
   const claudeMessages: Array<{ role: "user" | "assistant"; content: string }> =
     [];
   for (const m of history) {
@@ -1473,6 +1581,82 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
       res.status(400).json({ error: "content is required" });
       return;
     }
+
+    // APPROVE gate (stream path) — same logic as /chat; returns JSON, never opens SSE.
+    const streamApproveMatch = userContent.match(/^APPROVE:\s*(\S+)/i);
+    if (streamApproveMatch) {
+      const ticketId = streamApproveMatch[1]!;
+      try {
+        const result = await approveTicketById(ticketId);
+        if ("error" in result) {
+          res.status(400).json({ approved: false, error: result.error, ticket_id: ticketId });
+        } else {
+          req.log.info({ ticket_id: ticketId }, "chat/stream: APPROVE gate processed");
+          res.json({ approved: true, ticket_id: ticketId, status: "APPROVED" });
+        }
+      } catch (err) {
+        req.log.error({ err, ticket_id: ticketId }, "chat/stream: APPROVE gate failed");
+        res.status(500).json({ approved: false, error: "Failed to process approval", ticket_id: ticketId });
+      }
+      return;
+    }
+
+    // Diagnostic mode (stream path) — returns JSON, never opens SSE.
+    if (/run diagnostics|maintainer mode/i.test(userContent)) {
+      try {
+        const allTickets = await db.select().from(ashleyTicketsTable);
+        const byStatus: Record<string, typeof allTickets> = {};
+        for (const t of allTickets) {
+          (byStatus[t.status] ??= []).push(t);
+        }
+        const fmt = (tickets: typeof allTickets | undefined) =>
+          (tickets ?? []).length === 0
+            ? "  (none)"
+            : (tickets ?? [])
+                .map((t) => `  [${t.ticketId}] ${t.summary} (${t.severity}) — ${t.category}`)
+                .join("\n");
+        const summaryCount: Record<string, number> = {};
+        for (const t of allTickets) summaryCount[t.summary] = (summaryCount[t.summary] ?? 0) + 1;
+        const recurring = allTickets.filter((t) => (summaryCount[t.summary] ?? 0) > 1);
+        const seen = new Set<string>();
+        const recurringUniq = recurring.filter((t) => {
+          if (seen.has(t.summary)) return false;
+          seen.add(t.summary);
+          return true;
+        });
+        const report = [
+          "=== ASHLEY DIAGNOSTIC REPORT ===",
+          "",
+          "New Tickets (OPEN):",
+          fmt(byStatus["OPEN"]),
+          "",
+          "In Progress:",
+          fmt(byStatus["IN_PROGRESS"]),
+          "",
+          "Resolved:",
+          fmt(byStatus["RESOLVED"]),
+          "",
+          "Recurring Issues (exact summary match):",
+          recurringUniq.length === 0
+            ? "  (none)"
+            : recurringUniq.map((t) => `  [x${summaryCount[t.summary] ?? 1}] ${t.summary}`).join("\n"),
+          "",
+          "Recommended Priorities:",
+          (byStatus["OPEN"] ?? []).filter((t) => t.severity === "high")
+            .map((t) => `  HIGH: [${t.ticketId}] ${t.summary}`).join("\n") ||
+            "  (no high-severity open tickets)",
+          "",
+          "=== END REPORT ===",
+        ].join("\n");
+        req.log.info({ ticket_count: allTickets.length }, "chat/stream: diagnostic mode response");
+        res.json({ diagnostic: true, report });
+      } catch (err) {
+        req.log.error({ err }, "chat/stream: diagnostic mode failed");
+        res.status(500).json({ error: "Diagnostic query failed" });
+      }
+      return;
+    }
+
     try {
       const inserted = await db
         .insert(messagesTable)
@@ -1544,6 +1728,22 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     return;
   }
 
+  // Fetch open/in-progress tickets for prompt injection (Phase 2.5). Non-fatal.
+  let openTickets: Array<{ ticketId: string; summary: string; severity: string; status: string }> = [];
+  try {
+    openTickets = await db
+      .select({
+        ticketId: ashleyTicketsTable.ticketId,
+        summary: ashleyTicketsTable.summary,
+        severity: ashleyTicketsTable.severity,
+        status: ashleyTicketsTable.status,
+      })
+      .from(ashleyTicketsTable)
+      .where(inArray(ashleyTicketsTable.status, ["OPEN", "IN_PROGRESS"]));
+  } catch (err) {
+    req.log.warn({ err }, "Failed to fetch open tickets for stream prompt (non-fatal)");
+  }
+
   // ---- Build the prompt.
   //      In new-turn mode this mirrors /chat exactly. In continue mode we
   //      drop the trailing interrupted row from the verbatim history (we'll
@@ -1565,7 +1765,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     clientTimezone,
     previousMessageAt,
   );
-  const baseSystemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}${buildSystemEventsSection()}`;
+  const baseSystemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}${buildSystemEventsSection()}\n\n${buildOpenTicketsBlock(openTickets)}`;
 
   // Web lookup (Stage 1+): if the user message matches the trigger
   // heuristic, run a Tavily search server-side and inject a
@@ -2081,6 +2281,22 @@ router.post("/chat/image", async (req, res): Promise<void> => {
     return;
   }
 
+  // Fetch open/in-progress tickets for prompt injection (Phase 2.5). Non-fatal.
+  let openTickets: Array<{ ticketId: string; summary: string; severity: string; status: string }> = [];
+  try {
+    openTickets = await db
+      .select({
+        ticketId: ashleyTicketsTable.ticketId,
+        summary: ashleyTicketsTable.summary,
+        severity: ashleyTicketsTable.severity,
+        status: ashleyTicketsTable.status,
+      })
+      .from(ashleyTicketsTable)
+      .where(inArray(ashleyTicketsTable.status, ["OPEN", "IN_PROGRESS"]));
+  } catch (err) {
+    req.log.warn({ err }, "Failed to fetch open tickets for image prompt (non-fatal)");
+  }
+
   // 4. Build prompt: time context + core spec + image addendum.
   let previousMessageAt: Date | null = null;
   for (let i = history.length - 1; i >= 0; i--) {
@@ -2102,7 +2318,7 @@ router.post("/chat/image", async (req, res): Promise<void> => {
     caption,
     userRef,
   });
-  const systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}${buildSystemEventsSection()}\n\n${imageAddendum}`;
+  const systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}${buildSystemEventsSection()}\n\n${buildOpenTicketsBlock(openTickets)}\n\n${imageAddendum}`;
 
   // 5. Build Claude messages: history as text-only (older images become a
   //    "[user shared a photo]" placeholder so we don't blow context).
