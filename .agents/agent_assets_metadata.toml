@@ -29,3 +29,9 @@ id = "Hjuzj-clZwPzv8j99wk8R"
 uri = "file://docs/architecture.md"
 type = "text"
 title = "Ashley-Sidecar Architecture Reference"
+
+[[outputs]]
+id = "nOCRU0cdFRx9v1sEEg0HF"
+uri = "file://exports/ashley_v1.3_pre_mobile_snapshot.md"
+type = "text"
+title = "ashley_v1.3_pre_mobile — 2026-05-12T21:05:00Z"
