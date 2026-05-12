@@ -1682,7 +1682,7 @@ function MessageBubble({
             <StreamingCursor color={colors.light.bubbleAshleyText} />
           </Text>
         ) : null}
-        {message.role === "ashley" && hasText && message.status === "complete" ? (
+        {message.role === "ashley" && hasText && message.status !== "streaming" && message.status !== "interrupted" ? (
           <Pressable
             onPress={() => onSpeak?.(message.id, message.content)}
             disabled={speakStatus === "loading"}
