@@ -189,12 +189,14 @@ export async function synthesizeSpeech(text: string): Promise<Buffer> {
   } catch (err: unknown) {
     // Only fall through if the proxy rejected the endpoint or returned empty.
     // Re-throw genuine network/auth errors so the route's catch block logs them.
-    const msg =
-      err instanceof Error ? err.message : String(err);
+    const msg = err instanceof Error ? err.message : String(err);
+    const code = (err as { code?: string }).code ?? "";
     const isProxyBlock =
       msg.includes("INVALID_ENDPOINT") ||
       msg.includes("invalid_endpoint") ||
-      msg.includes("empty buffer");
+      msg.includes("not supported") ||
+      msg.includes("empty buffer") ||
+      code === "INVALID_ENDPOINT";
     if (!isProxyBlock) throw err;
     // Fall through to the gpt-audio chat-completions path below.
   }
