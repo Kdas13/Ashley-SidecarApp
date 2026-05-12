@@ -37,6 +37,7 @@ export async function generateChatText(opts: GenerateOpts): Promise<string> {
       config: {
         maxOutputTokens: opts.maxTokens,
         systemInstruction: opts.system,
+        thinkingConfig: { thinkingBudget: 0 },
       },
     });
     return (result.text ?? "").trim();
@@ -61,6 +62,7 @@ export async function* streamChatText(
       config: {
         maxOutputTokens: opts.maxTokens,
         systemInstruction: opts.system,
+        thinkingConfig: { thinkingBudget: 0 },
       },
     });
     for await (const chunk of stream) {

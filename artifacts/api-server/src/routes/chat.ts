@@ -745,11 +745,11 @@ async function generateAshleySelfie(
     return inflight;
   }
 
-  // Mode → provider params. fast = small + low quality = ~7s, quality = tall
-  // + high quality = ~30s. See generateImageBase64 in lib/openai.ts.
+  // Mode → provider params. fast = 1024x1024 + medium quality = ~15-20s,
+  // quality = 1024x1536 + high quality = ~25-40s.
   const size: "1024x1024" | "1024x1536" =
     mode === "quality" ? "1024x1536" : "1024x1024";
-  const quality: "low" | "high" = mode === "quality" ? "high" : "low";
+  const quality: "low" | "medium" | "high" = mode === "quality" ? "high" : "medium";
 
   const promise: Promise<string | null> = (async () => {
     let b64: string;
@@ -879,22 +879,6 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
     .limit(1);
   if (owns.length === 0) {
     res.status(404).json({ error: "Message not found" });
-    return;
-  }
-
-  // Daily selfie cap — image gen is the most expensive per-call line item,
-  // so we cap per device per UTC day. Configurable via ASHLEY_SELFIE_DAILY_CAP
-  // (default 5). The chat reply text already shipped, so the worst case here
-  // is the user sees Ashley say "*holds up the camera*..." then a small
-  // capped-out toast on the client.
-  const slot = tryClaimSelfieSlot(deviceId);
-  if (!slot.ok) {
-    res.status(429).json({
-      error: "Daily selfie limit reached.",
-      capReached: true,
-      cap: slot.cap,
-      used: slot.used,
-    });
     return;
   }
 
