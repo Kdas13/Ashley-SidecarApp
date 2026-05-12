@@ -223,42 +223,19 @@ function newId(): string {
 
 router.post("/chat", async (req, res): Promise<void> => {
   const deviceId = getDeviceId(req);
-  const parsed = ChatBodySchema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.message });
-    return;
-  }
-  const { id: userId, content, replyTo } = parsed.data.userMessage;
-  const { clientNow, clientTimezone, debug: debugMode = false } = parsed.data;
-  const userContent = content.trim();
-  if (!userContent) {
-    res.status(400).json({ error: "content is required" });
-    return;
-  }
 
-  // APPROVE gate — processed before LLM and before message persistence.
-  // Matches "APPROVE: <ticket_id>" (case-insensitive). Ashley is not involved.
-  const approveMatch = userContent.match(/^APPROVE:\s*(\S+)/i);
-  if (approveMatch) {
-    const ticketId = approveMatch[1]!;
-    try {
-      const result = await approveTicketById(ticketId);
-      if ("error" in result) {
-        res.status(400).json({ approved: false, error: result.error, ticket_id: ticketId });
-      } else {
-        req.log.info({ ticket_id: ticketId }, "chat: APPROVE gate processed");
-        res.json({ approved: true, ticket_id: ticketId, status: "APPROVED" });
-      }
-    } catch (err) {
-      req.log.error({ err, ticket_id: ticketId }, "chat: APPROVE gate failed");
-      res.status(500).json({ approved: false, error: "Failed to process approval", ticket_id: ticketId });
-    }
-    return;
-  }
-
-  // Diagnostic mode — structured report, no LLM, no personality.
-  // Checked against raw `content` (before trim) per spec: no normalisation, no word removal.
-  if (isDiagnosticsCommand(content)) {
+  // ---------------------------------------------------------------------------
+  // DIAGNOSTIC CHECK — must be first, before any parsing or normalisation.
+  // rawMessage is read directly from req.body; Zod is not involved here.
+  // /^\s*run diagnostics\s*$/i — exact phrase only, optional surrounding space.
+  // ---------------------------------------------------------------------------
+  const rawBody = req.body as Record<string, unknown> | null | undefined;
+  const rawUserMsg = rawBody?.["userMessage"] as Record<string, unknown> | null | undefined;
+  const rawMessage = typeof rawUserMsg?.["content"] === "string" ? rawUserMsg["content"] : "";
+  const isDiagCmd = isDiagnosticsCommand(rawMessage);
+  // eslint-disable-next-line no-console
+  console.log({ rawMessage, isDiagnosticsCommand: isDiagCmd });
+  if (isDiagCmd) {
     try {
       const allTickets = await db.select().from(ashleyTicketsTable);
       const openTickets = allTickets.filter((t) => t.status === "OPEN");
@@ -320,6 +297,39 @@ router.post("/chat", async (req, res): Promise<void> => {
     } catch (err) {
       req.log.error({ err }, "chat: diagnostic mode failed");
       res.status(500).json({ error: "Diagnostic query failed" });
+    }
+    return;
+  }
+
+  const parsed = ChatBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const { id: userId, content, replyTo } = parsed.data.userMessage;
+  const { clientNow, clientTimezone, debug: debugMode = false } = parsed.data;
+  const userContent = content.trim();
+  if (!userContent) {
+    res.status(400).json({ error: "content is required" });
+    return;
+  }
+
+  // APPROVE gate — processed before LLM and before message persistence.
+  // Matches "APPROVE: <ticket_id>" (case-insensitive). Ashley is not involved.
+  const approveMatch = userContent.match(/^APPROVE:\s*(\S+)/i);
+  if (approveMatch) {
+    const ticketId = approveMatch[1]!;
+    try {
+      const result = await approveTicketById(ticketId);
+      if ("error" in result) {
+        res.status(400).json({ approved: false, error: result.error, ticket_id: ticketId });
+      } else {
+        req.log.info({ ticket_id: ticketId }, "chat: APPROVE gate processed");
+        res.json({ approved: true, ticket_id: ticketId, status: "APPROVED" });
+      }
+    } catch (err) {
+      req.log.error({ err, ticket_id: ticketId }, "chat: APPROVE gate failed");
+      res.status(500).json({ approved: false, error: "Failed to process approval", ticket_id: ticketId });
     }
     return;
   }
@@ -1521,6 +1531,71 @@ const ChatStreamBodySchema = z
 
 router.post("/chat/stream", async (req, res): Promise<void> => {
   const deviceId = getDeviceId(req);
+
+  // ---------------------------------------------------------------------------
+  // DIAGNOSTIC CHECK — must be first, before any parsing or normalisation.
+  // rawMessage is read directly from req.body; Zod is not involved here.
+  // ---------------------------------------------------------------------------
+  const rawBodyS = req.body as Record<string, unknown> | null | undefined;
+  const rawUserMsgS = rawBodyS?.["userMessage"] as Record<string, unknown> | null | undefined;
+  const rawMessageS = typeof rawUserMsgS?.["content"] === "string" ? rawUserMsgS["content"] : "";
+  const isDiagCmdS = isDiagnosticsCommand(rawMessageS);
+  // eslint-disable-next-line no-console
+  console.log({ rawMessage: rawMessageS, isDiagnosticsCommand: isDiagCmdS });
+  if (isDiagCmdS) {
+    try {
+      const allTickets = await db.select().from(ashleyTicketsTable);
+      const openTickets = allTickets.filter((t) => t.status === "OPEN");
+      const inProgressTickets = allTickets.filter((t) => t.status === "IN_PROGRESS");
+      const resolvedTickets = allTickets.filter((t) => t.status === "RESOLVED");
+      const fmt = (tickets: typeof allTickets) =>
+        tickets.length === 0
+          ? "  (none)"
+          : tickets
+              .map((t) => `  [${t.ticketId}] ${t.summary} (${t.severity}) — ${t.category}`)
+              .join("\n");
+      const summaryCount: Record<string, number> = {};
+      for (const t of allTickets) summaryCount[t.summary] = (summaryCount[t.summary] ?? 0) + 1;
+      const recurring = allTickets.filter((t) => (summaryCount[t.summary] ?? 0) > 1);
+      const seen = new Set<string>();
+      const recurringUniq = recurring.filter((t) => {
+        if (seen.has(t.summary)) return false;
+        seen.add(t.summary);
+        return true;
+      });
+      const report = [
+        "=== ASHLEY DIAGNOSTIC REPORT ===",
+        "",
+        "New Tickets (OPEN):",
+        fmt(openTickets),
+        "",
+        "In Progress (IN_PROGRESS):",
+        fmt(inProgressTickets),
+        "",
+        "Resolved:",
+        fmt(resolvedTickets),
+        "",
+        "Recurring Issues (exact summary match):",
+        recurringUniq.length === 0
+          ? "  (none)"
+          : recurringUniq.map((t) => `  [x${summaryCount[t.summary] ?? 1}] ${t.summary}`).join("\n"),
+        "",
+        "Recommended Priorities:",
+        openTickets.filter((t) => t.severity === "high")
+          .map((t) => `  HIGH: [${t.ticketId}] ${t.summary}`).join("\n") ||
+          "  (no high-severity open tickets)",
+        "",
+        "=== END REPORT ===",
+      ].join("\n");
+      req.log.info({ ticket_count: allTickets.length }, "chat/stream: diagnostic mode response");
+      res.json({ diagnostic: true, report });
+    } catch (err) {
+      req.log.error({ err }, "chat/stream: diagnostic mode failed");
+      res.status(500).json({ error: "Diagnostic query failed" });
+    }
+    return;
+  }
+
   const parsed = ChatStreamBodySchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({
@@ -1597,62 +1672,6 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
       } catch (err) {
         req.log.error({ err, ticket_id: ticketId }, "chat/stream: APPROVE gate failed");
         res.status(500).json({ approved: false, error: "Failed to process approval", ticket_id: ticketId });
-      }
-      return;
-    }
-
-    // Diagnostic mode (stream path) — returns JSON, never opens SSE.
-    // Checked against raw `userMessage.content` (before trim) per spec.
-    if (isDiagnosticsCommand(userMessage.content)) {
-      try {
-        const allTickets = await db.select().from(ashleyTicketsTable);
-        const openTickets = allTickets.filter((t) => t.status === "OPEN");
-        const inProgressTickets = allTickets.filter((t) => t.status === "IN_PROGRESS");
-        const resolvedTickets = allTickets.filter((t) => t.status === "RESOLVED");
-        const fmt = (tickets: typeof allTickets) =>
-          tickets.length === 0
-            ? "  (none)"
-            : tickets
-                .map((t) => `  [${t.ticketId}] ${t.summary} (${t.severity}) — ${t.category}`)
-                .join("\n");
-        const summaryCount: Record<string, number> = {};
-        for (const t of allTickets) summaryCount[t.summary] = (summaryCount[t.summary] ?? 0) + 1;
-        const recurring = allTickets.filter((t) => (summaryCount[t.summary] ?? 0) > 1);
-        const seen = new Set<string>();
-        const recurringUniq = recurring.filter((t) => {
-          if (seen.has(t.summary)) return false;
-          seen.add(t.summary);
-          return true;
-        });
-        const report = [
-          "=== ASHLEY DIAGNOSTIC REPORT ===",
-          "",
-          "New Tickets (OPEN):",
-          fmt(openTickets),
-          "",
-          "In Progress (IN_PROGRESS):",
-          fmt(inProgressTickets),
-          "",
-          "Resolved:",
-          fmt(resolvedTickets),
-          "",
-          "Recurring Issues (exact summary match):",
-          recurringUniq.length === 0
-            ? "  (none)"
-            : recurringUniq.map((t) => `  [x${summaryCount[t.summary] ?? 1}] ${t.summary}`).join("\n"),
-          "",
-          "Recommended Priorities:",
-          openTickets.filter((t) => t.severity === "high")
-            .map((t) => `  HIGH: [${t.ticketId}] ${t.summary}`).join("\n") ||
-            "  (no high-severity open tickets)",
-          "",
-          "=== END REPORT ===",
-        ].join("\n");
-        req.log.info({ ticket_count: allTickets.length }, "chat/stream: diagnostic mode response");
-        res.json({ diagnostic: true, report });
-      } catch (err) {
-        req.log.error({ err }, "chat/stream: diagnostic mode failed");
-        res.status(500).json({ error: "Diagnostic query failed" });
       }
       return;
     }

@@ -12,7 +12,7 @@ describe("isDiagnosticsCommand", () => {
     expect(isDiagnosticsCommand("Run Diagnostics")).toBe(true);
   });
 
-  it("allows surrounding whitespace", () => {
+  it("allows surrounding whitespace only", () => {
     expect(isDiagnosticsCommand("  run diagnostics  ")).toBe(true);
     expect(isDiagnosticsCommand("\trun diagnostics\t")).toBe(true);
   });
@@ -27,10 +27,12 @@ describe("isDiagnosticsCommand", () => {
     expect(isDiagnosticsCommand("please run diagnostics")).toBe(false);
   });
 
-  it("does not match partial phrases", () => {
+  it("does not match partial or alias phrases", () => {
     expect(isDiagnosticsCommand("run diagnostic")).toBe(false);
     expect(isDiagnosticsCommand("diagnostics")).toBe(false);
     expect(isDiagnosticsCommand("run")).toBe(false);
+    expect(isDiagnosticsCommand("maintainer mode")).toBe(false);
+    expect(isDiagnosticsCommand("maintainer mode now")).toBe(false);
   });
 
   it("does not match empty string", () => {
