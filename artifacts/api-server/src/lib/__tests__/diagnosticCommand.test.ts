@@ -1,0 +1,39 @@
+import { describe, it, expect } from "vitest";
+import { isDiagnosticsCommand } from "../diagnosticCommand";
+
+describe("isDiagnosticsCommand", () => {
+  it("matches exact phrase", () => {
+    expect(isDiagnosticsCommand("run diagnostics")).toBe(true);
+  });
+
+  it("is case-insensitive", () => {
+    expect(isDiagnosticsCommand("Run diagnostics")).toBe(true);
+    expect(isDiagnosticsCommand("RUN DIAGNOSTICS")).toBe(true);
+    expect(isDiagnosticsCommand("Run Diagnostics")).toBe(true);
+  });
+
+  it("allows surrounding whitespace", () => {
+    expect(isDiagnosticsCommand("  run diagnostics  ")).toBe(true);
+    expect(isDiagnosticsCommand("\trun diagnostics\t")).toBe(true);
+  });
+
+  it("does not match trailing words", () => {
+    expect(isDiagnosticsCommand("run diagnostics now")).toBe(false);
+    expect(isDiagnosticsCommand("run diagnostics please")).toBe(false);
+  });
+
+  it("does not match leading words", () => {
+    expect(isDiagnosticsCommand("hey run diagnostics")).toBe(false);
+    expect(isDiagnosticsCommand("please run diagnostics")).toBe(false);
+  });
+
+  it("does not match partial phrases", () => {
+    expect(isDiagnosticsCommand("run diagnostic")).toBe(false);
+    expect(isDiagnosticsCommand("diagnostics")).toBe(false);
+    expect(isDiagnosticsCommand("run")).toBe(false);
+  });
+
+  it("does not match empty string", () => {
+    expect(isDiagnosticsCommand("")).toBe(false);
+  });
+});

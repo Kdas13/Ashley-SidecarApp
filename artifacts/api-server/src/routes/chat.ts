@@ -18,6 +18,7 @@ import {
 } from "@workspace/db";
 import { anthropic } from "@workspace/integrations-anthropic-ai";
 import { generateChatText, streamChatText } from "../lib/textLLM";
+import { isDiagnosticsCommand } from "../lib/diagnosticCommand";
 import { tryClaimSelfieSlot } from "../lib/selfieCap";
 
 import { getDeviceId } from "../middleware/deviceId";
@@ -256,8 +257,8 @@ router.post("/chat", async (req, res): Promise<void> => {
   }
 
   // Diagnostic mode — structured report, no LLM, no personality.
-  // Triggered by exact phrase "run diagnostics" only (case-insensitive, leading/trailing whitespace allowed).
-  if (/^\s*run diagnostics\s*$/i.test(userContent)) {
+  // Checked against raw `content` (before trim) per spec: no normalisation, no word removal.
+  if (isDiagnosticsCommand(content)) {
     try {
       const allTickets = await db.select().from(ashleyTicketsTable);
       const openTickets = allTickets.filter((t) => t.status === "OPEN");
@@ -1601,7 +1602,8 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     }
 
     // Diagnostic mode (stream path) — returns JSON, never opens SSE.
-    if (/^\s*run diagnostics\s*$/i.test(userContent)) {
+    // Checked against raw `userMessage.content` (before trim) per spec.
+    if (isDiagnosticsCommand(userMessage.content)) {
       try {
         const allTickets = await db.select().from(ashleyTicketsTable);
         const openTickets = allTickets.filter((t) => t.status === "OPEN");
