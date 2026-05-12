@@ -35,6 +35,22 @@ describe("isDiagnosticsCommand", () => {
     expect(isDiagnosticsCommand("maintainer mode now")).toBe(false);
   });
 
+  it("does not match multiline messages containing the phrase", () => {
+    expect(isDiagnosticsCommand("run diagnostics\nanything else")).toBe(false);
+    expect(isDiagnosticsCommand("anything else\nrun diagnostics")).toBe(false);
+    expect(
+      isDiagnosticsCommand(
+        "run diagnostics now\nrun diagnostics please\nhey run diagnostics\ndiagnostics\nmaintainer mode",
+      ),
+    ).toBe(false);
+  });
+
+  it("does not match non-string input", () => {
+    expect(isDiagnosticsCommand(null)).toBe(false);
+    expect(isDiagnosticsCommand(undefined)).toBe(false);
+    expect(isDiagnosticsCommand(42)).toBe(false);
+  });
+
   it("does not match empty string", () => {
     expect(isDiagnosticsCommand("")).toBe(false);
   });

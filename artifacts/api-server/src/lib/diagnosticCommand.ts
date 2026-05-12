@@ -1,12 +1,13 @@
 /**
  * Diagnostic command predicate.
  *
- * Only the exact phrase "run diagnostics" (case-insensitive, optional
- * surrounding whitespace) may trigger the diagnostic report.
+ * Triggers ONLY when the entire raw user message, after trimming outer
+ * whitespace only, equals "run diagnostics" case-insensitively.
  *
  * Must be called with the raw, unmodified message string — before any
- * trim(), toLowerCase(), word removal, or other normalisation.
+ * processing. No regex, no line-splitting, no alias matching.
  */
-export function isDiagnosticsCommand(rawMessage: string): boolean {
-  return /^\s*run diagnostics\s*$/i.test(rawMessage);
+export function isDiagnosticsCommand(rawMessage: unknown): boolean {
+  if (typeof rawMessage !== "string") return false;
+  return rawMessage.trim().toLowerCase() === "run diagnostics";
 }
