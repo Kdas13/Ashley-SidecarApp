@@ -2427,3 +2427,53 @@ router.post("/chat/tts", async (req, res): Promise<void> => {
     });
   }
 });
+
+// POST /messages/:messageId/speech — same synthesis logic as /chat/tts,
+// keyed by message id so the server can log which message triggered the
+// synthesis. Used by the manual per-message Speak button.
+router.post("/messages/:messageId/speech", async (req, res): Promise<void> => {
+  const deviceId = getDeviceId(req);
+  if (!deviceId) {
+    res.status(400).json({ error: "X-Device-Id header is required" });
+    return;
+  }
+  const parsed = TtsBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error: parsed.error.issues[0]?.message ?? "Invalid speech payload",
+    });
+    return;
+  }
+  try {
+    const stripped = parsed.data.text
+      .replace(/\*([^*]*)\*/g, "$1")
+      .replace(/\*/g, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    const TTS_CHAR_CAP = 600;
+    let ttsText = stripped;
+    if (stripped.length > TTS_CHAR_CAP) {
+      const window = stripped.slice(0, TTS_CHAR_CAP);
+      const lastBoundary = Math.max(
+        window.lastIndexOf(". "),
+        window.lastIndexOf("! "),
+        window.lastIndexOf("? "),
+        window.lastIndexOf(".\n"),
+        window.lastIndexOf("!\n"),
+        window.lastIndexOf("?\n"),
+      );
+      ttsText =
+        lastBoundary > TTS_CHAR_CAP / 2
+          ? window.slice(0, lastBoundary + 1).trimEnd()
+          : window.trimEnd();
+    }
+    const buf = await synthesizeSpeech(ttsText);
+    res.json({ audioBase64: buf.toString("base64"), mimeType: "audio/mpeg" });
+  } catch (err) {
+    req.log.error(
+      { err, messageId: req.params.messageId },
+      "Message speech synthesis failed",
+    );
+    res.status(502).json({ error: "Couldn't generate speech — try again." });
+  }
+});

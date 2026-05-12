@@ -42,6 +42,12 @@ import {
 
 export type TtsPlayback = {
   speak: (text: string) => void;
+  /**
+   * Play from a pre-existing local file URI without re-synthesising.
+   * The caller is responsible for keeping the file alive; teardown will
+   * NOT delete it (lastUriRef is left null for this path).
+   */
+  speakUri: (uri: string) => void;
   /** Fire-and-forget stop — safe to call synchronously. */
   stop: () => void;
   /**
@@ -287,6 +293,82 @@ export function useTtsPlayback(): TtsPlayback {
     [teardown],
   );
 
+  // -------------------------------------------------------------------------
+  // speakUri — play from a caller-owned local file URI without synthesising.
+  // The cancel-token + teardown contract is identical to speak(); the only
+  // difference is we skip the network call and we do NOT set lastUriRef so
+  // teardown never deletes the caller's file.
+  // -------------------------------------------------------------------------
+  const speakUri = useCallback(
+    (uri: string): void => {
+      if (!uri) return;
+
+      cancelTokenRef.current += 1;
+      const myToken = cancelTokenRef.current;
+      audioLog("TTS.speakUri.queued", { token: myToken });
+
+      void (async () => {
+        await teardown("superseded");
+
+        if (myToken !== cancelTokenRef.current) return;
+
+        try {
+          await setAudioModeAsync({
+            allowsRecording: false,
+            playsInSilentMode: true,
+          });
+          patchAudioState({ audioFocusState: "playback", ttsReady: false });
+        } catch (err) {
+          audioError("TTS.speakUri.setAudioMode", err, { token: myToken });
+        }
+
+        if (myToken !== cancelTokenRef.current) return;
+
+        try {
+          const player = createAudioPlayer({ uri });
+          playerRef.current = player;
+          lastUriRef.current = null; // caller owns the file — do not delete it
+          setIsPlaying(true);
+          patchAudioState({
+            ttsSpeaking: true,
+            ttsReady: true,
+            lastTtsStartedAt: Date.now(),
+          });
+
+          player.addListener("playbackStatusUpdate", (status) => {
+            if (status.didJustFinish) {
+              audioLog("TTS.speakUri.didJustFinish", { token: myToken });
+              patchAudioState({
+                ttsSpeaking: false,
+                lastTtsFinishedAt: Date.now(),
+              });
+              if (playerRef.current === player) {
+                void teardown("didJustFinish");
+              }
+            }
+          });
+
+          watchdogRef.current = setTimeout(() => {
+            audioLog("TTS.speakUri.watchdogFired", { token: myToken });
+            patchAudioState({
+              lastAudioError: "TTS watchdog fired — didJustFinish never received",
+            });
+            if (playerRef.current === player) {
+              void teardown("watchdog");
+            }
+          }, TTS_PLAYBACK_WATCHDOG_MS);
+
+          player.play();
+          audioLog("TTS.speakUri.playing", { token: myToken });
+        } catch (err) {
+          audioError("TTS.speakUri.createPlayer", err, { token: myToken });
+          void teardown("createPlayer-error");
+        }
+      })();
+    },
+    [teardown],
+  );
+
   // Cleanup on unmount — never leak a player or hold an audio session.
   useEffect(() => {
     return () => {
@@ -296,5 +378,5 @@ export function useTtsPlayback(): TtsPlayback {
     };
   }, [teardown, clearWatchdog]);
 
-  return { speak, stop, stopAsync, isPlaying };
+  return { speak, speakUri, stop, stopAsync, isPlaying };
 }

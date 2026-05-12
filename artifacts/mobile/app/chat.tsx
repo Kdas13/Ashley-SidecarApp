@@ -41,6 +41,7 @@ import { useProfile, useUpdateProfile } from "@/lib/useProfile";
 import { useVoiceRecorder, VOICE_MAX_DURATION_MS } from "@/lib/voiceInput";
 import { useTranscribeAudioStream } from "@/lib/useVoice";
 import { useTtsPlayback } from "@/lib/voiceOutput";
+import { useSpeakMessage, type SpeakStatus } from "@/lib/useSpeakMessage";
 import type {
   ImageAnalysisMode,
   ImageCategory,
@@ -275,6 +276,7 @@ export default function ChatScreen(): React.JSX.Element {
   const [voicePartial, setVoicePartial] = useState("");
 
   const tts = useTtsPlayback();
+  const { speakMessage, getSpeakStatus } = useSpeakMessage(tts);
   // Buffer the partial text in a ref too so the onDelta callback (created
   // once per call below) can accumulate without going stale between
   // renders. The setVoicePartial call is just for UI redraw.
@@ -733,7 +735,8 @@ export default function ChatScreen(): React.JSX.Element {
             onSwipeReply={handleStartReply}
             onContinue={handleContinue}
             onRetry={handleRetryFromInterrupted}
-            onSpeak={(text) => tts.speak(text)}
+            onSpeak={speakMessage}
+            speakStatus={getSpeakStatus(item.id)}
             continuePending={
               continueMutation.isPending &&
               activeStream?.mode === "continue"
@@ -753,7 +756,7 @@ export default function ChatScreen(): React.JSX.Element {
         </>
       );
     },
-    [handleStartReply, messages, onRemember, markImageRemembered.isPending, tts],
+    [handleStartReply, messages, onRemember, markImageRemembered.isPending, speakMessage, getSpeakStatus],
   );
 
   return (
@@ -1415,6 +1418,7 @@ function MessageBubble({
   onContinue,
   onRetry,
   onSpeak,
+  speakStatus,
   continuePending,
   retryPending,
 }: {
@@ -1422,7 +1426,8 @@ function MessageBubble({
   onSwipeReply: (m: Message) => void;
   onContinue?: (interruptedMessageId: string) => void;
   onRetry?: (interruptedMessageId: string) => void;
-  onSpeak?: (text: string) => void;
+  onSpeak?: (messageId: string, text: string) => void;
+  speakStatus?: SpeakStatus;
   continuePending?: boolean;
   retryPending?: boolean;
 }): React.JSX.Element {
@@ -1677,18 +1682,38 @@ function MessageBubble({
             <StreamingCursor color={colors.light.bubbleAshleyText} />
           </Text>
         ) : null}
-        {message.role === "ashley" && hasText && message.status !== "streaming" ? (
+        {message.role === "ashley" && hasText && message.status === "complete" ? (
           <Pressable
-            onPress={() => onSpeak?.(message.content)}
+            onPress={() => onSpeak?.(message.id, message.content)}
+            disabled={speakStatus === "loading"}
             style={({ pressed }) => [
               styles.speakBtn,
+              speakStatus === "loading" && { opacity: 0.5 },
               pressed && { opacity: 0.6 },
             ]}
             hitSlop={8}
             accessibilityLabel="Speak this message"
           >
-            <Feather name="volume-2" size={12} color={colors.light.mutedForeground} />
-            <Text style={styles.speakBtnText}>Speak</Text>
+            {speakStatus === "loading" ? (
+              <ActivityIndicator size="small" color={colors.light.mutedForeground} />
+            ) : (
+              <Feather
+                name={speakStatus === "error" ? "alert-circle" : "volume-2"}
+                size={12}
+                color={
+                  speakStatus === "error"
+                    ? colors.light.destructiveForeground
+                    : colors.light.mutedForeground
+                }
+              />
+            )}
+            <Text style={styles.speakBtnText}>
+              {speakStatus === "loading"
+                ? "loading…"
+                : speakStatus === "error"
+                  ? "retry"
+                  : "Speak"}
+            </Text>
           </Pressable>
         ) : null}
         {message.status === "interrupted" && message.role === "ashley" ? (

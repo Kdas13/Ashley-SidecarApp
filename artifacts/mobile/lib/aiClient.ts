@@ -1348,6 +1348,21 @@ export async function markImageRemembered(
 // The caller (lib/voiceOutput.ts → useTtsPlayback) is responsible for
 // cleaning up the file after playback completes.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// fetchSpeechForMessage — called by useSpeakMessage for the manual Speak
+// button. Routes to /messages/:messageId/speech so the server can log the
+// message id alongside the synthesis request.
+// ---------------------------------------------------------------------------
+export async function fetchSpeechForMessage(
+  messageId: string,
+  text: string,
+): Promise<{ audioBase64: string; mimeType: string }> {
+  return fetchJSON<{ audioBase64: string; mimeType: string }>(
+    `/messages/${messageId}/speech`,
+    { method: "POST", body: JSON.stringify({ text }) },
+  );
+}
+
 export async function synthesizeSpeechToFile(
   text: string,
 ): Promise<{ uri: string }> {
