@@ -37,10 +37,13 @@ import * as FileSystem from "expo-file-system/legacy";
 // ---------------------------------------------------------------------------
 
 const EXPO_API_KEY = process.env.EXPO_PUBLIC_API_KEY ?? "";
-const EXPO_DOMAIN  = process.env.EXPO_PUBLIC_DOMAIN  ?? "";
 
 function apiBase(): string {
-  const raw = (EXPO_DOMAIN || "").replace(/\/+$/, "");
+  const raw = (
+    process.env.EXPO_PUBLIC_API_BASE ||
+    process.env.EXPO_PUBLIC_DOMAIN ||
+    ""
+  ).replace(/\/+$/, "");
   const withScheme =
     raw.startsWith("http://") || raw.startsWith("https://")
       ? raw
