@@ -3,7 +3,7 @@ import { z } from "zod";
 import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { and, asc, desc, eq, gt, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gt } from "drizzle-orm";
 import {
   db,
   ashleyProfileTable,
@@ -452,7 +452,7 @@ router.post("/chat", async (req, res): Promise<void> => {
         status: ashleyTicketsTable.status,
       })
       .from(ashleyTicketsTable)
-      .where(inArray(ashleyTicketsTable.status, ["OPEN", "IN_PROGRESS"]));
+      .where(eq(ashleyTicketsTable.status, "OPEN"));
   } catch (err) {
     req.log.warn({ err }, "Failed to fetch open tickets for prompt (non-fatal)");
   }
@@ -1739,7 +1739,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
         status: ashleyTicketsTable.status,
       })
       .from(ashleyTicketsTable)
-      .where(inArray(ashleyTicketsTable.status, ["OPEN", "IN_PROGRESS"]));
+      .where(eq(ashleyTicketsTable.status, "OPEN"));
   } catch (err) {
     req.log.warn({ err }, "Failed to fetch open tickets for stream prompt (non-fatal)");
   }
@@ -2292,7 +2292,7 @@ router.post("/chat/image", async (req, res): Promise<void> => {
         status: ashleyTicketsTable.status,
       })
       .from(ashleyTicketsTable)
-      .where(inArray(ashleyTicketsTable.status, ["OPEN", "IN_PROGRESS"]));
+      .where(eq(ashleyTicketsTable.status, "OPEN"));
   } catch (err) {
     req.log.warn({ err }, "Failed to fetch open tickets for image prompt (non-fatal)");
   }

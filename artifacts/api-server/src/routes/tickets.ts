@@ -182,12 +182,28 @@ router.patch("/tickets/:ticket_id", async (req, res): Promise<void> => {
     return;
   }
 
-  // Enforce status transition: OPEN → APPROVED → IN_PROGRESS → RESOLVED only.
+  // APPROVED status can only be set by POST /tickets/:ticket_id/approve (or the
+  // APPROVE: chat gate) because that path also sets approved=true, approved_by,
+  // and approved_at. PATCH is not allowed to set APPROVED directly.
+  if (data.status === "APPROVED") {
+    res.status(422).json({
+      error: "Use POST /tickets/:ticket_id/approve to approve a ticket. PATCH cannot set status to APPROVED.",
+    });
+    return;
+  }
+
+  // Enforce status transition for non-APPROVED targets:
+  //   APPROVED → IN_PROGRESS → RESOLVED only via PATCH.
+  //   OPEN tickets cannot be advanced via PATCH (use approve endpoint first).
   if (data.status && data.status !== existing.status) {
-    const allowed = VALID_NEXT_STATUS[existing.status];
-    if (data.status !== allowed) {
+    const patchNextStatus: Record<string, string> = {
+      APPROVED: "IN_PROGRESS",
+      IN_PROGRESS: "RESOLVED",
+    };
+    const allowed = patchNextStatus[existing.status];
+    if (!allowed || data.status !== allowed) {
       res.status(422).json({
-        error: `Invalid status transition: ${existing.status} → ${data.status}. Expected next status: ${allowed ?? "(terminal)"}`,
+        error: `Invalid status transition via PATCH: ${existing.status} → ${data.status}. ${allowed ? `Expected: ${allowed}` : "OPEN tickets must go through the approve endpoint."}`,
       });
       return;
     }
