@@ -218,6 +218,74 @@ function newId(): string {
 }
 
 // ---------------------------------------------------------------------------
+// runDiagnosticsReport — the ONE function that produces diagnostic output.
+//
+// Search for `runDiagnosticsReport(` to find every call site.
+// There must be exactly TWO: one in POST /chat, one in POST /chat/stream.
+// Both are guarded by isDiagnosticsCommand(rawMessage) before being called.
+// ---------------------------------------------------------------------------
+
+async function runDiagnosticsReport(
+  req: Parameters<Parameters<typeof router.post>[1]>[0],
+  res: Parameters<Parameters<typeof router.post>[1]>[1],
+  label: string,
+): Promise<void> {
+  // eslint-disable-next-line no-console
+  console.log("RUN DIAGNOSTICS CALLED");
+  try {
+    const allTickets = await db.select().from(ashleyTicketsTable);
+    const openTickets = allTickets.filter((t) => t.status === "OPEN");
+    const inProgressTickets = allTickets.filter((t) => t.status === "IN_PROGRESS");
+    const resolvedTickets = allTickets.filter((t) => t.status === "RESOLVED");
+    const fmt = (tickets: typeof allTickets) =>
+      tickets.length === 0
+        ? "  (none)"
+        : tickets
+            .map((t) => `  [${t.ticketId}] ${t.summary} (${t.severity}) — ${t.category}`)
+            .join("\n");
+    const summaryCount: Record<string, number> = {};
+    for (const t of allTickets) summaryCount[t.summary] = (summaryCount[t.summary] ?? 0) + 1;
+    const recurring = allTickets.filter((t) => (summaryCount[t.summary] ?? 0) > 1);
+    const seen = new Set<string>();
+    const recurringUniq = recurring.filter((t) => {
+      if (seen.has(t.summary)) return false;
+      seen.add(t.summary);
+      return true;
+    });
+    const report = [
+      "=== ASHLEY DIAGNOSTIC REPORT ===",
+      "",
+      "New Tickets (OPEN):",
+      fmt(openTickets),
+      "",
+      "In Progress (IN_PROGRESS):",
+      fmt(inProgressTickets),
+      "",
+      "Resolved:",
+      fmt(resolvedTickets),
+      "",
+      "Recurring Issues (exact summary match):",
+      recurringUniq.length === 0
+        ? "  (none)"
+        : recurringUniq.map((t) => `  [x${summaryCount[t.summary] ?? 1}] ${t.summary}`).join("\n"),
+      "",
+      "Recommended Priorities:",
+      openTickets
+        .filter((t) => t.severity === "high")
+        .map((t) => `  HIGH: [${t.ticketId}] ${t.summary}`)
+        .join("\n") || "  (no high-severity open tickets)",
+      "",
+      "=== END REPORT ===",
+    ].join("\n");
+    req.log.info({ ticket_count: allTickets.length }, `${label}: diagnostic mode response`);
+    res.json({ diagnostic: true, report });
+  } catch (err) {
+    req.log.error({ err }, `${label}: diagnostic mode failed`);
+    res.status(500).json({ error: "Diagnostic query failed" });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // POST /chat — the one chat endpoint
 // ---------------------------------------------------------------------------
 
@@ -234,70 +302,9 @@ router.post("/chat", async (req, res): Promise<void> => {
   const rawMessage = typeof rawUserMsg?.["content"] === "string" ? rawUserMsg["content"] : "";
   const isDiagCmd = isDiagnosticsCommand(rawMessage);
   // eslint-disable-next-line no-console
-  console.log({ rawMessage, isDiagnosticsCommand: isDiagCmd });
+  console.log("DIAG CHECK:", { rawMessage, isDiagnosticsCommand: isDiagCmd });
   if (isDiagCmd) {
-    try {
-      const allTickets = await db.select().from(ashleyTicketsTable);
-      const openTickets = allTickets.filter((t) => t.status === "OPEN");
-      const inProgressTickets = allTickets.filter((t) => t.status === "IN_PROGRESS");
-      const resolvedTickets = allTickets.filter((t) => t.status === "RESOLVED");
-      const fmt = (tickets: typeof allTickets) =>
-        tickets.length === 0
-          ? "  (none)"
-          : tickets
-              .map((t) => `  [${t.ticketId}] ${t.summary} (${t.severity}) — ${t.category}`)
-              .join("\n");
-
-      // Recurring issues: exact summary match with count > 1 occurrence.
-      const summaryCount: Record<string, number> = {};
-      for (const t of allTickets) summaryCount[t.summary] = (summaryCount[t.summary] ?? 0) + 1;
-      const recurring = allTickets.filter(
-        (t) => (summaryCount[t.summary] ?? 0) > 1,
-      );
-      const seen = new Set<string>();
-      const recurringUniq = recurring.filter((t) => {
-        if (seen.has(t.summary)) return false;
-        seen.add(t.summary);
-        return true;
-      });
-
-      const report = [
-        "=== ASHLEY DIAGNOSTIC REPORT ===",
-        "",
-        "New Tickets (OPEN):",
-        fmt(openTickets),
-        "",
-        "In Progress (IN_PROGRESS):",
-        fmt(inProgressTickets),
-        "",
-        "Resolved:",
-        fmt(resolvedTickets),
-        "",
-        "Recurring Issues (exact summary match):",
-        recurringUniq.length === 0
-          ? "  (none)"
-          : recurringUniq
-              .map(
-                (t) =>
-                  `  [x${summaryCount[t.summary] ?? 1}] ${t.summary}`,
-              )
-              .join("\n"),
-        "",
-        "Recommended Priorities:",
-        openTickets
-          .filter((t) => t.severity === "high")
-          .map((t) => `  HIGH: [${t.ticketId}] ${t.summary}`)
-          .join("\n") || "  (no high-severity open tickets)",
-        "",
-        "=== END REPORT ===",
-      ].join("\n");
-
-      req.log.info({ ticket_count: allTickets.length }, "chat: diagnostic mode response");
-      res.json({ diagnostic: true, report });
-    } catch (err) {
-      req.log.error({ err }, "chat: diagnostic mode failed");
-      res.status(500).json({ error: "Diagnostic query failed" });
-    }
+    await runDiagnosticsReport(req, res, "chat");
     return;
   }
 
@@ -1541,58 +1548,9 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   const rawMessageS = typeof rawUserMsgS?.["content"] === "string" ? rawUserMsgS["content"] : "";
   const isDiagCmdS = isDiagnosticsCommand(rawMessageS);
   // eslint-disable-next-line no-console
-  console.log({ rawMessage: rawMessageS, isDiagnosticsCommand: isDiagCmdS });
+  console.log("DIAG CHECK:", { rawMessage: rawMessageS, isDiagnosticsCommand: isDiagCmdS });
   if (isDiagCmdS) {
-    try {
-      const allTickets = await db.select().from(ashleyTicketsTable);
-      const openTickets = allTickets.filter((t) => t.status === "OPEN");
-      const inProgressTickets = allTickets.filter((t) => t.status === "IN_PROGRESS");
-      const resolvedTickets = allTickets.filter((t) => t.status === "RESOLVED");
-      const fmt = (tickets: typeof allTickets) =>
-        tickets.length === 0
-          ? "  (none)"
-          : tickets
-              .map((t) => `  [${t.ticketId}] ${t.summary} (${t.severity}) — ${t.category}`)
-              .join("\n");
-      const summaryCount: Record<string, number> = {};
-      for (const t of allTickets) summaryCount[t.summary] = (summaryCount[t.summary] ?? 0) + 1;
-      const recurring = allTickets.filter((t) => (summaryCount[t.summary] ?? 0) > 1);
-      const seen = new Set<string>();
-      const recurringUniq = recurring.filter((t) => {
-        if (seen.has(t.summary)) return false;
-        seen.add(t.summary);
-        return true;
-      });
-      const report = [
-        "=== ASHLEY DIAGNOSTIC REPORT ===",
-        "",
-        "New Tickets (OPEN):",
-        fmt(openTickets),
-        "",
-        "In Progress (IN_PROGRESS):",
-        fmt(inProgressTickets),
-        "",
-        "Resolved:",
-        fmt(resolvedTickets),
-        "",
-        "Recurring Issues (exact summary match):",
-        recurringUniq.length === 0
-          ? "  (none)"
-          : recurringUniq.map((t) => `  [x${summaryCount[t.summary] ?? 1}] ${t.summary}`).join("\n"),
-        "",
-        "Recommended Priorities:",
-        openTickets.filter((t) => t.severity === "high")
-          .map((t) => `  HIGH: [${t.ticketId}] ${t.summary}`).join("\n") ||
-          "  (no high-severity open tickets)",
-        "",
-        "=== END REPORT ===",
-      ].join("\n");
-      req.log.info({ ticket_count: allTickets.length }, "chat/stream: diagnostic mode response");
-      res.json({ diagnostic: true, report });
-    } catch (err) {
-      req.log.error({ err }, "chat/stream: diagnostic mode failed");
-      res.status(500).json({ error: "Diagnostic query failed" });
-    }
+    await runDiagnosticsReport(req, res, "chat/stream");
     return;
   }
 
