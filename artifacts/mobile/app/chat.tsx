@@ -100,6 +100,15 @@ function classifyError(msg: string | null): string {
   return "PROVIDER_ERROR";
 }
 
+/**
+ * Generate a compact unique id for a single send attempt.
+ * Not cryptographically random — just needs to be unique within a session
+ * so the server can detect in-flight duplicates.
+ */
+function generateRequestId(): string {
+  return `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
 // Image picker — visible labels for category + analysis-mode chips.
 const IMAGE_CATEGORIES: { value: ImageCategory; label: string }[] = [
   { value: "art_progress", label: "Art progress" },
@@ -164,7 +173,7 @@ export default function ChatScreen(): React.JSX.Element {
   // Messages typed while a stream is in-flight are pushed here rather than
   // dropped. The drain effect below processes them in FIFO order as each
   // stream settles (done / error / interrupted).
-  const messageQueue = useRef<Array<{ content: string; replyTo: ReplyToRef | null }>>([]);
+  const messageQueue = useRef<Array<{ content: string; replyTo: ReplyToRef | null; requestId: string }>>([]);
   const [queueSize, setQueueSize] = useState(0);
 
   const messagesQuery = useMessages();
@@ -262,6 +271,10 @@ export default function ChatScreen(): React.JSX.Element {
   // Ref-wrapped so the drain effect captures a fresh closure on every render
   // without needing the function itself in deps (same pattern as retryMutateRef).
   const drainQueueRef = useRef<() => void>(() => {});
+  // Synchronous lock — set to true BEFORE calling mutateAsync so that a
+  // second send() fired in the same render cycle (before isPending re-renders)
+  // still sees the lock and goes to the queue instead of firing concurrently.
+  const isSendingRef = useRef(false);
   useEffect(() => {
     if (!hasUnansweredTail) return;
     if (streamMutation.isPending) return;
@@ -439,26 +452,39 @@ export default function ChatScreen(): React.JSX.Element {
   // Always up-to-date — captures the latest streamHooks / handleStreamOutcome
   // without adding them to the useEffect dep array.
   drainQueueRef.current = () => {
-    if (streamMutation.isPending) return;
+    if (isSendingRef.current || streamMutation.isPending) return;
     const next = messageQueue.current.shift();
     if (!next) return;
     setQueueSize(messageQueue.current.length);
+    isSendingRef.current = true;
     streamMutation.reset();
     tts.stop();
     presenceDispatch({ type: "USER_SEND" });
     streamMutation
-      .mutateAsync({ content: next.content, replyTo: next.replyTo, hooks: streamHooks })
+      .mutateAsync({
+        content: next.content,
+        replyTo: next.replyTo,
+        requestId: next.requestId,
+        hooks: streamHooks,
+      })
       .then(handleStreamOutcome)
-      .catch(() => presenceDispatch({ type: "STREAM_INTERRUPTED_RECEIVED" }));
+      .catch(() => presenceDispatch({ type: "STREAM_INTERRUPTED_RECEIVED" }))
+      .finally(() => {
+        isSendingRef.current = false;
+      });
   };
 
   // Fire once each time the stream settles (isPending flips to false).
+  // Guard on hasUnansweredTail: if the previous stream errored before producing
+  // any Ashley row, let the auto-retry mechanism recover that turn first so we
+  // don't collide with it by sending the next queued message simultaneously.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (!streamMutation.isPending && messageQueue.current.length > 0) {
+    if (streamMutation.isPending || hasUnansweredTail) return;
+    if (messageQueue.current.length > 0) {
       drainQueueRef.current();
     }
-  }, [streamMutation.isPending]);
+  }, [streamMutation.isPending, hasUnansweredTail]);
 
   const send = useCallback(() => {
     const content = draft.trim();
@@ -466,20 +492,25 @@ export default function ChatScreen(): React.JSX.Element {
     const replyToSnapshot = replyingTo;
     setDraft("");
     setReplyingTo(null);
-    if (streamMutation.isPending) {
-      // A stream is already in flight — queue rather than drop. The drain
-      // effect fires as soon as isPending flips to false.
-      messageQueue.current.push({ content, replyTo: replyToSnapshot });
+    const requestId = generateRequestId();
+    // isSendingRef is a synchronous lock that catches two taps in the same
+    // render cycle before React re-renders with isPending=true. Combined with
+    // the isPending check it prevents concurrent mutateAsync calls entirely.
+    if (isSendingRef.current || streamMutation.isPending) {
+      // A stream is already in flight (or starting) — queue rather than drop.
+      // The drain effect fires as soon as isPending flips to false.
+      messageQueue.current.push({ content, replyTo: replyToSnapshot, requestId });
       setQueueSize(messageQueue.current.length);
       return;
     }
+    isSendingRef.current = true;
     streamMutation.reset();
     // Sending a fresh message supersedes any reply Ashley is currently
     // speaking — silence her so the new turn isn't talked over.
     tts.stop();
     presenceDispatch({ type: "USER_SEND" });
     streamMutation
-      .mutateAsync({ content, replyTo: replyToSnapshot, hooks: streamHooks })
+      .mutateAsync({ content, replyTo: replyToSnapshot, requestId, hooks: streamHooks })
       .then(handleStreamOutcome)
       .catch(() => {
         // Stream errors surface via streamMutation.error and the
@@ -487,6 +518,9 @@ export default function ChatScreen(): React.JSX.Element {
         // (Continue / Retry) can be offered on whatever partial we
         // captured.
         presenceDispatch({ type: "STREAM_INTERRUPTED_RECEIVED" });
+      })
+      .finally(() => {
+        isSendingRef.current = false;
       });
   }, [
     draft,

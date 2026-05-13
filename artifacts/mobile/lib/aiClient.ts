@@ -861,6 +861,9 @@ export type StreamReplyCallbacks = {
 export type StreamReplyArgs = {
   newTurn?: ChatRequest;
   continueFromMessageId?: string;
+  /** Forwarded to POST /chat/stream so the server can detect and reject
+   *  in-flight duplicate requests (same requestId already being processed). */
+  requestId?: string;
 };
 
 export type StreamReplyOutcome =
@@ -891,6 +894,9 @@ export async function streamAshleyReply(
         Intl.DateTimeFormat().resolvedOptions().timeZone) ||
       "UTC",
   };
+  if (args.requestId) {
+    body["requestId"] = args.requestId;
+  }
   if (args.newTurn) {
     body["userMessage"] = {
       id: args.newTurn.id,

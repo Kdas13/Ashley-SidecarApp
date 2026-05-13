@@ -1992,6 +1992,26 @@ router.post("/chat/transcribe/stream", async (req, res): Promise<void> => {
 // `finally` of the streaming handler so the map never grows unboundedly.
 const inFlightStreams = new Map<string, AbortController>();
 
+// ---------------------------------------------------------------------------
+// Request idempotency map — prevents duplicate model calls when the mobile
+// client sends the same requestId twice before the first completes.
+// Keyed by client-supplied requestId; entries expire after 10 minutes.
+// "pending"  → a request with this id is currently being processed.
+// "done"     → the request completed successfully (kept briefly for late
+//              duplicate detection; client-side lock makes true replays rare).
+// Errors are not stored: the requestId is deleted so retries are allowed.
+// ---------------------------------------------------------------------------
+type IdempotencyStatus = "pending" | "done";
+const requestIdempotencyMap = new Map<string, { status: IdempotencyStatus; createdAt: number }>();
+const IDEMPOTENCY_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+function pruneIdempotencyMap(): void {
+  const cutoff = Date.now() - IDEMPOTENCY_TTL_MS;
+  for (const [key, entry] of requestIdempotencyMap) {
+    if (entry.createdAt < cutoff) requestIdempotencyMap.delete(key);
+  }
+}
+
 const ChatStreamBodySchema = z
   .object({
     userMessage: z
@@ -2004,6 +2024,11 @@ const ChatStreamBodySchema = z
     continueFromMessageId: z.string().min(8).max(128).optional(),
     clientNow: z.string().datetime({ offset: true }).optional(),
     clientTimezone: z.string().min(1).max(64).optional(),
+    /** Client-generated id for this logical send. The server uses it to
+     *  detect and reject duplicate in-flight requests (same id already
+     *  being processed), preventing concurrent model calls for the same
+     *  message under rapid-send / retry conditions. */
+    requestId: z.string().min(1).max(128).optional(),
   })
   .refine(
     (d) =>
@@ -2228,9 +2253,34 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     });
     return;
   }
-  const { userMessage, continueFromMessageId, clientNow, clientTimezone } =
+  const { userMessage, continueFromMessageId, clientNow, clientTimezone, requestId } =
     parsed.data;
   const isContinue = Boolean(continueFromMessageId);
+
+  // ---- Request idempotency check (new-turn mode only; continue is inherently
+  //      idempotent via the existing message id the client already has).
+  if (requestId && !isContinue) {
+    pruneIdempotencyMap();
+    const existing = requestIdempotencyMap.get(requestId);
+    if (existing?.status === "pending") {
+      // This exact request is already being processed. Return a structured
+      // SSE error so the client knows to wait rather than stacking another
+      // parallel call. The client-side isSendingRef lock should prevent this
+      // in normal operation; this is the belt-and-suspenders server guard.
+      req.log.warn({ requestId }, "chat/stream: duplicate in-flight requestId rejected");
+      res.status(200);
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.write(
+        `event: error\ndata: ${JSON.stringify({ error: "IN_FLIGHT_REQUEST: a request with this id is already being processed" })}\n\n`,
+      );
+      res.end();
+      return;
+    }
+    // Mark as pending immediately — before any async DB or model work.
+    requestIdempotencyMap.set(requestId, { status: "pending", createdAt: Date.now() });
+  }
 
   // ---- Continue-mode preflight: validate the interrupted row up-front so
   //      we can return a proper 4xx before opening the SSE stream.
@@ -2685,6 +2735,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
         })
         .where(eq(messagesTable.id, streamId));
       writeEvent("done", { content: finalText, selfieVibe });
+      if (requestId) requestIdempotencyMap.set(requestId, { status: "done", createdAt: Date.now() });
     } else if (userAborted) {
       await db
         .update(messagesTable)
@@ -2723,6 +2774,11 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     }
   } finally {
     inFlightStreams.delete(streamId);
+    // If the request didn't finish naturally (error / abort), remove from the
+    // idempotency map so the client can retry with the same requestId.
+    if (requestId && requestIdempotencyMap.get(requestId)?.status === "pending") {
+      requestIdempotencyMap.delete(requestId);
+    }
     if (!res.writableEnded) res.end();
   }
 

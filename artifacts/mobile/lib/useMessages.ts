@@ -262,6 +262,8 @@ type RunStreamArgs = {
   continueFromMessageId?: string;
   controller: AbortController;
   hooks?: StreamHooks;
+  /** Forwarded to the server for in-flight deduplication. */
+  requestId?: string;
 };
 
 /**
@@ -303,7 +305,7 @@ async function runStream(args: RunStreamArgs): Promise<StreamReplyOutcome> {
 
   const outcome = await streamAshleyReply(
     args.newTurn
-      ? { newTurn: args.newTurn }
+      ? { newTurn: args.newTurn, requestId: args.requestId }
       : { continueFromMessageId: args.continueFromMessageId! },
     {
       onMeta: (meta: StreamReplyMeta) => {
@@ -419,6 +421,9 @@ export type StreamMessageArg =
       content: string;
       replyTo?: ReplyToRef | null;
       hooks?: StreamHooks;
+      /** Unique id for this logical send — reused on retries so the server
+       *  can detect and reject in-flight duplicate requests. */
+      requestId?: string;
     };
 
 export function useStreamMessage() {
@@ -430,6 +435,7 @@ export function useStreamMessage() {
       const content = typeof arg === "string" ? arg : arg.content;
       const replyTo = typeof arg === "string" ? null : arg.replyTo ?? null;
       const hooks = typeof arg === "string" ? undefined : arg.hooks;
+      const requestId = typeof arg === "string" ? undefined : arg.requestId;
       const userId = newId();
       const optimisticAshleyId = `optimistic-ashley-${userId}`;
 
@@ -472,6 +478,7 @@ export function useStreamMessage() {
           optimisticAshleyId,
           newTurn: { id: userId, content, replyTo },
           controller: ac,
+          ...(requestId ? { requestId } : {}),
           ...(hooks ? { hooks } : {}),
         });
       } catch (err) {
