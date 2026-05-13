@@ -302,18 +302,16 @@ router.post("/chat", async (req, res): Promise<void> => {
   const rawMessage = typeof rawUserMsg?.["content"] === "string" ? rawUserMsg["content"] : "";
   const normalized = rawMessage.trim().toLowerCase();
   const isExactDiagnostics = normalized === "run diagnostics";
-  const isDiagnosticsNearMiss =
-    !isExactDiagnostics &&
-    (normalized.includes("diagnostic") ||
-      normalized.includes("diagnostics") ||
-      normalized.includes("maintainer mode"));
+  const isDiagnosticsIntent =
+    normalized.includes("diagnostic") ||
+    normalized.includes("diagnostics");
   // eslint-disable-next-line no-console
-  console.log("DIAG CHECK:", { rawMessage, isExactDiagnostics, isDiagnosticsNearMiss });
+  console.log("DIAG CHECK:", { rawMessage, isExactDiagnostics, isDiagnosticsIntent });
   if (isExactDiagnostics) {
     await runDiagnosticsReport(req, res, "chat");
     return;
   }
-  if (isDiagnosticsNearMiss) {
+  if (isDiagnosticsIntent) {
     res.json({ reply: "To run diagnostics, please use the exact command: run diagnostics" });
     return;
   }
@@ -1562,18 +1560,16 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   const rawMessageS = typeof rawUserMsgS?.["content"] === "string" ? rawUserMsgS["content"] : "";
   const normalizedS = rawMessageS.trim().toLowerCase();
   const isExactDiagnosticsS = normalizedS === "run diagnostics";
-  const isDiagnosticsNearMissS =
-    !isExactDiagnosticsS &&
-    (normalizedS.includes("diagnostic") ||
-      normalizedS.includes("diagnostics") ||
-      normalizedS.includes("maintainer mode"));
+  const isDiagnosticsIntentS =
+    normalizedS.includes("diagnostic") ||
+    normalizedS.includes("diagnostics");
   // eslint-disable-next-line no-console
-  console.log("DIAG CHECK:", { rawMessage: rawMessageS, isExactDiagnostics: isExactDiagnosticsS, isDiagnosticsNearMiss: isDiagnosticsNearMissS });
+  console.log("DIAG CHECK:", { rawMessage: rawMessageS, isExactDiagnostics: isExactDiagnosticsS, isDiagnosticsIntent: isDiagnosticsIntentS });
   if (isExactDiagnosticsS) {
     await runDiagnosticsReport(req, res, "chat/stream");
     return;
   }
-  if (isDiagnosticsNearMissS) {
+  if (isDiagnosticsIntentS) {
     res.json({ reply: "To run diagnostics, please use the exact command: run diagnostics" });
     return;
   }
