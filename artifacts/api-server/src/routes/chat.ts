@@ -300,11 +300,21 @@ router.post("/chat", async (req, res): Promise<void> => {
   const rawBody = req.body as Record<string, unknown> | null | undefined;
   const rawUserMsg = rawBody?.["userMessage"] as Record<string, unknown> | null | undefined;
   const rawMessage = typeof rawUserMsg?.["content"] === "string" ? rawUserMsg["content"] : "";
-  const isDiagCmd = isDiagnosticsCommand(rawMessage);
+  const normalized = rawMessage.trim().toLowerCase();
+  const isExactDiagnostics = normalized === "run diagnostics";
+  const isDiagnosticsNearMiss =
+    !isExactDiagnostics &&
+    (normalized.includes("diagnostic") ||
+      normalized.includes("diagnostics") ||
+      normalized.includes("maintainer mode"));
   // eslint-disable-next-line no-console
-  console.log("DIAG CHECK:", { rawMessage, isDiagnosticsCommand: isDiagCmd });
-  if (isDiagCmd) {
+  console.log("DIAG CHECK:", { rawMessage, isExactDiagnostics, isDiagnosticsNearMiss });
+  if (isExactDiagnostics) {
     await runDiagnosticsReport(req, res, "chat");
+    return;
+  }
+  if (isDiagnosticsNearMiss) {
+    res.json({ reply: "To run diagnostics, please use the exact command: run diagnostics" });
     return;
   }
 
@@ -1550,11 +1560,21 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   const rawBodyS = req.body as Record<string, unknown> | null | undefined;
   const rawUserMsgS = rawBodyS?.["userMessage"] as Record<string, unknown> | null | undefined;
   const rawMessageS = typeof rawUserMsgS?.["content"] === "string" ? rawUserMsgS["content"] : "";
-  const isDiagCmdS = isDiagnosticsCommand(rawMessageS);
+  const normalizedS = rawMessageS.trim().toLowerCase();
+  const isExactDiagnosticsS = normalizedS === "run diagnostics";
+  const isDiagnosticsNearMissS =
+    !isExactDiagnosticsS &&
+    (normalizedS.includes("diagnostic") ||
+      normalizedS.includes("diagnostics") ||
+      normalizedS.includes("maintainer mode"));
   // eslint-disable-next-line no-console
-  console.log("DIAG CHECK:", { rawMessage: rawMessageS, isDiagnosticsCommand: isDiagCmdS });
-  if (isDiagCmdS) {
+  console.log("DIAG CHECK:", { rawMessage: rawMessageS, isExactDiagnostics: isExactDiagnosticsS, isDiagnosticsNearMiss: isDiagnosticsNearMissS });
+  if (isExactDiagnosticsS) {
     await runDiagnosticsReport(req, res, "chat/stream");
+    return;
+  }
+  if (isDiagnosticsNearMissS) {
+    res.json({ reply: "To run diagnostics, please use the exact command: run diagnostics" });
     return;
   }
 
