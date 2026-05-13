@@ -21,7 +21,7 @@
 // than refuse.
 // =============================================================================
 
-import { classifyImageIntent, type ImageMode } from "./imageIntent.js";
+import { classifyImageIntent, decodeStoredVibe, type ImageMode } from "./imageIntent.js";
 
 // ---------------------------------------------------------------------------
 // Trigger detection
@@ -55,6 +55,19 @@ export function isShortFollowUpImageRequest(text: string): boolean {
   // doesn't need follow-up resolution.
   if (trimmed.split(/\s+/).length > 10) return false;
   return FOLLOW_UP_RX.test(trimmed);
+}
+
+// "Send again" / re-send / try again — these are explicit instructions to
+// re-trigger the most recent image attempt, NOT to write more roleplay.
+const SEND_AGAIN_RX =
+  /^\s*(send (it|that|the (pic|picture|photo|image))? ?again|send again|resend|re[- ]?send|try again|do (it|that) again|one more time|another( one)?|again( please)?|retry( it| that)?|generate (it|that) again)\s*[.!?]*\s*$/i;
+
+export function isSendAgainRequest(text: string): boolean {
+  if (typeof text !== "string") return false;
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (trimmed.split(/\s+/).length > 8) return false;
+  return SEND_AGAIN_RX.test(trimmed);
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +134,18 @@ export function sanitiseExpression(text: string): {
 export type HistoryTurn = {
   role: "user" | "ashley" | "assistant" | string;
   content: string;
+  /**
+   * For assistant turns: the encoded MODE|vibe payload that was attached
+   * to the message row when the model emitted [image: MODE | vibe]. Used
+   * by the "send again" resolver to recover the most recent image attempt.
+   */
+  selfieVibe?: string | null;
+  /**
+   * For assistant turns: the URL of the actual delivered image, if one was
+   * generated and patched into the row. A non-null value here is the
+   * canonical "an actual image artifact exists" signal.
+   */
+  imageUrl?: string | null;
 };
 
 /**
@@ -152,9 +177,50 @@ export function findPriorVisualDescription(
 // End-to-end resolver
 // ---------------------------------------------------------------------------
 
+/**
+ * Walk the recent history backwards looking for the most recent assistant
+ * turn that carried an image attempt — either a non-null `selfieVibe`
+ * (an attempted [image: MODE | vibe] tag, regardless of whether the image
+ * actually rendered) or a non-null `imageUrl` (a delivered image).
+ *
+ * `mostRecentDelivered` returns only turns where `imageUrl` was set, which is
+ * the canonical "an actual image artifact existed" signal. Used to decide
+ * whether a "send again" should re-run a known-good attempt or escalate.
+ */
+export function findPriorImageAttempt(
+  history: ReadonlyArray<HistoryTurn>,
+  lookback = 10,
+): { vibe: string | null; mode: ImageMode | null; imageUrl: string | null; turnsBack: number } | null {
+  if (!Array.isArray(history) || history.length === 0) return null;
+  const start = history.length - 2; // skip the latest user turn (the "send again")
+  const stop = Math.max(0, start - lookback + 1);
+  for (let i = start; i >= stop; i--) {
+    const turn = history[i];
+    if (!turn) continue;
+    if (turn.role !== "ashley" && turn.role !== "assistant") continue;
+    const vibe = turn.selfieVibe ?? null;
+    const url = turn.imageUrl ?? null;
+    if (vibe || url) {
+      let mode: ImageMode | null = null;
+      let vibeText: string | null = vibe;
+      if (vibe) {
+        const decoded = decodeStoredVibe(vibe);
+        if (decoded) {
+          mode = decoded.mode;
+          vibeText = decoded.vibe;
+        }
+      }
+      return { vibe: vibeText, mode, imageUrl: url, turnsBack: start - i };
+    }
+  }
+  return null;
+}
+
 export type FollowUpResolution = {
   isFollowUp: true;
-  /** Raw latest user text (the "as a picture" phrase). */
+  /** Distinguishes `as-a-picture` style from explicit `send again`. */
+  kind: "render_prior_visual" | "send_again";
+  /** Raw latest user text (the "as a picture" / "send again" phrase). */
   followUpText: string;
   /** Prior user turn that the follow-up references, if found. */
   priorVisualText: string | null;
@@ -162,6 +228,12 @@ export type FollowUpResolution = {
   sanitisedVisualText: string | null;
   /** Whether sanitisation actually rewrote anything. */
   sanitised: boolean;
+  /**
+   * For send-again: the prior assistant attempt's vibe text (if any) and
+   * whether that prior attempt actually delivered an image artifact.
+   */
+  priorAttemptVibe: string | null;
+  priorAttemptDelivered: boolean;
   /** Resolved natural-language image request (combined). */
   resolvedRequest: string;
   /** Suggested image mode (from follow-up hint, else from sanitised text). */
@@ -174,8 +246,49 @@ export function resolveImageFollowUp(
   latestUserText: string,
   history: ReadonlyArray<HistoryTurn>,
 ): FollowUpResolution | null {
-  if (!isShortFollowUpImageRequest(latestUserText)) return null;
+  const isResend = isSendAgainRequest(latestUserText);
+  const isFollowUp = !isResend && isShortFollowUpImageRequest(latestUserText);
+  if (!isResend && !isFollowUp) return null;
 
+  // Send-again path: prefer the most recent assistant image attempt.
+  if (isResend) {
+    const priorAttempt = findPriorImageAttempt(history);
+    const priorVisual = findPriorVisualDescription(history);
+    const baseText = priorAttempt?.vibe ?? priorVisual?.text ?? null;
+    const { text: sanitised, changed } = baseText
+      ? sanitiseExpression(baseText)
+      : { text: null as string | null, changed: false };
+
+    let suggestedMode: ImageMode = priorAttempt?.mode ?? "PORTRAIT_MODE";
+    let modeReason = priorAttempt?.mode
+      ? "send-again — reusing mode from most recent assistant image attempt"
+      : "send-again — no prior attempt found, defaulting to PORTRAIT_MODE";
+    if (!priorAttempt?.mode && sanitised) {
+      const classified = classifyImageIntent(sanitised);
+      suggestedMode = classified.mode;
+      modeReason = `send-again — no prior attempt; classified from prior visual text (${classified.reason})`;
+    }
+
+    const resolvedRequest = sanitised
+      ? `RETRY image generation for Ashley: ${sanitised.trim()}.`
+      : `RETRY the most recent image generation request — but no prior visual context was found in history.`;
+
+    return {
+      isFollowUp: true,
+      kind: "send_again",
+      followUpText: latestUserText,
+      priorVisualText: priorVisual?.text ?? null,
+      sanitisedVisualText: sanitised,
+      sanitised: changed,
+      priorAttemptVibe: priorAttempt?.vibe ?? null,
+      priorAttemptDelivered: Boolean(priorAttempt?.imageUrl),
+      resolvedRequest,
+      suggestedMode,
+      modeReason,
+    };
+  }
+
+  // "As a picture" path: prefer the prior user turn that described a visual.
   const prior = findPriorVisualDescription(history);
   const priorRaw = prior?.text ?? null;
   const { text: sanitised, changed } = priorRaw
@@ -205,10 +318,13 @@ export function resolveImageFollowUp(
 
   return {
     isFollowUp: true,
+    kind: "render_prior_visual",
     followUpText: latestUserText,
     priorVisualText: priorRaw,
     sanitisedVisualText: sanitised,
     sanitised: changed,
+    priorAttemptVibe: null,
+    priorAttemptDelivered: false,
     resolvedRequest,
     suggestedMode,
     modeReason,
@@ -227,6 +343,51 @@ export function resolveImageFollowUp(
  */
 export function buildFollowUpTurnHint(resolution: FollowUpResolution): string {
   const lines: string[] = [];
+  if (resolution.kind === "send_again") {
+    lines.push("## TURN HINT — send-again / retry image request detected");
+    lines.push(
+      'The user\'s latest message is "send again" / "again" / "try again" / "resend" / "one more time". This is an INSTRUCTION to RE-RUN the most recent image generation, NOT to write more roleplay text describing an image.',
+    );
+    lines.push(`- Follow-up text: "${resolution.followUpText.trim()}"`);
+    if (resolution.priorAttemptVibe) {
+      lines.push(
+        `- Most recent assistant image attempt (decoded vibe): "${resolution.priorAttemptVibe.trim()}"`,
+      );
+      lines.push(
+        `- Prior attempt actually delivered an image artifact: ${resolution.priorAttemptDelivered ? "yes" : "no"}`,
+      );
+    } else {
+      lines.push("- No prior assistant image attempt was found in the recent history.");
+    }
+    if (resolution.priorVisualText) {
+      lines.push(
+        `- Prior user visual description (fallback): "${resolution.priorVisualText.trim()}"`,
+      );
+      if (resolution.sanitised && resolution.sanitisedVisualText) {
+        lines.push(
+          `- Sanitised version to USE in the image tag: "${resolution.sanitisedVisualText.trim()}"`,
+        );
+      }
+    }
+    lines.push(`- Resolved request: ${resolution.resolvedRequest}`);
+    lines.push(`- Suggested image mode: ${resolution.suggestedMode} (${resolution.modeReason}).`);
+    lines.push("");
+    lines.push("Required behaviour for THIS turn:");
+    lines.push(
+      "1. EMIT a fresh [image: <MODE> | <description>] tag for the same visual. Do NOT just write text saying you're sending again — that produces a phantom image.",
+    );
+    lines.push(
+      "2. If no prior visual context was found, ASK the user what they want re-sent. Do NOT roleplay sending an image.",
+    );
+    lines.push(
+      "3. Do NOT use any of the banned capability-wall phrases (Capability Truth Rule still applies).",
+    );
+    lines.push(
+      "4. Do NOT use phantom-delivery phrases like \"I present the image\", \"here it is\", \"is this it?\", \"sending it now\" without an actual [image:] tag in the SAME reply.",
+    );
+    return lines.join("\n");
+  }
+
   lines.push("## TURN HINT — short follow-up image intent detected");
   lines.push(
     'The user\'s latest message is a SHORT follow-up like "as a picture" / "show me" / "make it a picture". This is NOT a capability question. It is an INSTRUCTION to render the previously described visual as an image.',
@@ -262,5 +423,64 @@ export function buildFollowUpTurnHint(resolution: FollowUpResolution): string {
   lines.push(
     "4. Keep your caption short and neutral. For FULL_BODY_MODE / OUTFIT_MODE, the existing reply contract still applies — ask the user to confirm head-to-toe / feet / shoes visibility instead of celebrating.",
   );
+  lines.push(
+    "5. Do NOT use phantom-delivery phrases like \"I present the image\", \"here it is\", \"is this it?\", \"sending it now\" without an actual [image:] tag in the SAME reply.",
+  );
   return lines.join("\n");
 }
+
+// ---------------------------------------------------------------------------
+// Phantom-image detection (post-generation)
+// ---------------------------------------------------------------------------
+
+/**
+ * Phantom phrases — the kind of roleplay text the model writes when it is
+ * pretending to send / present / generate an image WITHOUT actually emitting
+ * an [image: MODE | ...] tag. If any of these appear in a reply that has no
+ * image marker AND no delivered image URL, we treat the reply as a false
+ * success and rewrite it to a diagnostic failure message.
+ */
+const PHANTOM_IMAGE_PHRASES: RegExp[] = [
+  /\bi (now |just |finally )?(present|am presenting|deliver|hand|hand over|send|am sending) (the |you |you the |an? )?(image|picture|photo|selfie|photograph)\b/i,
+  /\b(presenting|delivering|sending) (the |an? |you the |you an? )?(image|picture|photo|selfie|photograph)\b/i,
+  /\bi (have |'ve )?(generated|created|made|produced|crafted|drawn|rendered) (it|that)(?=[.!?,\s]|$)/i,
+  /\bi (have |'ve )?(generated|created|made|produced|crafted|drawn|rendered) (the |an? |this |that |you )?(image|picture|photo|selfie|photograph)\b/i,
+  /\b(here (it|she|i) (is|are)|here you (go|are))(?=[.!?,\s]|$)/i,
+  /\bis this it(?=[.!?,\s]|$)/i,
+  /\bis this truly(\.\.\.|,)? me\b/i,
+  /\b(sending|sent) (it|that|the (image|picture|photo|selfie))( again| now| over)?\b/i,
+  /\bsending again\b/i,
+  /\blook at (this|that|me|her)(?=[.!?,\s]|$)/i,
+  /\b\*?(presents|sends|hands over|holds up|delivers|reveals) (the |an? )?(image|picture|photo|selfie|photograph)\*?/i,
+  /\bi channel (that|the|this) feeling into the (image|picture|photo|selfie)\b/i,
+];
+
+/**
+ * Returns true iff the reply text contains phantom-delivery language and the
+ * server has confirmed there is NO accompanying image artifact (no [image:]
+ * marker AND no delivered imageUrl). The caller is responsible for swapping
+ * the assistant text for a diagnostic message.
+ */
+export function detectPhantomImageDelivery(args: {
+  text: string;
+  hasImageMarker: boolean;
+  hasDeliveredImageUrl: boolean;
+}): { phantom: true; matchedPhrase: string } | { phantom: false } {
+  const { text, hasImageMarker, hasDeliveredImageUrl } = args;
+  if (!text || typeof text !== "string") return { phantom: false };
+  if (hasImageMarker || hasDeliveredImageUrl) return { phantom: false };
+  for (const rx of PHANTOM_IMAGE_PHRASES) {
+    const m = rx.exec(text);
+    if (m) {
+      return { phantom: true, matchedPhrase: m[0] };
+    }
+  }
+  return { phantom: false };
+}
+
+/**
+ * Canonical user-facing diagnostic copy for a phantom-image incident. Per
+ * Wren's spec (no fake success, name the layer, no roleplay substitute).
+ */
+export const PHANTOM_IMAGE_DIAGNOSTIC =
+  "The image request was detected, but no image artifact was returned. That is a generation or UI delivery failure, not a successful image. I shouldn't have written it as if the image was already there. Want me to retry?";

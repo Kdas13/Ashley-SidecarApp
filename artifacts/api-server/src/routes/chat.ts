@@ -40,6 +40,8 @@ import {
 import {
   resolveImageFollowUp,
   buildFollowUpTurnHint,
+  detectPhantomImageDelivery,
+  PHANTOM_IMAGE_DIAGNOSTIC,
   type HistoryTurn as FollowUpHistoryTurn,
 } from "../lib/imageFollowUp";
 import { approveTicketById } from "./tickets";
@@ -816,6 +818,8 @@ router.post("/chat", async (req, res): Promise<void> => {
     const followUpHistory: FollowUpHistoryTurn[] = history.map((m) => ({
       role: m.role === "user" ? "user" : "ashley",
       content: (m.content ?? "").toString(),
+      selfieVibe: m.role === "user" ? null : m.selfieVibe ?? null,
+      imageUrl: m.role === "user" ? null : m.imageUrl ?? null,
     }));
     const resolution = resolveImageFollowUp(userContent, followUpHistory);
     if (resolution) {
@@ -948,6 +952,44 @@ router.post("/chat", async (req, res): Promise<void> => {
       assistantText = selfieVibe
         ? "*holds up the camera* one sec…"
         : "*tries to take a selfie but fumbles the camera* one sec — try again?";
+    }
+  }
+
+  // 5b. Phantom-image detector. If the model wrote roleplay-style image-
+  //     delivery prose ("I present the image", "Sending it now", "is this
+  //     it?", "*sends a photo*", etc.) WITHOUT actually emitting an [image:]
+  //     marker, we treat it as a false success and replace the text with
+  //     the diagnostic copy. The image-attempt state machine logs the
+  //     transition so the failure is visible in production logs.
+  {
+    const phantom = detectPhantomImageDelivery({
+      text: assistantText,
+      hasImageMarker: Boolean(selfieVibe),
+      hasDeliveredImageUrl: false,
+    });
+    req.log.info(
+      {
+        imageAttemptState: selfieVibe
+          ? "prompt_built"
+          : phantom.phantom
+            ? "ui_delivery_failed_phantom"
+            : "no_image_attempt",
+        userText: userContent.slice(0, 160),
+        hasImageMarker: Boolean(selfieVibe),
+        phantomDetected: phantom.phantom,
+        phantomMatchedPhrase: phantom.phantom ? phantom.matchedPhrase : null,
+      },
+      "image-attempt: post-model state",
+    );
+    if (phantom.phantom) {
+      req.log.warn(
+        {
+          matchedPhrase: phantom.matchedPhrase,
+          assistantPreview: assistantText.slice(0, 240),
+        },
+        "phantom-image: replacing roleplay-only image delivery with diagnostic copy",
+      );
+      assistantText = PHANTOM_IMAGE_DIAGNOSTIC;
     }
   }
 
@@ -2637,6 +2679,8 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
       const followUpHistory: FollowUpHistoryTurn[] = history.map((m) => ({
         role: m.role === "user" ? "user" : "ashley",
         content: (m.content ?? "").toString(),
+        selfieVibe: m.role === "user" ? null : m.selfieVibe ?? null,
+        imageUrl: m.role === "user" ? null : m.imageUrl ?? null,
       }));
       const resolution = resolveImageFollowUp(userRow.content, followUpHistory);
       if (resolution) {
@@ -2903,6 +2947,42 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
           : "*tries to take a selfie but fumbles the camera* one sec — try again?";
       }
     }
+
+    // Phantom-image detector (mirror of /chat). See ../lib/imageFollowUp.ts.
+    {
+      const phantom = detectPhantomImageDelivery({
+        text: finalText,
+        hasImageMarker: Boolean(selfieVibe),
+        hasDeliveredImageUrl: false,
+      });
+      req.log.info(
+        {
+          deviceId,
+          streamId,
+          imageAttemptState: selfieVibe
+            ? "prompt_built"
+            : phantom.phantom
+              ? "ui_delivery_failed_phantom"
+              : "no_image_attempt",
+          hasImageMarker: Boolean(selfieVibe),
+          phantomDetected: phantom.phantom,
+          phantomMatchedPhrase: phantom.phantom ? phantom.matchedPhrase : null,
+        },
+        "image-attempt: post-stream state",
+      );
+      if (phantom.phantom) {
+        req.log.warn(
+          {
+            streamId,
+            matchedPhrase: phantom.matchedPhrase,
+            finalTextPreview: finalText.slice(0, 240),
+          },
+          "phantom-image: replacing roleplay-only image delivery with diagnostic copy (stream)",
+        );
+        finalText = PHANTOM_IMAGE_DIAGNOSTIC;
+      }
+    }
+
     // Tail-defensive: if the model produced no text at all (shouldn't
     // normally happen), drop in the same fallback /chat uses so the row
     // isn't empty.
