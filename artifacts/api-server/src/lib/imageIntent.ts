@@ -349,8 +349,22 @@ export type ParsedMarker = {
 
 export function parseImageMarker(text: string): ParsedMarker | null {
   if (!text) return null;
+  // Pick the EARLIEST marker by position across both syntaxes — otherwise a
+  // legacy [selfie:...] that appears before a (model-emitted) [image:...]
+  // would be left in the user-visible text after the new-syntax match got
+  // stripped, leaking a raw tag into the chat.
   const newMatch = text.match(IMAGE_MARKER_RX);
-  if (newMatch && typeof newMatch.index === "number") {
+  const legacyMatch = text.match(LEGACY_SELFIE_MARKER_RX);
+  const newIdx = newMatch && typeof newMatch.index === "number" ? newMatch.index : -1;
+  const legacyIdx =
+    legacyMatch && typeof legacyMatch.index === "number" ? legacyMatch.index : -1;
+
+  const useNew =
+    newIdx !== -1 && (legacyIdx === -1 || newIdx <= legacyIdx);
+  const useLegacy =
+    !useNew && legacyIdx !== -1;
+
+  if (useNew && newMatch) {
     const declared = (newMatch[1] ?? "").trim().toUpperCase();
     const vibe = (newMatch[2] ?? "").trim();
     let mode: ImageMode;
@@ -367,13 +381,12 @@ export function parseImageMarker(text: string): ParsedMarker | null {
       mode,
       vibe,
       rawMatch: newMatch[0],
-      startIndex: newMatch.index,
+      startIndex: newIdx,
       length: newMatch[0].length,
       reason,
     };
   }
-  const legacyMatch = text.match(LEGACY_SELFIE_MARKER_RX);
-  if (legacyMatch && typeof legacyMatch.index === "number") {
+  if (useLegacy && legacyMatch) {
     const vibe = (legacyMatch[1] ?? "").trim();
     // Legacy [selfie:...] — respect intent in the description: if it talks
     // about full-body / outfit / pose, route there even though the tag says
@@ -390,7 +403,7 @@ export function parseImageMarker(text: string): ParsedMarker | null {
       mode,
       vibe,
       rawMatch: legacyMatch[0],
-      startIndex: legacyMatch.index,
+      startIndex: legacyIdx,
       length: legacyMatch[0].length,
       reason,
     };
