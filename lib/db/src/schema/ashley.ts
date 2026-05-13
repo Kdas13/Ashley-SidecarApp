@@ -3,6 +3,7 @@ import {
   boolean,
   index,
   integer,
+  real,
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
@@ -267,6 +268,28 @@ export const memoriesTable = pgTable(
       .notNull()
       .defaultNow()
       .$onUpdate(() => new Date()),
+    // ----- Memory Triage Layer (additive; do not replace existing fields).
+    //
+    // memType: semantic type for triage classification.
+    //   "preference" | "event" | "correction" | "identity" | "system" | "relationship"
+    // Inferred from category at distillation time.
+    memType: text("mem_type"),
+    // triageImportance: string importance band ("low" | "medium" | "high" | "core").
+    // Derived from memType (identity/system/relationship=high, correction=medium,
+    // preference/event=low). Separate from the existing integer `importance` (1–5).
+    triageImportance: text("triage_importance"),
+    // state: prompt-inclusion gate.
+    //   "active"  — eligible for prompt injection (default for all rows).
+    //   "passive" — stored, excluded from prompt; restored to active on reference.
+    state: text("state").notNull().default("active"),
+    // lastUsedAt: timestamp of last prompt inclusion. Null = never tracked.
+    // ACTIVE → PASSIVE after 30 days without inclusion. Updated by the triage
+    // background job each chat turn.
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    // confidenceScore: 0.0–1.0 float. Starts at 0.7 on creation; incremented
+    // by 0.1 (max 1.0) each time a duplicate is detected and merged.
+    // Separate from the existing integer `confidence` (1–5).
+    confidenceScore: real("confidence_score"),
   },
   (t) => ({
     byDevice: index("memories_device_idx").on(t.deviceId),

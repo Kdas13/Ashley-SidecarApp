@@ -58,7 +58,14 @@ function joinSection(label: string, value: string): string {
 // ---------------------------------------------------------------------------
 
 export function filterMemoriesForPrompt(memories: Memory[]): Memory[] {
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   return memories.filter((m) => {
+    // Triage layer: exclude memories explicitly marked passive in the DB.
+    if ((m.state ?? "active") === "passive") return false;
+    // Triage layer: real-time 30-day inactivity check (catches the current
+    // turn before the background DB update has propagated).
+    if (m.lastUsedAt !== null && m.lastUsedAt !== undefined && m.lastUsedAt < thirtyDaysAgo) return false;
+    // Existing reuse/importance filter — unchanged.
     const reuse = (m.reuse ?? "relevant_only").trim();
     if (reuse === "often") return true;
     if (reuse === "relevant_only") return true;

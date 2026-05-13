@@ -3,7 +3,7 @@ import { z } from "zod";
 import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
 import {
   db,
   ashleyProfileTable,
@@ -742,6 +742,9 @@ router.post("/chat", async (req, res): Promise<void> => {
         .limit(HISTORY_WINDOW),
     ]);
     history.reverse();
+    // Triage: fire-and-forget — transitions stale memories to PASSIVE and
+    // updates lastUsedAt for memories that will be included in this turn.
+    void applyMemoryTriageBackground(deviceId, memories);
   } catch (err) {
     req.log.error({ err }, "Failed to load chat context from DB");
     res.status(500).json({ error: "Could not load conversation" });
@@ -1455,6 +1458,101 @@ router.post("/chat/summarize", async (req, res): Promise<void> => {
 const ALLOWED_CATEGORIES = ["identity", "relational", "project", "daily", "landmark"] as const;
 const ALLOWED_REUSE = ["often", "relevant_only", "rarely"] as const;
 
+// ---------------------------------------------------------------------------
+// Memory Triage Layer helpers
+// ---------------------------------------------------------------------------
+
+const MEM_TYPE_BY_CATEGORY: Record<string, string> = {
+  identity: "identity",
+  relational: "relationship",
+  daily: "preference",
+  landmark: "event",
+  project: "preference",
+};
+
+function inferMemType(category: string): string {
+  return MEM_TYPE_BY_CATEGORY[category] ?? "preference";
+}
+
+function inferTriageImportance(
+  memType: string,
+): "low" | "medium" | "high" | "core" {
+  if (
+    memType === "identity" ||
+    memType === "system" ||
+    memType === "relationship"
+  )
+    return "high";
+  if (memType === "correction") return "medium";
+  return "low"; // preference, event
+}
+
+function normalizeMemoryContent(content: string): string {
+  return content.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+// Fire-and-forget: run after every memory fetch that precedes a prompt build.
+// Two duties:
+//   1. ACTIVE → PASSIVE: any memory not used for 30+ days (by lastUsedAt).
+//   2. Update lastUsedAt = now for memories that pass the reuse/importance
+//      filter and will be included in the current prompt turn.
+// Neither duty blocks the chat response; failures are logged and ignored.
+async function applyMemoryTriageBackground(
+  deviceId: string,
+  memories: Memory[],
+): Promise<void> {
+  try {
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const now = new Date();
+
+    // 1. ACTIVE → PASSIVE for memories not used in 30 days.
+    // Only considers memories where lastUsedAt is set (i.e. those created or
+    // touched after the triage layer went live). Old rows with null lastUsedAt
+    // are left untouched so existing behaviour is preserved.
+    await db
+      .update(memoriesTable)
+      .set({ state: "passive" })
+      .where(
+        and(
+          eq(memoriesTable.deviceId, deviceId),
+          sql`(${memoriesTable.state} IS NULL OR ${memoriesTable.state} = 'active')`,
+          sql`${memoriesTable.lastUsedAt} IS NOT NULL`,
+          sql`${memoriesTable.lastUsedAt} < ${thirtyDaysAgo}`,
+        ),
+      );
+
+    // 2. Mark as recently used: memories that pass the reuse/importance gate
+    // (inline — no state check here to avoid circular dependency with
+    // filterMemoriesForPrompt's new state filter).
+    const includedIds = memories
+      .filter((m) => {
+        const reuse = (m.reuse ?? "relevant_only").trim();
+        if (reuse === "often") return true;
+        if (reuse === "relevant_only") return true;
+        if (reuse === "rarely") return m.importance >= 4;
+        return true;
+      })
+      .map((m) => m.id);
+
+    if (includedIds.length > 0) {
+      await db
+        .update(memoriesTable)
+        .set({ state: "active", lastUsedAt: now })
+        .where(
+          and(
+            eq(memoriesTable.deviceId, deviceId),
+            inArray(memoriesTable.id, includedIds),
+          ),
+        );
+    }
+  } catch (err) {
+    logger.error(
+      { err },
+      "Memory triage background update failed (non-fatal)",
+    );
+  }
+}
+
 async function distillMemories(
   deviceId: string,
   userText: string,
@@ -1547,10 +1645,69 @@ async function distillMemories(
       }));
 
     if (memories.length === 0) return;
-    await db.insert(memoriesTable).values(memories);
+
+    // Fetch existing memories for duplicate detection.
+    // One query up-front; comparisons happen in-process.
+    const existingRows = await db
+      .select({
+        id: memoriesTable.id,
+        content: memoriesTable.content,
+        confidenceScore: memoriesTable.confidenceScore,
+        state: memoriesTable.state,
+      })
+      .from(memoriesTable)
+      .where(eq(memoriesTable.deviceId, deviceId));
+
+    const existingByNorm = new Map(
+      existingRows.map((r) => [normalizeMemoryContent(r.content), r]),
+    );
+
+    let inserted = 0;
+    let updated = 0;
+
+    for (const mem of memories) {
+      const norm = normalizeMemoryContent(mem.content);
+      const existing = existingByNorm.get(norm);
+
+      if (existing) {
+        // Duplicate — update metadata; do not create a second record.
+        // Incrementing confidenceScore signals increasing reliability.
+        // Restoring state to "active" handles the PASSIVE → ACTIVE case
+        // (acceptance test: referencing a passive memory reactivates it).
+        const newScore = Math.min(
+          1.0,
+          (existing.confidenceScore ?? 0.7) + 0.1,
+        );
+        await db
+          .update(memoriesTable)
+          .set({ lastUsedAt: new Date(), confidenceScore: newScore, state: "active" })
+          .where(eq(memoriesTable.id, existing.id));
+        updated++;
+      } else {
+        // New memory — insert with full triage stamp.
+        const mt = inferMemType(mem.category);
+        await db.insert(memoriesTable).values({
+          ...mem,
+          memType: mt,
+          triageImportance: inferTriageImportance(mt),
+          state: "active",
+          lastUsedAt: new Date(),
+          confidenceScore: 0.7,
+        });
+        inserted++;
+        // Register in local map so within-batch duplicates are caught.
+        existingByNorm.set(norm, {
+          id: mem.id,
+          content: mem.content,
+          confidenceScore: 0.7,
+          state: "active",
+        });
+      }
+    }
+
     logger.info(
-      { count: memories.length, deviceId },
-      "Distilled new memories",
+      { inserted, updated, deviceId },
+      "Memory distillation complete (triage)",
     );
   } catch (err) {
     logger.error({ err }, "Memory distillation failed");
@@ -2208,6 +2365,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
         .limit(HISTORY_WINDOW),
     ]);
     history.reverse();
+    void applyMemoryTriageBackground(deviceId, memories);
   } catch (err) {
     req.log.error({ err }, "Failed to load chat context (stream)");
     res.status(500).json({ error: "Could not load conversation" });
@@ -2808,6 +2966,7 @@ router.post("/chat/image", async (req, res): Promise<void> => {
         .limit(HISTORY_WINDOW),
     ]);
     history.reverse();
+    void applyMemoryTriageBackground(deviceId, memories);
   } catch (err) {
     req.log.error({ err }, "Failed to load chat context for image turn");
     res.status(500).json({ error: "Could not load conversation" });
