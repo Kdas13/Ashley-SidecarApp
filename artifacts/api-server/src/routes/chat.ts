@@ -518,8 +518,24 @@ async function findDuplicateTicket(rawSummary: string): Promise<string | null> {
 
 router.post("/chat", async (req, res): Promise<void> => {
   // ===========================================================================
-  // VERY TOP INTERCEPT — runs before getDeviceId, before Zod, before LLM.
-  // create ticket: <summary>
+  // STEP 1: Multi-ticket guard — BEFORE interceptor logic, BEFORE any DB touch.
+  // If the message contains more than one "create ticket:" the entire request
+  // is rejected here. The interceptor below is never reached.
+  // ===========================================================================
+  {
+    const _gc = req.body as Record<string, unknown> | null | undefined;
+    const _gContent = typeof ((_gc?.["userMessage"] as Record<string, unknown> | null | undefined)?.["content"]) === "string"
+      ? ((_gc!["userMessage"] as Record<string, unknown>)["content"] as string) : "";
+    const _gCount = (_gContent.toLowerCase().match(/create ticket:/g) ?? []).length;
+    if (_gCount > 1) {
+      res.json({ reply: "Invalid command: multiple ticket instructions detected. Only one allowed per message." });
+      return;
+    }
+  }
+
+  // ===========================================================================
+  // STEP 2: Single create ticket: interceptor — exactly one command guaranteed.
+  // Runs before getDeviceId, before Zod, before LLM.
   // ===========================================================================
   {
     const _rawBody = req.body as Record<string, unknown> | null | undefined;
@@ -527,11 +543,6 @@ router.post("/chat", async (req, res): Promise<void> => {
     const _content = typeof _rawMsg?.["content"] === "string" ? (_rawMsg["content"] as string) : "";
     if (_content.trimStart().toLowerCase().startsWith("create ticket:")) {
       console.log("CREATE_TICKET_INTERCEPTOR_TRIGGERED");
-      const _ticketCount = (_content.toLowerCase().match(/create ticket:/g) ?? []).length;
-      if (_ticketCount > 1) {
-        res.json({ reply: "Invalid command: multiple ticket instructions detected. Only one allowed per message." });
-        return;
-      }
       const summary = _content.trim().slice("create ticket:".length).trim();
       if (!summary) {
         res.json({ reply: "Please provide a ticket summary after: create ticket:" });
@@ -1848,8 +1859,39 @@ const ChatStreamBodySchema = z
 
 router.post("/chat/stream", async (req, res): Promise<void> => {
   // ===========================================================================
-  // VERY TOP INTERCEPT — runs before getDeviceId, before Zod, before LLM.
-  // create ticket: <summary>
+  // STEP 1: Multi-ticket guard — BEFORE interceptor logic, BEFORE any DB touch.
+  // Rejected here via SSE so the ack renders in the chat bubble.
+  // The interceptor below is never reached for multi-command messages.
+  // ===========================================================================
+  {
+    const _gc = req.body as Record<string, unknown> | null | undefined;
+    const _gContent = typeof ((_gc?.["userMessage"] as Record<string, unknown> | null | undefined)?.["content"]) === "string"
+      ? ((_gc!["userMessage"] as Record<string, unknown>)["content"] as string) : "";
+    const _gCount = (_gContent.toLowerCase().match(/create ticket:/g) ?? []).length;
+    if (_gCount > 1) {
+      const _ackId = crypto.randomUUID();
+      const _ackNow = new Date().toISOString();
+      const _ackMsg = {
+        id: _ackId, role: "ashley", content: "", status: "streaming",
+        imageUrl: null, selfieVibe: null, imageMimeType: null, imageCategory: null,
+        imageCaption: null, imageAnalysisMode: null, imageRemembered: null,
+        replyToId: null, replyToRole: null, replyToPreview: null, createdAt: _ackNow,
+      };
+      res.status(200);
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders?.();
+      res.write(`event: meta\ndata: ${JSON.stringify({ streamId: _ackId, userMessage: null, ashleyMessage: _ackMsg, mode: "new", continueFromMessageId: null })}\n\n`);
+      res.write(`event: done\ndata: ${JSON.stringify({ content: "Invalid command: multiple ticket instructions detected. Only one allowed per message.", selfieVibe: null })}\n\n`);
+      res.end();
+      return;
+    }
+  }
+
+  // ===========================================================================
+  // STEP 2: Single create ticket: interceptor — exactly one command guaranteed.
   // SSE response so the ack renders in the chat bubble.
   // ===========================================================================
   {
@@ -1858,27 +1900,6 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     const _content = typeof _rawMsg?.["content"] === "string" ? (_rawMsg["content"] as string) : "";
     if (_content.trimStart().toLowerCase().startsWith("create ticket:")) {
       console.log("CREATE_TICKET_INTERCEPTOR_TRIGGERED");
-      const _ticketCount = (_content.toLowerCase().match(/create ticket:/g) ?? []).length;
-      if (_ticketCount > 1) {
-        const _ackId = crypto.randomUUID();
-        const _ackNow = new Date().toISOString();
-        const _ackMsg = {
-          id: _ackId, role: "ashley", content: "", status: "streaming",
-          imageUrl: null, selfieVibe: null, imageMimeType: null, imageCategory: null,
-          imageCaption: null, imageAnalysisMode: null, imageRemembered: null,
-          replyToId: null, replyToRole: null, replyToPreview: null, createdAt: _ackNow,
-        };
-        res.status(200);
-        res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-        res.setHeader("Cache-Control", "no-cache, no-transform");
-        res.setHeader("Connection", "keep-alive");
-        res.setHeader("X-Accel-Buffering", "no");
-        res.flushHeaders?.();
-        res.write(`event: meta\ndata: ${JSON.stringify({ streamId: _ackId, userMessage: null, ashleyMessage: _ackMsg, mode: "new", continueFromMessageId: null })}\n\n`);
-        res.write(`event: done\ndata: ${JSON.stringify({ content: "Invalid command: multiple ticket instructions detected. Only one allowed per message.", selfieVibe: null })}\n\n`);
-        res.end();
-        return;
-      }
       const summary = _content.trim().slice("create ticket:".length).trim();
       let ackContent: string;
       if (!summary) {
