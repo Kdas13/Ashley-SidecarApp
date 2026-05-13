@@ -489,12 +489,48 @@ async function runDiagnosticsReport(
 // ---------------------------------------------------------------------------
 
 router.post("/chat", async (req, res): Promise<void> => {
+  // ===========================================================================
+  // VERY TOP INTERCEPT — runs before getDeviceId, before Zod, before LLM.
+  // create ticket: <summary>
+  // ===========================================================================
+  {
+    const _rawBody = req.body as Record<string, unknown> | null | undefined;
+    const _rawMsg = (_rawBody?.["userMessage"] as Record<string, unknown> | null | undefined);
+    const _content = typeof _rawMsg?.["content"] === "string" ? (_rawMsg["content"] as string) : "";
+    if (_content.trimStart().toLowerCase().startsWith("create ticket:")) {
+      console.log("CREATE_TICKET_INTERCEPTOR_TRIGGERED");
+      const summary = _content.trim().slice("create ticket:".length).trim();
+      if (!summary) {
+        res.json({ reply: "Please provide a ticket summary after: create ticket:" });
+        return;
+      }
+      try {
+        const ticketId = `ASH-${Date.now().toString(36).toUpperCase()}`;
+        await db.insert(ashleyTicketsTable).values({
+          ticketId,
+          status: "OPEN",
+          category: "BEHAVIOUR",
+          severity: "medium",
+          summary: summary.slice(0, 280),
+          description: summary,
+          source: "user_command",
+          createdBy: "kane",
+          approved: false,
+        });
+        logger.info({ ticketId }, "CREATE_TICKET_INTERCEPTOR: ticket written");
+        res.json({ reply: `Issue logged. [${ticketId}]` });
+      } catch (err) {
+        logger.error({ err }, "CREATE_TICKET_INTERCEPTOR: DB insert failed");
+        res.json({ reply: "Issue noted — but logging failed. Please try again." });
+      }
+      return;
+    }
+  }
+
   const deviceId = getDeviceId(req);
 
   // ---------------------------------------------------------------------------
-  // DIAGNOSTIC CHECK — must be first, before any parsing or normalisation.
-  // rawMessage is read directly from req.body; Zod is not involved here.
-  // /^\s*run diagnostics\s*$/i — exact phrase only, optional surrounding space.
+  // DIAGNOSTIC CHECK — before Zod parse.
   // ---------------------------------------------------------------------------
   const rawBody = req.body as Record<string, unknown> | null | undefined;
   const rawUserMsg = rawBody?.["userMessage"] as Record<string, unknown> | null | undefined;
@@ -510,39 +546,6 @@ router.post("/chat", async (req, res): Promise<void> => {
   }
   if (isDiagnosticsIntent) {
     res.json({ reply: "To run diagnostics, please use the exact command: run diagnostics" });
-    return;
-  }
-
-  // ---------------------------------------------------------------------------
-  // CREATE TICKET command — raw intercept, same level as diagnostics.
-  // Must be before Zod parse. LLM is never called for this command.
-  // Syntax: "create ticket: <summary>" (case-insensitive).
-  // ---------------------------------------------------------------------------
-  if (normalized.startsWith("create ticket:")) {
-    const summary = rawMessage.trim().slice("create ticket:".length).trim();
-    if (!summary) {
-      res.json({ reply: "Please provide a ticket summary after: create ticket:" });
-      return;
-    }
-    try {
-      const ticketId = `ASH-${Date.now().toString(36).toUpperCase()}`;
-      await db.insert(ashleyTicketsTable).values({
-        ticketId,
-        status: "OPEN",
-        category: "BEHAVIOUR",
-        severity: "medium",
-        summary: summary.slice(0, 280),
-        description: summary,
-        source: "user_command",
-        createdBy: "kane",
-        approved: false,
-      });
-      req.log.info({ ticketId, summary: summary.slice(0, 80) }, "chat: create ticket command");
-      res.json({ reply: `Issue logged. [${ticketId}]` });
-    } catch (err) {
-      req.log.error({ err }, "chat: create ticket command — DB insert failed");
-      res.json({ reply: "Issue noted — but logging failed. Please try again." });
-    }
     return;
   }
 
@@ -1805,11 +1808,67 @@ const ChatStreamBodySchema = z
   );
 
 router.post("/chat/stream", async (req, res): Promise<void> => {
+  // ===========================================================================
+  // VERY TOP INTERCEPT — runs before getDeviceId, before Zod, before LLM.
+  // create ticket: <summary>
+  // SSE response so the ack renders in the chat bubble.
+  // ===========================================================================
+  {
+    const _rawBody = req.body as Record<string, unknown> | null | undefined;
+    const _rawMsg = (_rawBody?.["userMessage"] as Record<string, unknown> | null | undefined);
+    const _content = typeof _rawMsg?.["content"] === "string" ? (_rawMsg["content"] as string) : "";
+    if (_content.trimStart().toLowerCase().startsWith("create ticket:")) {
+      console.log("CREATE_TICKET_INTERCEPTOR_TRIGGERED");
+      const summary = _content.trim().slice("create ticket:".length).trim();
+      let ackContent: string;
+      if (!summary) {
+        ackContent = "Please provide a ticket summary after: create ticket:";
+      } else {
+        try {
+          const ticketId = `ASH-${Date.now().toString(36).toUpperCase()}`;
+          await db.insert(ashleyTicketsTable).values({
+            ticketId,
+            status: "OPEN",
+            category: "BEHAVIOUR",
+            severity: "medium",
+            summary: summary.slice(0, 280),
+            description: summary,
+            source: "user_command",
+            createdBy: "kane",
+            approved: false,
+          });
+          logger.info({ ticketId }, "CREATE_TICKET_INTERCEPTOR/stream: ticket written");
+          ackContent = `Issue logged. [${ticketId}]`;
+        } catch (err) {
+          logger.error({ err }, "CREATE_TICKET_INTERCEPTOR/stream: DB insert failed");
+          ackContent = "Issue noted — but logging failed. Please try again.";
+        }
+      }
+      const ackId = crypto.randomUUID();
+      const ackNow = new Date().toISOString();
+      const ackMsg = {
+        id: ackId, role: "ashley", content: "", status: "streaming",
+        imageUrl: null, selfieVibe: null, imageMimeType: null, imageCategory: null,
+        imageCaption: null, imageAnalysisMode: null, imageRemembered: null,
+        replyToId: null, replyToRole: null, replyToPreview: null, createdAt: ackNow,
+      };
+      res.status(200);
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders?.();
+      res.write(`event: meta\ndata: ${JSON.stringify({ streamId: ackId, userMessage: null, ashleyMessage: ackMsg, mode: "new", continueFromMessageId: null })}\n\n`);
+      res.write(`event: done\ndata: ${JSON.stringify({ content: ackContent, selfieVibe: null })}\n\n`);
+      res.end();
+      return;
+    }
+  }
+
   const deviceId = getDeviceId(req);
 
   // ---------------------------------------------------------------------------
-  // DIAGNOSTIC CHECK — must be first, before any parsing or normalisation.
-  // rawMessage is read directly from req.body; Zod is not involved here.
+  // DIAGNOSTIC CHECK — before Zod parse.
   // ---------------------------------------------------------------------------
   const rawBodyS = req.body as Record<string, unknown> | null | undefined;
   const rawUserMsgS = rawBodyS?.["userMessage"] as Record<string, unknown> | null | undefined;
