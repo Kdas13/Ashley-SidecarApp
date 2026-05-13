@@ -634,11 +634,15 @@ router.post("/chat", async (req, res): Promise<void> => {
       },
     };
 
-    res.json({ userMessage: userRow, ashleyMessage: ashleyRow, _debug });
+    // TEMP DIAGNOSTIC PREFIX — remove once LLM source confirmed
+    const _llmTagged = { ...ashleyRow, content: "[LLM] " + (ashleyRow.content ?? "") };
+    res.json({ userMessage: userRow, ashleyMessage: _llmTagged, _debug });
     return;
   }
 
-  res.json({ userMessage: userRow, ashleyMessage: ashleyRow });
+  // TEMP DIAGNOSTIC PREFIX — remove once LLM source confirmed
+  const _llmTagged = { ...ashleyRow, content: "[LLM] " + (ashleyRow.content ?? "") };
+  res.json({ userMessage: userRow, ashleyMessage: _llmTagged });
 });
 
 // ---------------------------------------------------------------------------
@@ -1894,6 +1898,8 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   let accumulated = "";
   let finishedNaturally = false;
   let upstreamErr: unknown = null;
+  // TEMP DIAGNOSTIC PREFIX — remove once LLM source confirmed
+  let _firstLLMChunk = true;
 
   try {
     for await (const chunk of streamChatText({
@@ -1904,7 +1910,10 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     })) {
       if (chunk.length === 0) continue;
       accumulated += chunk;
-      writeEvent("delta", { text: chunk });
+      // TEMP: prefix only the first emitted delta, not the stored content
+      const _emitText = _firstLLMChunk ? "[LLM] " + chunk : chunk;
+      _firstLLMChunk = false;
+      writeEvent("delta", { text: _emitText });
     }
     finishedNaturally = true;
   } catch (err) {
