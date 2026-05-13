@@ -42,6 +42,7 @@ import {
   buildFollowUpTurnHint,
   detectPhantomImageDelivery,
   PHANTOM_IMAGE_DIAGNOSTIC,
+  synthesizeImageActionReply,
   type HistoryTurn as FollowUpHistoryTurn,
 } from "../lib/imageFollowUp";
 import { approveTicketById } from "./tickets";
@@ -823,6 +824,53 @@ router.post("/chat", async (req, res): Promise<void> => {
     }));
     const resolution = resolveImageFollowUp(userContent, followUpHistory);
     if (resolution) {
+      // HARD SERVER-SIDE GATE. Wren follow-up: TURN HINT alone wasn't enough —
+      // the model still produced refusal prose / phantom success. Synthesise
+      // the [image: MODE | description] marker server-side and short-circuit
+      // the LLM. The existing parseImageMarker → /chat/selfie pipeline takes
+      // over from here, so the user-facing reply is a short, action-first
+      // caption + a real generation job — never a refusal, never a fake
+      // success.
+      const synth = synthesizeImageActionReply(resolution);
+      if (synth) {
+        const gateSelfieVibe = synth.selfieVibe;
+        const gateAssistantText = synth.captionText;
+        req.log.info(
+          {
+            kind: resolution.kind,
+            imageMode: synth.mode,
+            captionPreview: synth.captionText.slice(0, 200),
+            descriptionPreview: synth.description.slice(0, 200),
+            modeReason: resolution.modeReason,
+            imageGenerationTriggered: "yes — server-side marker synthesised, /chat/selfie will run",
+            llmCallSkipped: true,
+          },
+          "image-intent: HARD GATE — LLM bypassed, marker synthesised server-side",
+        );
+        let gateAshleyRow: Message;
+        try {
+          const [inserted] = await db
+            .insert(messagesTable)
+            .values({
+              id: newId(),
+              deviceId,
+              role: "ashley",
+              content: gateAssistantText,
+              selfieVibe: gateSelfieVibe,
+            })
+            .returning();
+          gateAshleyRow = inserted!;
+        } catch (err) {
+          req.log.error({ err }, "image-intent gate: failed to persist synthesised reply");
+          res.status(500).json({ error: "Could not save Ashley's reply" });
+          return;
+        }
+        res.json({ userMessage: userRow, ashleyMessage: gateAshleyRow });
+        return;
+      }
+      // Fallback: synth couldn't produce a reply (e.g. send-again with no
+      // prior context). Keep the legacy TURN HINT path so the model can ask
+      // a clarifying question rather than the server emitting an empty marker.
       systemPrompt = `${systemPrompt}\n\n${buildFollowUpTurnHint(resolution)}`;
       req.log.info(
         {
@@ -833,9 +881,9 @@ router.post("/chat", async (req, res): Promise<void> => {
           resolvedRequest: resolution.resolvedRequest.slice(0, 240),
           suggestedMode: resolution.suggestedMode,
           modeReason: resolution.modeReason,
-          imageGenerationTriggered: "deferred — depends on model emitting [image: ...] tag this turn",
+          imageGenerationTriggered: "no — no actionable description, falling back to TURN HINT",
         },
-        "image-followup: short follow-up image intent detected — turn hint injected",
+        "image-followup: synth declined — TURN HINT fallback engaged",
       );
     }
   } catch (err) {
@@ -2674,6 +2722,12 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
 
   // Short follow-up image intent resolver (mirror of /chat). Only meaningful
   // for new-turn mode where there's a fresh user message to inspect.
+  //
+  // HARD SERVER-SIDE GATE (Wren follow-up): if the resolver fires AND we can
+  // synthesise a marker server-side, capture the synth result here and use it
+  // to short-circuit the streaming LLM call below. This guarantees image
+  // intent → image action, never refusal prose / phantom success.
+  let imageGateSynth: ReturnType<typeof synthesizeImageActionReply> | null = null;
   if (!isContinue && userRow) {
     try {
       const followUpHistory: FollowUpHistoryTurn[] = history.map((m) => ({
@@ -2684,21 +2738,39 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
       }));
       const resolution = resolveImageFollowUp(userRow.content, followUpHistory);
       if (resolution) {
-        systemPrompt = `${systemPrompt}\n\n${buildFollowUpTurnHint(resolution)}`;
-        req.log.info(
-          {
-            deviceId,
-            followUpText: resolution.followUpText.slice(0, 200),
-            priorVisualText: resolution.priorVisualText?.slice(0, 200) ?? null,
-            sanitisedVisualText: resolution.sanitisedVisualText?.slice(0, 200) ?? null,
-            sanitised: resolution.sanitised,
-            resolvedRequest: resolution.resolvedRequest.slice(0, 240),
-            suggestedMode: resolution.suggestedMode,
-            modeReason: resolution.modeReason,
-            imageGenerationTriggered: "deferred — depends on model emitting [image: ...] tag this turn",
-          },
-          "image-followup: short follow-up image intent detected — turn hint injected (stream)",
-        );
+        const synth = synthesizeImageActionReply(resolution);
+        if (synth) {
+          imageGateSynth = synth;
+          req.log.info(
+            {
+              deviceId,
+              kind: resolution.kind,
+              imageMode: synth.mode,
+              captionPreview: synth.captionText.slice(0, 200),
+              descriptionPreview: synth.description.slice(0, 200),
+              modeReason: resolution.modeReason,
+              imageGenerationTriggered: "yes — server-side marker synthesised, /chat/selfie will run",
+              llmCallSkipped: true,
+            },
+            "image-intent: HARD GATE (stream) — LLM bypassed, marker synthesised server-side",
+          );
+        } else {
+          systemPrompt = `${systemPrompt}\n\n${buildFollowUpTurnHint(resolution)}`;
+          req.log.info(
+            {
+              deviceId,
+              followUpText: resolution.followUpText.slice(0, 200),
+              priorVisualText: resolution.priorVisualText?.slice(0, 200) ?? null,
+              sanitisedVisualText: resolution.sanitisedVisualText?.slice(0, 200) ?? null,
+              sanitised: resolution.sanitised,
+              resolvedRequest: resolution.resolvedRequest.slice(0, 240),
+              suggestedMode: resolution.suggestedMode,
+              modeReason: resolution.modeReason,
+              imageGenerationTriggered: "no — no actionable description, falling back to TURN HINT",
+            },
+            "image-followup: synth declined — TURN HINT fallback engaged (stream)",
+          );
+        }
       }
     } catch (err) {
       req.log.warn({ err }, "image-followup: resolver threw in /chat/stream (non-fatal)");
@@ -2823,6 +2895,50 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     // stream ownership and drop late tokens from mismatched streams.
     requestId: requestId ?? null,
   });
+
+  // ---- HARD GATE: image-intent short-circuit. If the resolver upstream
+  //      synthesised a marker, emit caption + done immediately and persist
+  //      the row WITH selfieVibe set, bypassing the LLM entirely. The
+  //      mobile then polls /chat/selfie/:streamId for the actual image.
+  if (imageGateSynth) {
+    const gateText = imageGateSynth.captionText;
+    const gateVibe = imageGateSynth.selfieVibe;
+    writeEvent("delta", { text: gateText });
+    try {
+      await db
+        .update(messagesTable)
+        .set({ content: gateText, status: "complete", selfieVibe: gateVibe })
+        .where(eq(messagesTable.id, streamId));
+      writeEvent("done", { content: gateText, selfieVibe: gateVibe });
+      req.log.info(
+        {
+          streamId,
+          deviceId,
+          imageMode: imageGateSynth.mode,
+          captionPreview: gateText.slice(0, 200),
+          descriptionPreview: imageGateSynth.description.slice(0, 200),
+        },
+        "image-intent: HARD GATE (stream) — marker persisted, selfie pipeline armed",
+      );
+    } catch (err) {
+      req.log.error({ err, streamId }, "image-intent gate (stream): persist failed");
+      // Hygiene: don't leave the row stuck in `streaming`. Best-effort
+      // mark interrupted so the recovery sweep doesn't keep retrying it.
+      try {
+        await db
+          .update(messagesTable)
+          .set({ status: "interrupted" })
+          .where(eq(messagesTable.id, streamId));
+      } catch (markErr) {
+        req.log.warn({ err: markErr, streamId }, "image-intent gate (stream): also failed to mark row interrupted");
+      }
+      if (!res.writableEnded) writeEvent("error", { error: "Couldn't save reply." });
+    } finally {
+      inFlightStreams.delete(streamId);
+      if (!res.writableEnded) res.end();
+    }
+    return;
+  }
 
   // ---- Register abort controller.
   const ac = new AbortController();

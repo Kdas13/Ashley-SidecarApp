@@ -21,7 +21,12 @@
 // than refuse.
 // =============================================================================
 
-import { classifyImageIntent, decodeStoredVibe, type ImageMode } from "./imageIntent.js";
+import {
+  classifyImageIntent,
+  decodeStoredVibe,
+  encodeStoredVibe,
+  type ImageMode,
+} from "./imageIntent.js";
 
 // ---------------------------------------------------------------------------
 // Trigger detection
@@ -73,8 +78,20 @@ const SEND_AGAIN_RX =
 // them on the server, classify the mode via classifyImageIntent, and inject a
 // TURN HINT that orders the model to emit an [image:] tag for THIS turn.
 
-// Image-request nouns. Any one of these turns a short message into an image
-// request — "selfie please" / "a picture of you in the kitchen" / "render".
+// Image-request nouns, split into two tiers.
+//
+// STRONG nouns are unambiguous in everyday English — `selfie` / `portrait` /
+// `picture` / `image` / `photo` / `photograph` / `pic`. They fire on
+// noun+verb or noun+request-framing.
+//
+// WEAK nouns (`shot`, `visual`, `render`) have strong non-image senses
+// ("a shot of vodka", "give me a visual / a render of the idea") and only
+// count as image nouns when paired with a framing qualifier (full-body,
+// head-to-toe, outfit, pose, scene). The architect review caught "a shot
+// please" misfiring as PORTRAIT_MODE — this split is the fix.
+const IMAGE_NOUN_STRONG_RX =
+  /\b(picture|image|photo|photograph|pic|selfie|portrait)\b/i;
+const IMAGE_NOUN_WEAK_RX = /\b(render|visual|shot)\b/i;
 const IMAGE_NOUN_RX =
   /\b(picture|image|photo|photograph|pic|render|visual|shot|selfie|portrait)\b/i;
 
@@ -99,8 +116,14 @@ const IMAGE_DIAGNOSTIC_RX =
 // Bare image-request phrasings that are unambiguous enough to fire on a noun
 // alone. Anything outside this set must come with an imperative verb / polite
 // request / question framing to qualify (see isDirectImageRequest below).
+//
+// Deliberately EXCLUDES `shot`, `visual`, and `render` — those words have
+// strong non-image senses ("a shot of vodka", "give me a visual / a render
+// of the idea") and the architect review flagged them as deterministic
+// misfires now that the gate is hard. They still qualify via noun+framing
+// or noun+verb, just not on their own.
 const BARE_NOUN_REQUEST_RX =
-  /^\s*(a |an |another |one more |another one )?(selfie|portrait|picture|image|photo|photograph|pic|render|visual|shot)( please| pls)?\s*[.!?]*\s*$/i;
+  /^\s*(a |an |another |one more |another one )?(selfie|portrait|picture|image|photo|photograph|pic)( please| pls)?\s*[.!?]*\s*$/i;
 
 // Imperative / polite-request framings that legitimise "noun + framing"
 // short messages ("whole body picture", "full-body shot please", "give me a
@@ -122,21 +145,26 @@ export function isDirectImageRequest(text: string): boolean {
   // a previous image, not asking for a new one.
   if (IMAGE_DIAGNOSTIC_RX.test(trimmed)) return false;
 
-  const hasNoun = IMAGE_NOUN_RX.test(trimmed);
+  const hasStrongNoun = IMAGE_NOUN_STRONG_RX.test(trimmed);
+  const hasAnyNoun = IMAGE_NOUN_RX.test(trimmed);
   const hasVerb = IMAGE_VERB_RX.test(trimmed);
   const hasFraming = FRAMING_QUALIFIER_RX.test(trimmed);
 
   // Bare noun phrasings ("selfie", "a picture please") are explicit enough.
   if (BARE_NOUN_REQUEST_RX.test(trimmed)) return true;
-  // Noun + body/outfit framing ("whole body picture", "full-body shot",
-  // "outfit photo") is unambiguously a request even without a verb.
-  if (hasNoun && hasFraming) return true;
-  // Noun + verb / polite request framing ("send me a photo", "can I get a
-  // portrait", "give me a selfie") is also unambiguous.
-  if (hasNoun && (hasVerb || REQUEST_FRAMING_RX.test(trimmed))) return true;
+  // ANY noun + body/outfit framing ("whole body picture", "full-body shot",
+  // "outfit photo") is unambiguously a request even without a verb. Weak
+  // nouns (`shot`, `visual`, `render`) need framing here, by construction.
+  if (hasAnyNoun && hasFraming) return true;
+  // STRONG noun + verb / polite request framing ("send me a photo", "can I
+  // get a portrait", "give me a selfie") is unambiguous. Weak nouns are
+  // intentionally excluded here — "a shot please" / "give me a render"
+  // would otherwise misfire (architect review, May 2026).
+  if (hasStrongNoun && (hasVerb || REQUEST_FRAMING_RX.test(trimmed))) return true;
   // Verb + framing without an explicit noun ("show me head to toe") still
   // qualifies — these are imperative image asks by construction.
   if (hasVerb && hasFraming) return true;
+  void IMAGE_NOUN_WEAK_RX;
   return false;
 }
 
@@ -627,3 +655,99 @@ export function detectPhantomImageDelivery(args: {
  */
 export const PHANTOM_IMAGE_DIAGNOSTIC =
   "The image request was detected, but no image artifact was returned. That is a generation or UI delivery failure, not a successful image. I shouldn't have written it as if the image was already there. Want me to retry?";
+
+// ---------------------------------------------------------------------------
+// HARD SERVER-SIDE EXECUTION GATE
+// ---------------------------------------------------------------------------
+//
+// Wren follow-up (May 2026): the LLM kept ignoring the TURN HINT and producing
+// (a) refusal prose ("I cannot. I truly cannot.") for FULL_BODY,
+// (b) phantom success ("there you go" with no image) for SELFIE,
+// (c) plain prose for visual-description prompts.
+//
+// `synthesizeImageActionReply` short-circuits the LLM entirely. The server
+// constructs the assistant text with a real `[image: MODE | description]`
+// marker so the existing parseImageMarker → encodeStoredVibe → /chat/selfie
+// pipeline takes over. The user-visible text after marker stripping is a
+// short, action-first caption — no roleplay, no manifestation prose, no
+// claim of an artifact that doesn't exist yet.
+//
+// For send-again with no usable prior context (we have nothing to retry),
+// returns `null` so the caller can fall back to a diagnostic ask.
+// ---------------------------------------------------------------------------
+
+export type SynthesizedImageReply = {
+  /** Full assistant text WITH the `[image: ...]` marker embedded. */
+  fullText: string;
+  /** Same text after parseImageMarker would strip the marker — what the user sees. */
+  captionText: string;
+  /** Encoded `MODE|vibe` payload to write into messages.selfieVibe. */
+  selfieVibe: string;
+  /** Mode the marker carries (for logging). */
+  mode: ImageMode;
+  /** Description the marker carries (for logging). */
+  description: string;
+};
+
+function shortCaptionFor(mode: ImageMode, kind: FollowUpResolution["kind"]): string {
+  if (kind === "send_again") return "Retrying — wait for the image to arrive before assuming it landed.";
+  switch (mode) {
+    case "FULL_BODY_MODE":
+      return "Full-body shot incoming. Tell me if both feet, shoes, and the floor aren't all visible — I'll retry stricter.";
+    case "OUTFIT_MODE":
+      return "Outfit shot incoming — head-to-toe so the whole look is in frame.";
+    case "POSE_REFERENCE_MODE":
+      return "Pose reference incoming.";
+    case "SCENE_MODE":
+      return "Scene shot incoming.";
+    case "ART_REFERENCE_MODE":
+      return "Art reference incoming.";
+    case "ABSTRACT_OR_SYMBOLIC_MODE":
+      return "Symbolic shot incoming.";
+    case "PORTRAIT_MODE":
+      return "Portrait incoming.";
+    case "SELFIE_MODE":
+    default:
+      return "Selfie incoming.";
+  }
+}
+
+export function synthesizeImageActionReply(
+  resolution: FollowUpResolution,
+): SynthesizedImageReply | null {
+  // Pick the description that goes inside the marker. Order of preference:
+  //   1. sanitisedVisualText (already cleansed of unsafe expressions)
+  //   2. priorAttemptVibe (for send_again)
+  //   3. resolvedRequest (always present, but more verbose)
+  const description =
+    resolution.sanitisedVisualText?.trim() ||
+    resolution.priorAttemptVibe?.trim() ||
+    resolution.resolvedRequest.trim();
+
+  // Send-again with no actionable prior context: bail so the caller can ask.
+  if (
+    resolution.kind === "send_again" &&
+    !resolution.sanitisedVisualText &&
+    !resolution.priorAttemptVibe
+  ) {
+    return null;
+  }
+  if (!description) return null;
+
+  // Strip newlines / collapse whitespace inside the marker so parseImageMarker
+  // sees a single-line `[image: MODE | desc]` payload. parseImageMarker uses a
+  // non-greedy match terminated by `]`, so embedded brackets would confuse it.
+  const cleanDesc = description.replace(/[\r\n]+/g, " ").replace(/\]/g, ")").replace(/\s+/g, " ").trim();
+  const caption = shortCaptionFor(resolution.suggestedMode, resolution.kind);
+  const marker = `[image: ${resolution.suggestedMode} | ${cleanDesc}]`;
+  const fullText = `${caption}\n\n${marker}`;
+  const selfieVibe = encodeStoredVibe(resolution.suggestedMode, cleanDesc);
+
+  return {
+    fullText,
+    captionText: caption,
+    selfieVibe,
+    mode: resolution.suggestedMode,
+    description: cleanDesc,
+  };
+}
