@@ -180,28 +180,32 @@ const WRAPPERS: Record<ImageMode, PromptWrapper> = {
     pendingLabel: "framing a portrait",
   },
   FULL_BODY_MODE: {
+    // Catalogue-style framing language (per Wren spec): force the camera
+    // distance, the floor under the shoes, and empty space above head and
+    // below feet. The "fashion catalogue / not a close portrait" anchor is
+    // there to push the diffusion model out of its default selfie attractor.
     shotType:
-      "Full-body photograph of {subject}, a young woman, captured from head to toe with both legs and feet entirely inside the frame, in a vertical composition with breathing room above her head and below her feet",
+      "Full-length vertical fashion-catalogue portrait of {subject}, a young woman, standing several metres from the camera, her entire body visible from the top of her head to the soles of her shoes, both legs and both feet fully inside the frame, the floor visible beneath both shoes, with clear empty space above her head and below her feet",
     styleLine:
-      "Even, readable lighting across her whole body so the silhouette is clear, photorealistic, single subject, no text or watermarks",
+      "Vertical portrait composition, fashion catalogue full-body reference style, even readable lighting across the whole body, photorealistic, single subject, no text or watermarks",
     framingHint: "tall",
     requiresFullBodyValidation: true,
     pendingLabel: "framing a full-body shot",
   },
   OUTFIT_MODE: {
     shotType:
-      "Full-outfit fashion photograph of {subject}, a young woman, standing from head to toe with the entire outfit and footwear inside the frame, in a vertical composition",
+      "Full-length outfit reference image of {subject}, a young woman, standing several metres from the camera, her complete outfit visible from head to toe including top, trousers or skirt, both legs, both shoes, and the floor beneath her feet, with clear empty space above her head and below her shoes",
     styleLine:
-      "Lighting that flatters the garments, fabric and silhouette readable, photorealistic, single subject, no text or watermarks",
+      "Vertical portrait composition, fashion catalogue outfit view, lighting that flatters the garments and keeps fabric and silhouette readable, photorealistic, single subject, no text or watermarks",
     framingHint: "tall",
     requiresFullBodyValidation: true,
     pendingLabel: "framing an outfit shot",
   },
   POSE_REFERENCE_MODE: {
     shotType:
-      "Clean pose-reference image of {subject}, a young woman, with the full silhouette inside the frame and limbs clearly separated, in a vertical composition",
+      "Full-length vertical pose-reference image of {subject}, a young woman, standing several metres from the camera, her entire body visible from the top of her head to the soles of her shoes, both arms and both legs separated and clearly readable, the floor visible beneath her feet, with clear empty space above her head and below her feet",
     styleLine:
-      "Even reference-style lighting across the body, photorealistic, single subject, neutral background, no text or watermarks",
+      "Vertical portrait composition, reference-sheet style, even lighting across the body, neutral background, photorealistic, single subject, no text or watermarks",
     framingHint: "tall",
     requiresFullBodyValidation: true,
     pendingLabel: "drafting a pose reference",
