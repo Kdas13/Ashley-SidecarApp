@@ -74,6 +74,32 @@ const isApiConfigured =
   !!process.env.EXPO_PUBLIC_API_KEY &&
   !!(process.env.EXPO_PUBLIC_API_BASE ?? process.env.EXPO_PUBLIC_DOMAIN);
 
+/**
+ * Map a raw error message to a short category code shown in the error banner.
+ * Keeps the banner informative without exposing raw server text to the user.
+ */
+function classifyError(msg: string | null): string {
+  if (!msg) return "UNKNOWN";
+  if (!isApiConfigured) return "CONFIG_MISSING";
+  const m = msg.toLowerCase();
+  if (
+    m.includes("rate") ||
+    m.includes("429") ||
+    m.includes("ratelimit") ||
+    m.includes("too many")
+  )
+    return "RATE_LIMIT";
+  if (m.includes("timeout") || m.includes("timed out")) return "TIMEOUT";
+  if (
+    m.includes("network") ||
+    m.includes("failed to fetch") ||
+    m.includes("network request failed")
+  )
+    return "NETWORK";
+  if (m.includes("abort")) return "ABORTED";
+  return "PROVIDER_ERROR";
+}
+
 // Image picker — visible labels for category + analysis-mode chips.
 const IMAGE_CATEGORIES: { value: ImageCategory; label: string }[] = [
   { value: "art_progress", label: "Art progress" },
@@ -134,6 +160,12 @@ export default function ChatScreen(): React.JSX.Element {
   const [replyingTo, setReplyingTo] = useState<ReplyToRef | null>(null);
   const inputRef = useRef<TextInput>(null);
   const listRef = useRef<FlatList<Message>>(null);
+
+  // Messages typed while a stream is in-flight are pushed here rather than
+  // dropped. The drain effect below processes them in FIFO order as each
+  // stream settles (done / error / interrupted).
+  const messageQueue = useRef<Array<{ content: string; replyTo: ReplyToRef | null }>>([]);
+  const [queueSize, setQueueSize] = useState(0);
 
   const messagesQuery = useMessages();
   const streamMutation = useStreamMessage();
@@ -227,6 +259,9 @@ export default function ChatScreen(): React.JSX.Element {
   const sendResetRef = useRef(streamMutation.reset);
   sendResetRef.current = streamMutation.reset;
   const inFlightRetryRef = useRef(false);
+  // Ref-wrapped so the drain effect captures a fresh closure on every render
+  // without needing the function itself in deps (same pattern as retryMutateRef).
+  const drainQueueRef = useRef<() => void>(() => {});
   useEffect(() => {
     if (!hasUnansweredTail) return;
     if (streamMutation.isPending) return;
@@ -401,12 +436,43 @@ export default function ChatScreen(): React.JSX.Element {
     [presenceDispatch],
   );
 
+  // Always up-to-date — captures the latest streamHooks / handleStreamOutcome
+  // without adding them to the useEffect dep array.
+  drainQueueRef.current = () => {
+    if (streamMutation.isPending) return;
+    const next = messageQueue.current.shift();
+    if (!next) return;
+    setQueueSize(messageQueue.current.length);
+    streamMutation.reset();
+    tts.stop();
+    presenceDispatch({ type: "USER_SEND" });
+    streamMutation
+      .mutateAsync({ content: next.content, replyTo: next.replyTo, hooks: streamHooks })
+      .then(handleStreamOutcome)
+      .catch(() => presenceDispatch({ type: "STREAM_INTERRUPTED_RECEIVED" }));
+  };
+
+  // Fire once each time the stream settles (isPending flips to false).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!streamMutation.isPending && messageQueue.current.length > 0) {
+      drainQueueRef.current();
+    }
+  }, [streamMutation.isPending]);
+
   const send = useCallback(() => {
     const content = draft.trim();
-    if (!content || streamMutation.isPending) return;
+    if (!content) return;
     const replyToSnapshot = replyingTo;
     setDraft("");
     setReplyingTo(null);
+    if (streamMutation.isPending) {
+      // A stream is already in flight — queue rather than drop. The drain
+      // effect fires as soon as isPending flips to false.
+      messageQueue.current.push({ content, replyTo: replyToSnapshot });
+      setQueueSize(messageQueue.current.length);
+      return;
+    }
     streamMutation.reset();
     // Sending a fresh message supersedes any reply Ashley is currently
     // speaking — silence her so the new turn isn't talked over.
@@ -927,7 +993,7 @@ export default function ChatScreen(): React.JSX.Element {
               {sendError}
               {"\n"}
               <Text style={styles.errorSubtext}>
-                api: {process.env.EXPO_PUBLIC_API_BASE ?? process.env.EXPO_PUBLIC_DOMAIN ?? "(unset)"} · tap to dismiss
+                {classifyError(sendError)} · {process.env.EXPO_PUBLIC_API_BASE ?? process.env.EXPO_PUBLIC_DOMAIN ?? "CONFIG_MISSING"} · tap to dismiss
               </Text>
             </Text>
           </Pressable>
@@ -1058,15 +1124,20 @@ export default function ChatScreen(): React.JSX.Element {
           ) : (
             <Pressable
               onPress={send}
-              disabled={!draft.trim() || streamMutation.isPending}
+              disabled={!draft.trim()}
               style={({ pressed }) => [
                 styles.sendBtn,
-                (!draft.trim() || streamMutation.isPending) && { opacity: 0.4 },
+                !draft.trim() && { opacity: 0.4 },
                 pressed && { transform: [{ scale: 0.95 }] },
               ]}
               accessibilityLabel="Send message"
             >
               <Feather name="send" size={18} color={colors.light.primaryForeground} />
+              {queueSize > 0 ? (
+                <View style={styles.queueBadge}>
+                  <Text style={styles.queueBadgeText}>{queueSize}</Text>
+                </View>
+              ) : null}
             </Pressable>
           )}
         </View>
@@ -2245,6 +2316,25 @@ const styles = StyleSheet.create({
   // destructive intent.
   stopBtn: {
     backgroundColor: colors.light.destructive,
+  },
+  // Small count bubble that overlays the send button while messages are queued.
+  queueBadge: {
+    position: "absolute",
+    top: -5,
+    right: -5,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: colors.light.destructive,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 3,
+  },
+  queueBadgeText: {
+    fontFamily: "Inter_700Bold",
+    fontSize: 9,
+    color: colors.light.destructiveForeground,
+    lineHeight: 16,
   },
   cursor: {
     fontFamily: "Inter_400Regular",
