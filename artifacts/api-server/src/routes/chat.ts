@@ -3,7 +3,7 @@ import { z } from "zod";
 import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { and, asc, desc, eq, gt } from "drizzle-orm";
+import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
 import {
   db,
   ashleyProfileTable,
@@ -485,6 +485,28 @@ async function runDiagnosticsReport(
 }
 
 // ---------------------------------------------------------------------------
+// Duplicate ticket detection helper
+// Returns the existing ticket ID if a matching ticket was created in the
+// last 24 hours, or null if the summary is new.
+// Normalisation: lowercase + collapse whitespace (matches acceptance tests B & C).
+// ---------------------------------------------------------------------------
+async function findDuplicateTicket(rawSummary: string): Promise<string | null> {
+  const normalized = rawSummary.toLowerCase().replace(/\s+/g, " ").trim();
+  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const rows = await db
+    .select({ ticketId: ashleyTicketsTable.ticketId })
+    .from(ashleyTicketsTable)
+    .where(
+      and(
+        sql`lower(regexp_replace(${ashleyTicketsTable.summary}, '\\s+', ' ', 'g')) = ${normalized}`,
+        gt(ashleyTicketsTable.createdAt, cutoff),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0 ? rows[0].ticketId : null;
+}
+
+// ---------------------------------------------------------------------------
 // POST /chat — the one chat endpoint
 // ---------------------------------------------------------------------------
 
@@ -505,6 +527,12 @@ router.post("/chat", async (req, res): Promise<void> => {
         return;
       }
       try {
+        const dupId = await findDuplicateTicket(summary);
+        if (dupId) {
+          logger.info({ dupId }, "CREATE_TICKET_INTERCEPTOR: duplicate suppressed");
+          res.json({ reply: `Issue already exists. [${dupId}]` });
+          return;
+        }
         const ticketId = `ASH-${Date.now().toString(36).toUpperCase()}`;
         await db.insert(ashleyTicketsTable).values({
           ticketId,
@@ -1825,20 +1853,26 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
         ackContent = "Please provide a ticket summary after: create ticket:";
       } else {
         try {
-          const ticketId = `ASH-${Date.now().toString(36).toUpperCase()}`;
-          await db.insert(ashleyTicketsTable).values({
-            ticketId,
-            status: "OPEN",
-            category: "BEHAVIOUR",
-            severity: "medium",
-            summary: summary.slice(0, 280),
-            description: summary,
-            source: "user_command",
-            createdBy: "kane",
-            approved: false,
-          });
-          logger.info({ ticketId }, "CREATE_TICKET_INTERCEPTOR/stream: ticket written");
-          ackContent = `Issue logged. [${ticketId}]`;
+          const dupId = await findDuplicateTicket(summary);
+          if (dupId) {
+            logger.info({ dupId }, "CREATE_TICKET_INTERCEPTOR/stream: duplicate suppressed");
+            ackContent = `Issue already exists. [${dupId}]`;
+          } else {
+            const ticketId = `ASH-${Date.now().toString(36).toUpperCase()}`;
+            await db.insert(ashleyTicketsTable).values({
+              ticketId,
+              status: "OPEN",
+              category: "BEHAVIOUR",
+              severity: "medium",
+              summary: summary.slice(0, 280),
+              description: summary,
+              source: "user_command",
+              createdBy: "kane",
+              approved: false,
+            });
+            logger.info({ ticketId }, "CREATE_TICKET_INTERCEPTOR/stream: ticket written");
+            ackContent = `Issue logged. [${ticketId}]`;
+          }
         } catch (err) {
           logger.error({ err }, "CREATE_TICKET_INTERCEPTOR/stream: DB insert failed");
           ackContent = "Issue noted — but logging failed. Please try again.";
