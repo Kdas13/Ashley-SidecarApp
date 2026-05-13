@@ -300,13 +300,17 @@ router.post("/chat", async (req, res): Promise<void> => {
   const rawBody = req.body as Record<string, unknown> | null | undefined;
   const rawUserMsg = rawBody?.["userMessage"] as Record<string, unknown> | null | undefined;
   const rawMessage = typeof rawUserMsg?.["content"] === "string" ? rawUserMsg["content"] : "";
+  // eslint-disable-next-line no-console
+  console.log("DIAG ROUTER HIT:", rawMessage);
   const normalized = rawMessage.trim().toLowerCase();
+  // eslint-disable-next-line no-console
+  console.log("DIAG NORMALIZED:", normalized);
   const isExactDiagnostics = normalized === "run diagnostics";
   const isDiagnosticsIntent =
     normalized.includes("diagnostic") ||
     normalized.includes("diagnostics");
   // eslint-disable-next-line no-console
-  console.log("DIAG CHECK:", { rawMessage, isExactDiagnostics, isDiagnosticsIntent });
+  console.log("DIAG INTENT:", { isExactDiagnostics, isDiagnosticsIntent });
   if (isExactDiagnostics) {
     await runDiagnosticsReport(req, res, "chat");
     return;
@@ -1558,13 +1562,17 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   const rawBodyS = req.body as Record<string, unknown> | null | undefined;
   const rawUserMsgS = rawBodyS?.["userMessage"] as Record<string, unknown> | null | undefined;
   const rawMessageS = typeof rawUserMsgS?.["content"] === "string" ? rawUserMsgS["content"] : "";
+  // eslint-disable-next-line no-console
+  console.log("DIAG ROUTER HIT:", rawMessageS);
   const normalizedS = rawMessageS.trim().toLowerCase();
+  // eslint-disable-next-line no-console
+  console.log("DIAG NORMALIZED:", normalizedS);
   const isExactDiagnosticsS = normalizedS === "run diagnostics";
   const isDiagnosticsIntentS =
     normalizedS.includes("diagnostic") ||
     normalizedS.includes("diagnostics");
   // eslint-disable-next-line no-console
-  console.log("DIAG CHECK:", { rawMessage: rawMessageS, isExactDiagnostics: isExactDiagnosticsS, isDiagnosticsIntent: isDiagnosticsIntentS });
+  console.log("DIAG INTENT:", { isExactDiagnostics: isExactDiagnosticsS, isDiagnosticsIntent: isDiagnosticsIntentS });
   if (isExactDiagnosticsS) {
     await runDiagnosticsReport(req, res, "chat/stream");
     return;
