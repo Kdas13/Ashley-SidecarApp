@@ -1335,9 +1335,12 @@ function startSelfieGeneration(
         // mode fails we say so explicitly instead of pretending the image
         // succeeded with a cropped fallback. Mobile already shows a retry
         // button when status==="failed".
+        // Honest failure copy. Names the layer (generator) and the requested
+        // mode without dramatising the failure as a permanent limit. See the
+        // "Capability truth rule" section of ashleyCoreSpec.ts.
         const failureCopy = wrapper.requiresFullBodyValidation
-          ? "Couldn't get the full-body framing right — want me to try again?"
-          : "Couldn't get that shot — try again?";
+          ? `Image attempt failed at the generator layer for ${imageMode}. That's a failed test, not proof I can't do full-body — want me to retry?`
+          : `Image attempt failed at the generator layer for ${imageMode}. Want me to retry?`;
         setSelfieJob(jobId, {
           status: "failed",
           error: failureCopy,
