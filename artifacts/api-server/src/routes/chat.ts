@@ -229,9 +229,11 @@ async function runDiagnosticsReport(
   req: Parameters<Parameters<typeof router.post>[1]>[0],
   res: Parameters<Parameters<typeof router.post>[1]>[1],
   label: string,
+  format: "json" | "sse",
 ): Promise<void> {
   // eslint-disable-next-line no-console
   console.log("RUN DIAGNOSTICS CALLED");
+  const deviceId = getDeviceId(req);
   try {
     const allTickets = await db.select().from(ashleyTicketsTable);
     const openTickets = allTickets.filter((t) => t.status === "OPEN");
@@ -278,10 +280,55 @@ async function runDiagnosticsReport(
       "=== END REPORT ===",
     ].join("\n");
     req.log.info({ ticket_count: allTickets.length }, `${label}: diagnostic mode response`);
-    res.json({ diagnostic: true, report });
+
+    const now = new Date().toISOString();
+    const userFakeId = crypto.randomUUID();
+    const ashleyFakeId = crypto.randomUUID();
+    const nullFields = {
+      imageUrl: null,
+      selfieVibe: null,
+      imageMimeType: null,
+      imageCategory: null,
+      imageCaption: null,
+      imageAnalysisMode: null,
+      imageRemembered: null,
+      replyToId: null,
+      replyToRole: null,
+      replyToPreview: null,
+    };
+
+    if (format === "sse") {
+      const userMsg = { id: userFakeId, deviceId, role: "user", content: "run diagnostics", status: "complete", createdAt: now, ...nullFields };
+      const ashleyMsg = { id: ashleyFakeId, deviceId, role: "ashley", content: "", status: "streaming", createdAt: now, ...nullFields };
+      res.status(200);
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders?.();
+      res.write(`event: meta\ndata: ${JSON.stringify({ streamId: ashleyFakeId, userMessage: userMsg, ashleyMessage: ashleyMsg, mode: "new", continueFromMessageId: null })}\n\n`);
+      res.write(`event: done\ndata: ${JSON.stringify({ content: report, selfieVibe: null })}\n\n`);
+      res.end();
+    } else {
+      // /chat (non-streaming) — mobile expects { userMessage, ashleyMessage }
+      const userMsg = { id: userFakeId, deviceId, role: "user", content: "run diagnostics", status: "complete", createdAt: now, ...nullFields };
+      const ashleyMsg = { id: ashleyFakeId, deviceId, role: "ashley", content: report, status: "complete", createdAt: now, ...nullFields };
+      res.json({ userMessage: userMsg, ashleyMessage: ashleyMsg });
+    }
   } catch (err) {
     req.log.error({ err }, `${label}: diagnostic mode failed`);
-    res.status(500).json({ error: "Diagnostic query failed" });
+    if (format === "sse") {
+      res.status(200);
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders?.();
+      res.write(`event: error\ndata: ${JSON.stringify({ error: "Diagnostic query failed" })}\n\n`);
+      res.end();
+    } else {
+      res.status(500).json({ error: "Diagnostic query failed" });
+    }
   }
 }
 
@@ -314,7 +361,7 @@ router.post("/chat", async (req, res): Promise<void> => {
   // eslint-disable-next-line no-console
   console.log("DIAG INTENT:", { isExactDiagnostics, isDiagnosticsIntent });
   if (isExactDiagnostics) {
-    await runDiagnosticsReport(req, res, "chat");
+    await runDiagnosticsReport(req, res, "chat", "json");
     return;
   }
   if (isDiagnosticsIntent) {
@@ -1578,7 +1625,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   // eslint-disable-next-line no-console
   console.log("DIAG INTENT:", { isExactDiagnostics: isExactDiagnosticsS, isDiagnosticsIntent: isDiagnosticsIntentS });
   if (isExactDiagnosticsS) {
-    await runDiagnosticsReport(req, res, "chat/stream");
+    await runDiagnosticsReport(req, res, "chat/stream", "sse");
     return;
   }
   if (isDiagnosticsIntentS) {
