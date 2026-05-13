@@ -491,19 +491,25 @@ async function runDiagnosticsReport(
 // Normalisation: lowercase + collapse whitespace (matches acceptance tests B & C).
 // ---------------------------------------------------------------------------
 async function findDuplicateTicket(rawSummary: string): Promise<string | null> {
-  const normalized = rawSummary.toLowerCase().replace(/\s+/g, " ").trim();
+  // Normalise exactly as specified: trim → lowercase → collapse spaces.
+  const normalizedSummary = rawSummary.trim().toLowerCase().replace(/\s+/g, " ");
   const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  // Use POSIX ERE [[:space:]]+ — \s is not reliable in PostgreSQL regexp_replace.
   const rows = await db
     .select({ ticketId: ashleyTicketsTable.ticketId })
     .from(ashleyTicketsTable)
     .where(
       and(
-        sql`lower(regexp_replace(${ashleyTicketsTable.summary}, '\\s+', ' ', 'g')) = ${normalized}`,
+        sql`lower(regexp_replace(${ashleyTicketsTable.summary}, '[[:space:]]+', ' ', 'g')) = ${normalizedSummary}`,
         gt(ashleyTicketsTable.createdAt, cutoff),
+        sql`${ashleyTicketsTable.status} != 'RESOLVED'`,
       ),
     )
     .limit(1);
-  return rows.length > 0 ? rows[0].ticketId : null;
+  const duplicateFound = rows.length > 0;
+  const existingTicketId = duplicateFound ? rows[0].ticketId : null;
+  console.log("CREATE_TICKET_DEDUPE_CHECK", { normalizedSummary, duplicateFound, existingTicketId });
+  return existingTicketId;
 }
 
 // ---------------------------------------------------------------------------
