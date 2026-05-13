@@ -76,8 +76,15 @@ interface ParsedCreateTicket {
 const ASHLEY_LOG_RE =
   /^(?:\[[\d\-T:.Z]+\]\s+)?ASHLEY-([A-Z]+)-\d+\s+(.+)/s;
 
+// Strip ```json ... ``` or ``` ... ``` fences if present, so the parser
+// accepts Ashley's output even when she wraps JSON in markdown fences.
+function stripMarkdownFence(text: string): string {
+  const m = /^```(?:json)?\s*\n?([\s\S]*?)\n?```\s*$/.exec(text);
+  return m ? m[1]!.trim() : text;
+}
+
 function tryParseCreateTicket(text: string): ParsedCreateTicket | null {
-  const trimmed = text.trim();
+  const trimmed = stripMarkdownFence(text.trim());
 
   // --- Primary format: bare JSON CREATE_TICKET object ---
   if (trimmed.startsWith("{")) {
@@ -2135,6 +2142,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
         if (
           firstChar === "{" ||
           firstChar === "[" ||
+          firstChar === "`" ||
           (firstChar === "A" && accumulated.trimStart().startsWith("ASHLEY-"))
         ) {
           ticketBuffering = true;
