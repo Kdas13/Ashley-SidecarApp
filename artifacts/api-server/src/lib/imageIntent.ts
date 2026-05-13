@@ -48,9 +48,13 @@ export function isImageMode(value: unknown): value is ImageMode {
 const SELFIE_RX =
   /\b(selfie|close[- ]?up|face[- ]shot|head[- ]?shot|camera[- ]?held|hold(ing)? (the |a |her )?(camera|phone))\b/i;
 
-// Full-body / framing-explicit language.
+// Full-body / framing-explicit language. Per Wren spec: "whole body",
+// "entire body", "complete body", "complete form", "full form", "body shot",
+// and "standing (picture|photo|image|shot)" must all route to FULL_BODY_MODE,
+// alongside the original "full body / head to toe / full length / all of you"
+// triggers. This keeps obvious framing demands out of PORTRAIT_MODE crops.
 const FULL_BODY_RX =
-  /\b(full[- ]body|head[- ]to[- ]toe|full[- ]length|all of (you|her|herself)|show all of (you|her|herself))\b/i;
+  /\b(full[- ]?body|whole[- ]?body|entire[- ]?body|complete[- ]?body|full[- ]?length|head[- ]?to[- ]?toe|all of (you|her|herself)|show all of (you|her|herself)|complete form|full form|body shot|standing (picture|photo|image|shot|portrait))\b/i;
 
 // Lower-body / footwear cues — strong signal that a portrait crop fails.
 const LIMB_RX = /\b(legs?|feet|ankles?|knees?|thighs?|boots?|footwear|shoes?)\b/i;

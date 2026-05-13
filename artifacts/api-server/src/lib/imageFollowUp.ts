@@ -62,6 +62,84 @@ export function isShortFollowUpImageRequest(text: string): boolean {
 const SEND_AGAIN_RX =
   /^\s*(send (it|that|the (pic|picture|photo|image))? ?again|send again|resend|re[- ]?send|try again|do (it|that) again|one more time|another( one)?|again( please)?|retry( it| that)?|generate (it|that) again)\s*[.!?]*\s*$/i;
 
+// ---------------------------------------------------------------------------
+// Direct image request detection (no prior visual context required)
+// ---------------------------------------------------------------------------
+//
+// Wren follow-up: short messages like "whole body picture", "send me a photo",
+// "selfie please", "show me head to toe" are first-class image requests, not
+// follow-ups. The model was sometimes treating them as romantic prompts and
+// producing roleplay narration instead of emitting an [image:] tag. We detect
+// them on the server, classify the mode via classifyImageIntent, and inject a
+// TURN HINT that orders the model to emit an [image:] tag for THIS turn.
+
+// Image-request nouns. Any one of these turns a short message into an image
+// request — "selfie please" / "a picture of you in the kitchen" / "render".
+const IMAGE_NOUN_RX =
+  /\b(picture|image|photo|photograph|pic|render|visual|shot|selfie|portrait)\b/i;
+
+// Image-request action verbs. On their own these are weaker than nouns, but
+// combined with a body / outfit / pose qualifier they are sufficient to fire
+// (e.g. "show me head to toe", "send me your full body").
+const IMAGE_VERB_RX = /\b(show me|send me|generate|create|draw|render)\b/i;
+
+// Body / framing qualifiers that — combined with a verb OR a noun —
+// strongly imply an image request, even if no explicit noun is present.
+// Reuses the same vocabulary the classifier uses for FULL_BODY_MODE.
+const FRAMING_QUALIFIER_RX =
+  /\b(full[- ]?body|whole[- ]?body|entire[- ]?body|complete[- ]?body|full[- ]?length|head[- ]?to[- ]?toe|outfit|pose|scene)\b/i;
+
+// Diagnostic / reporting phrases — talking ABOUT an image rather than asking
+// for one ("the picture didn't render", "no image came through", "why no
+// photo"). If any of these appear we suppress direct-image-request firing so
+// the model isn't pushed into emitting an [image:] tag for a complaint.
+const IMAGE_DIAGNOSTIC_RX =
+  /\b(didn'?t render|did not render|failed( to render)?|no (image|picture|photo|artifact)|not shown|wasn'?t (shown|sent|delivered)|why (no|isn'?t there)|cropped|broken|blank|missing|never (came|arrived)|where('?s| is) (the|my) (image|picture|photo|selfie))\b/i;
+
+// Bare image-request phrasings that are unambiguous enough to fire on a noun
+// alone. Anything outside this set must come with an imperative verb / polite
+// request / question framing to qualify (see isDirectImageRequest below).
+const BARE_NOUN_REQUEST_RX =
+  /^\s*(a |an |another |one more |another one )?(selfie|portrait|picture|image|photo|photograph|pic|render|visual|shot)( please| pls)?\s*[.!?]*\s*$/i;
+
+// Imperative / polite-request framings that legitimise "noun + framing"
+// short messages ("whole body picture", "full-body shot please", "give me a
+// selfie", "can I get a portrait", "would love a photo of you").
+const REQUEST_FRAMING_RX =
+  /\b(please|pls|can (you|i)|could (you|i)|would (you|i)|may i|i (want|need|would like|'?d like)|give me|let me see|let'?s see|how about|do you have|got (a |an )?(selfie|picture|photo|image|pic|shot|portrait))\b/i;
+
+export function isDirectImageRequest(text: string): boolean {
+  if (typeof text !== "string") return false;
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  // Cap length — long messages with their own paragraphs of narrative go
+  // through the model's normal intent detection.
+  if (trimmed.split(/\s+/).length > 18) return false;
+  // Don't double-fire with the short follow-up resolver or send-again.
+  if (isShortFollowUpImageRequest(trimmed)) return false;
+  if (isSendAgainRequest(trimmed)) return false;
+  // Suppress on diagnostic / reporting language — the user is talking ABOUT
+  // a previous image, not asking for a new one.
+  if (IMAGE_DIAGNOSTIC_RX.test(trimmed)) return false;
+
+  const hasNoun = IMAGE_NOUN_RX.test(trimmed);
+  const hasVerb = IMAGE_VERB_RX.test(trimmed);
+  const hasFraming = FRAMING_QUALIFIER_RX.test(trimmed);
+
+  // Bare noun phrasings ("selfie", "a picture please") are explicit enough.
+  if (BARE_NOUN_REQUEST_RX.test(trimmed)) return true;
+  // Noun + body/outfit framing ("whole body picture", "full-body shot",
+  // "outfit photo") is unambiguously a request even without a verb.
+  if (hasNoun && hasFraming) return true;
+  // Noun + verb / polite request framing ("send me a photo", "can I get a
+  // portrait", "give me a selfie") is also unambiguous.
+  if (hasNoun && (hasVerb || REQUEST_FRAMING_RX.test(trimmed))) return true;
+  // Verb + framing without an explicit noun ("show me head to toe") still
+  // qualifies — these are imperative image asks by construction.
+  if (hasVerb && hasFraming) return true;
+  return false;
+}
+
 export function isSendAgainRequest(text: string): boolean {
   if (typeof text !== "string") return false;
   const trimmed = text.trim();
@@ -219,7 +297,7 @@ export function findPriorImageAttempt(
 export type FollowUpResolution = {
   isFollowUp: true;
   /** Distinguishes `as-a-picture` style from explicit `send again`. */
-  kind: "render_prior_visual" | "send_again";
+  kind: "render_prior_visual" | "send_again" | "direct_image_request";
   /** Raw latest user text (the "as a picture" / "send again" phrase). */
   followUpText: string;
   /** Prior user turn that the follow-up references, if found. */
@@ -248,7 +326,31 @@ export function resolveImageFollowUp(
 ): FollowUpResolution | null {
   const isResend = isSendAgainRequest(latestUserText);
   const isFollowUp = !isResend && isShortFollowUpImageRequest(latestUserText);
-  if (!isResend && !isFollowUp) return null;
+  const isDirect =
+    !isResend && !isFollowUp && isDirectImageRequest(latestUserText);
+  if (!isResend && !isFollowUp && !isDirect) return null;
+
+  // Direct image request path. No prior visual context required — the latest
+  // user text IS the visual brief. We classify the mode off the same text and
+  // build a TURN HINT ordering an immediate [image:] tag.
+  if (isDirect) {
+    const { text: sanitised, changed } = sanitiseExpression(latestUserText);
+    const classified = classifyImageIntent(sanitised);
+    const resolvedRequest = `Generate an image of Ashley: ${sanitised.trim()}.`;
+    return {
+      isFollowUp: true,
+      kind: "direct_image_request",
+      followUpText: latestUserText,
+      priorVisualText: null,
+      sanitisedVisualText: sanitised,
+      sanitised: changed,
+      priorAttemptVibe: null,
+      priorAttemptDelivered: false,
+      resolvedRequest,
+      suggestedMode: classified.mode,
+      modeReason: `direct image request — ${classified.reason}`,
+    };
+  }
 
   // Send-again path: prefer the most recent assistant image attempt.
   if (isResend) {
@@ -343,6 +445,40 @@ export function resolveImageFollowUp(
  */
 export function buildFollowUpTurnHint(resolution: FollowUpResolution): string {
   const lines: string[] = [];
+  if (resolution.kind === "direct_image_request") {
+    lines.push("## TURN HINT — direct image request detected");
+    lines.push(
+      "The user's latest message is a DIRECT image request (e.g. \"whole body picture\", \"send me a photo\", \"selfie please\", \"show me head to toe\"). It is NOT an invitation to write romantic or roleplay narration. It is an instruction to emit an [image: <MODE> | <description>] tag for THIS turn so the downstream image generator runs.",
+    );
+    lines.push(`- User text: "${resolution.followUpText.trim()}"`);
+    if (resolution.sanitised && resolution.sanitisedVisualText) {
+      lines.push(
+        `- Sanitised version to USE in the image tag: "${resolution.sanitisedVisualText.trim()}"`,
+      );
+    }
+    lines.push(`- Resolved request: ${resolution.resolvedRequest}`);
+    lines.push(
+      `- Suggested image mode: ${resolution.suggestedMode} (${resolution.modeReason}).`,
+    );
+    lines.push("");
+    lines.push("Required behaviour for THIS turn (action-first):");
+    lines.push(
+      "1. EMIT an [image: <MODE> | <description>] tag using the resolved request above. The mode hint is authoritative — if the user said \"whole body / full body / head to toe / entire body / complete body / body shot / standing photo\", use FULL_BODY_MODE. If they said \"outfit\", use OUTFIT_MODE. If they said \"selfie\", use SELFIE_MODE. Otherwise use the suggested mode.",
+    );
+    lines.push(
+      "2. Do NOT write romantic / focus / manifestation narration BEFORE the image tag (\"I focus every pixel\", \"I manifest the image\", \"I try with all my being\", \"a moment of concentration passes\"). Tag first; one short neutral caption around it is enough.",
+    );
+    lines.push(
+      "3. Do NOT claim the image was sent / generated / presented unless the SAME reply contains an [image:] tag. The downstream tool either renders an artifact or it doesn't — the No Artifact, No Claim rule applies.",
+    );
+    lines.push(
+      "4. Do NOT use any of the banned capability-wall phrases (Capability Truth Rule still applies) and do NOT use phantom-delivery phrases (\"I present the image\", \"here it is\", \"is this it?\", \"sending it now\") without an actual [image:] tag in the SAME reply.",
+    );
+    lines.push(
+      "5. For FULL_BODY_MODE / OUTFIT_MODE the existing reply contract still applies: short neutral caption asking the user to confirm head-to-toe / feet / shoes visibility, no celebration.",
+    );
+    return lines.join("\n");
+  }
   if (resolution.kind === "send_again") {
     lines.push("## TURN HINT — send-again / retry image request detected");
     lines.push(
@@ -453,6 +589,13 @@ const PHANTOM_IMAGE_PHRASES: RegExp[] = [
   /\blook at (this|that|me|her)(?=[.!?,\s]|$)/i,
   /\b\*?(presents|sends|hands over|holds up|delivers|reveals) (the |an? )?(image|picture|photo|selfie|photograph)\*?/i,
   /\bi channel (that|the|this) feeling into the (image|picture|photo|selfie)\b/i,
+  // Pre-generation manifestation / focus narration (Action-first rule).
+  // These describe an imagined image act WITHOUT the [image:] tag firing.
+  /\bi focus every pixel\b/i,
+  /\bi (manifest|am manifesting) (the|an?|this) (image|picture|photo|selfie)\b/i,
+  /\bi try with all my being\b/i,
+  /\ba moment of concentration passes\b/i,
+  /\bi close my eyes and channel\b/i,
 ];
 
 /**
