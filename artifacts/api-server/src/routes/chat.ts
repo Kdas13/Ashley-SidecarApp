@@ -70,34 +70,64 @@ interface ParsedCreateTicket {
   detectedFrom: "user_message" | "self_analysis";
 }
 
+// Matches: [2026-05-13T09:44:00Z] ASHLEY-LOGGING-007 some summary text
+//      or: ASHLEY-LOGGING-007 some summary text
+// The category is the middle word (LOGGING, MEMORY, RESPONSE, BEHAVIOUR, DIAG).
+const ASHLEY_LOG_RE =
+  /^(?:\[[\d\-T:.Z]+\]\s+)?ASHLEY-([A-Z]+)-\d+\s+(.+)/s;
+
 function tryParseCreateTicket(text: string): ParsedCreateTicket | null {
   const trimmed = text.trim();
-  if (!trimmed.startsWith("{")) return null;
-  try {
-    const parsed: unknown = JSON.parse(trimmed);
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const p = parsed as Record<string, unknown>;
-    if (p["type"] !== "CREATE_TICKET") return null;
-    const t = p["ticket"];
-    if (typeof t !== "object" || t === null) return null;
-    const ticket = t as Record<string, unknown>;
-    const summary = typeof ticket["summary"] === "string" ? ticket["summary"].trim() : "";
+
+  // --- Primary format: bare JSON CREATE_TICKET object ---
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (typeof parsed !== "object" || parsed === null) return null;
+      const p = parsed as Record<string, unknown>;
+      if (p["type"] !== "CREATE_TICKET") return null;
+      const t = p["ticket"];
+      if (typeof t !== "object" || t === null) return null;
+      const ticket = t as Record<string, unknown>;
+      const summary = typeof ticket["summary"] === "string" ? ticket["summary"].trim() : "";
+      if (!summary) return null;
+      const severity = ticket["severity"];
+      if (!VALID_TICKET_SEVERITIES.includes(severity as (typeof VALID_TICKET_SEVERITIES)[number])) return null;
+      const category = typeof ticket["category"] === "string" ? ticket["category"].toUpperCase().trim() : "";
+      if (!category) return null;
+      const detectedFrom = ticket["detected_from"] === "user_message" ? "user_message" : "self_analysis";
+      return {
+        category,
+        summary,
+        details: typeof ticket["details"] === "string" ? ticket["details"] : "",
+        severity: severity as "low" | "medium" | "high",
+        detectedFrom,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  // --- Fallback format: [TIMESTAMP] ASHLEY-CATEGORY-NNN summary text ---
+  // Ashley occasionally outputs log-style lines instead of JSON.
+  // We rescue these so they still get persisted rather than rendering
+  // raw in the chat bubble.
+  const logMatch = ASHLEY_LOG_RE.exec(trimmed);
+  if (logMatch) {
+    const category = logMatch[1]!.toUpperCase();
+    const summary = logMatch[2]!.trim().split("\n")[0]!.trim(); // first line only
+    const details = logMatch[2]!.trim();
     if (!summary) return null;
-    const severity = ticket["severity"];
-    if (!VALID_TICKET_SEVERITIES.includes(severity as (typeof VALID_TICKET_SEVERITIES)[number])) return null;
-    const category = typeof ticket["category"] === "string" ? ticket["category"].toUpperCase().trim() : "";
-    if (!category) return null;
-    const detectedFrom = ticket["detected_from"] === "user_message" ? "user_message" : "self_analysis";
     return {
       category,
-      summary,
-      details: typeof ticket["details"] === "string" ? ticket["details"] : "",
-      severity: severity as "low" | "medium" | "high",
-      detectedFrom,
+      summary: summary.slice(0, 280), // guard against runaway
+      details,
+      severity: "medium",
+      detectedFrom: "self_analysis",
     };
-  } catch {
-    return null;
   }
+
+  return null;
 }
 
 async function insertTicketFromAshley(
@@ -2098,8 +2128,17 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     })) {
       if (chunk.length === 0) continue;
       accumulated += chunk;
-      if (!ticketBuffering && (accumulated.trimStart()[0] === "{")) {
-        ticketBuffering = true;
+      if (!ticketBuffering) {
+        const firstChar = accumulated.trimStart()[0];
+        // Suppress deltas for JSON tickets (`{`) and log-line tickets
+        // (`[` timestamp prefix or `A` for ASHLEY-CATEGORY-NNN).
+        if (
+          firstChar === "{" ||
+          firstChar === "[" ||
+          (firstChar === "A" && accumulated.trimStart().startsWith("ASHLEY-"))
+        ) {
+          ticketBuffering = true;
+        }
       }
       if (!ticketBuffering) {
         writeEvent("delta", { text: chunk });
