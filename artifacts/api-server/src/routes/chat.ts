@@ -231,8 +231,6 @@ async function runDiagnosticsReport(
   label: string,
   format: "json" | "sse",
 ): Promise<void> {
-  // eslint-disable-next-line no-console
-  console.log("RUN DIAGNOSTICS CALLED");
   const deviceId = getDeviceId(req);
   try {
     const allTickets = await db.select().from(ashleyTicketsTable);
@@ -337,8 +335,6 @@ async function runDiagnosticsReport(
 // ---------------------------------------------------------------------------
 
 router.post("/chat", async (req, res): Promise<void> => {
-  // eslint-disable-next-line no-console
-  console.log("ENTRY HIT:", req.path, (req.body as Record<string,unknown>|null)?.["userMessage"] && typeof ((req.body as Record<string,unknown>)["userMessage"] as Record<string,unknown>)?.["content"] === "string" ? ((req.body as Record<string,unknown>)["userMessage"] as Record<string,unknown>)["content"] : "(no content)");
   const deviceId = getDeviceId(req);
 
   // ---------------------------------------------------------------------------
@@ -349,17 +345,11 @@ router.post("/chat", async (req, res): Promise<void> => {
   const rawBody = req.body as Record<string, unknown> | null | undefined;
   const rawUserMsg = rawBody?.["userMessage"] as Record<string, unknown> | null | undefined;
   const rawMessage = typeof rawUserMsg?.["content"] === "string" ? rawUserMsg["content"] : "";
-  // eslint-disable-next-line no-console
-  console.log("DIAG ROUTER HIT:", rawMessage);
   const normalized = rawMessage.trim().toLowerCase();
-  // eslint-disable-next-line no-console
-  console.log("DIAG NORMALIZED:", normalized);
   const isExactDiagnostics = normalized === "run diagnostics";
   const isDiagnosticsIntent =
     normalized.includes("diagnostic") ||
     normalized.includes("diagnostics");
-  // eslint-disable-next-line no-console
-  console.log("DIAG INTENT:", { isExactDiagnostics, isDiagnosticsIntent });
   if (isExactDiagnostics) {
     await runDiagnosticsReport(req, res, "chat", "json");
     return;
@@ -695,15 +685,11 @@ router.post("/chat", async (req, res): Promise<void> => {
       },
     };
 
-    // TEMP DIAGNOSTIC PREFIX — remove once LLM source confirmed
-    const _llmTagged = { ...ashleyRow, content: "[LLM] " + (ashleyRow.content ?? "") };
-    res.json({ userMessage: userRow, ashleyMessage: _llmTagged, _debug });
+    res.json({ userMessage: userRow, ashleyMessage: ashleyRow, _debug });
     return;
   }
 
-  // TEMP DIAGNOSTIC PREFIX — remove once LLM source confirmed
-  const _llmTagged = { ...ashleyRow, content: "[LLM] " + (ashleyRow.content ?? "") };
-  res.json({ userMessage: userRow, ashleyMessage: _llmTagged });
+  res.json({ userMessage: userRow, ashleyMessage: ashleyRow });
 });
 
 // ---------------------------------------------------------------------------
@@ -1602,8 +1588,6 @@ const ChatStreamBodySchema = z
   );
 
 router.post("/chat/stream", async (req, res): Promise<void> => {
-  // eslint-disable-next-line no-console
-  console.log("ENTRY HIT:", req.path, (req.body as Record<string,unknown>|null)?.["userMessage"] && typeof ((req.body as Record<string,unknown>)["userMessage"] as Record<string,unknown>)?.["content"] === "string" ? ((req.body as Record<string,unknown>)["userMessage"] as Record<string,unknown>)["content"] : "(no content)");
   const deviceId = getDeviceId(req);
 
   // ---------------------------------------------------------------------------
@@ -1613,17 +1597,11 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   const rawBodyS = req.body as Record<string, unknown> | null | undefined;
   const rawUserMsgS = rawBodyS?.["userMessage"] as Record<string, unknown> | null | undefined;
   const rawMessageS = typeof rawUserMsgS?.["content"] === "string" ? rawUserMsgS["content"] : "";
-  // eslint-disable-next-line no-console
-  console.log("DIAG ROUTER HIT:", rawMessageS);
   const normalizedS = rawMessageS.trim().toLowerCase();
-  // eslint-disable-next-line no-console
-  console.log("DIAG NORMALIZED:", normalizedS);
   const isExactDiagnosticsS = normalizedS === "run diagnostics";
   const isDiagnosticsIntentS =
     normalizedS.includes("diagnostic") ||
     normalizedS.includes("diagnostics");
-  // eslint-disable-next-line no-console
-  console.log("DIAG INTENT:", { isExactDiagnostics: isExactDiagnosticsS, isDiagnosticsIntent: isDiagnosticsIntentS });
   if (isExactDiagnosticsS) {
     await runDiagnosticsReport(req, res, "chat/stream", "sse");
     return;
@@ -2011,8 +1989,6 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   let accumulated = "";
   let finishedNaturally = false;
   let upstreamErr: unknown = null;
-  // TEMP DIAGNOSTIC PREFIX — remove once LLM source confirmed
-  let _firstLLMChunk = true;
 
   try {
     for await (const chunk of streamChatText({
@@ -2023,10 +1999,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     })) {
       if (chunk.length === 0) continue;
       accumulated += chunk;
-      // TEMP: prefix only the first emitted delta, not the stored content
-      const _emitText = _firstLLMChunk ? "[LLM] " + chunk : chunk;
-      _firstLLMChunk = false;
-      writeEvent("delta", { text: _emitText });
+      writeEvent("delta", { text: chunk });
     }
     finishedNaturally = true;
   } catch (err) {
