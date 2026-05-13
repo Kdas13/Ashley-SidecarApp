@@ -917,7 +917,7 @@ export default function ChatScreen(): React.JSX.Element {
               {sendError}
               {"\n"}
               <Text style={styles.errorSubtext}>
-                api: {process.env.EXPO_PUBLIC_DOMAIN || "(unset!)"} · tap to dismiss
+                api: {process.env.EXPO_PUBLIC_API_BASE ?? process.env.EXPO_PUBLIC_DOMAIN ?? "(unset)"} · tap to dismiss
               </Text>
             </Text>
           </Pressable>
