@@ -1582,7 +1582,45 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     return;
   }
   if (isDiagnosticsIntentS) {
-    res.json({ reply: "To run diagnostics, please use the exact command: run diagnostics" });
+    // The streaming client expects SSE format — a plain res.json() is read
+    // as an unknown event and the mobile treats the stream as failed, then
+    // retries on /chat every 4 s. Return a real SSE stream instead so the
+    // redirect message appears in the chat bubble and the retry loop stops.
+    const redirectContent =
+      "To run diagnostics, please use the exact command: run diagnostics";
+    const fakeId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const ashleyMsg = {
+      id: fakeId,
+      deviceId,
+      role: "ashley",
+      content: "",
+      status: "streaming",
+      imageUrl: null,
+      selfieVibe: null,
+      imageMimeType: null,
+      imageCategory: null,
+      imageCaption: null,
+      imageAnalysisMode: null,
+      imageRemembered: null,
+      replyToId: null,
+      replyToRole: null,
+      replyToPreview: null,
+      createdAt: now,
+    };
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders?.();
+    res.write(
+      `event: meta\ndata: ${JSON.stringify({ streamId: fakeId, userMessage: null, ashleyMessage: ashleyMsg, mode: "new", continueFromMessageId: null })}\n\n`,
+    );
+    res.write(
+      `event: done\ndata: ${JSON.stringify({ content: redirectContent, selfieVibe: null })}\n\n`,
+    );
+    res.end();
     return;
   }
 
