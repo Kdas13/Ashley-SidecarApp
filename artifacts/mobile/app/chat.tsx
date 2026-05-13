@@ -64,6 +64,16 @@ const RELATIONSHIP_MODE_PRESETS = [
 // Keeps storage and the on-screen quote header from getting unwieldy.
 const REPLY_PREVIEW_MAX = 140;
 
+// True when the bundle has both the API key and a reachable base URL baked in.
+// Both are EXPO_PUBLIC_* variables inlined at build time. False only in dev
+// builds where the env vars were not set; in production both are always present.
+// Used to gate Continue/Retry so a misconfigured build fails visibly rather
+// than silently. Does not gate the main send button — getApiBase() throws there,
+// surfacing the error banner, which is sufficient for dev-time discovery.
+const isApiConfigured =
+  !!process.env.EXPO_PUBLIC_API_KEY &&
+  !!(process.env.EXPO_PUBLIC_API_BASE ?? process.env.EXPO_PUBLIC_DOMAIN);
+
 // Image picker — visible labels for category + analysis-mode chips.
 const IMAGE_CATEGORIES: { value: ImageCategory; label: string }[] = [
   { value: "art_progress", label: "Art progress" },
@@ -1723,7 +1733,7 @@ function MessageBubble({
           <View style={styles.interruptedActions}>
             <Pressable
               onPress={() => onContinue?.(message.id)}
-              disabled={!!continuePending || !!retryPending}
+              disabled={!!continuePending || !!retryPending || !isApiConfigured}
               style={({ pressed }) => [
                 styles.continueBtn,
                 (continuePending || retryPending) && { opacity: 0.5 },

@@ -1,5 +1,6 @@
 import { anthropic } from "@workspace/integrations-anthropic-ai";
 import { getGemini } from "./gemini";
+import { logger } from "./logger";
 
 export type LLMMessage = { role: "user" | "assistant"; content: string };
 
@@ -75,6 +76,10 @@ export async function generateChatText(opts: GenerateOpts): Promise<string> {
     } catch (err) {
       if (isRateLimit(err) && attempt < RETRY_DELAYS_MS.length) {
         lastErr = err;
+        logger.warn(
+          { attempt: attempt + 1, delayMs: RETRY_DELAYS_MS[attempt] },
+          "Gemini rate limit on generateChatText — retrying",
+        );
         continue;
       }
       throw err;
@@ -122,6 +127,10 @@ export async function* streamChatText(
         // received partial content), so let them surface as errors.
         if (isRateLimit(err) && !hasYielded && attempt < RETRY_DELAYS_MS.length) {
           lastErr = err;
+          logger.warn(
+            { attempt: attempt + 1, delayMs: RETRY_DELAYS_MS[attempt] },
+            "Gemini rate limit on streamChatText — retrying",
+          );
           continue;
         }
         throw err;
