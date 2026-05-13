@@ -144,8 +144,16 @@ export function classifyImageIntent(text: string): ClassifyResult {
 export type FramingHint = "square" | "tall";
 
 export type PromptWrapper = {
-  positives: string[];
-  negatives: string[];
+  /**
+   * One natural-language sentence describing the SHOT TYPE for this mode.
+   * Goes at the head of the image prompt. Use only positive affirmations —
+   * gpt-image-1 is a diffusion model and does not understand negation, so
+   * "no cropped legs" tends to *summon* cropped legs. Affirm the desired
+   * framing instead.
+   */
+  shotType: string;
+  /** One natural-language sentence about lighting / texture / finish. */
+  styleLine: string;
   framingHint: FramingHint;
   requiresFullBodyValidation: boolean;
   /** Short label used in client-side pending UI ("taking a selfie…", etc.) */
@@ -154,128 +162,73 @@ export type PromptWrapper = {
 
 const WRAPPERS: Record<ImageMode, PromptWrapper> = {
   SELFIE_MODE: {
-    positives: [
-      "Close-up or upper-body framing is allowed.",
-      "Camera-held / phone-in-hand selfie language is allowed.",
-      "Cropped body is acceptable; full legs are NOT required unless explicitly asked for.",
-      "Single subject. Soft natural lighting. Slightly soft focus. Avoid uncanny faces.",
-    ],
-    negatives: ["text or watermarks"],
+    shotType:
+      "Warm intimate phone-camera selfie of {subject}, a young woman, with the camera held at arm's length",
+    styleLine:
+      "Soft natural lighting, slightly soft focus, single subject, photorealistic, no text or watermarks",
     framingHint: "square",
     requiresFullBodyValidation: false,
     pendingLabel: "taking a selfie",
   },
   PORTRAIT_MODE: {
-    positives: [
-      "Head-and-shoulders or upper-body framing.",
-      "Focus on face, expression, identity, controlled lighting.",
-      "Single subject, looking at camera or in candid moment.",
-      "No selfie / phone-in-hand framing.",
-    ],
-    negatives: ["selfie crop", "phone in hand", "camera-held framing", "text or watermarks"],
+    shotType:
+      "Photorealistic head-and-shoulders portrait of {subject}, a young woman, looking at the camera in a candid moment",
+    styleLine:
+      "Controlled natural lighting, focus on face and expression, single subject, photorealistic, no text or watermarks",
     framingHint: "square",
     requiresFullBodyValidation: false,
     pendingLabel: "framing a portrait",
   },
   FULL_BODY_MODE: {
-    positives: [
-      "Full body visible from head to toe.",
-      "Both legs fully visible.",
-      "Feet visible (unless explicitly excluded by the description).",
-      "Subject is framed with enough negative space around the body.",
-      "Even readable lighting; the silhouette is clearly visible.",
-    ],
-    negatives: [
-      "cropped legs",
-      "hidden feet",
-      "portrait crop",
-      "close-up or selfie framing",
-      "cut-off body",
-      "lower body hidden by fog, darkness, furniture, foreground objects, or low camera angle",
-      "text or watermarks",
-    ],
+    shotType:
+      "Full-body photograph of {subject}, a young woman, captured from head to toe with both legs and feet entirely inside the frame, in a vertical composition with breathing room above her head and below her feet",
+    styleLine:
+      "Even, readable lighting across her whole body so the silhouette is clear, photorealistic, single subject, no text or watermarks",
     framingHint: "tall",
     requiresFullBodyValidation: true,
     pendingLabel: "framing a full-body shot",
   },
   OUTFIT_MODE: {
-    positives: [
-      "Full outfit visible.",
-      "Head-to-toe framing.",
-      "Both legs and footwear visible.",
-      "Lighting flatters the garments; fabric and silhouette are readable.",
-    ],
-    negatives: [
-      "selfie crop",
-      "cropped lower body",
-      "hidden footwear",
-      "lower body obscured by fog, shadow, or foreground",
-      "text or watermarks",
-    ],
+    shotType:
+      "Full-outfit fashion photograph of {subject}, a young woman, standing from head to toe with the entire outfit and footwear inside the frame, in a vertical composition",
+    styleLine:
+      "Lighting that flatters the garments, fabric and silhouette readable, photorealistic, single subject, no text or watermarks",
     framingHint: "tall",
     requiresFullBodyValidation: true,
     pendingLabel: "framing an outfit shot",
   },
   POSE_REFERENCE_MODE: {
-    positives: [
-      "Clean, readable body pose.",
-      "Full silhouette visible.",
-      "Limbs clearly separated where possible.",
-      "Even lighting that does not hide anatomy.",
-    ],
-    negatives: [
-      "cropped limbs",
-      "hidden legs",
-      "obscured feet",
-      "ambiguous lower body",
-      "heavy cinematic shadow that hides anatomy",
-      "text or watermarks",
-    ],
+    shotType:
+      "Clean pose-reference image of {subject}, a young woman, with the full silhouette inside the frame and limbs clearly separated, in a vertical composition",
+    styleLine:
+      "Even reference-style lighting across the body, photorealistic, single subject, neutral background, no text or watermarks",
     framingHint: "tall",
     requiresFullBodyValidation: true,
     pendingLabel: "drafting a pose reference",
   },
   SCENE_MODE: {
-    positives: [
-      "Prioritise the scene / composition over selfie framing.",
-      "Camera distance appropriate to the moment described.",
-      "Subject may be full-body, half-body, or environmental as the scene demands.",
-      "Environmental detail is present and legible.",
-    ],
-    negatives: [
-      "default close-up selfie framing",
-      "phone-in-hand selfie language",
-      "text or watermarks",
-    ],
+    shotType:
+      "Cinematic environmental photograph featuring {subject}, a young woman, framed at whatever camera distance the scene demands, with environmental detail present and legible, in a vertical composition",
+    styleLine:
+      "Photorealistic cinematic lighting that suits the scene, single subject, no text or watermarks",
     framingHint: "tall",
     requiresFullBodyValidation: false,
     pendingLabel: "composing a scene",
   },
   ART_REFERENCE_MODE: {
-    positives: [
-      "Art-useful composition.",
-      "Respect the requested canvas / panel / framing in the description.",
-      "Clear forms, readable lighting, usable as reference.",
-    ],
-    negatives: [
-      "forced selfie framing",
-      "phone-in-hand language",
-      "text or watermarks",
-    ],
+    shotType:
+      "Art-reference image of {subject}, a young woman, composed for use as drawing or painting reference, respecting any canvas or panel framing described in the scene",
+    styleLine:
+      "Clear forms, readable lighting, photorealistic or stylised as the description requires, no text or watermarks",
     framingHint: "tall",
     requiresFullBodyValidation: false,
     pendingLabel: "sketching a reference",
   },
   ABSTRACT_OR_SYMBOLIC_MODE: {
-    positives: [
-      "Symbolic visual language: composition, mood, theme over literal portrait.",
-      "Do not force the subject's face / body into the image unless the description requires it.",
-    ],
-    negatives: [
-      "forced selfie framing",
-      "literal portrait when not requested",
-      "text or watermarks",
-    ],
+    shotType:
+      "Symbolic visual composition inspired by {subject}'s mood and theme rather than a literal portrait",
+    styleLine:
+      "Atmospheric lighting, composition-driven, photorealistic or stylised as the description requires, no text or watermarks",
     framingHint: "square",
     requiresFullBodyValidation: false,
     pendingLabel: "drafting an image",
@@ -302,23 +255,18 @@ export function buildModePromptBlock(opts: {
 }): string {
   const { mode, vibe, subjectName, appearance } = opts;
   const w = wrapperFor(mode);
-  const positives = w.positives.map((p) => `- ${p}`).join("\n");
-  const negatives = w.negatives.length
-    ? `Forbidden in this image: ${w.negatives.join("; ")}.`
-    : "";
-  const identity = appearance
-    ? `Identity anchor (must remain recognisable, but MUST NOT override the framing requirements above): ${appearance}`
-    : "";
-  return [
-    `Image intent: ${mode}.`,
-    `Subject: ${subjectName}, a young woman.`,
-    `Framing requirements:\n${positives}`,
-    negatives,
-    identity,
-    `Vibe / scene: ${vibe.trim() || "natural, unposed."}`,
-  ]
+  // Diffusion models follow natural-language description, not bulleted
+  // instructions. The shot-type sentence is the framing anchor; the appearance
+  // and vibe are blended in as narrative detail; the style line caps it.
+  // Crucially: NO negatives ("no cropped legs", "forbidden:") — diffusion
+  // models render whatever words appear, regardless of negation.
+  const shot = w.shotType.replace("{subject}", subjectName);
+  const appearanceSentence = appearance ? `She has ${appearance}.` : "";
+  const vibeText = vibe.trim();
+  const vibeSentence = vibeText ? `Scene: ${vibeText}.` : "";
+  return [shot + ".", appearanceSentence, vibeSentence, w.styleLine + "."]
     .filter(Boolean)
-    .join("\n");
+    .join(" ");
 }
 
 // ---------------------------------------------------------------------------
