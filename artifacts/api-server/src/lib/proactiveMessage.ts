@@ -169,7 +169,7 @@ export async function generateProactiveMessage(
   // Strip selfie tags — proactive messages are text-only by design (no
   // bandwidth/UX expectation that a notification opens a generated photo).
   // Mirrors the strip behaviour in chat.ts but unconditional here.
-  text = text.replace(/\[selfie:\s*[^\]]+\]/gi, "").trim();
+  text = text.replace(/\[(?:image|selfie):[^\]]+\]/gi, "").trim();
   if (!text) return "";
 
   return text;

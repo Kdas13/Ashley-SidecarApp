@@ -27,6 +27,16 @@ import { MEMORY_DISTILLER_PROMPT, SUMMARIZER_PROMPT } from "../lib/ashleyPrompt"
 import { buildSystemPrompt } from "../lib/ashleyCoreSpec";
 import { buildSystemEventsSection, buildOpenTicketsBlock } from "../lib/systemEvents";
 import { buildSelfiePromptSafetyPrefix } from "../lib/contentPolicy";
+import {
+  type ImageMode,
+  isImageMode,
+  IMAGE_MODES,
+  parseImageMarker,
+  buildModePromptBlock,
+  wrapperFor,
+  encodeStoredVibe,
+  decodeStoredVibe,
+} from "../lib/imageIntent";
 import { approveTicketById } from "./tickets";
 import {
   generateImageBase64,
@@ -358,7 +368,11 @@ function buildTimeContext(
 // truth for the Ashley Core Behaviour Spec). buildSystemPrompt is imported
 // at the top of this file.
 
-const SELFIE_MARKER_RE = /\[selfie:\s*([^\]]+)\]/i;
+// Belt-and-braces strip pattern. The primary parse is parseImageMarker (from
+// ../lib/imageIntent) which handles BOTH the new [image:MODE|...] form and
+// the legacy [selfie:...] form. After we extract the *first* marker we use
+// this regex to drop any *additional* markers that snuck into the same reply.
+const ANY_IMAGE_MARKER_STRIP_RE = /\[(?:image|selfie):[^\]]+\]/gi;
 
 function publicBaseUrl(): string {
   const domains = (process.env["REPLIT_DOMAINS"] ?? "").split(",");
@@ -869,16 +883,27 @@ router.post("/chat", async (req, res): Promise<void> => {
     return;
   }
 
-  // 5. Strip selfie marker (first one only) and remember the vibe.
+  // 5. Strip image marker (first one only) and remember the (mode, vibe).
+  //    The selfieVibe column carries an encoded `MODE|vibe` payload so the
+  //    /chat/selfie generation endpoint can replay the same mode without a
+  //    schema change. Legacy [selfie:...] tags route through the classifier.
   let selfieVibe: string | null = null;
-  const match = assistantText.match(SELFIE_MARKER_RE);
-  if (match) {
-    const vibe = match[1]!.trim();
-    if (vibe.length > 0) selfieVibe = vibe;
-    const before = assistantText.slice(0, match.index).trim();
+  const parsedMarker = parseImageMarker(assistantText);
+  if (parsedMarker) {
+    selfieVibe = encodeStoredVibe(parsedMarker.mode, parsedMarker.vibe);
+    req.log.info(
+      {
+        userText: userContent.slice(0, 200),
+        imageMode: parsedMarker.mode,
+        reason: parsedMarker.reason,
+        vibePreview: parsedMarker.vibe.slice(0, 120),
+      },
+      "image-intent: marker detected in /chat reply",
+    );
+    const before = assistantText.slice(0, parsedMarker.startIndex).trim();
     const after = assistantText
-      .slice(match.index! + match[0].length)
-      .replace(/\[selfie:\s*[^\]]+\]/gi, "")
+      .slice(parsedMarker.startIndex + parsedMarker.length)
+      .replace(ANY_IMAGE_MARKER_STRIP_RE, "")
       .trim();
     const joined = [before, after].filter((s) => s.length > 0).join("\n\n");
     assistantText = joined;
@@ -977,8 +1002,17 @@ type SelfieMode = "fast" | "quality";
 
 const ChatSelfieBodySchema = z.object({
   messageId: z.string().min(8).max(128),
+  // The vibe field MAY contain an encoded `MODE|description` payload (server
+  // emits these from /chat / /chat/stream). It MAY also be a legacy bare
+  // description (older clients, retry from disk-persisted rows). Either is
+  // accepted; decodeStoredVibe handles both.
   vibe: z.string().min(1).max(MAX_VIBE_LEN),
   mode: z.enum(["fast", "quality"]).optional().default("fast"),
+  // Optional explicit override from the client. When omitted, the server
+  // decodes from `vibe` (preferred path).
+  imageMode: z
+    .enum(IMAGE_MODES as unknown as [ImageMode, ...ImageMode[]])
+    .optional(),
 });
 
 type SelfieJob =
@@ -986,6 +1020,7 @@ type SelfieJob =
       status: "pending";
       vibe: string;
       mode: SelfieMode;
+      imageMode: ImageMode;
       deviceId: string;
       messageId: string;
       createdAt: number;
@@ -994,6 +1029,7 @@ type SelfieJob =
       status: "ready";
       imageUrl: string;
       mode: SelfieMode;
+      imageMode: ImageMode;
       deviceId: string;
       messageId: string;
       createdAt: number;
@@ -1002,6 +1038,7 @@ type SelfieJob =
       status: "failed";
       error: string;
       mode: SelfieMode;
+      imageMode: ImageMode;
       deviceId: string;
       messageId: string;
       createdAt: number;
@@ -1043,10 +1080,13 @@ function loadSelfieJobs(): void {
         typeof job.messageId === "string"
       ) {
         // Backwards-compat: jobs persisted before fast/quality modes existed
-        // had no `mode` field. Default them to "fast" so they replay cleanly.
+        // had no `mode` field; jobs persisted before image-intent routing
+        // had no `imageMode` field. Default both so they replay cleanly.
+        const persistedImageMode = (job as Partial<SelfieJob>).imageMode;
         const withMode: SelfieJob = {
           ...job,
           mode: job.mode === "quality" ? "quality" : "fast",
+          imageMode: isImageMode(persistedImageMode) ? persistedImageMode : "SELFIE_MODE",
         };
         selfieJobs.set(id, withMode);
       }
@@ -1149,9 +1189,17 @@ async function generateAshleySelfie(
   vibe: string,
   profile: AshleyProfile,
   mode: SelfieMode,
+  imageMode: ImageMode,
 ): Promise<string | null> {
   const appearance = (profile.appearance ?? "").trim();
   const ashleyName = (profile.name ?? "Ashley").trim() || "Ashley";
+  const wrapper = wrapperFor(imageMode);
+  const modeBlock = buildModePromptBlock({
+    mode: imageMode,
+    vibe,
+    subjectName: ashleyName,
+    appearance,
+  });
   const fullPrompt = [
     // Provider Floor for the IMAGE generator. Always first, never overridden
     // by mode/intimacy — see lib/contentPolicy.ts. The downstream image
@@ -1159,14 +1207,25 @@ async function generateAshleySelfie(
     // inside it so we degrade by Ashley saying "couldn't get the shot —
     // try a different vibe" rather than by hitting a hard provider error.
     buildSelfiePromptSafetyPrefix(),
-    `Photograph (selfie) of ${ashleyName}, a young woman.`,
-    appearance ? `Appearance: ${appearance}` : "",
-    `Style: warm intimate phone-camera selfie, natural lighting, slightly soft focus, no text or watermarks.`,
-    `Vibe / scene: ${vibe}`,
-    `Single subject, full or half-body framing, soft and flattering. Avoid uncanny faces.`,
+    modeBlock,
   ]
     .filter(Boolean)
-    .join("\n");
+    .join("\n\n");
+
+  // Pre-generation log. Captures: imageMode, why (wrapper hint), final
+  // framing/sizing, vibe preview. Required by the image-intent spec so we
+  // can audit "Schrödinger's legs" regressions after the fact.
+  logger.info(
+    {
+      imageMode,
+      framingHint: wrapper.framingHint,
+      validationRequired: wrapper.requiresFullBodyValidation,
+      providerMode: mode,
+      vibePreview: vibe.slice(0, 160),
+      promptPreview: fullPrompt.slice(0, 280),
+    },
+    "image-gen: pre-generation request",
+  );
 
   // Cache check by (mode, fullPrompt). Cross-message reuse — saves 6-40s
   // when the same vibe + appearance + mode recurs within 24h.
@@ -1175,8 +1234,8 @@ async function generateAshleySelfie(
   const cached = selfieCache.get(cacheKey);
   if (cached) {
     logger.info(
-      { mode, cacheKey: cacheKey.slice(0, 12), selfieId: cached.selfieId },
-      "Selfie cache hit — reusing previously generated image",
+      { mode, imageMode, cacheKey: cacheKey.slice(0, 12), selfieId: cached.selfieId },
+      "Image cache hit — reusing previously generated image",
     );
     return `${publicBaseUrl()}/api/selfies/${cached.selfieId}.png`;
   }
@@ -1188,16 +1247,20 @@ async function generateAshleySelfie(
   const inflight = selfieInFlight.get(cacheKey);
   if (inflight) {
     logger.info(
-      { mode, cacheKey: cacheKey.slice(0, 12) },
-      "Selfie in-flight dedup — joining existing generation",
+      { mode, imageMode, cacheKey: cacheKey.slice(0, 12) },
+      "Image in-flight dedup — joining existing generation",
     );
     return inflight;
   }
 
-  // Mode → provider params. fast = 1024x1024 + medium quality = ~15-20s,
-  // quality = 1024x1536 + high quality = ~25-40s.
+  // Sizing: the per-mode framing hint OVERRIDES the user's fast/quality
+  // preference for canvas shape. Full-body / outfit / pose / scene / art
+  // require a tall canvas — a square crop is the root cause of cropped
+  // legs. Quality bit (medium vs high) still respects the user's choice.
   const size: "1024x1024" | "1024x1536" =
-    mode === "quality" ? "1024x1536" : "1024x1024";
+    wrapper.framingHint === "tall" || mode === "quality"
+      ? "1024x1536"
+      : "1024x1024";
   const quality: "low" | "medium" | "high" = mode === "quality" ? "high" : "medium";
 
   const promise: Promise<string | null> = (async () => {
@@ -1230,13 +1293,14 @@ function startSelfieGeneration(
   jobId: string,
   vibe: string,
   mode: SelfieMode,
+  imageMode: ImageMode,
   deviceId: string,
   messageId: string,
 ): void {
   void (async () => {
     try {
       const profile = await getOrCreateProfileFor(deviceId);
-      const imageUrl = await generateAshleySelfie(vibe, profile, mode);
+      const imageUrl = await generateAshleySelfie(vibe, profile, mode, imageMode);
       if (imageUrl) {
         // Patch the assistant message row so the next /state hydration
         // reflects the photo even if the client misses the poll.
@@ -1260,29 +1324,40 @@ function startSelfieGeneration(
           status: "ready",
           imageUrl,
           mode,
+          imageMode,
           deviceId,
           messageId,
           createdAt: Date.now(),
         });
       } else {
+        const wrapper = wrapperFor(imageMode);
+        // Honesty over performance theatre: when a full-body / outfit / pose
+        // mode fails we say so explicitly instead of pretending the image
+        // succeeded with a cropped fallback. Mobile already shows a retry
+        // button when status==="failed".
+        const failureCopy = wrapper.requiresFullBodyValidation
+          ? "Couldn't get the full-body framing right — want me to try again?"
+          : "Couldn't get that shot — try again?";
         setSelfieJob(jobId, {
           status: "failed",
-          error: "Couldn't take that selfie — try again?",
+          error: failureCopy,
           mode,
+          imageMode,
           deviceId,
           messageId,
           createdAt: Date.now(),
         });
       }
     } catch (err) {
-      logger.warn({ err, jobId }, "Background selfie generation crashed");
+      logger.warn({ err, jobId, imageMode }, "Background image generation crashed");
       setSelfieJob(jobId, {
         status: "failed",
         error:
           err instanceof Error && err.message
             ? err.message
-            : "Selfie generation crashed.",
+            : "Image generation crashed.",
         mode,
+        imageMode,
         deviceId,
         messageId,
         createdAt: Date.now(),
@@ -1298,10 +1373,17 @@ loadSelfieCache();
 for (const [id, job] of selfieJobs) {
   if (job.status === "pending") {
     logger.info(
-      { jobId: id, mode: job.mode },
-      "Resuming selfie job after server restart",
+      { jobId: id, mode: job.mode, imageMode: job.imageMode },
+      "Resuming image-gen job after server restart",
     );
-    startSelfieGeneration(id, job.vibe, job.mode, job.deviceId, job.messageId);
+    startSelfieGeneration(
+      id,
+      job.vibe,
+      job.mode,
+      job.imageMode,
+      job.deviceId,
+      job.messageId,
+    );
   }
 }
 
@@ -1312,7 +1394,7 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const { messageId, vibe, mode } = parsed.data;
+  const { messageId, vibe, mode, imageMode: clientImageMode } = parsed.data;
 
   // Confirm the message belongs to this device — prevents using another
   // device's id with our own deviceId via header.
@@ -1331,17 +1413,36 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
     return;
   }
 
+  // Resolve (imageMode, vibe). Priority:
+  //   1. Explicit client-supplied imageMode wins.
+  //   2. Otherwise decode from the vibe payload (server emits MODE|vibe
+  //      from /chat and /chat/stream).
+  //   3. Legacy bare vibes get classified by keyword.
+  const decoded = decodeStoredVibe(vibe);
+  const imageMode: ImageMode = clientImageMode ?? decoded.mode;
+  const decodedVibe = decoded.vibe || vibe.trim();
+  req.log.info(
+    {
+      messageId,
+      imageMode,
+      reason: clientImageMode ? "client-supplied imageMode override" : decoded.reason,
+      vibePreview: decodedVibe.slice(0, 120),
+    },
+    "image-intent: /chat/selfie request resolved",
+  );
+
   pruneSelfieJobs();
   const jobId = randomUUID();
   setSelfieJob(jobId, {
     status: "pending",
-    vibe: vibe.trim(),
+    vibe: decodedVibe,
     mode,
+    imageMode,
     deviceId,
     messageId,
     createdAt: Date.now(),
   });
-  startSelfieGeneration(jobId, vibe.trim(), mode, deviceId, messageId);
+  startSelfieGeneration(jobId, decodedVibe, mode, imageMode, deviceId, messageId);
   res.status(202).json({ jobId });
 });
 
@@ -2698,22 +2799,30 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     }
   }
 
-  // ---- Strip selfie marker on the FINAL accumulated text (mirrors /chat).
+  // ---- Strip image marker on the FINAL accumulated text (mirrors /chat).
   //      We only do this for naturally-finished replies — partials get
   //      stored verbatim so a Continue can flow without losing the marker
-  //      that the model may complete on the next pass.
+  //      that the model may complete on the next pass. selfieVibe column
+  //      carries the encoded `MODE|vibe` payload; see imageIntent.ts.
   let finalText = accumulated;
   let selfieVibe: string | null = null;
   if (finishedNaturally) {
     finalText = finalText.trim();
-    const match = finalText.match(SELFIE_MARKER_RE);
-    if (match) {
-      const vibe = match[1]!.trim();
-      if (vibe.length > 0) selfieVibe = vibe;
-      const before = finalText.slice(0, match.index).trim();
+    const parsedMarker = parseImageMarker(finalText);
+    if (parsedMarker) {
+      selfieVibe = encodeStoredVibe(parsedMarker.mode, parsedMarker.vibe);
+      req.log.info(
+        {
+          imageMode: parsedMarker.mode,
+          reason: parsedMarker.reason,
+          vibePreview: parsedMarker.vibe.slice(0, 120),
+        },
+        "image-intent: marker detected in /chat/stream reply",
+      );
+      const before = finalText.slice(0, parsedMarker.startIndex).trim();
       const after = finalText
-        .slice(match.index! + match[0].length)
-        .replace(/\[selfie:\s*[^\]]+\]/gi, "")
+        .slice(parsedMarker.startIndex + parsedMarker.length)
+        .replace(ANY_IMAGE_MARKER_STRIP_RE, "")
         .trim();
       const joined = [before, after].filter((s) => s.length > 0).join("\n\n");
       finalText = joined;
