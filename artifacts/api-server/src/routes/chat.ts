@@ -513,6 +513,39 @@ router.post("/chat", async (req, res): Promise<void> => {
     return;
   }
 
+  // ---------------------------------------------------------------------------
+  // CREATE TICKET command — raw intercept, same level as diagnostics.
+  // Must be before Zod parse. LLM is never called for this command.
+  // Syntax: "create ticket: <summary>" (case-insensitive).
+  // ---------------------------------------------------------------------------
+  if (normalized.startsWith("create ticket:")) {
+    const summary = rawMessage.trim().slice("create ticket:".length).trim();
+    if (!summary) {
+      res.json({ reply: "Please provide a ticket summary after: create ticket:" });
+      return;
+    }
+    try {
+      const ticketId = `ASH-${Date.now().toString(36).toUpperCase()}`;
+      await db.insert(ashleyTicketsTable).values({
+        ticketId,
+        status: "OPEN",
+        category: "BEHAVIOUR",
+        severity: "medium",
+        summary: summary.slice(0, 280),
+        description: summary,
+        source: "user_command",
+        createdBy: "kane",
+        approved: false,
+      });
+      req.log.info({ ticketId, summary: summary.slice(0, 80) }, "chat: create ticket command");
+      res.json({ reply: `Issue logged. [${ticketId}]` });
+    } catch (err) {
+      req.log.error({ err }, "chat: create ticket command — DB insert failed");
+      res.json({ reply: "Issue noted — but logging failed. Please try again." });
+    }
+    return;
+  }
+
   const parsed = ChatBodySchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
@@ -543,62 +576,6 @@ router.post("/chat", async (req, res): Promise<void> => {
       req.log.error({ err, ticket_id: ticketId }, "chat: APPROVE gate failed");
       res.status(500).json({ approved: false, error: "Failed to process approval", ticket_id: ticketId });
     }
-    return;
-  }
-
-  // CREATE TICKET command — intercepted before LLM.
-  // Syntax: "create ticket: <description>" (case-insensitive).
-  // Creates a ticket server-side, persists both rows, returns chat shape.
-  const createTicketMatch = userContent.match(/^create\s+ticket:\s*(.+)/is);
-  if (createTicketMatch) {
-    const description = createTicketMatch[1]!.trim();
-    const ticketSummary = description.split("\n")[0]!.trim().slice(0, 280);
-    let ackText = "";
-    try {
-      const ticketId = `ASH-${Date.now().toString(36).toUpperCase()}`;
-      await db.insert(ashleyTicketsTable).values({
-        ticketId,
-        severity: "medium",
-        category: "BEHAVIOUR",
-        summary: ticketSummary,
-        description: description || null,
-        source: "user_feedback",
-        createdBy: "user",
-        status: "OPEN",
-        approved: false,
-      });
-      req.log.info({ ticketId, summary: ticketSummary }, "chat: create ticket command");
-      ackText = `Issue logged. [${ticketId}]`;
-    } catch (err) {
-      req.log.error({ err }, "chat: create ticket command failed");
-      ackText = "Issue noted — but logging failed. Please try again.";
-    }
-    let ctUserRow: Message;
-    try {
-      const [inserted] = await db
-        .insert(messagesTable)
-        .values({ id: userId, deviceId, role: "user", content: userContent })
-        .onConflictDoNothing({ target: messagesTable.id })
-        .returning();
-      ctUserRow = inserted ?? (await db.select().from(messagesTable).where(eq(messagesTable.id, userId)).limit(1))[0]!;
-    } catch (err) {
-      req.log.error({ err }, "chat: failed to persist user row for create ticket");
-      res.status(500).json({ error: "Could not save message" });
-      return;
-    }
-    let ctAshleyRow: Message;
-    try {
-      const [inserted] = await db
-        .insert(messagesTable)
-        .values({ id: newId(), deviceId, role: "ashley", content: ackText, selfieVibe: null })
-        .returning();
-      ctAshleyRow = inserted!;
-    } catch (err) {
-      req.log.error({ err }, "chat: failed to persist ack row for create ticket");
-      res.status(500).json({ error: "Could not save reply" });
-      return;
-    }
-    res.json({ userMessage: ctUserRow, ashleyMessage: ctAshleyRow });
     return;
   }
 
@@ -1889,6 +1866,57 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     return;
   }
 
+  // ---------------------------------------------------------------------------
+  // CREATE TICKET command — raw intercept, same level as diagnostics.
+  // Must be before Zod parse. LLM is never called for this command.
+  // Syntax: "create ticket: <summary>" (case-insensitive).
+  // Returns SSE so the ack appears in the chat bubble.
+  // ---------------------------------------------------------------------------
+  if (normalizedS.startsWith("create ticket:")) {
+    const summary = rawMessageS.trim().slice("create ticket:".length).trim();
+    const ackContent = summary
+      ? await (async () => {
+          try {
+            const ticketId = `ASH-${Date.now().toString(36).toUpperCase()}`;
+            await db.insert(ashleyTicketsTable).values({
+              ticketId,
+              status: "OPEN",
+              category: "BEHAVIOUR",
+              severity: "medium",
+              summary: summary.slice(0, 280),
+              description: summary,
+              source: "user_command",
+              createdBy: "kane",
+              approved: false,
+            });
+            req.log.info({ ticketId, summary: summary.slice(0, 80) }, "chat/stream: create ticket command");
+            return `Issue logged. [${ticketId}]`;
+          } catch (err) {
+            req.log.error({ err }, "chat/stream: create ticket command — DB insert failed");
+            return "Issue noted — but logging failed. Please try again.";
+          }
+        })()
+      : "Please provide a ticket summary after: create ticket:";
+    const ackId = crypto.randomUUID();
+    const ackNow = new Date().toISOString();
+    const ackMsg = {
+      id: ackId, deviceId, role: "ashley", content: "", status: "streaming",
+      imageUrl: null, selfieVibe: null, imageMimeType: null, imageCategory: null,
+      imageCaption: null, imageAnalysisMode: null, imageRemembered: null,
+      replyToId: null, replyToRole: null, replyToPreview: null, createdAt: ackNow,
+    };
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders?.();
+    res.write(`event: meta\ndata: ${JSON.stringify({ streamId: ackId, userMessage: null, ashleyMessage: ackMsg, mode: "new", continueFromMessageId: null })}\n\n`);
+    res.write(`event: done\ndata: ${JSON.stringify({ content: ackContent, selfieVibe: null })}\n\n`);
+    res.end();
+    return;
+  }
+
   const parsed = ChatStreamBodySchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({
@@ -1947,69 +1975,6 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     const userContent = userMessage.content.trim();
     if (!userContent) {
       res.status(400).json({ error: "content is required" });
-      return;
-    }
-
-    // CREATE TICKET command (stream path) — intercepted before LLM and before SSE opens.
-    const streamCreateTicketMatch = userContent.match(/^create\s+ticket:\s*(.+)/is);
-    if (streamCreateTicketMatch) {
-      const description = streamCreateTicketMatch[1]!.trim();
-      const ticketSummary = description.split("\n")[0]!.trim().slice(0, 280);
-      let ackText = "";
-      try {
-        const ticketId = `ASH-${Date.now().toString(36).toUpperCase()}`;
-        await db.insert(ashleyTicketsTable).values({
-          ticketId,
-          severity: "medium",
-          category: "BEHAVIOUR",
-          summary: ticketSummary,
-          description: description || null,
-          source: "user_feedback",
-          createdBy: "user",
-          status: "OPEN",
-          approved: false,
-        });
-        req.log.info({ ticketId, summary: ticketSummary }, "chat/stream: create ticket command");
-        ackText = `Issue logged. [${ticketId}]`;
-      } catch (err) {
-        req.log.error({ err }, "chat/stream: create ticket command failed");
-        ackText = "Issue noted — but logging failed. Please try again.";
-      }
-      let ctUserRow: Message | null = null;
-      try {
-        const [ins] = await db
-          .insert(messagesTable)
-          .values({ id: userMessage!.id, deviceId, role: "user", content: userContent })
-          .onConflictDoNothing({ target: messagesTable.id })
-          .returning();
-        ctUserRow = ins ?? (await db.select().from(messagesTable).where(eq(messagesTable.id, userMessage!.id)).limit(1))[0] ?? null;
-      } catch (err) {
-        req.log.error({ err }, "chat/stream: failed to persist user row for create ticket");
-      }
-      const ackId = newId();
-      const ackNow = new Date().toISOString();
-      const ackMsg = {
-        id: ackId, deviceId, role: "ashley", content: ackText, status: "complete",
-        imageUrl: null, selfieVibe: null, imageMimeType: null, imageCategory: null,
-        imageCaption: null, imageAnalysisMode: null, imageRemembered: null,
-        replyToId: null, replyToRole: null, replyToPreview: null, createdAt: ackNow,
-      };
-      try {
-        await db.insert(messagesTable).values({ id: ackId, deviceId, role: "ashley", content: ackText, selfieVibe: null });
-      } catch (err) {
-        req.log.error({ err }, "chat/stream: failed to persist ack row for create ticket");
-      }
-      res.status(200);
-      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-      res.setHeader("Cache-Control", "no-cache, no-transform");
-      res.setHeader("Connection", "keep-alive");
-      res.setHeader("X-Accel-Buffering", "no");
-      res.flushHeaders?.();
-      res.write(
-        `event: meta\ndata: ${JSON.stringify({ streamId: ackId, userMessage: ctUserRow ? { id: ctUserRow.id, role: ctUserRow.role, content: ctUserRow.content, createdAt: (ctUserRow as unknown as Record<string,unknown>)["createdAt"] } : null, ashleyMessage: ackMsg, mode: "new", continueFromMessageId: null })}\n\n`,
-      );
-      res.write(`event: done\ndata: ${JSON.stringify({ content: ackText, selfieVibe: null })}\n\n`);
-      res.end();
       return;
     }
 
