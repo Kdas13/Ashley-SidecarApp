@@ -2496,6 +2496,13 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     // explicitly as the final assistant turn so the continuation prompt
     // ends with `assistant:<partial>`.
     if (interruptedRow && m.id === interruptedRow.id) continue;
+    // For new-turn mode, exclude all incomplete Ashley rows (status=interrupted
+    // or status=streaming). Including them contaminates the model's context:
+    // a partial like "Ping3" sent as an assistant turn causes the model to
+    // treat it as something to continue from, producing blended output
+    // ("Ping3Ping4.") for the next user turn. In new-turn mode the user has
+    // implicitly moved on; only confirmed complete turns belong in context.
+    if (!isContinue && m.role === "ashley" && m.status !== "complete") continue;
     const role: "user" | "assistant" =
       m.role === "user" ? "user" : "assistant";
     let text = (m.content ?? "").trim();
@@ -2585,12 +2592,20 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
+  req.log.info(
+    { requestId: requestId ?? null, streamId, deviceId, isContinue },
+    "chat/stream: opened",
+  );
+
   writeEvent("meta", {
     streamId,
     userMessage: userRow,
     ashleyMessage: ashleyRow,
     mode: isContinue ? "continue" : "new",
     continueFromMessageId: continueFromMessageId ?? null,
+    // Echo the client-supplied requestId so the client can validate
+    // stream ownership and drop late tokens from mismatched streams.
+    requestId: requestId ?? null,
   });
 
   // ---- Register abort controller.
@@ -2779,6 +2794,10 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     if (requestId && requestIdempotencyMap.get(requestId)?.status === "pending") {
       requestIdempotencyMap.delete(requestId);
     }
+    req.log.info(
+      { requestId: requestId ?? null, streamId, finishedNaturally, userAborted, clientDisconnected },
+      "chat/stream: closed",
+    );
     if (!res.writableEnded) res.end();
   }
 

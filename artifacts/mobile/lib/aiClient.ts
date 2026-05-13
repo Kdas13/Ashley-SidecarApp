@@ -843,6 +843,10 @@ export type StreamReplyMeta = {
   ashleyMessage: Message;
   mode: "new" | "continue";
   continueFromMessageId: string | null;
+  /** Echo of the client-supplied requestId. Used to validate stream ownership
+   *  and drop late tokens from mismatched streams. Null for continue mode or
+   *  when the server is older and doesn't echo it. */
+  requestId: string | null;
 };
 
 export type StreamReplyDoneEvent = {
@@ -959,6 +963,9 @@ export async function streamAshleyReply(
   let outcome: StreamReplyOutcome | null = null;
   let buffer = "";
   const decoder = new TextDecoder("utf-8");
+  // Tracks the requestId the server echoed back in the meta event.
+  // Set to null if the server is old and doesn't echo it.
+  let streamOwnerRequestId: string | null | undefined = undefined; // undefined = meta not yet seen
 
   const handleMessage = (raw: string): void => {
     let event = "message";
@@ -987,6 +994,27 @@ export async function streamAshleyReply(
       const wireUser = (d["userMessage"] ?? null) as WireMessage | null;
       const wireAshley = d["ashleyMessage"] as WireMessage | undefined;
       if (!wireAshley) return;
+      // Capture the requestId the server echoed back. Null means the server
+      // is older and doesn't echo it (no validation possible in that case).
+      streamOwnerRequestId =
+        typeof d["requestId"] === "string" ? (d["requestId"] as string) : null;
+      // Stream ownership check: if the server echoed a different requestId
+      // than we sent, we're reading stale data from the wrong response. Drop
+      // everything — the abort below will close this connection.
+      if (
+        args.requestId &&
+        streamOwnerRequestId !== null &&
+        streamOwnerRequestId !== args.requestId
+      ) {
+        outcome = {
+          kind: "error",
+          error: new Error(
+            `Stream requestId mismatch: expected ${args.requestId}, got ${streamOwnerRequestId}`,
+          ),
+          meta: null,
+        };
+        return;
+      }
       meta = {
         streamId: String(d["streamId"] ?? wireAshley.id),
         userMessage: wireUser ? messageFromWire(wireUser) : null,
@@ -996,13 +1024,33 @@ export async function streamAshleyReply(
           typeof d["continueFromMessageId"] === "string"
             ? (d["continueFromMessageId"] as string)
             : null,
+        requestId: streamOwnerRequestId,
       };
       callbacks.onMeta?.(meta);
     } else if (event === "delta") {
+      // Drop tokens that arrive before meta (shouldn't happen) or from a
+      // mismatched stream (late delivery from a previous timed-out request).
+      if (
+        streamOwnerRequestId === undefined ||
+        (args.requestId &&
+          streamOwnerRequestId !== null &&
+          streamOwnerRequestId !== args.requestId)
+      ) {
+        return;
+      }
       if (typeof d["text"] === "string" && d["text"]) {
         callbacks.onDelta?.(d["text"] as string);
       }
     } else if (event === "done") {
+      // Same ownership guard as delta.
+      if (
+        args.requestId &&
+        streamOwnerRequestId !== null &&
+        streamOwnerRequestId !== undefined &&
+        streamOwnerRequestId !== args.requestId
+      ) {
+        return;
+      }
       const final: StreamReplyDoneEvent = {
         content: typeof d["content"] === "string" ? (d["content"] as string) : "",
         selfieVibe:
