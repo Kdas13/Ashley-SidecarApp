@@ -76,58 +76,111 @@ interface ParsedCreateTicket {
 const ASHLEY_LOG_RE =
   /^(?:\[[\d\-T:.Z]+\]\s+)?ASHLEY-([A-Z]+)-\d+\s+(.+)/s;
 
-// Strip ```json ... ``` or ``` ... ``` fences if present, so the parser
-// accepts Ashley's output even when she wraps JSON in markdown fences.
-function stripMarkdownFence(text: string): string {
-  const m = /^```(?:json)?\s*\n?([\s\S]*?)\n?```\s*$/.exec(text);
-  return m ? m[1]!.trim() : text;
+// Walk the text character by character to extract the first complete,
+// balanced JSON object `{...}` — regardless of what appears before or
+// after it (conversational preamble, markdown fences, etc.).
+function extractFirstJsonObject(text: string): string | null {
+  const start = text.indexOf("{");
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]!;
+    if (escape) { escape = false; continue; }
+    if (ch === "\\" && inString) { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+// Attempt to interpret a parsed JSON object as a ticket, accepting two
+// surface formats Ashley may produce:
+//
+//   Format A (instructed):  { "type": "CREATE_TICKET", "ticket": { ... } }
+//   Format B (flat):        { "category": ..., "summary": ..., "severity": ... }
+//
+// Returns null if neither format matches with the minimum required fields.
+function tryParseJsonAsTicket(p: Record<string, unknown>): ParsedCreateTicket | null {
+  // Format A — wrapper object
+  if (p["type"] === "CREATE_TICKET") {
+    const t = p["ticket"];
+    if (typeof t !== "object" || t === null) return null;
+    const ticket = t as Record<string, unknown>;
+    const summary = typeof ticket["summary"] === "string" ? ticket["summary"].trim() : "";
+    if (!summary) return null;
+    const severity = ticket["severity"];
+    if (!VALID_TICKET_SEVERITIES.includes(severity as (typeof VALID_TICKET_SEVERITIES)[number])) return null;
+    const category = typeof ticket["category"] === "string" ? ticket["category"].toUpperCase().trim() : "";
+    if (!category) return null;
+    const detectedFrom = ticket["detected_from"] === "user_message" ? "user_message" : "self_analysis";
+    return {
+      category,
+      summary,
+      details: typeof ticket["details"] === "string" ? ticket["details"] : "",
+      severity: severity as "low" | "medium" | "high",
+      detectedFrom,
+    };
+  }
+
+  // Format B — flat object (summary + category + severity at minimum)
+  const summary = typeof p["summary"] === "string" ? p["summary"].trim() : "";
+  const category = typeof p["category"] === "string" ? p["category"].toUpperCase().trim() : "";
+  const severity = p["severity"];
+  if (
+    summary &&
+    category &&
+    VALID_TICKET_SEVERITIES.includes(severity as (typeof VALID_TICKET_SEVERITIES)[number])
+  ) {
+    const details =
+      typeof p["description"] === "string" ? p["description"] :
+      typeof p["details"] === "string" ? p["details"] : "";
+    const detectedFrom = p["detected_from"] === "user_message" ? "user_message" : "self_analysis";
+    return {
+      category,
+      summary,
+      details,
+      severity: severity as "low" | "medium" | "high",
+      detectedFrom,
+    };
+  }
+
+  return null;
 }
 
 function tryParseCreateTicket(text: string): ParsedCreateTicket | null {
-  const trimmed = stripMarkdownFence(text.trim());
-
-  // --- Primary format: bare JSON CREATE_TICKET object ---
-  if (trimmed.startsWith("{")) {
+  // Extract the first JSON object from anywhere in the text — handles
+  // conversational preamble, markdown fences, trailing text, etc.
+  const jsonStr = extractFirstJsonObject(text);
+  if (jsonStr) {
     try {
-      const parsed: unknown = JSON.parse(trimmed);
-      if (typeof parsed !== "object" || parsed === null) return null;
-      const p = parsed as Record<string, unknown>;
-      if (p["type"] !== "CREATE_TICKET") return null;
-      const t = p["ticket"];
-      if (typeof t !== "object" || t === null) return null;
-      const ticket = t as Record<string, unknown>;
-      const summary = typeof ticket["summary"] === "string" ? ticket["summary"].trim() : "";
-      if (!summary) return null;
-      const severity = ticket["severity"];
-      if (!VALID_TICKET_SEVERITIES.includes(severity as (typeof VALID_TICKET_SEVERITIES)[number])) return null;
-      const category = typeof ticket["category"] === "string" ? ticket["category"].toUpperCase().trim() : "";
-      if (!category) return null;
-      const detectedFrom = ticket["detected_from"] === "user_message" ? "user_message" : "self_analysis";
-      return {
-        category,
-        summary,
-        details: typeof ticket["details"] === "string" ? ticket["details"] : "",
-        severity: severity as "low" | "medium" | "high",
-        detectedFrom,
-      };
+      const parsed: unknown = JSON.parse(jsonStr);
+      if (typeof parsed === "object" && parsed !== null) {
+        const result = tryParseJsonAsTicket(parsed as Record<string, unknown>);
+        if (result) return result;
+      }
     } catch {
-      return null;
+      // malformed JSON — fall through to log-line check
     }
   }
 
-  // --- Fallback format: [TIMESTAMP] ASHLEY-CATEGORY-NNN summary text ---
-  // Ashley occasionally outputs log-style lines instead of JSON.
-  // We rescue these so they still get persisted rather than rendering
-  // raw in the chat bubble.
-  const logMatch = ASHLEY_LOG_RE.exec(trimmed);
+  // --- Last-resort fallback: [TIMESTAMP] ASHLEY-CATEGORY-NNN summary ---
+  // Catches the log-style format Ashley occasionally produces instead of JSON.
+  const logMatch = ASHLEY_LOG_RE.exec(text.trim());
   if (logMatch) {
     const category = logMatch[1]!.toUpperCase();
-    const summary = logMatch[2]!.trim().split("\n")[0]!.trim(); // first line only
+    const summary = logMatch[2]!.trim().split("\n")[0]!.trim();
     const details = logMatch[2]!.trim();
     if (!summary) return null;
     return {
       category,
-      summary: summary.slice(0, 280), // guard against runaway
+      summary: summary.slice(0, 280),
       details,
       severity: "medium",
       detectedFrom: "self_analysis",
@@ -2135,18 +2188,12 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     })) {
       if (chunk.length === 0) continue;
       accumulated += chunk;
-      if (!ticketBuffering) {
-        const firstChar = accumulated.trimStart()[0];
-        // Suppress deltas for JSON tickets (`{`) and log-line tickets
-        // (`[` timestamp prefix or `A` for ASHLEY-CATEGORY-NNN).
-        if (
-          firstChar === "{" ||
-          firstChar === "[" ||
-          firstChar === "`" ||
-          (firstChar === "A" && accumulated.trimStart().startsWith("ASHLEY-"))
-        ) {
-          ticketBuffering = true;
-        }
+      // Only suppress deltas when the response is pure JSON (starts with `{`).
+      // If there is conversational preamble before the JSON, deltas are allowed
+      // to stream — the `done` event replaces the bubble content entirely, so
+      // the raw JSON/preamble is overwritten by the ack anyway.
+      if (!ticketBuffering && accumulated.trimStart()[0] === "{") {
+        ticketBuffering = true;
       }
       if (!ticketBuffering) {
         writeEvent("delta", { text: chunk });
@@ -2166,11 +2213,11 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   }
 
   // ---- CREATE_TICKET intercept (streaming path).
-  //      If Ashley emitted a bare JSON ticket object, ticketBuffering will
-  //      have suppressed all deltas (so nothing rendered yet). Parse, write
-  //      to DB, and replace the content with a clean ack before the done
-  //      event fires. Memory distillation is skipped for ticket turns.
-  if (finishedNaturally && ticketBuffering) {
+  //      Runs unconditionally on every natural completion. extractFirstJsonObject
+  //      finds ticket JSON even when conversational preamble was streamed first.
+  //      The `done` event replaces the entire bubble, so any preamble deltas
+  //      that already rendered are overwritten by the ack text.
+  if (finishedNaturally) {
     const parsedStreamTicket = tryParseCreateTicket(accumulated);
     if (parsedStreamTicket) {
       let ackText = "";
