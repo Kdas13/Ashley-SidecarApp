@@ -37,6 +37,11 @@ import {
   encodeStoredVibe,
   decodeStoredVibe,
 } from "../lib/imageIntent";
+import {
+  resolveImageFollowUp,
+  buildFollowUpTurnHint,
+  type HistoryTurn as FollowUpHistoryTurn,
+} from "../lib/imageFollowUp";
 import { approveTicketById } from "./tickets";
 import {
   generateImageBase64,
@@ -800,7 +805,39 @@ router.post("/chat", async (req, res): Promise<void> => {
     clientTimezone,
     previousMessageAt,
   );
-  const systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}${buildSystemEventsSection()}\n\n${buildOpenTicketsBlock(openTickets)}`;
+  let systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}${buildSystemEventsSection()}\n\n${buildOpenTicketsBlock(openTickets)}`;
+
+  // 3b. Short follow-up image intent resolver. If the latest user message is
+  //     "as a picture" / "show me" / "make it an image" etc., look back at
+  //     the most recent user turn that described a visual and inject a TURN
+  //     HINT into the system prompt so the model emits an [image: MODE | ...]
+  //     tag instead of refusing with capability-wall language.
+  try {
+    const followUpHistory: FollowUpHistoryTurn[] = history.map((m) => ({
+      role: m.role === "user" ? "user" : "ashley",
+      content: (m.content ?? "").toString(),
+    }));
+    const resolution = resolveImageFollowUp(userContent, followUpHistory);
+    if (resolution) {
+      systemPrompt = `${systemPrompt}\n\n${buildFollowUpTurnHint(resolution)}`;
+      req.log.info(
+        {
+          followUpText: resolution.followUpText.slice(0, 200),
+          priorVisualText: resolution.priorVisualText?.slice(0, 200) ?? null,
+          sanitisedVisualText: resolution.sanitisedVisualText?.slice(0, 200) ?? null,
+          sanitised: resolution.sanitised,
+          resolvedRequest: resolution.resolvedRequest.slice(0, 240),
+          suggestedMode: resolution.suggestedMode,
+          modeReason: resolution.modeReason,
+          imageGenerationTriggered: "deferred — depends on model emitting [image: ...] tag this turn",
+        },
+        "image-followup: short follow-up image intent detected — turn hint injected",
+      );
+    }
+  } catch (err) {
+    req.log.warn({ err }, "image-followup: resolver threw (non-fatal)");
+  }
+
   const claudeMessages: Array<{ role: "user" | "assistant"; content: string }> =
     [];
   for (const m of history) {
@@ -2590,6 +2627,37 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
         "web lookup outcome injected into chat/stream prompt",
       );
       systemPrompt = `${baseSystemPrompt}\n\n${lookup.block}`;
+    }
+  }
+
+  // Short follow-up image intent resolver (mirror of /chat). Only meaningful
+  // for new-turn mode where there's a fresh user message to inspect.
+  if (!isContinue && userRow) {
+    try {
+      const followUpHistory: FollowUpHistoryTurn[] = history.map((m) => ({
+        role: m.role === "user" ? "user" : "ashley",
+        content: (m.content ?? "").toString(),
+      }));
+      const resolution = resolveImageFollowUp(userRow.content, followUpHistory);
+      if (resolution) {
+        systemPrompt = `${systemPrompt}\n\n${buildFollowUpTurnHint(resolution)}`;
+        req.log.info(
+          {
+            deviceId,
+            followUpText: resolution.followUpText.slice(0, 200),
+            priorVisualText: resolution.priorVisualText?.slice(0, 200) ?? null,
+            sanitisedVisualText: resolution.sanitisedVisualText?.slice(0, 200) ?? null,
+            sanitised: resolution.sanitised,
+            resolvedRequest: resolution.resolvedRequest.slice(0, 240),
+            suggestedMode: resolution.suggestedMode,
+            modeReason: resolution.modeReason,
+            imageGenerationTriggered: "deferred — depends on model emitting [image: ...] tag this turn",
+          },
+          "image-followup: short follow-up image intent detected — turn hint injected (stream)",
+        );
+      }
+    } catch (err) {
+      req.log.warn({ err }, "image-followup: resolver threw in /chat/stream (non-fatal)");
     }
   }
 
