@@ -174,6 +174,14 @@ export type Message = {
   audioUrl?: string | null;
   /** Local-only: TTS playback status for the per-message Speak button. Not persisted. */
   audioStatus?: "none" | "loading" | "ready" | "error" | null;
+  /**
+   * Local-only: the requestId of the stream that created this message.
+   * Set on optimistic rows and on the server-authoritative row when onMeta
+   * fires. Used as a hard ownership guard — cache writes are dropped if
+   * the incoming stream's requestId doesn't match. Never persisted to disk
+   * or sent to the server.
+   */
+  requestId?: string | null;
 };
 
 export type ReplyToRef = {

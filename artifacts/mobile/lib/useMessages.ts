@@ -272,19 +272,46 @@ type RunStreamArgs = {
  */
 async function runStream(args: RunStreamArgs): Promise<StreamReplyOutcome> {
   const { qc, optimisticUserId, optimisticAshleyId, controller, hooks } = args;
+  // Capture requestId once — used for ownership guards throughout this closure.
+  const currentRequestId = args.requestId ?? null;
   let ashleyId: string | null = null;
+  // Fresh per-invocation accumulator — never shared across runStream calls.
   let pendingDelta = "";
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let firstDeltaSeen = false;
+
+  console.log(
+    "[runStream] open  requestId:", currentRequestId,
+    "optimisticAshleyId:", optimisticAshleyId,
+    "pendingDelta reset to ''",
+  );
 
   const flushNow = (): void => {
     if (!ashleyId || pendingDelta.length === 0) return;
     const chunk = pendingDelta;
     pendingDelta = "";
     const previous = qc.getQueryData<Message[]>(MESSAGES_KEY) ?? [];
-    const next = previous.map((m) =>
-      m.id === ashleyId ? { ...m, content: (m.content ?? "") + chunk } : m,
-    );
+    const next = previous.map((m) => {
+      if (m.id !== ashleyId) return m;
+      // Hard guard 1: never append to a completed message — it is immutable.
+      if (m.status === "complete") {
+        console.warn(
+          "[runStream] flushNow DROP (message complete) requestId:", currentRequestId,
+          "ashleyId:", ashleyId,
+        );
+        return m;
+      }
+      // Hard guard 2: if the row carries a requestId that doesn't match this
+      // stream, another runStream owns it — drop to prevent cross-stream bleed.
+      if (currentRequestId && m.requestId && m.requestId !== currentRequestId) {
+        console.warn(
+          "[runStream] flushNow DROP (requestId mismatch) expected:", currentRequestId,
+          "got:", m.requestId, "ashleyId:", ashleyId,
+        );
+        return m;
+      }
+      return { ...m, content: (m.content ?? "") + chunk };
+    });
     qc.setQueryData(MESSAGES_KEY, next);
   };
 
@@ -310,6 +337,10 @@ async function runStream(args: RunStreamArgs): Promise<StreamReplyOutcome> {
     {
       onMeta: (meta: StreamReplyMeta) => {
         ashleyId = meta.ashleyMessage.id;
+        console.log(
+          "[runStream] meta  requestId:", currentRequestId,
+          "ashleyId:", ashleyId,
+        );
         setActiveStream({ streamId: meta.streamId, mode: meta.mode });
         // Register the local AbortController against the real streamId
         // *before* we start handling deltas so useStopStream() can find
@@ -340,7 +371,12 @@ async function runStream(args: RunStreamArgs): Promise<StreamReplyOutcome> {
         });
         const additions: Message[] = [];
         if (meta.userMessage) additions.push(meta.userMessage);
-        additions.push(meta.ashleyMessage);
+        // Stamp the server-authoritative Ashley row with this stream's
+        // requestId so ownership guards in flushNow/onDone can verify it.
+        const taggedAshley: Message = currentRequestId
+          ? { ...meta.ashleyMessage, requestId: currentRequestId }
+          : meta.ashleyMessage;
+        additions.push(taggedAshley);
         qc.setQueryData(MESSAGES_KEY, [...filtered, ...additions]);
       },
       onDelta: (text: string) => {
@@ -356,26 +392,54 @@ async function runStream(args: RunStreamArgs): Promise<StreamReplyOutcome> {
         cancelFlush();
         pendingDelta = "";
         if (!ashleyId) return;
-        const previous = qc.getQueryData<Message[]>(MESSAGES_KEY) ?? [];
-        const next = previous.map((m) =>
-          m.id === ashleyId
-            ? {
-                ...m,
-                content,
-                status: "complete" as const,
-                selfieVibe: selfieVibe ?? m.selfieVibe ?? null,
-              }
-            : m,
+        console.log(
+          "[runStream] done  requestId:", currentRequestId,
+          "ashleyId:", ashleyId,
+          "content length:", content.length,
         );
+        const previous = qc.getQueryData<Message[]>(MESSAGES_KEY) ?? [];
+        const next = previous.map((m) => {
+          if (m.id !== ashleyId) return m;
+          // Guard: once complete, the message is immutable.
+          if (m.status === "complete") {
+            console.warn(
+              "[runStream] onDone DROP (already complete) requestId:", currentRequestId,
+              "ashleyId:", ashleyId,
+            );
+            return m;
+          }
+          // Guard: ownership check — only write if this stream owns the row.
+          if (currentRequestId && m.requestId && m.requestId !== currentRequestId) {
+            console.warn(
+              "[runStream] onDone DROP (requestId mismatch) expected:", currentRequestId,
+              "got:", m.requestId,
+            );
+            return m;
+          }
+          return {
+            ...m,
+            content,
+            status: "complete" as const,
+            selfieVibe: selfieVibe ?? m.selfieVibe ?? null,
+          };
+        });
         qc.setQueryData(MESSAGES_KEY, next);
       },
       onInterrupted: ({ partialContent }) => {
         cancelFlush();
         pendingDelta = "";
         if (!ashleyId) return;
+        console.log(
+          "[runStream] interrupted requestId:", currentRequestId,
+          "ashleyId:", ashleyId,
+        );
         const previous = qc.getQueryData<Message[]>(MESSAGES_KEY) ?? [];
         const next = previous.map((m) => {
           if (m.id !== ashleyId) return m;
+          // Guard: don't downgrade a completed message.
+          if (m.status === "complete") return m;
+          // Guard: ownership check.
+          if (currentRequestId && m.requestId && m.requestId !== currentRequestId) return m;
           // If the server told us a partial, prefer it (it's authoritative
           // — written from the same accumulated buffer the SSE wrote
           // out). Otherwise keep whatever deltas we'd already applied.
@@ -395,12 +459,19 @@ async function runStream(args: RunStreamArgs): Promise<StreamReplyOutcome> {
         // Mirror onInterrupted's cache shape so the UI can offer
         // Continue/Retry on errored streams too.
         if (!ashleyId) return;
-        const previous = qc.getQueryData<Message[]>(MESSAGES_KEY) ?? [];
-        const next = previous.map((m) =>
-          m.id === ashleyId
-            ? { ...m, status: "interrupted" as const }
-            : m,
+        console.log(
+          "[runStream] error requestId:", currentRequestId,
+          "ashleyId:", ashleyId,
         );
+        const previous = qc.getQueryData<Message[]>(MESSAGES_KEY) ?? [];
+        const next = previous.map((m) => {
+          if (m.id !== ashleyId) return m;
+          // Guard: don't downgrade a completed message.
+          if (m.status === "complete") return m;
+          // Guard: ownership check.
+          if (currentRequestId && m.requestId && m.requestId !== currentRequestId) return m;
+          return { ...m, status: "interrupted" as const };
+        });
         qc.setQueryData(MESSAGES_KEY, next);
       },
     },
@@ -412,6 +483,11 @@ async function runStream(args: RunStreamArgs): Promise<StreamReplyOutcome> {
   // content (pure cancel) but we'd buffered some deltas, get them onto
   // the bubble before we hand control back.
   flushNow();
+  console.log(
+    "[runStream] close requestId:", currentRequestId,
+    "ashleyId:", ashleyId,
+    "outcome:", outcome.kind,
+  );
   return outcome;
 }
 
@@ -457,6 +533,9 @@ export function useStreamMessage() {
         content: "",
         createdAt: new Date(Date.now() + 1).toISOString(),
         status: "streaming",
+        // Stamp the requestId so flushNow/onDone can verify ownership even
+        // before onMeta fires and replaces this row with the server version.
+        ...(requestId ? { requestId } : {}),
       };
       const previous = qc.getQueryData<Message[]>(MESSAGES_KEY) ?? [];
       qc.setQueryData(MESSAGES_KEY, [
