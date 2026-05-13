@@ -56,6 +56,70 @@ import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 
+// ---------------------------------------------------------------------------
+// CREATE_TICKET interception helpers
+// ---------------------------------------------------------------------------
+
+const VALID_TICKET_SEVERITIES = ["low", "medium", "high"] as const;
+
+interface ParsedCreateTicket {
+  category: string;
+  summary: string;
+  details: string;
+  severity: "low" | "medium" | "high";
+  detectedFrom: "user_message" | "self_analysis";
+}
+
+function tryParseCreateTicket(text: string): ParsedCreateTicket | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{")) return null;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const p = parsed as Record<string, unknown>;
+    if (p["type"] !== "CREATE_TICKET") return null;
+    const t = p["ticket"];
+    if (typeof t !== "object" || t === null) return null;
+    const ticket = t as Record<string, unknown>;
+    const summary = typeof ticket["summary"] === "string" ? ticket["summary"].trim() : "";
+    if (!summary) return null;
+    const severity = ticket["severity"];
+    if (!VALID_TICKET_SEVERITIES.includes(severity as (typeof VALID_TICKET_SEVERITIES)[number])) return null;
+    const category = typeof ticket["category"] === "string" ? ticket["category"].toUpperCase().trim() : "";
+    if (!category) return null;
+    const detectedFrom = ticket["detected_from"] === "user_message" ? "user_message" : "self_analysis";
+    return {
+      category,
+      summary,
+      details: typeof ticket["details"] === "string" ? ticket["details"] : "",
+      severity: severity as "low" | "medium" | "high",
+      detectedFrom,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function insertTicketFromAshley(
+  ticket: ParsedCreateTicket,
+  log: { info: (obj: Record<string, unknown>, msg: string) => void; error: (obj: Record<string, unknown>, msg: string) => void },
+): Promise<string> {
+  const ticketId = `ASH-${Date.now().toString(36).toUpperCase()}`;
+  await db.insert(ashleyTicketsTable).values({
+    ticketId,
+    severity: ticket.severity,
+    category: ticket.category,
+    summary: ticket.summary,
+    description: ticket.details || null,
+    source: ticket.detectedFrom === "user_message" ? "user_feedback" : "self_detected",
+    createdBy: "Ashley",
+    status: "OPEN",
+    approved: false,
+  });
+  log.info({ ticketId, summary: ticket.summary, severity: ticket.severity }, "chat: Ashley created ticket");
+  return ticketId;
+}
+
 const CHAT_MODEL = "claude-sonnet-4-6";
 const HISTORY_WINDOW = 80;
 const SUMMARY_CHUNK_SIZE = 20;
@@ -595,6 +659,36 @@ router.post("/chat", async (req, res): Promise<void> => {
   //     Always run detailed version so diagnostics are available.
   const guardResult = await guardContinuityDetailed(assistantText);
   assistantText = guardResult.text;
+
+  // 4c. CREATE_TICKET intercept — Ashley may output a bare JSON ticket
+  //     object instead of a conversational reply. The server catches it
+  //     here, writes the ticket to the DB, and replaces the content with
+  //     a clean acknowledgement so the raw JSON never reaches the mobile.
+  const parsedTicket = tryParseCreateTicket(assistantText);
+  if (parsedTicket) {
+    try {
+      const ticketId = await insertTicketFromAshley(parsedTicket, req.log);
+      assistantText = `Issue logged. [${ticketId}]`;
+    } catch (err) {
+      req.log.error({ err }, "chat: failed to write Ashley ticket to DB");
+      assistantText = "Issue noted — but logging failed. Please try again.";
+    }
+    // Skip selfie + distillation — fall straight through to persist + respond.
+    let ashleyRow2: Message;
+    try {
+      const [inserted] = await db
+        .insert(messagesTable)
+        .values({ id: newId(), deviceId, role: "ashley", content: assistantText, selfieVibe: null })
+        .returning();
+      ashleyRow2 = inserted!;
+    } catch (err) {
+      req.log.error({ err }, "chat: failed to persist ticket ack");
+      res.status(500).json({ error: "Could not save reply" });
+      return;
+    }
+    res.json({ userMessage: userRow, ashleyMessage: ashleyRow2 });
+    return;
+  }
 
   // 5. Strip selfie marker (first one only) and remember the vibe.
   let selfieVibe: string | null = null;
@@ -1989,6 +2083,11 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   let accumulated = "";
   let finishedNaturally = false;
   let upstreamErr: unknown = null;
+  // When the response starts with `{` it may be a CREATE_TICKET JSON.
+  // Suppress deltas so the raw JSON never renders in the chat bubble —
+  // the `done` event (which replaces bubble content entirely) will carry
+  // the clean "Issue logged." acknowledgement instead.
+  let ticketBuffering = false;
 
   try {
     for await (const chunk of streamChatText({
@@ -1999,7 +2098,12 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     })) {
       if (chunk.length === 0) continue;
       accumulated += chunk;
-      writeEvent("delta", { text: chunk });
+      if (!ticketBuffering && (accumulated.trimStart()[0] === "{")) {
+        ticketBuffering = true;
+      }
+      if (!ticketBuffering) {
+        writeEvent("delta", { text: chunk });
+      }
     }
     finishedNaturally = true;
   } catch (err) {
@@ -2011,6 +2115,39 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     } else {
       upstreamErr = err;
       req.log.error({ err }, "Chat model stream failed mid-flight");
+    }
+  }
+
+  // ---- CREATE_TICKET intercept (streaming path).
+  //      If Ashley emitted a bare JSON ticket object, ticketBuffering will
+  //      have suppressed all deltas (so nothing rendered yet). Parse, write
+  //      to DB, and replace the content with a clean ack before the done
+  //      event fires. Memory distillation is skipped for ticket turns.
+  if (finishedNaturally && ticketBuffering) {
+    const parsedStreamTicket = tryParseCreateTicket(accumulated);
+    if (parsedStreamTicket) {
+      let ackText = "";
+      try {
+        const ticketId = await insertTicketFromAshley(parsedStreamTicket, req.log);
+        ackText = `Issue logged. [${ticketId}]`;
+      } catch (err) {
+        req.log.error({ err }, "chat/stream: failed to write Ashley ticket to DB");
+        ackText = "Issue noted — but logging failed. Please try again.";
+      }
+      try {
+        await db
+          .update(messagesTable)
+          .set({ content: ackText, status: "complete", selfieVibe: null })
+          .where(eq(messagesTable.id, streamId));
+        writeEvent("done", { content: ackText, selfieVibe: null });
+      } catch (err) {
+        req.log.error({ err, streamId }, "chat/stream: failed to persist ticket ack");
+        if (!res.writableEnded) writeEvent("error", { error: "Couldn't save reply." });
+      } finally {
+        inFlightStreams.delete(streamId);
+        if (!res.writableEnded) res.end();
+      }
+      return;
     }
   }
 
