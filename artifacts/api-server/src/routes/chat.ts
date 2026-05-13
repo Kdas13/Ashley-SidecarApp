@@ -290,6 +290,8 @@ async function runDiagnosticsReport(
 // ---------------------------------------------------------------------------
 
 router.post("/chat", async (req, res): Promise<void> => {
+  // eslint-disable-next-line no-console
+  console.log("ENTRY HIT:", req.path, (req.body as Record<string,unknown>|null)?.["userMessage"] && typeof ((req.body as Record<string,unknown>)["userMessage"] as Record<string,unknown>)?.["content"] === "string" ? ((req.body as Record<string,unknown>)["userMessage"] as Record<string,unknown>)["content"] : "(no content)");
   const deviceId = getDeviceId(req);
 
   // ---------------------------------------------------------------------------
@@ -1553,6 +1555,8 @@ const ChatStreamBodySchema = z
   );
 
 router.post("/chat/stream", async (req, res): Promise<void> => {
+  // eslint-disable-next-line no-console
+  console.log("ENTRY HIT:", req.path, (req.body as Record<string,unknown>|null)?.["userMessage"] && typeof ((req.body as Record<string,unknown>)["userMessage"] as Record<string,unknown>)?.["content"] === "string" ? ((req.body as Record<string,unknown>)["userMessage"] as Record<string,unknown>)["content"] : "(no content)");
   const deviceId = getDeviceId(req);
 
   // ---------------------------------------------------------------------------
