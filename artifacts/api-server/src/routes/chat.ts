@@ -1384,10 +1384,18 @@ async function generateAshleySelfie(
   // preference for canvas shape. Full-body / outfit / pose / scene / art
   // require a tall canvas — a square crop is the root cause of cropped
   // legs. Quality bit (medium vs high) still respects the user's choice.
-  const size: "1024x1024" | "1024x1536" =
-    wrapper.framingHint === "tall" || mode === "quality"
-      ? "1024x1536"
-      : "1024x1024";
+  // Per-mode framing hint dictates the canvas shape:
+  //   "tall"      -> 1024x1536 (full-body, outfit, pose, foot-retry, etc.)
+  //   "landscape" -> 1536x1024 (seated-lengthwise sofa, etc.)
+  //   "square"    -> 1024x1024 (selfie, portrait, abstract)
+  // Quality bit (medium vs high) still respects the user's choice and
+  // upgrades a square selfie to a tall canvas for higher fidelity.
+  const size: "1024x1024" | "1024x1536" | "1536x1024" =
+    wrapper.framingHint === "landscape"
+      ? "1536x1024"
+      : wrapper.framingHint === "tall" || mode === "quality"
+        ? "1024x1536"
+        : "1024x1024";
   const quality: "low" | "medium" | "high" = mode === "quality" ? "high" : "medium";
 
   const promise: Promise<string | null> = (async () => {

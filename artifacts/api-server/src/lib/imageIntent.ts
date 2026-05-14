@@ -24,6 +24,7 @@ export const IMAGE_MODES = [
   "FULL_BODY_MODE",
   "FOOT_VISIBLE_RETRY",
   "EXTREME_WIDE_FULL_BODY_RETRY",
+  "SEATED_LENGTHWISE_FULL_BODY_MODE",
   "OUTFIT_MODE",
   "POSE_REFERENCE_MODE",
   "SCENE_MODE",
@@ -88,6 +89,13 @@ const PORTRAIT_RX =
 const ABSTRACT_RX =
   /\b(symbolic|abstract|metaphor(ic)?|conceptual|mood board|aesthetic only|no person|just (a )?(mood|vibe|texture))\b/i;
 
+// Seated-lengthwise / horizontal sofa pose cues. These trigger a landscape
+// composition with the body running across the cushions (per Wren spec). Must
+// fire BEFORE generic full-body / scene / limb regexes so the lengthwise
+// requirement isn't lost to a generic full-body interpretation.
+const SEATED_LENGTHWISE_RX =
+  /\b((couch|sofa)\s+lengthw(ay|ise)s?|sitting\s+lengthw(ay|ise)s?|lying\s+along\s+(the\s+)?(sofa|couch)|reclin(e|ing)\s+along\s+(the\s+)?(sofa|couch)|side[-\s]on\s+(sofa|couch)\s+full\s+body|legs\s+stretched\s+along\s+(the\s+)?(sofa|couch)|stretched\s+(out\s+)?(along|across)\s+(the\s+)?(sofa|couch))\b/i;
+
 export type ClassifyResult = {
   mode: ImageMode;
   reason: string;
@@ -115,6 +123,14 @@ export function classifyImageIntent(text: string): ClassifyResult {
     return { mode: "ART_REFERENCE_MODE", reason: "matched art-reference / mock-up keyword" };
   if (POSE_RX.test(t))
     return { mode: "POSE_REFERENCE_MODE", reason: "matched pose-reference / character-sheet keyword" };
+  // Seated-lengthwise must beat OUTFIT / FULL_BODY / SCENE / LIMB — those
+  // would otherwise route to a vertical front-facing composition and lose
+  // the horizontal sofa pose entirely.
+  if (SEATED_LENGTHWISE_RX.test(t))
+    return {
+      mode: "SEATED_LENGTHWISE_FULL_BODY_MODE",
+      reason: "matched seated-lengthwise / lying-along-sofa keyword",
+    };
   if (OUTFIT_RX.test(t))
     return { mode: "OUTFIT_MODE", reason: "matched outfit / wardrobe keyword" };
   if (FULL_BODY_RX.test(t))
@@ -147,7 +163,7 @@ export function classifyImageIntent(text: string): ClassifyResult {
 // Per-mode prompt wrappers
 // ---------------------------------------------------------------------------
 
-export type FramingHint = "square" | "tall";
+export type FramingHint = "square" | "tall" | "landscape";
 
 export type PromptWrapper = {
   /**
@@ -212,6 +228,22 @@ const WRAPPERS: Record<ImageMode, PromptWrapper> = {
     framingHint: "tall",
     requiresFullBodyValidation: true,
     pendingLabel: "retrying full-body framing — wider",
+  },
+  SEATED_LENGTHWISE_FULL_BODY_MODE: {
+    // Wren May 2026 follow-up #3. The default seated interpretation is a
+    // front-facing portrait on a sofa, which loses the lengthwise pose Wren
+    // wants. This wrapper forces a landscape canvas, side-on viewpoint, and
+    // a horizontal body that runs across the cushions. All constraints
+    // expressed positively (diffusion ignores negation). Subject capped at
+    // ~65% of image width; entire sofa visible; both feet on the cushion,
+    // not hanging off the edge.
+    shotType:
+      "Wide landscape full-body image of {subject}, a young woman, sitting lengthways along a sofa and viewed side-on from across the room; her body runs horizontally across the sofa cushions, with her head resting at one end of the sofa and her legs stretched along the sofa toward the other end; her complete body is visible from the top of her head to the soles of both shoes; her legs rest along the cushions, with both complete feet (in socks or shoes) fully visible resting on the sofa cushion; the entire sofa is visible inside the frame, with empty cushion space beyond her head at one end and empty cushion space beyond her feet at the other end; {subject} occupies no more than sixty-five percent of the image width and is centered horizontally with generous margin at both ends of the sofa; pulled-back side-on camera view, generous margins all round",
+    styleLine:
+      "Wide landscape composition, side-on full-body view of a person reclining lengthways on a sofa, even readable lighting across the whole body, photorealistic, single subject, no text or watermarks",
+    framingHint: "landscape",
+    requiresFullBodyValidation: true,
+    pendingLabel: "framing a lengthways sofa shot",
   },
   EXTREME_WIDE_FULL_BODY_RETRY: {
     // Second-stage escalation (per Wren May 2026 follow-up #2). The previous

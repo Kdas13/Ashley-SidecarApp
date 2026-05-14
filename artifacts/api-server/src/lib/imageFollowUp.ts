@@ -395,15 +395,22 @@ export function resolveImageFollowUp(
       // EXTREME, in which case we stay at EXTREME — there is nothing wider),
       // bump up one rung. Anything else escalates to FOOT_VISIBLE_RETRY.
       const priorMode = priorAttempt.mode ?? null;
+      // Seated-lengthwise has its own composition (landscape sofa shot).
+      // Escalating that to vertical EXTREME_WIDE would discard the pose.
+      // Re-run SEATED_LENGTHWISE_FULL_BODY_MODE itself instead.
       const escalatedMode: ImageMode =
-        priorMode === "FOOT_VISIBLE_RETRY" ||
-        priorMode === "EXTREME_WIDE_FULL_BODY_RETRY"
-          ? "EXTREME_WIDE_FULL_BODY_RETRY"
-          : "FOOT_VISIBLE_RETRY";
+        priorMode === "SEATED_LENGTHWISE_FULL_BODY_MODE"
+          ? "SEATED_LENGTHWISE_FULL_BODY_MODE"
+          : priorMode === "FOOT_VISIBLE_RETRY" ||
+              priorMode === "EXTREME_WIDE_FULL_BODY_RETRY"
+            ? "EXTREME_WIDE_FULL_BODY_RETRY"
+            : "FOOT_VISIBLE_RETRY";
       const escalatedReason =
-        escalatedMode === "EXTREME_WIDE_FULL_BODY_RETRY"
-          ? `prior attempt was already ${priorMode} and feet/shoes/floor still cropped — escalating to EXTREME_WIDE_FULL_BODY_RETRY with prior vibe`
-          : "user reported feet/shoes/floor cropped — escalating to FOOT_VISIBLE_RETRY with prior vibe";
+        escalatedMode === "SEATED_LENGTHWISE_FULL_BODY_MODE"
+          ? "prior attempt was a seated-lengthwise sofa shot and feet were still cropped — re-running same mode (no vertical escalation that would lose the pose)"
+          : escalatedMode === "EXTREME_WIDE_FULL_BODY_RETRY"
+            ? `prior attempt was already ${priorMode} and feet/shoes/floor still cropped — escalating to EXTREME_WIDE_FULL_BODY_RETRY with prior vibe`
+            : "user reported feet/shoes/floor cropped — escalating to FOOT_VISIBLE_RETRY with prior vibe";
       return {
         isFollowUp: true,
         kind: "foot_visible_retry",
@@ -800,6 +807,9 @@ function shortCaptionFor(
   priorAttemptMode?: ImageMode | null,
 ): string {
   if (kind === "foot_visible_retry") {
+    if (mode === "SEATED_LENGTHWISE_FULL_BODY_MODE") {
+      return "Seated lengthwise retry completed, but validation failed: the pose became front-facing or feet were still cropped. Re-running the lengthways sofa composition.";
+    }
     if (mode === "EXTREME_WIDE_FULL_BODY_RETRY") {
       // Two sub-cases: first-time escalation (prior was FOOT_VISIBLE_RETRY),
       // and re-running because EXTREME itself still cropped (prior already
