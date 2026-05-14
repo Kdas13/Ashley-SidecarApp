@@ -26,6 +26,8 @@
 // =============================================================================
 
 import type { ImageMode } from "./imageIntent.js";
+import { classifyIntent } from "./intentClassifier.js";
+import { classifySubject } from "./subjectClassifier.js";
 
 // ---------------------------------------------------------------------------
 // Category vocabularies
@@ -282,21 +284,12 @@ const DOING_GESTURE_RX = new RegExp(
   "i",
 );
 
-// Camera-relative target — "at the camera", "to the lens", "toward the
-// viewer". Strong signal that the user wants the action photographed.
-// We deliberately do NOT include "at me / at us / at you" here — those
-// are conversational narration ("she's smiling at me") far more often
-// than image asks. The user can still get there via second-person or
-// request-cue branches if they really mean an image.
-const CAMERA_TARGET_RX =
-  /\b(at|to|toward|towards|into|down)\s+(?:the\s+)?(camera|lens|viewer)\b/i;
-
-// "at <someone>" tail — a conversational target that disqualifies the
-// imperative-fragment branch. "smiling at me" / "waving at her" /
-// "pointing at them" all pattern-match here and should NOT auto-flip
-// imageIntent on their own short length. They can still pass via
-// request cue or explicit second-person.
-const AT_PERSON_RX = /\bat\s+(me|us|him|her|them|the\s+kids?|the\s+dog)\b/i;
+// NOTE: CAMERA_TARGET_RX and AT_PERSON_RX used to live here as part of
+// the legacy grammar-based gate (May 2026 regex era). Both are deleted —
+// the state-based pipeline (intentClassifier + subjectClassifier) does
+// the routing now. "smiling at me" loses on subject=SELF;
+// "waving at her" wins on subject=ASHLEY (her = Ashley convention);
+// camera-target phrases just fall out as part of the parsed pose.
 
 // Multi-word / unambiguous art keywords only. Bare "painting" / "drawing" /
 // "sketch" are excluded because they collide with verb usage ("at an easel
@@ -333,7 +326,8 @@ const REQUEST_VERBS_RX =
   /\b(show|send|give|generate|make|create|render|draw|paint|illustrate|mock\s*up|visualise|visualize|picture|photograph|shoot)\b/i;
 const REQUEST_FRAMING_RX =
   /\b(show\s+(me|us)|send\s+(me|us)|give\s+(me|us)|let\s+me\s+see|let'?s\s+see|how\s+about|what\s+about|i\s+want\s+to\s+see|i\s+(would|'?d)\s+like\s+to\s+see|can\s+i\s+see|could\s+i\s+see|i\s+want|i\s+need|i'?d\s+like)\b/i;
-const SECOND_PERSON_RX = /\b(you|your|yourself|her|herself|ashley|ashley'?s)\b/i;
+// NOTE: SECOND_PERSON_RX is gone — subjectClassifier owns the
+// "is this clause about Ashley?" decision now.
 // Follow-up / edit cues from Wren spec May 2026:
 //   "same but" / "same thing but"  / "same image but"
 //   "change <X>" / "change it" / "change the <X>"
@@ -346,7 +340,7 @@ const SECOND_PERSON_RX = /\b(you|your|yourself|her|herself|ashley|ashley'?s)\b/i
 // These set isFollowUp=true. The caller MUST then load the prior VisualSpec
 // from history and merge the new (delta) spec onto it.
 const FOLLOW_UP_PHRASES_RX =
-  /\b(try\s+again|same\s+again|again\s+please|do\s+(it|that)\s+again|one\s+more\s+time|run\s+(it|that)\s+again|same\s+(but|thing\s+but|image\s+but|picture\s+but|photo\s+but)|but\s+(wider|change|different|with)|change\s+(it|that|the)|make\s+(it|her|him|your|the)|edit\s+(it|that)|for\s+(this|that)\s+(photo|image|picture)|keep\s+(everything|the\s+rest)\s+but|different\s+(outfit|background|colour|color|hair|pose|setting|scene|location|expression)|add\s+(a|an|the|some)\s+|remove\s+(the|that|her|his)\s+|take\s+off\s+(the|her|his)\s+|put\s+on\s+(a|an|the|her|his)\s+|more\s+(blurry|sharp|wide|cinematic|dramatic|colourful)|less\s+(blurry|sharp|wide|cinematic|dramatic)|no\s+luck|didn'?t\s+work)\b/i;
+  /(^\s*(now|and\s+now|also|but|same\s+but)\b|\b(try\s+again|same\s+again|again\s+please|do\s+(it|that)\s+again|one\s+more\s+time|run\s+(it|that)\s+again|same\s+(but|thing\s+but|image\s+but|picture\s+but|photo\s+but)|but\s+(wider|change|different|with)|change\s+(it|that|the)|make\s+(it|her|him|your|the)|edit\s+(it|that)|for\s+(this|that)\s+(photo|image|picture)|keep\s+(everything|the\s+rest)\s+but|different\s+(outfit|background|colour|color|hair|pose|setting|scene|location|expression)|add\s+(a|an|the|some)\s+|remove\s+(the|that|her|his)\s+|take\s+off\s+(the|her|his)\s+|put\s+on\s+(a|an|the|her|his)\s+|more\s+(blurry|sharp|wide|cinematic|dramatic|colourful)|less\s+(blurry|sharp|wide|cinematic|dramatic)|no\s+luck|didn'?t\s+work)\b)/i;
 const IMAGE_DIAGNOSTIC_SUPPRESS_RX =
   /\b(didn'?t render|did not render|failed( to render)?|no (image|picture|photo|artifact) (came|appeared|arrived|landed)|wasn'?t (shown|sent|delivered)|cropped|broken|blank|never (came|arrived)|where('?s| is) (the|my) (image|picture|photo|selfie))\b/i;
 
@@ -530,20 +524,21 @@ export function extractVisualSpec(text: string): VisualSpec {
   }
 
   // Clothing — use "wearing" / "dressed" / "in (a|an) ..." cues to avoid
-  // matching mention-of-clothing rather than request-for-clothing. Cheap heuristic:
-  // if any clothing vocab is present AND the prompt has a request verb or pose
-  // verb or "wearing/dressed/in", count it. Otherwise skip.
+  // Always extract clothing / accessory vocab when matched. The
+  // intent + subject classifiers upstream handle disambiguation between
+  // "i love this dress" (intent=MUTATION but subject=SELF → no-op) and
+  // "red dress" (verbless-fragment MUTATION + ASHLEY default → render).
+  // The old hasClothingCue gate (`wearing|dressed|in...`) used to live
+  // here as a leak prevention; it caused bare fragments like "red
+  // dress" / "an Amish hat" to be silently dropped under the new
+  // pipeline. Removed.
   const clothingHits = findAllMatches(lower, CLOTHING_ITEMS);
   const accessoryHits = findAllMatches(lower, ACCESSORIES);
-  const hasClothingCue =
-    /\b(wearing|dressed|in\s+(a|an|the|some|her|his|paint[- ]covered)|wears|put\s+on|change\s+(your|her|the)\s+outfit|outfit|change\s+clothes)\b/i.test(raw) ||
-    REQUEST_VERBS_RX.test(raw) ||
-    REQUEST_FRAMING_RX.test(raw);
-  if (clothingHits.length && hasClothingCue) {
+  if (clothingHits.length) {
     spec.clothing.items = clothingHits;
     matched.push(`clothing.items=[${clothingHits.join(",")}]`);
   }
-  if (accessoryHits.length && hasClothingCue) {
+  if (accessoryHits.length) {
     spec.clothing.accessories = accessoryHits;
     matched.push(`clothing.accessories=[${accessoryHits.join(",")}]`);
   }
@@ -705,11 +700,53 @@ export function extractVisualSpec(text: string): VisualSpec {
     matched.push(`style.medium=${noun}`);
   }
 
-  // ---- Image-intent decision ----
+  // ---- Image-intent decision (Wren spec May 2026) ----
+  //
+  // Pipeline: intent → subject → diff → render.
+  //
+  //   1. Diagnostic suppression — "do you remember that selfie" is
+  //      talking ABOUT a previous image, not requesting one. Hard no.
+  //   2. classifyIntent: MUTATION vs DESCRIPTION. Default DESCRIPTION.
+  //      Past tense, questions, copula+attribute, time markers all win
+  //      DESCRIPTION. Bare gerund clauses, imperative verbs, follow-up
+  //      cues, verbless visual fragments, and imagine/picture framings
+  //      win MUTATION.
+  //   3. classifySubject: ASHLEY only proceeds. SELF (talking about
+  //      Wren) and THIRD_PARTY (about someone else) are no-ops even if
+  //      intent is MUTATION.
+  //   4. Mutation extraction + follow-up: imageIntent=true iff the
+  //      parser captured a visible delta OR the turn is a follow-up
+  //      that will merge with prior state downstream.
+  //
+  // The grammar-based gates that used to live here (performativeAccepted
+  // / hasNarrativeSubject / hasDirectAddress / camera-target / discourse
+  // adverbs / at-person tail) are gone. Intent + subject does the work.
   if (IMAGE_DIAGNOSTIC_SUPPRESS_RX.test(raw)) {
     spec.imageIntent = false;
-    spec.intentReason = "diagnostic phrasing — talking ABOUT a previous image, not requesting one";
+    spec.intentReason =
+      "diagnostic phrasing — talking ABOUT a previous image, not requesting one";
     return spec;
+  }
+
+  const intent = classifyIntent(raw);
+  if (intent.intent === "DESCRIPTION") {
+    spec.imageIntent = false;
+    spec.intentReason = `intent=DESCRIPTION — ${intent.reason}`;
+    return spec;
+  }
+
+  const subject = classifySubject(raw);
+  if (subject.subject !== "ASHLEY") {
+    spec.imageIntent = false;
+    spec.intentReason = `intent=MUTATION but subject=${subject.subject} — ${subject.reason}`;
+    return spec;
+  }
+
+  // Follow-up flag still needed downstream so the merge layer loads the
+  // prior VisualSpec from history before applying this delta.
+  if (FOLLOW_UP_PHRASES_RX.test(raw)) {
+    spec.isFollowUp = true;
+    spec.isRetryOrEdit = true;
   }
 
   const hasMutation =
@@ -730,148 +767,14 @@ export function extractVisualSpec(text: string): VisualSpec {
     spec.props.objects.length > 0 ||
     spec.style.isArtworkRequest;
 
-  const hasRequestCue = REQUEST_VERBS_RX.test(raw) || REQUEST_FRAMING_RX.test(raw);
-  const hasSecondPerson = SECOND_PERSON_RX.test(raw);
-  const hasFollowUpCue = FOLLOW_UP_PHRASES_RX.test(raw);
-
-  // ---- Action-based visual intent (Wren spec May 2026) ----
-  // "If a sentence describes something a camera can capture, generate."
-  // STRONG signals (no extra guard required):
-  //   (a) a named gesture ("peace sign", "thumbs up") — gestures only
-  //       exist to be photographed
-  //   (b) an action verb paired with an object ("holding a frying pan")
-  //   (c) a pose verb paired with an object/vehicle
-  //       ("sitting with a cup of coffee", "standing by a tractor")
-  // SOFT signal — bare performative verb ("waving", "smiling", "winking"):
-  //   These also appear in chat narration ("she's just smiling at me",
-  //   "I was waving him off"), so they only count as visual intent when
-  //   accompanied by ANY of:
-  //     - a request cue ("show me waving")
-  //     - a second-person reference (Ashley/you/your/her/herself)
-  //     - a camera-target phrase ("at the camera")
-  //     - the message is a short imperative fragment (≤4 words and no
-  //       third-person/past-tense narrative subject like "she's was I'm")
-  //   Wren's acceptance list keeps bare "waving" working because a
-  //   one-word turn satisfies the imperative-fragment branch.
-  const hasCameraTarget = CAMERA_TARGET_RX.test(raw);
-  const hasActionObject = !!spec.pose.action && spec.props.objects.length > 0;
-  const isPerformativeAction =
-    !!spec.pose.action && PERFORMATIVE_VERBS.includes(spec.pose.action);
-  const hasPoseAndObject =
-    !!spec.pose.bodyPosition &&
-    (spec.props.objects.length > 0 || spec.props.vehicles.length > 0);
-
-  const wordCount = raw.trim().split(/\s+/).length;
-  // Narrative / observation markers that indicate the user is RECOUNTING
-  // or COMMENTING ON an event, not requesting an image. Rough heuristic
-  // covering: third-person/past pronouns, past auxiliaries
-  // (was/were/had/been), present copulas (is/are/am — "you are waving"
-  // is an observation, "you waving" is a request), and discourse adverbs
-  // that almost always sit inside narration ("just smiling at me",
-  // "honestly waving", "literally pointing"). When any of these match we
-  // refuse the soft performative path even if camera-target /
-  // second-person / imperative-fragment also fire.
-  const hasNarrativeSubject =
-    /\b(i|we|they|she|he|him|them|us|she'?s|he'?s|they'?re|you'?re|youre|i'?m|we'?re|i\s+was|we\s+were|they\s+were|she\s+was|he\s+was|i\s+had|she\s+had|he\s+had|was|were|had|been|is|are|am|just|honestly|literally|actually|kinda|sort\s+of|always|already|still)\b/i.test(
-      raw,
-    );
-  // Imperative-fragment also rejects "at me/us/him/her/them/..." tails —
-  // those are conversational ("smiling at me") not image asks.
-  const isImperativeFragment =
-    wordCount <= 4 && !hasNarrativeSubject && !AT_PERSON_RX.test(raw);
-  // Camera-target and second-person can appear inside narration too
-  // ("she's just smiling at me", "I was waving at her"), so for the SOFT
-  // performative path we additionally require !hasNarrativeSubject when
-  // the only positive signal is camera-target/second-person.  Explicit
-  // request cues stay strong on their own (the user asked for the image
-  // even if the surrounding clause is narrated).  isImperativeFragment
-  // already excludes narrative subjects by construction.
-  // For the soft performative path we need DIRECT ADDRESS (you / your /
-  // yourself / ashley) — not bare "her", which the wider second-person
-  // regex accepts as an Ashley referent. Without this, "waving at her"
-  // would qualify as second-person and false-fire. "you waving at me"
-  // still works because "you" satisfies direct address regardless of the
-  // at-person tail.
-  const hasDirectAddress = /\b(you|your|yours|yourself|ashley|ashley'?s)\b/i.test(raw);
-  const performativeAccepted =
-    isPerformativeAction &&
-    (hasRequestCue ||
-      (hasDirectAddress && !hasNarrativeSubject) ||
-      (hasCameraTarget && !hasNarrativeSubject) ||
-      isImperativeFragment);
-
-  if (
-    spec.pose.gesture ||
-    hasActionObject ||
-    hasPoseAndObject ||
-    performativeAccepted
-  ) {
+  if (hasMutation || spec.isFollowUp) {
     spec.imageIntent = true;
-    spec.intentReason =
-      "action-based visual intent — describes a camera-capturable physical state " +
-      `(gesture=${spec.pose.gesture ?? "-"}, action=${spec.pose.action ?? "-"}, ` +
-      `objects=[${spec.props.objects.join(",")}], cameraTarget=${hasCameraTarget}, ` +
-      `performativeAccepted=${performativeAccepted})`;
-    // Action-intent and follow-up are NOT mutually exclusive: "same but
-    // waving" is both an edit (load prior spec) AND a fresh action
-    // attribute. Set the follow-up flags here too so the merge path runs.
-    if (hasFollowUpCue) {
-      spec.isFollowUp = true;
-      spec.isRetryOrEdit = true;
-    }
-    return spec;
-  }
-
-  if (hasFollowUpCue) {
-    spec.isFollowUp = true;
-    spec.isRetryOrEdit = true;
-    spec.imageIntent = true;
-    spec.intentReason =
-      "follow-up/edit phrasing — caller MUST merge with prior VisualSpec from history";
-    // Note: do NOT return early. We still want to extract any delta
-    // attributes ("change the background to a beach" needs location=beach
-    // captured BELOW, not just isFollowUp=true). Continue to attribute
-    // extraction; the resolver consumes both flags.
-  }
-
-  // A request is image intent if:
-  //  - explicit selfie / artwork request (no mutation needed), OR
-  //  - request cue + (mutation OR second-person reference + framing/pose)
-  if (SELFIE_RX.test(raw) && hasRequestCue) {
-    spec.imageIntent = true;
-    spec.intentReason = "explicit selfie language with request cue";
-    return spec;
-  }
-  if (spec.style.isArtworkRequest && hasRequestCue) {
-    spec.imageIntent = true;
-    spec.intentReason = "artwork request with request cue";
-    return spec;
-  }
-  if (hasRequestCue && hasMutation) {
-    spec.imageIntent = true;
-    spec.intentReason = "request cue + extracted visible mutation";
-    return spec;
-  }
-  if (hasRequestCue && hasSecondPerson && (spec.framing.shotType || spec.pose.bodyPosition)) {
-    spec.imageIntent = true;
-    spec.intentReason = "request cue + second-person + pose/framing";
-    return spec;
-  }
-
-  // Follow-up phrasing alone is enough to count as image intent, even
-  // without an explicit request cue ("make her blonde", "different outfit"
-  // are valid edit asks the moment a prior image exists). The earlier
-  // branch already set imageIntent=true; we re-affirm here so this final
-  // fallthrough doesn't clobber it.
-  if (hasFollowUpCue) {
-    spec.imageIntent = true;
-    spec.intentReason =
-      "follow-up/edit phrasing — caller MUST merge with prior VisualSpec from history";
+    spec.intentReason = `intent=MUTATION subject=ASHLEY hasMutation=${hasMutation} isFollowUp=${spec.isFollowUp} — ${intent.reason}`;
     return spec;
   }
 
   spec.imageIntent = false;
-  spec.intentReason = "no request cue or no extracted visible mutation";
+  spec.intentReason = `intent=MUTATION subject=ASHLEY but parser extracted no visible delta — ${intent.reason}`;
   return spec;
 }
 
