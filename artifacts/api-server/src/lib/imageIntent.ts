@@ -214,17 +214,21 @@ const WRAPPERS: Record<ImageMode, PromptWrapper> = {
     pendingLabel: "retrying full-body framing — wider",
   },
   EXTREME_WIDE_FULL_BODY_RETRY: {
-    // Second-stage escalation (per Wren May 2026 follow-up). Fires when the
-    // user complains about cropped feet AGAIN after FOOT_VISIBLE_RETRY has
-    // already run. Pushes the camera even further back so the standing figure
-    // is much smaller, with generous floor and headroom margins.
+    // Second-stage escalation (per Wren May 2026 follow-up #2). The previous
+    // version still placed the shoes at the bottom edge of the frame, so this
+    // version uses a FLOOR ANCHOR OBJECT — a small rectangular rug — that the
+    // diffusion model has to render in full, which forces visible floor area
+    // beyond the shoes and pushes the subject up off the bottom edge. Subject
+    // capped at 55 percent of image height, extreme catalogue distance, all
+    // composition language stated as positive facts (diffusion ignores
+    // negation).
     shotType:
-      "Very wide full-body standing reference image of {subject}, a young woman, placed at extreme distance from the camera; {subject} is much smaller in the frame, shown head to toe with both complete shoes and a wide patch of floor visible beneath them; large empty space above the head and large visible floor space below the shoes; the full standing figure fits comfortably inside the image with generous margins on all sides; the floor line and baseboard are visible if indoors",
+      "Very wide full-body fashion-catalogue reference image of {subject}, a young woman, standing far from the camera on a small rectangular rug placed on the floor; the entire rectangular rug is visible inside the frame, including a visible strip of rug and floor beyond both shoes; {subject}'s complete body is visible from the top of her head to the soles of both shoes; both complete shoes are visible and the rug is visible underneath both shoes; the bottom edge of the image shows visible rug and floor below the shoes, with the shoes positioned well above the bottom edge of the image; {subject} occupies no more than fifty-five percent of the image height and is centered in the frame with generous empty margin above her head and generous empty rug and floor margin below her shoes; extreme long-shot catalogue distance, full standing figure with rug fully inside the frame; the floor line and baseboard are visible if indoors",
     styleLine:
-      "Tall vertical portrait composition, extra-wide full-body reference framing, even readable lighting across the whole body, photorealistic, single subject, no text or watermarks",
+      "Tall vertical portrait composition, extreme long-shot full-body catalogue framing, even readable lighting across the whole body, photorealistic, single subject, no text or watermarks",
     framingHint: "tall",
     requiresFullBodyValidation: true,
-    pendingLabel: "retrying full-body framing — extreme wide",
+    pendingLabel: "retrying full-body framing — extreme wide on rug",
   },
   OUTFIT_MODE: {
     shotType:

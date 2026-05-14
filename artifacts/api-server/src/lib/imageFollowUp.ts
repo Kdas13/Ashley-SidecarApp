@@ -794,10 +794,21 @@ export type SynthesizedImageReply = {
   description: string;
 };
 
-function shortCaptionFor(mode: ImageMode, kind: FollowUpResolution["kind"]): string {
+function shortCaptionFor(
+  mode: ImageMode,
+  kind: FollowUpResolution["kind"],
+  priorAttemptMode?: ImageMode | null,
+): string {
   if (kind === "foot_visible_retry") {
     if (mode === "EXTREME_WIDE_FULL_BODY_RETRY") {
-      return "That retry still failed full-body validation: feet/shoes/floor were not visible. Re-running once more with extreme-wide framing — this is the last automatic escalation.";
+      // Two sub-cases: first-time escalation (prior was FOOT_VISIBLE_RETRY),
+      // and re-running because EXTREME itself still cropped (prior already
+      // EXTREME). Wren spec May 2026 #2 wants explicit "shoes/floor too close
+      // to the bottom edge" wording when EXTREME is repeating itself.
+      if (priorAttemptMode === "EXTREME_WIDE_FULL_BODY_RETRY") {
+        return "Extreme-wide retry completed, but validation still failed: shoes/floor are too close to or cut off by the bottom edge. Re-running EXTREME with the rug-anchor framing again — this is the widest preset.";
+      }
+      return "That retry still failed full-body validation: feet/shoes/floor were not visible. Escalating to EXTREME-WIDE framing with a floor anchor (rug) so the shoes sit well above the bottom edge.";
     }
     return "That attempt still failed full-body validation: feet/shoes/floor were not visible. Re-running with wider framing — say \"feet missing\" again if this one still crops.";
   }
@@ -853,7 +864,11 @@ export function synthesizeImageActionReply(
   // sees a single-line `[image: MODE | desc]` payload. parseImageMarker uses a
   // non-greedy match terminated by `]`, so embedded brackets would confuse it.
   const cleanDesc = description.replace(/[\r\n]+/g, " ").replace(/\]/g, ")").replace(/\s+/g, " ").trim();
-  const caption = shortCaptionFor(resolution.suggestedMode, resolution.kind);
+  const caption = shortCaptionFor(
+    resolution.suggestedMode,
+    resolution.kind,
+    resolution.priorAttemptMode ?? null,
+  );
   const marker = `[image: ${resolution.suggestedMode} | ${cleanDesc}]`;
   const fullText = `${caption}\n\n${marker}`;
   const selfieVibe = encodeStoredVibe(resolution.suggestedMode, cleanDesc);
