@@ -166,25 +166,25 @@ export function isSeatedLengthwiseImageRequest(text: string): boolean {
 // IMAGE_DIAGNOSTIC_RX still suppresses (talking ABOUT a previous image is
 // not an ask). No word-count cap.
 
+// Allow up to 40 chars between the banner-noun and the saying-verb so phrases
+// like "banner on the tractor saying #AmishLife" still hit. Wren live test
+// May 2026 #5b.
 const SCENE_BANNER_SIGN_RX =
-  /\b(banner|sign|placard|poster|board)\s+(that\s+(says|reads)|saying|reading)\b/i;
+  /\b(banner|sign|placard|poster|board)\b[\s\S]{0,40}\b(that\s+(says|reads)|saying|reading)\b/i;
 
 // Meme-style adjectives only count as image intent when paired with an
 // imperative request verb (generate / create / render / draw / make / send /
 // show / want / give me / can you ...). Bare declarative ("a comedic image
 // can be harmful") must NOT trigger the gate. Architect review May 2026.
 const SCENE_MEME_STYLE_RX =
-  /\b(generate|create|render|draw|paint|illustrate|make|send|show|give|want|can\s+you|could\s+you|please)\b[\s\S]{0,80}\b(meme[- ]?style|comedic|joke|silly|absurd|funny)\s+(image|picture|photo|pic|render|shot|scene)\b/i;
+  /\b(generate|create|render|draw|paint|illustrate|make|send|show|give|want|can\s+you|could\s+you|please|let'?s\s+(try|do|see|make))\b[\s\S]{0,80}\b(meme[- ]?style|comedic|joke|silly|absurd|funny)\s+(image|picture|photo|pic|render|shot|scene)\b/i;
 
 // "image / picture / photo of you on / beside / next to / in front of / with /
 // holding / wearing / dressed (as|in) / riding / driving / sitting in /
-// standing in <noun>". The trailing preposition / verb + a following word is
-// what makes this a prop or location compound, not just "image of you".
-// `wearing` and `dressed (as|in)` were added so prompts like "image of Ashley
-// wearing dungarees beside a tractor" hit the prop branch directly, not just
-// via the banner branch.
+// standing in <noun>" — and now also bare "in" / "by" / "near".
+// Wren live: "photo of you in dungarees" — bare "in" was missing.
 const SCENE_PROP_LOCATION_RX =
-  /\b(image|picture|photo|photograph|pic|shot|render)\s+of\s+(you|her|ashley)\s+(on|beside|next\s+to|in\s+front\s+of|at|near|inside|outside|with|holding|wearing|dressed\s+(as|in)|riding|driving|sitting\s+in|sitting\s+on|standing\s+in|standing\s+on|leaning\s+on|leaning\s+against)\s+\S+/i;
+  /\b(image|picture|photo|photograph|pic|shot|render)\s+of\s+(you|her|ashley)\s+(on|in|by|beside|next\s+to|in\s+front\s+of|at|near|inside|outside|with|holding|wearing|dressed\s+(as|in)|riding|driving|sitting\s+in|sitting\s+on|standing\s+in|standing\s+on|leaning\s+on|leaning\s+against)\s+\S+/i;
 
 // "scene of you / full picture of you / full image of you / whole picture of
 // you" — explicit scene framing.
@@ -196,12 +196,20 @@ const SCENE_OF_YOU_RX =
 const MAKE_THAT_SCENE_RX =
   /\b(make|turn|render|generate)\s+(that|this|it)\s+(as|into)\s+(a |an )?(meme|image|picture|photo|scene)\b/i;
 
-// Hashtag inside the body (banner content like "#AmishLife"). Must be paired
-// with banner / sign / wearing / holding / costume / tractor / prop signals
-// to avoid firing on hashtag chatter.
-const HASHTAG_IN_TEXT_RX = /(?:^|\s)#\w+/;
+// "tractor photo of you", "joke picture of you", "amish image of you" —
+// any prop/scene noun directly preceding an image-noun + "of you/her/ashley".
+// Must be paired with a request cue elsewhere in the message to avoid firing
+// on "the photo of you" or "I sent a photo of you" (those have determiners,
+// not props). Wren live: "tractor photo of you" — was the missing pattern.
+const PROP_PHOTO_OF_YOU_RX =
+  /\b\w{3,}\s+(photo|picture|image|photograph|pic|shot|render)\s+of\s+(you|her|ashley)\b/i;
+
+// Hashtag detection: literal `#word` OR the spelled-out form "hashtag <word>".
+// Wren live: "saying hashtag Amish life" — spelled-out form was missed.
+const HASHTAG_LITERAL_RX = /(?:^|\s)#\w+/;
+const HASHTAG_SPELLED_RX = /\bhashtag\s+\w+/i;
 const HASHTAG_PROP_PARTNER_RX =
-  /\b(banner|sign|placard|poster|board|wearing|dressed|holding|costume|tractor|car|truck|bike|horse|sash|t[- ]?shirt|hoodie|jumper)\b/i;
+  /\b(banner|sign|placard|poster|board|wearing|dressed|holding|costume|tractor|car|truck|bike|horse|sash|t[- ]?shirt|hoodie|jumper|amish|cowboy|chef|farmer)\b/i;
 
 // STRICT image-handle vocabulary — concrete image nouns and explicit image-
 // generation verbs only. Adjectives like "comedic" / "joke" / "silly" are
@@ -210,23 +218,43 @@ const HASHTAG_PROP_PARTNER_RX =
 const SCENE_IMAGE_HANDLE_RX =
   /\b(image|picture|photo|photograph|pic|render|shot|selfie|generate|create|draw|paint|illustrate|make\s+(me|that|an?\s+(image|picture|photo))|turn\s+(it|that)\s+into|scene\s+of|meme\s+of|full\s+picture|full\s+image)\b/i;
 
+// Imperative / request cues — used to distinguish "let's try the tractor
+// photo of you" (request) from "the photo of you was cropped" (statement).
+const REQUEST_CUE_RX =
+  /\b(let'?s\s+(try|do|see|make|have)|try\b|generate|render|create|draw|paint|illustrate|show\s+me|send\s+me|give\s+me|i\s+want|i\s+need|please|can\s+you|could\s+you|will\s+you|how\s+about|what\s+about|do\s+(a|the|me)|make\s+(a|me|that|an))\b/i;
+
+// Final catch-all per Wren May 2026 #5b spec: image-handle + scene/prop/
+// costume/location/sign/banner/vehicle vocab + a request cue + no
+// diagnostic context → bypass LLM. Wider net than the targeted regexes
+// above, deliberately layered so any one of them is enough.
+const SCENE_PROP_VOCAB_RX =
+  /\b(tractor|car|truck|bike|motorbike|horse|boat|train|bus|van|plane|barn|kitchen|bedroom|garden|park|beach|forest|street|cafe|pub|farm|field|stage|throne|sofa|couch|chair|ladder|mug|hat|cap|crown|sash|banner|sign|placard|poster|board|hashtag|costume|dress|dungarees|overalls|hoodie|jumper|jacket|t[- ]?shirt|shirt|scarf|gloves|skirt|trousers|jeans|wellies|boots|apron|chef|cowboy|amish|tutu|onesie|pyjamas|pajamas|meme|scene|prop)\b/i;
+
 export function isSceneCostumePropImageRequest(text: string): boolean {
   if (typeof text !== "string") return false;
   const trimmed = text.trim();
   if (!trimmed) return false;
   if (IMAGE_DIAGNOSTIC_RX.test(trimmed)) return false;
   const hasImageHandle = SCENE_IMAGE_HANDLE_RX.test(trimmed);
+  const hasRequestCue = REQUEST_CUE_RX.test(trimmed);
+  const hasHashtag =
+    HASHTAG_LITERAL_RX.test(trimmed) || HASHTAG_SPELLED_RX.test(trimmed);
   if (SCENE_BANNER_SIGN_RX.test(trimmed) && hasImageHandle) return true;
   if (SCENE_MEME_STYLE_RX.test(trimmed)) return true;
   if (SCENE_PROP_LOCATION_RX.test(trimmed)) return true;
   if (SCENE_OF_YOU_RX.test(trimmed) && hasImageHandle) return true;
   if (MAKE_THAT_SCENE_RX.test(trimmed)) return true;
+  if (PROP_PHOTO_OF_YOU_RX.test(trimmed) && hasRequestCue) return true;
   if (
-    HASHTAG_IN_TEXT_RX.test(trimmed) &&
+    hasHashtag &&
     HASHTAG_PROP_PARTNER_RX.test(trimmed) &&
     hasImageHandle
   )
     return true;
+  // Final catch-all: image-handle + prop/scene vocab + request cue.
+  if (hasImageHandle && SCENE_PROP_VOCAB_RX.test(trimmed) && hasRequestCue) {
+    return true;
+  }
   return false;
 }
 
