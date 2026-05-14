@@ -87,6 +87,54 @@ export function isFootVisibleRetryRequest(text: string): boolean {
   return FOOT_VISIBLE_RETRY_RX.test(trimmed);
 }
 
+// Seated-lengthwise hard-gate triggers (Wren follow-up, May 2026 #4). The
+// classifier already routes short forms ("sofa lengthways", "sitting
+// lengthwise"), but Kane's fallback prompt was a long, detailed brief
+// (~50 words) that exceeded isDirectImageRequest's 18-word cap and was
+// answered with romantic prose instead of an image action. The hard gate
+// here has NO word-count cap.
+//
+// Architect-review hardening (May 2026): split triggers into STRONG and
+// WEAK. STRONG phrases are unambiguous image-pose language that hardly ever
+// occurs in everyday conversation ("reclining lengthways across the sofa",
+// "body runs horizontally across the couch", "wide landscape full-body
+// sofa image") — they fire on their own. WEAK phrases ("sofa lengthways",
+// "head near left armrest") COULD appear in furniture/comfort talk and
+// only fire when paired with image-intent context OR with another weak
+// signal. This avoids hard-gating ordinary sofa chat into image generation.
+const SEATED_LENGTHWISE_STRONG_RX =
+  /\b(reclin(e|ing)\s+lengthw(ay|ise)s?\s+(across|along)\s+(the\s+)?(sofa|couch)|sitting\s+lengthw(ay|ise)s?\s+(along|across|on)\s+(the\s+)?(sofa|couch)|body\s+runs\s+horizontally\s+across\s+(the\s+)?(sofa|couch|cushions?)|legs\s+stretched\s+along\s+(the\s+)?(sofa|couch)|wide\s+landscape\s+full[- ]body\s+(sofa|couch)\s+(image|picture|photo|shot)|side[- ]on\s+(sofa|couch)\s+full\s+body|lying\s+lengthw(ay|ise)s?\s+(along|across|on)\s+(the\s+)?(sofa|couch))\b/i;
+
+const SEATED_LENGTHWISE_WEAK_RX_LIST: ReadonlyArray<RegExp> = [
+  /\b(sofa|couch)\s+lengthw(ay|ise)s?\b/i,
+  /\blengthw(ay|ise)s?\s+(along|across)\s+(the\s+)?(sofa|couch)\b/i,
+  /\bhead\s+near\s+(the\s+)?left\s+armrest\b/i,
+  /\bfeet\s+near\s+(the\s+)?right\s+armrest\b/i,
+  /\b(full|entire)\s+sofa\s+visible\b/i,
+  /\blying\s+along\s+(the\s+)?(sofa|couch)\b/i,
+];
+
+// Image-intent context that promotes a single weak seated signal to a
+// hard-gate fire. Kept narrow — same vocabulary the rest of this module
+// already uses to detect image asks.
+const SEATED_IMAGE_CONTEXT_RX =
+  /\b(image|picture|photo|photograph|pic|selfie|portrait|render|generate|create|draw|show me|send me|full[- ]?body|whole[- ]?body|head[- ]to[- ]toe|wide\s+landscape|pulled[- ]?back\s+camera|side[- ]on\s+(camera|view))\b/i;
+
+export function isSeatedLengthwiseImageRequest(text: string): boolean {
+  if (typeof text !== "string") return false;
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  // No word-count cap — Kane's spec prompts are long.
+  if (SEATED_LENGTHWISE_STRONG_RX.test(trimmed)) return true;
+  let weakHits = 0;
+  for (const rx of SEATED_LENGTHWISE_WEAK_RX_LIST) {
+    if (rx.test(trimmed)) weakHits++;
+    if (weakHits >= 2) return true;
+  }
+  if (weakHits >= 1 && SEATED_IMAGE_CONTEXT_RX.test(trimmed)) return true;
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Direct image request detection (no prior visual context required)
 // ---------------------------------------------------------------------------
@@ -428,6 +476,29 @@ export function resolveImageFollowUp(
     }
     // No prior attempt to retry — fall through and let the normal resolvers
     // (or the caller) decide what to do with the message.
+  }
+
+  // Seated-lengthwise hard-gate path. Runs before the direct/short/send-again
+  // detectors so a long Kane-spec prompt ("reclining lengthways across the
+  // sofa, head near left armrest, feet near right armrest, ...") routes
+  // straight to image generation in SEATED_LENGTHWISE_FULL_BODY_MODE instead
+  // of being answered as conversation. No prior history required.
+  if (isSeatedLengthwiseImageRequest(latestUserText)) {
+    const { text: sanitised, changed } = sanitiseExpression(latestUserText);
+    return {
+      isFollowUp: true,
+      kind: "direct_image_request",
+      followUpText: latestUserText,
+      priorVisualText: null,
+      sanitisedVisualText: sanitised,
+      sanitised: changed,
+      priorAttemptVibe: null,
+      priorAttemptDelivered: false,
+      resolvedRequest: `Generate a wide landscape full-body image of Ashley reclining lengthways across the sofa: ${sanitised.trim()}.`,
+      suggestedMode: "SEATED_LENGTHWISE_FULL_BODY_MODE",
+      modeReason:
+        "matched seated-lengthwise hard-gate trigger — bypassing romantic-prose path",
+    };
   }
 
   const isResend = isSendAgainRequest(latestUserText);
@@ -823,6 +894,9 @@ function shortCaptionFor(
     return "That attempt still failed full-body validation: feet/shoes/floor were not visible. Re-running with wider framing — say \"feet missing\" again if this one still crops.";
   }
   if (kind === "send_again") return "Retrying — wait for the image to arrive before assuming it landed.";
+  if (mode === "SEATED_LENGTHWISE_FULL_BODY_MODE") {
+    return "Wide landscape lengthways-sofa shot incoming. Confirm head, both legs, and both complete socked feet are visible on the cushion, with empty sofa space beyond the feet — if anything is cropped or the pose came out front-facing, say \"feet missing\" and I'll re-run.";
+  }
   switch (mode) {
     case "FULL_BODY_MODE":
       return "Full-body shot incoming. If feet, shoes, or the floor are cropped, say \"feet missing\" / \"cut off at the ankles\" / \"retry stricter\" and I'll re-run wider.";
