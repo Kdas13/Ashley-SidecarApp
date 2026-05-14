@@ -390,6 +390,20 @@ export function resolveImageFollowUp(
     if (priorAttempt && priorVibe) {
       const { text: sanitised, changed } = sanitiseExpression(priorVibe);
       const usable = sanitised && sanitised.trim() ? sanitised : priorVibe;
+      // Escalation ladder: FULL_BODY_MODE → FOOT_VISIBLE_RETRY → EXTREME.
+      // If the prior attempt was already a FOOT_VISIBLE_RETRY (or the prior
+      // EXTREME, in which case we stay at EXTREME — there is nothing wider),
+      // bump up one rung. Anything else escalates to FOOT_VISIBLE_RETRY.
+      const priorMode = priorAttempt.mode ?? null;
+      const escalatedMode: ImageMode =
+        priorMode === "FOOT_VISIBLE_RETRY" ||
+        priorMode === "EXTREME_WIDE_FULL_BODY_RETRY"
+          ? "EXTREME_WIDE_FULL_BODY_RETRY"
+          : "FOOT_VISIBLE_RETRY";
+      const escalatedReason =
+        escalatedMode === "EXTREME_WIDE_FULL_BODY_RETRY"
+          ? `prior attempt was already ${priorMode} and feet/shoes/floor still cropped — escalating to EXTREME_WIDE_FULL_BODY_RETRY with prior vibe`
+          : "user reported feet/shoes/floor cropped — escalating to FOOT_VISIBLE_RETRY with prior vibe";
       return {
         isFollowUp: true,
         kind: "foot_visible_retry",
@@ -399,11 +413,10 @@ export function resolveImageFollowUp(
         sanitised: changed,
         priorAttemptVibe: priorVibe,
         priorAttemptDelivered: Boolean(priorAttempt.imageUrl),
-        priorAttemptMode: priorAttempt.mode,
-        resolvedRequest: `STRICTER FULL-BODY RETRY (feet/shoes/floor were cropped on the previous attempt): ${usable.trim()}`,
-        suggestedMode: "FOOT_VISIBLE_RETRY",
-        modeReason:
-          "user reported feet/shoes/floor cropped — escalating to FOOT_VISIBLE_RETRY with prior vibe",
+        priorAttemptMode: priorMode,
+        resolvedRequest: `${escalatedMode === "EXTREME_WIDE_FULL_BODY_RETRY" ? "EXTREME-WIDE FULL-BODY RETRY" : "STRICTER FULL-BODY RETRY"} (feet/shoes/floor were cropped on the previous attempt): ${usable.trim()}`,
+        suggestedMode: escalatedMode,
+        modeReason: escalatedReason,
       };
     }
     // No prior attempt to retry — fall through and let the normal resolvers
@@ -588,7 +601,7 @@ export function buildFollowUpTurnHint(resolution: FollowUpResolution): string {
     lines.push("");
     lines.push("Required behaviour for THIS turn:");
     lines.push(
-      "1. EMIT a fresh [image: FOOT_VISIBLE_RETRY | <description>] tag reusing the prior visual. Do NOT re-ask what to render.",
+      `1. EMIT a fresh [image: ${resolution.suggestedMode} | <description>] tag reusing the prior visual. Do NOT re-ask what to render.`,
     );
     lines.push(
       "2. Caption it briefly along the lines of: \"That attempt still failed full-body validation: feet/shoes/floor are not visible. I'll retry with wider framing.\" No apologies, no roleplay narration.",
@@ -783,7 +796,10 @@ export type SynthesizedImageReply = {
 
 function shortCaptionFor(mode: ImageMode, kind: FollowUpResolution["kind"]): string {
   if (kind === "foot_visible_retry") {
-    return "That attempt still failed full-body validation: feet/shoes/floor were not visible. Retrying with wider framing.";
+    if (mode === "EXTREME_WIDE_FULL_BODY_RETRY") {
+      return "That retry still failed full-body validation: feet/shoes/floor were not visible. Re-running once more with extreme-wide framing — this is the last automatic escalation.";
+    }
+    return "That attempt still failed full-body validation: feet/shoes/floor were not visible. Re-running with wider framing — say \"feet missing\" again if this one still crops.";
   }
   if (kind === "send_again") return "Retrying — wait for the image to arrive before assuming it landed.";
   switch (mode) {
@@ -791,6 +807,8 @@ function shortCaptionFor(mode: ImageMode, kind: FollowUpResolution["kind"]): str
       return "Full-body shot incoming. If feet, shoes, or the floor are cropped, say \"feet missing\" / \"cut off at the ankles\" / \"retry stricter\" and I'll re-run wider.";
     case "FOOT_VISIBLE_RETRY":
       return "Wider full-body retry incoming. Same check — both shoes and the floor below them should be in frame.";
+    case "EXTREME_WIDE_FULL_BODY_RETRY":
+      return "Extreme-wide full-body retry incoming. Whole figure with floor and headroom margins.";
     case "OUTFIT_MODE":
       return "Outfit shot incoming — head-to-toe so the whole look is in frame.";
     case "POSE_REFERENCE_MODE":

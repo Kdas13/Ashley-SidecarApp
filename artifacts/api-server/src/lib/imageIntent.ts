@@ -23,6 +23,7 @@ export const IMAGE_MODES = [
   "PORTRAIT_MODE",
   "FULL_BODY_MODE",
   "FOOT_VISIBLE_RETRY",
+  "EXTREME_WIDE_FULL_BODY_RETRY",
   "OUTFIT_MODE",
   "POSE_REFERENCE_MODE",
   "SCENE_MODE",
@@ -198,17 +199,32 @@ const WRAPPERS: Record<ImageMode, PromptWrapper> = {
     pendingLabel: "framing a full-body shot",
   },
   FOOT_VISIBLE_RETRY: {
-    // Stricter retry wording (per Wren spec). Used when the user reports that
-    // a previous FULL_BODY_MODE attempt cropped feet / shoes / floor. Pushes
-    // the camera further back and over-affirms floor + margin to drag the
-    // diffusion model out of its default crop attractor.
+    // Stricter retry wording (per Wren May 2026 follow-up). The previous
+    // wording still produced trouser-cuff crops, so this version over-affirms
+    // a wide vertical fashion-catalogue composition with the subject smaller
+    // in the frame, both shoes complete, and a strip of empty floor below the
+    // shoes. Diffusion models ignore negation, so every constraint is
+    // expressed as a positive composition fact.
     shotType:
-      "Wider full-length standing reference image of {subject}, a young woman, placed farther from the camera so her whole body fits comfortably inside the frame; her entire figure is shown from head to toe, including both complete shoes and the floor underneath them; visible floor space below both shoes and empty margin above her head; the composition is a full-body clothing-catalogue shot",
+      "Wide full-length vertical fashion-catalogue image of {subject}, a young woman, standing far from the camera; {subject}'s entire body is visible from the top of her head to the soles of both shoes; both shoes are fully visible and the floor beneath both shoes is clearly visible, including a strip of empty floor below the shoes; {subject} is smaller in the frame, occupying only the central sixty-five percent of the image height; clear empty margin above her head and clear empty floor margin below her shoes; the camera is positioned far enough away to show the complete standing figure comfortably inside the frame, including the floor line and baseboard if indoors",
     styleLine:
-      "Vertical portrait composition, full-body clothing-catalogue framing, even readable lighting across the whole body, photorealistic, single subject, no text or watermarks",
+      "Tall vertical portrait composition, full-body fashion-catalogue framing, even readable lighting across the whole body, photorealistic, single subject, no text or watermarks",
     framingHint: "tall",
     requiresFullBodyValidation: true,
     pendingLabel: "retrying full-body framing — wider",
+  },
+  EXTREME_WIDE_FULL_BODY_RETRY: {
+    // Second-stage escalation (per Wren May 2026 follow-up). Fires when the
+    // user complains about cropped feet AGAIN after FOOT_VISIBLE_RETRY has
+    // already run. Pushes the camera even further back so the standing figure
+    // is much smaller, with generous floor and headroom margins.
+    shotType:
+      "Very wide full-body standing reference image of {subject}, a young woman, placed at extreme distance from the camera; {subject} is much smaller in the frame, shown head to toe with both complete shoes and a wide patch of floor visible beneath them; large empty space above the head and large visible floor space below the shoes; the full standing figure fits comfortably inside the image with generous margins on all sides; the floor line and baseboard are visible if indoors",
+    styleLine:
+      "Tall vertical portrait composition, extra-wide full-body reference framing, even readable lighting across the whole body, photorealistic, single subject, no text or watermarks",
+    framingHint: "tall",
+    requiresFullBodyValidation: true,
+    pendingLabel: "retrying full-body framing — extreme wide",
   },
   OUTFIT_MODE: {
     shotType:

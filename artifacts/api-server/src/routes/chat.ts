@@ -1472,9 +1472,18 @@ function startSelfieGeneration(
         // Honest failure copy. Names the layer (generator) and the requested
         // mode without dramatising the failure as a permanent limit. See the
         // "Capability truth rule" section of ashleyCoreSpec.ts.
-        const failureCopy = wrapper.requiresFullBodyValidation
-          ? `Image attempt failed at the generator layer for ${imageMode}. That's a failed test, not proof I can't do full-body — want me to retry?`
-          : `Image attempt failed at the generator layer for ${imageMode}. Want me to retry?`;
+        // Wren May 2026: retry modes get their own copy — do NOT say "want me
+        // to retry?" when we're not actually starting another generation. The
+        // user has to send "feet missing" again to re-trigger; that re-trigger
+        // path will escalate to EXTREME on its own.
+        const isRetryMode =
+          imageMode === "FOOT_VISIBLE_RETRY" ||
+          imageMode === "EXTREME_WIDE_FULL_BODY_RETRY";
+        const failureCopy = isRetryMode
+          ? `Retry completed, but generation failed at the provider layer for ${imageMode}. No image artifact was returned. Send "feet missing" again to escalate framing, or retry from the bubble.`
+          : wrapper.requiresFullBodyValidation
+            ? `Image attempt failed at the generator layer for ${imageMode}. That's a failed test, not proof I can't do full-body — want me to retry?`
+            : `Image attempt failed at the generator layer for ${imageMode}. Want me to retry?`;
         setSelfieJob(jobId, {
           status: "failed",
           error: failureCopy,
