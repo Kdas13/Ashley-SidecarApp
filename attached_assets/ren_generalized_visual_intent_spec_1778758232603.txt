@@ -1,0 +1,965 @@
+REN TECHNICAL SPEC: Generalized Visual Intent Extraction + Visual Attribute Propagation
+
+Purpose
+This document defines the required technical change for Ashley's image-generation pipeline.
+
+The goal is not to support one narrow prompt, such as “tractor”.
+The goal is to support generalized visual imagination.
+
+Any user-requested visible change must become part of the image specification and be passed into the image generator.
+
+
+0. Core Problem
+
+The current image system appears to be patched around specific recent cases:
+
+- selfie
+- full body
+- feet detail
+- tractor scene
+
+That is not enough.
+
+The system needs a generalized image-request pipeline that can handle any user-requested visible change, including future unseen prompts.
+
+This must not be implemented as a growing pile of exact-match hardcoded prompts.
+
+Required pipeline:
+
+USER MESSAGE
+→ visual intent detection
+→ visual attribute extraction
+→ image mode resolution
+→ prompt construction
+→ generation call
+→ artifact attachment
+→ no-artifact guard
+→ retry/carryover state
+
+Important rule:
+
+If the user asks for something that should visibly change the image, that instruction must be extracted and passed into the image generator.
+
+
+1. Required Architecture
+
+Implement or refactor toward these layers:
+
+- visualIntent.ts
+- visualAttributeExtractor.ts
+- imageModeResolver.ts
+- imagePromptBuilder.ts
+- imageAttemptState.ts
+- imageGenerationService.ts
+- imageResponseGuard.ts
+- imageViewer.tsx / generatedImageCard.tsx
+
+The image pipeline must run before normal romantic/chat LLM streaming.
+
+Pseudo-flow:
+
+async function handleChatTurn(req: ChatRequest) {
+  const userText = req.message;
+
+  const visualIntent = detectVisualIntent(userText, conversationState);
+
+  if (visualIntent.isImageRequest) {
+    return handleImageTurn({
+      userText,
+      visualIntent,
+      conversationState,
+      userId,
+      deviceId,
+    });
+  }
+
+  return streamNormalChat(req);
+}
+
+Critical requirement:
+
+detectVisualIntent(...) must execute before the normal LLM response path begins.
+
+Do not allow the LLM to start streaming prose before image intent has been resolved.
+
+
+2. Visual Intent Detection
+
+2.1 What counts as visual intent?
+
+A message should be classified as image intent if it asks for, implies, modifies, retries, or references a visual output.
+
+Trigger families include, but are not limited to:
+
+const IMAGE_ACTION_TERMS = [
+  "show",
+  "generate",
+  "make",
+  "create",
+  "render",
+  "draw",
+  "paint",
+  "mock up",
+  "mock-up",
+  "visualise",
+  "visualize",
+  "turn this into",
+  "give me a picture",
+  "give me an image",
+  "send a picture",
+  "send an image",
+  "send a selfie",
+  "photo",
+  "picture",
+  "image",
+  "selfie",
+  "portrait",
+  "shot",
+  "scene",
+  "example",
+  "concept",
+  "reference",
+  "mockup",
+];
+
+Do not rely only on this list.
+
+The detector needs to understand the general class of request:
+
+“User is asking for a visual artifact or visible change.”
+
+Examples that must trigger image intent:
+
+- Show me a picture of you sitting on the bonnet of a car.
+- Try you in a black dress.
+- Change your hair to blue.
+- Make it outdoors.
+- Put you on a sofa.
+- Show me your latest artwork.
+- Give me an example of what I should paint next.
+- Show me standing under a streetlight.
+- Can you do that as an image?
+- Same again, but with red hair.
+- Retry that, but wider.
+
+
+3. Visual Attribute Extraction
+
+Create a normalized VisualSpec object.
+
+Example interface:
+
+export type ImageMode =
+  | "SELFIE_MODE"
+  | "FULL_BODY_MODE"
+  | "FEET_DETAIL_MODE"
+  | "BODY_DETAIL_MODE"
+  | "SCENE_IMAGE_MODE"
+  | "ENVIRONMENT_IMAGE_MODE"
+  | "COSTUME_PROP_SCENE_MODE"
+  | "ARTWORK_IMAGE_MODE"
+  | "ART_REFERENCE_MODE"
+  | "IMAGE_EDIT_MODE"
+  | "RETRY_PREVIOUS_IMAGE_MODE";
+
+export interface VisualSpec {
+  requestId: string;
+  rawUserText: string;
+  normalizedText: string;
+
+  imageIntent: boolean;
+  confidence: number;
+
+  requestedAction:
+    | "generate_new"
+    | "edit_previous"
+    | "retry_previous"
+    | "show_example"
+    | "show_artwork"
+    | "unknown";
+
+  mode: ImageMode;
+
+  subject: {
+    target: "ashley" | "artwork" | "scene" | "object" | "unknown";
+    preserveIdentity: boolean;
+    identityAnchors?: string[];
+  };
+
+  environment?: {
+    location?: string;
+    background?: string;
+    timeOfDay?: string;
+    weather?: string;
+    atmosphere?: string;
+    requiredElements?: string[];
+  };
+
+  wardrobe?: {
+    clothing?: string[];
+    accessories?: string[];
+    footwear?: string[];
+    colours?: string[];
+  };
+
+  appearance?: {
+    hairColour?: string;
+    hairstyle?: string;
+    skinTone?: string;
+    makeup?: string;
+    expression?: string;
+    agePresentation?: string;
+    otherTraits?: string[];
+  };
+
+  pose?: {
+    bodyPosition?: string;
+    orientation?: string;
+    gesture?: string;
+    gaze?: string;
+    limbVisibility?: string[];
+  };
+
+  framing?: {
+    shotType?: "close_up" | "medium" | "full_body" | "wide" | "extreme_wide";
+    cameraAngle?: string;
+    aspectRatio?: string;
+    mustInclude?: string[];
+    mustNotCrop?: string[];
+    marginRequirements?: string[];
+  };
+
+  props?: {
+    objects?: string[];
+    vehicles?: string[];
+    furniture?: string[];
+    tools?: string[];
+    artSupplies?: string[];
+  };
+
+  textInImage?: {
+    requiredText?: string[];
+    location?: string;
+    casingPreference?: string;
+  };
+
+  style?: {
+    medium?: string;
+    realismLevel?: string;
+    lighting?: string;
+    colourPalette?: string[];
+    mood?: string;
+    genre?: string;
+  };
+
+  safety?: {
+    explicitness: "safe" | "suggestive" | "blocked";
+    reasonIfBlocked?: string;
+  };
+
+  validation?: {
+    requiredVisibleElements?: string[];
+    forbiddenMissingElements?: string[];
+    userValidationPhrase?: string[];
+  };
+
+  carryover?: {
+    usePreviousVisualSpec: boolean;
+    previousAttemptId?: string;
+    mergeStrategy?: "replace" | "merge" | "retry_exact" | "retry_with_changes";
+  };
+}
+
+
+4. Visual Dimensions That Must Be Extracted
+
+The extractor must support broad visual attributes, not exact examples.
+
+
+4.1 Environment / Setting
+
+Extract any requested location, background, or scene change.
+
+Examples:
+
+- on a tractor
+- in a field
+- on a sofa
+- on the bonnet of a car
+- in a bedroom
+- in a café
+- in a rainy street
+- in a studio
+- on a beach
+- in an art room
+- at an easel
+- in a garden
+- inside a car
+- outside at sunset
+
+Example output:
+
+environment.location = "on the bonnet of a car";
+props.vehicles = ["car"];
+
+
+4.2 Clothing / Outfit / Accessories
+
+Extract any requested clothing change.
+
+Examples:
+
+- wearing dungarees
+- wearing overalls
+- black hoodie
+- Amish hat
+- boots
+- white socks
+- gold necklace
+- black choker
+- Mickey Mouse ears
+- formal dress
+- paint-covered apron
+
+Example output:
+
+wardrobe.clothing = ["dungarees"];
+wardrobe.accessories = ["Amish hat"];
+
+
+4.3 Appearance Changes
+
+Extract visible appearance changes.
+
+Examples:
+
+- change hair colour to blue
+- make her hair darker
+- lavender hair
+- short hair
+- curly hair
+- different makeup
+- paler skin
+- warmer skin tone
+- more tired expression
+- cheeky smile
+- tongue out
+
+Example output:
+
+appearance.hairColour = "blue";
+appearance.expression = "cheeky smile";
+
+Important:
+Appearance changes should affect the current generated image only unless the user explicitly requests permanent identity/profile change.
+
+Do not mutate Ashley’s core identity permanently from one image prompt.
+
+
+4.4 Pose and Body Position
+
+Extract pose requests.
+
+Examples:
+
+- sitting
+- standing
+- reclining
+- lying lengthways on the sofa
+- sitting cross-legged
+- feet toward camera
+- side-on
+- leaning against the car
+- hands in pockets
+- looking at camera
+- looking away
+
+Example output:
+
+pose.bodyPosition = "sitting on the bonnet of a car";
+pose.orientation = "facing camera";
+
+
+4.5 Camera Framing / Composition
+
+Extract all framing constraints.
+
+Examples:
+
+- full body
+- head to toe
+- close-up
+- wide angle
+- extreme wide angle
+- show both feet
+- include the floor
+- space around the feet
+- do not crop
+- portrait
+- landscape
+- side profile
+
+Example output:
+
+framing.shotType = "full_body";
+framing.mustInclude = ["both feet", "floor space"];
+framing.mustNotCrop = ["feet", "top of head"];
+
+
+4.6 Props / Objects / Vehicles
+
+Extract required props.
+
+Examples:
+
+- tractor
+- car
+- sofa
+- banner
+- painting
+- canvas
+- easel
+- brushes
+- coffee mug
+- phone
+- book
+- umbrella
+- streetlight
+
+Example output:
+
+props.vehicles = ["tractor"];
+props.objects = ["banner"];
+
+
+4.7 Text Inside Image
+
+Extract any text the user wants rendered inside the generated image.
+
+Examples:
+
+- banner saying #AmishLife
+- sign saying No Rules No Labels
+- text on hoodie saying Kiss This
+- label on painting
+
+Example output:
+
+textInImage.requiredText = ["#AmishLife"];
+textInImage.location = "banner on front of tractor";
+
+Important:
+Image models may distort text. The system should still pass the requested text through clearly.
+
+
+5. Image Mode Resolution
+
+Do not resolve mode by one keyword alone. Resolve from the full VisualSpec.
+
+Suggested priority:
+
+function resolveImageMode(spec: VisualSpec, state: ImageAttemptState): ImageMode {
+  if (isRetryOfPreviousImage(spec, state)) {
+    return "RETRY_PREVIOUS_IMAGE_MODE";
+  }
+
+  if (isFeetOnlyRequest(spec)) {
+    return "FEET_DETAIL_MODE";
+  }
+
+  if (isOtherBodyDetailRequest(spec)) {
+    return "BODY_DETAIL_MODE";
+  }
+
+  if (isArtworkRequest(spec)) {
+    return "ARTWORK_IMAGE_MODE";
+  }
+
+  if (isArtReferenceRequest(spec)) {
+    return "ART_REFERENCE_MODE";
+  }
+
+  if (isFullBodyRequest(spec)) {
+    return "FULL_BODY_MODE";
+  }
+
+  if (hasEnvironmentOrPropsOrCostume(spec)) {
+    return "SCENE_IMAGE_MODE";
+  }
+
+  if (isSelfieRequest(spec)) {
+    return "SELFIE_MODE";
+  }
+
+  return "SCENE_IMAGE_MODE";
+}
+
+Important:
+A request like:
+
+“Show me a picture of you sitting on the bonnet of a car with an Amish hat on.”
+
+must resolve to:
+
+IMAGE_MODE = "SCENE_IMAGE_MODE"
+
+not normal chat prose.
+
+
+6. Scene / Environment Routing Rule
+
+This is the key part.
+
+If the user asks for Ashley in any described setting, vehicle, outfit, prop, or pose, the request must route to scene image generation.
+
+Examples:
+
+- you on a tractor
+- you sitting on a car bonnet
+- you in a field
+- you on a sofa
+- you at an easel
+- you in a rainy street
+- you in a coffee shop
+- you wearing dungarees
+- you wearing an Amish hat
+- you with a banner
+- you holding a paintbrush
+
+These must not require exact hardcoded scenarios.
+
+Technical rule:
+
+const hasSceneMutation =
+  spec.environment?.location ||
+  spec.environment?.background ||
+  spec.props?.objects?.length ||
+  spec.props?.vehicles?.length ||
+  spec.props?.furniture?.length ||
+  spec.wardrobe?.clothing?.length ||
+  spec.wardrobe?.accessories?.length ||
+  spec.pose?.bodyPosition ||
+  spec.textInImage?.requiredText?.length;
+
+if (spec.imageIntent && hasSceneMutation) {
+  mode = "SCENE_IMAGE_MODE";
+}
+
+
+7. Prompt Builder
+
+The image prompt must be built from the extracted spec.
+
+Do not let the LLM response understand the request while the image prompt ignores it.
+
+Prompt structure:
+
+function buildImagePrompt(spec: VisualSpec): string {
+  return [
+    buildSubjectLine(spec),
+    buildEnvironmentLine(spec),
+    buildWardrobeLine(spec),
+    buildAppearanceLine(spec),
+    buildPoseLine(spec),
+    buildFramingLine(spec),
+    buildPropsLine(spec),
+    buildTextInImageLine(spec),
+    buildStyleLine(spec),
+    buildSafetyLine(spec),
+    buildValidationLine(spec),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+Example output for car bonnet prompt:
+
+Create a harmless, fully clothed, playful image of Ashley sitting on the bonnet of a car.
+Ashley is wearing an Amish-style hat and casual clothing.
+The car bonnet is clearly visible and Ashley is seated on it.
+The scene should feel playful and absurd, like an inside joke.
+Use a medium-wide camera view so the car bonnet, Ashley’s pose, and the hat are visible.
+Keep the image non-explicit and lighthearted.
+
+Example output for artwork prompt:
+
+Create a generated concept image of an artwork idea for Kane to paint next.
+The artwork should be a dark blue abstract acrylic painting with gold swirling linework.
+The composition should feel moody, atmospheric, and suitable for canvas painting.
+Show it as a finished painting mock-up, not as a real historical artwork.
+
+
+8. “Latest Artwork” Honesty Rule
+
+If user says:
+
+“Show me your latest artwork.”
+
+and there is no stored real artwork record, do not pretend Ashley has a real historical artwork.
+
+Correct behavior:
+
+“Here’s a generated example of the kind of artwork I imagine making right now.”
+
+Then generate image.
+
+Incorrect behavior:
+
+“Here’s the real painting I made yesterday.”
+
+unless actual stored memory/artifact exists.
+
+Technical state rule:
+
+if (requestImpliesHistoricalArtifact && !hasStoredArtifact("ashley_artwork")) {
+  spec.requestedAction = "show_example";
+  spec.mode = "ARTWORK_IMAGE_MODE";
+  spec.honestyLabel = "generated concept, not stored historical artwork";
+}
+
+
+9. Retry and Carryover State
+
+Every image attempt must store its full VisualSpec, not just mode or vibe text.
+
+Required persisted state:
+
+export interface ImageAttemptRecord {
+  attemptId: string;
+  userId: string;
+  deviceId: string;
+  createdAt: string;
+
+  rawUserText: string;
+  visualSpec: VisualSpec;
+  imageMode: ImageMode;
+
+  promptSentToGenerator: string;
+
+  generationCalled: boolean;
+  providerStatus?: string;
+  imageUrl?: string;
+  imageAssetId?: string;
+  artifactReturned: boolean;
+  attachedToChat: boolean;
+
+  failureReason?: string;
+}
+
+Retry phrases:
+
+- try again
+- retry
+- same again
+- do that again
+- no luck
+- run it again
+- same but wider
+- same but change the hat
+- same thing but outdoors
+
+If a retry phrase appears after an image attempt, do not route to normal chat.
+
+Instead:
+
+const previous = getLatestImageAttempt(deviceId);
+
+if (isRetryPhrase(userText) && previous) {
+  const newSpec = mergeRetryInstruction(previous.visualSpec, userText);
+  return handleImageTurn(newSpec);
+}
+
+Merge rules:
+
+- “try again” => retry exact previous spec
+- “same again” => retry exact previous spec
+- “same but wider” => previous spec + framing.shotType = "wide"
+- “same but red hair” => previous spec + appearance.hairColour = "red"
+- “same but on a sofa” => previous spec + environment.location = "on a sofa"
+
+
+10. No Artifact, No Claim Guard
+
+This must be global across every image mode.
+
+If generation does not return an image URL or asset ID, Ashley must not say:
+
+- There.
+- Take a look.
+- Here it is.
+- I made it.
+- Is this the one?
+- I poured everything into that one.
+
+Required guard:
+
+function imageResponseGuard(result: ImageGenerationResult): ChatResponse {
+  if (!result.imageUrl && !result.imageAssetId) {
+    return {
+      text:
+        "The image request was detected, but no image artifact was returned. That is a generation or UI delivery failure, not a successful image. Want me to retry?",
+      image: null,
+      diagnostic: {
+        generationCalled: result.generationCalled,
+        providerStatus: result.providerStatus,
+        failureReason: result.failureReason,
+      },
+    };
+  }
+
+  return {
+    text: buildShortImageCaption(result.mode),
+    image: result.imageUrl ?? result.imageAssetId,
+  };
+}
+
+This guard must apply to:
+
+- SELFIE_MODE
+- FULL_BODY_MODE
+- FEET_DETAIL_MODE
+- SCENE_IMAGE_MODE
+- ARTWORK_IMAGE_MODE
+- ART_REFERENCE_MODE
+- IMAGE_EDIT_MODE
+- RETRY_PREVIOUS_IMAGE_MODE
+
+
+11. Logging Requirements
+
+Every image-intent turn must log:
+
+{
+  turnId,
+  rawUserText,
+  normalizedText,
+
+  imageIntent,
+  confidence,
+  matchedTriggers,
+  extractedVisualSpec,
+
+  previousImageAttemptFound,
+  previousImageMode,
+  previousVisualSpecFound,
+
+  resolvedImageMode,
+  routingPriorityWinner,
+
+  promptSentToGeneratorPreview,
+  generationCalled,
+
+  providerName,
+  providerStatus,
+  providerError,
+
+  imageUrlReturned,
+  imageAssetIdReturned,
+  attachedToChat,
+
+  noArtifactGuardTriggered,
+  llmStreamBypassedForImageIntent
+}
+
+Critical debug field:
+
+llmStreamBypassedForImageIntent: true
+
+For any direct visual request, this should be true.
+
+
+12. UI Tap-to-Enlarge Requirement
+
+Generated image cards must support full-screen viewing.
+
+Every image artifact should render through one shared component:
+
+<GeneratedImageCard
+  imageUrl={message.imageUrl}
+  imageAssetId={message.imageAssetId}
+  resizeMode="contain"
+  onPress={() => openImageViewer(message.imageUrl)}
+/>
+
+Preview can be cropped if necessary for card layout, but full-screen must not be cropped.
+
+Full-screen viewer:
+
+<Image
+  source={{ uri: imageUrl }}
+  resizeMode="contain"
+  style={{
+    width: "100%",
+    height: "100%",
+  }}
+/>
+
+Forbidden in full-screen view:
+
+- resizeMode="cover"
+- objectFit="cover"
+- overflow: "hidden"
+
+Acceptance:
+
+- tap generated image
+- full-screen modal opens
+- same raw image is used
+- image uses contain scaling
+- user can close modal
+
+
+13. Required Test Suite
+
+These are not optional. The point is to prove generalization beyond recent examples.
+
+
+13.1 Environment Tests
+
+- Show me a picture of you sitting on the bonnet of a car with an Amish hat on.
+- Show me sitting in a field sketching.
+- Show me standing in the rain under a streetlight.
+- Show me sitting on a sofa in a cozy room.
+- Show me at an easel painting something.
+
+Expected:
+
+IMAGE_MODE = SCENE_IMAGE_MODE
+GENERATION_CALLED = true
+
+
+13.2 Clothing / Accessory Tests
+
+- Show me wearing dungarees.
+- Show me wearing a black hoodie.
+- Show me with Mickey Mouse ears.
+- Show me wearing an Amish hat.
+- Show me in paint-covered overalls.
+
+Expected:
+Requested clothing/accessory appears in prompt and image attempt.
+
+
+13.3 Appearance Tests
+
+- Show me with darker purple hair.
+- Show me with short hair.
+- Show me with a cheeky expression.
+- Show me with your tongue out like “yeah, gotcha.”
+- Show me with a serious expression.
+
+Expected:
+Appearance changes pass into generator.
+
+
+13.4 Composition Tests
+
+- Show me full body, head to toe, both feet visible.
+- Show me just your feet.
+- Show me sitting lengthways on the sofa with your feet visible.
+- Show me from the side.
+- Show me in a wide landscape shot.
+
+Expected:
+Correct mode and framing.
+
+
+13.5 Artwork Tests
+
+- Show me your latest artwork.
+- Give me an example of what artwork I should start.
+- Show me a dark blue abstract canvas with gold swirls.
+- Generate a mock-up for my next oil painting.
+- Show me a painting idea based on pressure and fracture.
+
+Expected:
+
+ARTWORK_IMAGE_MODE or ART_REFERENCE_MODE
+GENERATION_CALLED = true
+
+If no stored artwork exists, label as generated concept/example.
+
+
+13.6 Retry Tests
+
+- Try again.
+- No luck, try again.
+- Same again, but wider.
+- Same thing but change the hat.
+- Same thing but make it outdoors.
+
+Expected:
+Previous VisualSpec is reused and merged.
+
+
+14. Acceptance Criteria
+
+This is complete only when:
+
+1. Visual requests are detected before LLM streaming.
+2. Environment changes propagate into image prompts.
+3. Clothing changes propagate into image prompts.
+4. Appearance changes propagate into image prompts.
+5. Pose changes propagate into image prompts.
+6. Prop/object/vehicle changes propagate into image prompts.
+7. Text-in-image requests propagate into image prompts.
+8. Artwork/reference prompts route to image generation.
+9. Retry prompts reuse previous visual state.
+10. No artifact means no success language.
+11. Generated images can be tapped to enlarge.
+12. The system works on unseen prompt types, not just known examples.
+
+
+15. Anti-Patterns to Avoid
+
+Do not do this:
+
+if (text.includes("tractor")) {
+  mode = "TRACTOR_MODE";
+}
+
+Do this instead:
+
+if (hasImageIntent(text) && hasSceneAttributes(spec)) {
+  mode = "SCENE_IMAGE_MODE";
+}
+
+Do not hardcode only:
+
+- tractor
+- feet
+- selfie
+
+The system must handle:
+
+- any environment
+- any outfit
+- any accessory
+- any pose
+- any prop
+- any visual style
+- any artwork/reference request
+
+within safety limits.
+
+
+16. Final Deliverable Required
+
+Return:
+
+1. Files changed.
+2. New image-intent detection logic.
+3. New VisualSpec / extracted attribute schema.
+4. New image mode resolver.
+5. Prompt builder changes.
+6. Retry/carryover state changes.
+7. No Artifact, No Claim guard location.
+8. Tap-to-enlarge component fix.
+9. Test logs for at least 10 diverse prompts.
+10. Proof that a new unseen prompt routes to image generation without being hardcoded.
+
+Final goal:
+
+Generalized visual imagination.
+
+Any user-requested visible change must become part of the image specification.
