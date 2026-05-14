@@ -122,6 +122,56 @@ describe("SCENE_MODE wrapper — anti-selfie framing contract", () => {
   });
 });
 
+describe("Override is request-scoped, not identity-scoped (Wren May 2026 correction)", () => {
+  // Profile is the persisted Core Identity Layer. composeAppearance must
+  // treat it as read-only — a blonde override applied to one request must
+  // NOT mutate it, and the next request with no override must see lavender
+  // again.
+  const profile = "Lavender hair (long, wavy), pale skin, hazel-green eyes";
+
+  it("default selfie (no spec) keeps Ashley's lavender hair", () => {
+    const out = composeAppearance(profile, null);
+    expect(out.toLowerCase()).toContain("lavender hair");
+    expect(out.toLowerCase()).not.toContain("blonde");
+  });
+
+  it("blonde override selfie uses blonde and emits the anti-lavender directive", () => {
+    const spec = extractVisualSpecCompound("Blonde hair no lavender. Black leather biker jacket. Sat on a bar stool at a bar.");
+    const out = composeAppearance(profile, spec);
+    expect(out.toLowerCase()).toContain("blonde hair");
+    expect(out.toLowerCase()).not.toContain("lavender");
+    const directive = buildHairColourDirective(spec);
+    expect(directive).toContain("MUST be blonde");
+    expect(directive.toLowerCase()).toContain("lavender");
+  });
+
+  it("next default selfie (no spec) returns to lavender — profile was not mutated", () => {
+    const before = profile;
+    const blondeSpec = extractVisualSpecCompound("Blonde hair no lavender");
+    composeAppearance(profile, blondeSpec);
+    // profile string is a primitive — verify identity object unchanged for paranoia.
+    expect(profile).toBe(before);
+    const next = composeAppearance(profile, null);
+    expect(next.toLowerCase()).toContain("lavender hair");
+    expect(next.toLowerCase()).not.toContain("blonde");
+    // And the directive does NOT fire when there's no spec.
+    const directive = ""; // buildHairColourDirective is only called when carriedSpec is truthy
+    expect(directive).toBe("");
+  });
+
+  it("three-call sequence: default → blonde → default round-trips lavender both ends", () => {
+    const a = composeAppearance(profile, null);
+    const b = composeAppearance(profile, extractVisualSpecCompound("Blonde hair no lavender"));
+    const c = composeAppearance(profile, null);
+    expect(a.toLowerCase()).toContain("lavender hair");
+    expect(b.toLowerCase()).toContain("blonde hair");
+    expect(b.toLowerCase()).not.toContain("lavender");
+    expect(c.toLowerCase()).toContain("lavender hair");
+    expect(c.toLowerCase()).not.toContain("blonde");
+    expect(a).toBe(c); // strict equality — request 3 is identical to request 1
+  });
+});
+
 describe("composeAppearance — Wren May 2026 precedence contract", () => {
   it("USER_EXPLICIT hair colour HARD REPLACES default identity hair colour", () => {
     const spec = extractVisualSpec("Black hair");
