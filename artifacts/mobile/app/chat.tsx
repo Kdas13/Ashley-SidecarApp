@@ -1731,50 +1731,102 @@ function MessageBubble({
         ) : null}
         {showImage ? (
           <>
+            {/*
+              Tap-to-enlarge wiring (Wren May 2026 follow-up #4 — hardened
+              for Android). Layout: a bounded View carrying the explicit
+              240×320 hit box, a Pressable filling that box with
+              android_ripple for visible tap feedback, the Image inside
+              with pointerEvents="none" so the Image never swallows the
+              tap, and an absolute-positioned "expand" icon overlay in the
+              top-right corner so the tap target is visually obvious. The
+              second Pressable sitting on top of the icon is a redundant
+              hit area for users who tap the affordance directly.
+            */}
+            <View
+              style={styles.bubbleImageHitBox}
+              accessibilityLabel="Image from Ashley"
+            >
+              <Pressable
+                onPress={() => {
+                  console.log("[chat] image preview tapped — opening viewer", {
+                    component: "MessageBubble.preview",
+                    imageUrl: message.imageUrl,
+                    previewWidth: 240,
+                    previewHeight: 320,
+                    previewResizeMode: "contain",
+                    naturalWidth: imageNaturalDims?.width ?? null,
+                    naturalHeight: imageNaturalDims?.height ?? null,
+                    tapHandlerAttached: true,
+                  });
+                  setViewerOpen(true);
+                }}
+                onLongPress={onImageLongPress}
+                delayLongPress={350}
+                android_ripple={{
+                  color: "rgba(255,255,255,0.18)",
+                  borderless: false,
+                }}
+                style={({ pressed }) => [
+                  styles.bubbleImagePressable,
+                  pressed && { opacity: 0.85 },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Tap to view full screen, long-press for options"
+                accessibilityHint="Opens a full-screen viewer with contain scaling"
+              >
+                <Image
+                  source={{ uri: message.imageUrl! }}
+                  style={styles.bubbleImage}
+                  resizeMode="contain"
+                  accessibilityLabel="Image from Ashley"
+                  onLoad={(e) => {
+                    const src = e?.nativeEvent?.source;
+                    if (src && typeof src.width === "number" && typeof src.height === "number") {
+                      setImageNaturalDims({ width: src.width, height: src.height });
+                      console.log("[chat] image preview loaded", {
+                        component: "MessageBubble.preview",
+                        imageUrl: message.imageUrl,
+                        naturalWidth: src.width,
+                        naturalHeight: src.height,
+                        previewWidth: 240,
+                        previewHeight: 320,
+                        previewResizeMode: "contain",
+                        tapHandlerAttached: true,
+                        tapHardenedBuild: "feet-followup-4",
+                      });
+                    }
+                  }}
+                  onError={(e) => {
+                    console.warn(
+                      "[chat] selfie image failed to load",
+                      message.imageUrl,
+                      e?.nativeEvent,
+                    );
+                    setImageFailed(true);
+                  }}
+                />
+                <View style={styles.bubbleImageExpandBadge} pointerEvents="none">
+                  <Feather name="maximize-2" size={14} color="#fff" />
+                </View>
+              </Pressable>
+            </View>
             <Pressable
               onPress={() => {
-                console.log("[chat] image preview tapped — opening viewer", {
+                console.log("[chat] tap-to-enlarge pill pressed", {
                   imageUrl: message.imageUrl,
-                  previewWidth: 240,
-                  previewHeight: 320,
-                  previewResizeMode: "contain",
-                  naturalWidth: imageNaturalDims?.width ?? null,
-                  naturalHeight: imageNaturalDims?.height ?? null,
                 });
                 setViewerOpen(true);
               }}
-              onLongPress={onImageLongPress}
-              delayLongPress={350}
-              accessibilityLabel="Tap to view full screen, long-press for options"
+              hitSlop={8}
+              style={({ pressed }) => [
+                styles.tapToEnlargePill,
+                pressed && { opacity: 0.7 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Open image full screen"
             >
-              <Image
-                source={{ uri: message.imageUrl! }}
-                style={styles.bubbleImage}
-                resizeMode="contain"
-                accessibilityLabel="Image from Ashley — tap to view full screen"
-                onLoad={(e) => {
-                  const src = e?.nativeEvent?.source;
-                  if (src && typeof src.width === "number" && typeof src.height === "number") {
-                    setImageNaturalDims({ width: src.width, height: src.height });
-                    console.log("[chat] image preview loaded", {
-                      imageUrl: message.imageUrl,
-                      naturalWidth: src.width,
-                      naturalHeight: src.height,
-                      previewWidth: 240,
-                      previewHeight: 320,
-                      previewResizeMode: "contain",
-                    });
-                  }
-                }}
-                onError={(e) => {
-                  console.warn(
-                    "[chat] selfie image failed to load",
-                    message.imageUrl,
-                    e?.nativeEvent,
-                  );
-                  setImageFailed(true);
-                }}
-              />
+              <Feather name="maximize-2" size={11} color={colors.light.mutedForeground} />
+              <Text style={styles.tapToEnlargePillText}>Tap to enlarge</Text>
             </Pressable>
             <Modal
               visible={viewerOpen}
@@ -2284,11 +2336,50 @@ const styles = StyleSheet.create({
     paddingBottom: 6,
     overflow: "hidden",
   },
+  bubbleImageHitBox: {
+    width: 240,
+    height: 320,
+    borderRadius: 14,
+    overflow: "hidden",
+  },
+  bubbleImagePressable: {
+    width: 240,
+    height: 320,
+    position: "relative",
+  },
   bubbleImage: {
     width: 240,
     height: 320,
     borderRadius: 14,
     backgroundColor: "rgba(0,0,0,0.2)",
+  },
+  bubbleImageExpandBadge: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  tapToEnlargePill: {
+    alignSelf: "flex-start",
+    marginLeft: 4,
+    marginTop: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 10,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  tapToEnlargePillText: {
+    color: colors.light.mutedForeground,
+    fontSize: 11,
+    fontWeight: "500",
   },
   // Full-screen viewer (per Wren May 2026 #3): black backdrop, contain-scaled
   // image, toolbar with close/copy-url/save, debug bar showing raw dims + URL.
