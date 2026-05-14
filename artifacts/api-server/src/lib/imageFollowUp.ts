@@ -245,7 +245,56 @@ const REQUEST_CUE_RX =
 // diagnostic context → bypass LLM. Wider net than the targeted regexes
 // above, deliberately layered so any one of them is enough.
 const SCENE_PROP_VOCAB_RX =
-  /\b(tractor|car|truck|bike|motorbike|horse|boat|train|bus|van|plane|barn|kitchen|bedroom|garden|park|beach|forest|street|cafe|pub|farm|field|stage|throne|sofa|couch|chair|ladder|mug|hat|cap|crown|sash|banner|sign|placard|poster|board|hashtag|costume|dress|dungarees|overalls|hoodie|jumper|jacket|t[- ]?shirt|shirt|scarf|gloves|skirt|trousers|jeans|wellies|boots|apron|chef|cowboy|amish|tutu|onesie|pyjamas|pajamas|meme|scene|prop)\b/i;
+  /\b(tractor|car|truck|bike|motorbike|horse|boat|train|bus|van|plane|barn|kitchen|bedroom|garden|park|beach|forest|street|cafe|pub|farm|field|stage|throne|sofa|couch|chair|ladder|mug|hat|cap|crown|sash|banner|sign|placard|poster|board|hashtag|costume|dress|dungarees|overalls|hoodie|jumper|jacket|t[- ]?shirt|shirt|scarf|gloves|skirt|trousers|jeans|wellies|boots|apron|chef|cowboy|amish|tutu|onesie|pyjamas|pajamas|meme|scene|prop|bonnet|hood|easel|paintbrush|brush|canvas|painting|streetlight|umbrella)\b/i;
+
+// Wren May 2026 spec §6 "Scene / Environment Routing Rule".
+//
+// Detects "show me / how about / let me see / give me / send me / can I see ...
+// you / yourself / ashley ... <pose-verb> | <location-prep + scene-vocab> ..."
+// — a generalised pattern that does NOT require an image-noun. The original
+// scene gate (SCENE_PROP_LOCATION_RX, PROP_PHOTO_OF_YOU_RX, etc.) all gate on
+// SCENE_IMAGE_HANDLE_RX, so prompts like
+//   "Show me / how about you sitting on the bonnet of a car with an Amish hat on?"
+//   "Show me you on a sofa"
+//   "Show me you in dungarees"
+// fell through to the LLM and produced phantom prose. This branch closes that
+// gap deterministically: any visible mutation request (pose OR location+vocab)
+// addressed at "you/yourself/ashley" via a request verb routes to SCENE_MODE.
+const SHOW_ME_YOU_REQUEST_RX =
+  /\b(show\s+(me|us)|let'?s\s+see|let\s+me\s+see|give\s+(me|us)|send\s+(me|us)|how\s+about|what\s+about|i\s+(want|need|'?d\s+like|would\s+like)\s+to\s+see|can\s+i\s+see|could\s+i\s+see)\b/i;
+// Note: an explicit "you/yourself/ashley/her" reference is NOT required.
+// English elides the subject in "Show me sitting in a field sketching"
+// (= show me [you] sitting). The subject is always Ashley (the second-
+// person addressee), and the pose-verb / location+scene-vocab branches
+// below are strong enough on their own to imply a visible mutation.
+// Wren spec §13 examples confirm: "Show me wearing dungarees", "Show me
+// at an easel painting something" all expect SCENE_IMAGE_MODE.
+// Pose / action verbs strong enough to imply a visible mutation on their own.
+// "wearing" / "holding" / "dressed (as|in)" carry a prop or outfit by
+// definition. "sitting / standing / lying / leaning / kneeling / riding /
+// driving / posing" describe body position.
+const POSE_VERB_STRONG_RX =
+  /\b(sitting|seated|sat|standing|stood|lying|laying|reclining|kneeling|crouching|leaning|holding|wearing|dressed\s+(as|in)|riding|driving|posing|cross[- ]?legged|perched)\b/i;
+// Location prepositions — only count when paired with SCENE_PROP_VOCAB_RX, so
+// "show me you in trouble" / "show me you with confidence" does NOT fire.
+const LOCATION_PREP_RX =
+  /\b(on|in|by|beside|near|inside|outside|in\s+front\s+of|next\s+to|at|with|under|behind|atop|on\s+top\s+of|on\s+the|in\s+the)\b/i;
+
+export function isShowMeYouSceneRequest(text: string): boolean {
+  if (typeof text !== "string") return false;
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (IMAGE_DIAGNOSTIC_RX.test(trimmed)) return false;
+  if (!SHOW_ME_YOU_REQUEST_RX.test(trimmed)) return false;
+  // Either a strong pose/action verb (wearing/holding/sitting/...) on its own,
+  // OR a location preposition AND a scene-vocab noun. Both branches imply a
+  // visible mutation; neither fires on bare conversational "show me you".
+  if (POSE_VERB_STRONG_RX.test(trimmed)) return true;
+  if (LOCATION_PREP_RX.test(trimmed) && SCENE_PROP_VOCAB_RX.test(trimmed)) {
+    return true;
+  }
+  return false;
+}
 
 export function isSceneCostumePropImageRequest(text: string): boolean {
   if (typeof text !== "string") return false;
@@ -272,6 +321,10 @@ export function isSceneCostumePropImageRequest(text: string): boolean {
   if (hasImageHandle && SCENE_PROP_VOCAB_RX.test(trimmed) && hasRequestCue) {
     return true;
   }
+  // Wren May 2026 spec §6: generalised "show me you <pose|location+prop>"
+  // routing — does NOT require an image-noun. Keep last so the targeted
+  // branches above still own their specific match reasons in logs.
+  if (isShowMeYouSceneRequest(trimmed)) return true;
   return false;
 }
 
