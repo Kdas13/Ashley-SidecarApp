@@ -26,7 +26,7 @@
 // =============================================================================
 
 import type { ImageMode } from "./imageIntent.js";
-import { classifyIntent, hasVisualSignal } from "./intentClassifier.js";
+import { classifyIntent } from "./intentClassifier.js";
 import { classifySubject } from "./subjectClassifier.js";
 
 // ---------------------------------------------------------------------------
@@ -752,30 +752,25 @@ export function extractVisualSpec(text: string): VisualSpec {
     spec.isRetryOrEdit = true;
   }
 
-  // Wren spec May 2026 (terminal render contract): once intent=MUTATION and
-  // subject=ASHLEY hold, image generation is mandatory PROVIDED the diff
-  // against the empty world is non-empty. The structured parser's vocab
-  // (clothing/pose/props/etc.) is intentionally NOT the gate — its
-  // coverage is incomplete by design and a "no visible delta" miss must
-  // NOT silently send the turn to the LLM. Instead we use a coarse
-  // visual-signal probe on the raw text: does it mention any visual
-  // hint word, place preposition, follow-up cue, gerund clause, or
-  // imagine framing? If yes, that IS the diff. If no — abstract
-  // show-me asks like "show me your day", "send me the link", "how
-  // about Tuesday" — the diff is empty and we fall back to the LLM.
+  // Wren May 2026 terminal-render contract — UNCONDITIONAL.
   //
-  // The renderer always has the user's raw text via
-  // buildVisualDescription's "Original request: ${rawUserText}" tail,
-  // so even when structured fields are empty the marker carries the
-  // brief.
-  if (spec.isFollowUp || hasVisualSignal(raw)) {
-    spec.imageIntent = true;
-    spec.intentReason = `intent=MUTATION subject=ASHLEY diffNonEmpty=true isFollowUp=${spec.isFollowUp} — ${intent.reason}`;
-    return spec;
-  }
-
-  spec.imageIntent = false;
-  spec.intentReason = `intent=MUTATION subject=ASHLEY but no visual signal in raw text (diff empty) — ${intent.reason}`;
+  //   intent === MUTATION AND subject === ASHLEY AND diffNonEmpty(prev, next)
+  //   → renderImage() MUST be called.
+  //
+  // Cold-turn diff: prev = empty spec, next = this spec with rawUserText
+  // populated. By construction we are past the early `!raw.trim()` return
+  // so rawUserText is non-empty — diff against the empty prior is
+  // therefore non-empty by definition. Image gen is mandatory.
+  //
+  // Follow-up diff: handled downstream by mergeVisualSpecs in the
+  // resolver path (loads prior VisualSpec from history, merges this
+  // delta, computes the merged spec). The merge result feeds the same
+  // marker pipeline.
+  //
+  // No visual-signal probe, no keyword filter, no interpretation layer.
+  // If the classifiers say MUTATION + ASHLEY, we render. Period.
+  spec.imageIntent = true;
+  spec.intentReason = `intent=MUTATION subject=ASHLEY diffNonEmpty=true isFollowUp=${spec.isFollowUp} — ${intent.reason}`;
   return spec;
 }
 

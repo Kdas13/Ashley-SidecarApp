@@ -58,21 +58,22 @@ describe("extractVisualSpec — first-pass routing", () => {
     expect(spec.imageIntent).toBe(expected);
   });
 
+  // Wren May 2026 terminal-render contract: render is UNCONDITIONAL once
+  // intent=MUTATION + subject=ASHLEY hold. The only legitimate negatives
+  // are turns the classifiers themselves reject — questions, past tense,
+  // copula-attribute observations. Abstract show-me asks like "show me
+  // your day" / "show me the manual" / "how about Tuesday" all hit
+  // MUTATION + ASHLEY and MUST render under the new contract; the
+  // user-side answer is "the model will produce a sensible best-effort
+  // image of the brief, even if abstract — interpretation is NOT the
+  // server's job".
   it.each([
-    // Negatives — must NOT fire
-    ["Show me your day", false],
-    ["Show me what you can do", false],
-    ["Show me how you feel", false],
-    ["Show me you in trouble", false],
-    ["Show me a tractor", true], // request + tractor → vehicle prop intent
-    ["How are you", false],
-    ["I love you", false],
-    ["the photo of you was lovely", false],
-    ["the picture didnt render", false],
-    ["Show me the manual", false],
-    ["Send me the link", false],
-    ["How about Tuesday", false],
-  ])("negative → %s", (text, expected) => {
+    ["Show me a tractor", true], // request + tractor → vehicle prop intent (still positive)
+    ["How are you", false], // question form — DESCRIPTION
+    ["I love you", false], // no mutation cue — DESCRIPTION (default safe)
+    ["the photo of you was lovely", false], // past tense — DESCRIPTION
+    ["the picture didnt render", false], // past tense — DESCRIPTION
+  ])("classifier-rejected negative → %s", (text, expected) => {
     const spec = extractVisualSpec(text);
     expect(spec.imageIntent).toBe(expected);
   });
