@@ -1432,9 +1432,16 @@ function startSelfieGeneration(
         // Patch the assistant message row so the next /state hydration
         // reflects the photo even if the client misses the poll.
         try {
+          // NOTE: do NOT clear selfieVibe here. The encoded `MODE|vibe`
+          // payload is the only record of which image mode + visual brief was
+          // used for this turn, and the foot-visible-retry path
+          // (findPriorImageAttempt → foot_visible_retry resolver) needs it to
+          // reconstruct the prior attempt when the user says "feet missing".
+          // Mobile's pending-UI is gated on `!hasImage && selfieVibe`, so a
+          // leftover vibe alongside a delivered imageUrl is harmless.
           await db
             .update(messagesTable)
-            .set({ imageUrl, selfieVibe: null })
+            .set({ imageUrl })
             .where(
               and(
                 eq(messagesTable.id, messageId),
@@ -2741,6 +2748,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
         const synth = synthesizeImageActionReply(resolution);
         if (synth) {
           imageGateSynth = synth;
+          const isFootRetry = resolution.kind === "foot_visible_retry";
           req.log.info(
             {
               deviceId,
@@ -2751,6 +2759,13 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
               modeReason: resolution.modeReason,
               imageGenerationTriggered: "yes — server-side marker synthesised, /chat/selfie will run",
               llmCallSkipped: true,
+              // Wren's required structured fields for foot-visible-retry.
+              recentImageAttempt: isFootRetry ? true : undefined,
+              previousImageMode: isFootRetry ? resolution.priorAttemptMode ?? null : undefined,
+              retryDetected: isFootRetry ? true : undefined,
+              retryReason: isFootRetry ? resolution.modeReason : undefined,
+              priorAttemptDelivered: isFootRetry ? resolution.priorAttemptDelivered : undefined,
+              generation_called: true,
             },
             "image-intent: HARD GATE (stream) — LLM bypassed, marker synthesised server-side",
           );

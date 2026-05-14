@@ -364,6 +364,10 @@ export type FollowUpResolution = {
    */
   priorAttemptVibe: string | null;
   priorAttemptDelivered: boolean;
+  /** Mode of the prior assistant image attempt, when one was found. Set by
+   *  the foot-visible-retry path so the gate log can surface
+   *  `previousImageMode` as a structured field. */
+  priorAttemptMode?: ImageMode | null;
   /** Resolved natural-language image request (combined). */
   resolvedRequest: string;
   /** Suggested image mode (from follow-up hint, else from sanitised text). */
@@ -395,6 +399,7 @@ export function resolveImageFollowUp(
         sanitised: changed,
         priorAttemptVibe: priorVibe,
         priorAttemptDelivered: Boolean(priorAttempt.imageUrl),
+        priorAttemptMode: priorAttempt.mode,
         resolvedRequest: `STRICTER FULL-BODY RETRY (feet/shoes/floor were cropped on the previous attempt): ${usable.trim()}`,
         suggestedMode: "FOOT_VISIBLE_RETRY",
         modeReason:
