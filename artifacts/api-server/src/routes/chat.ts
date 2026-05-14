@@ -3159,7 +3159,66 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   // to short-circuit the streaming LLM call below. This guarantees image
   // intent → image action, never refusal prose / phantom success.
   let imageGateSynth: ReturnType<typeof synthesizeImageActionReply> | null = null;
+  // Wren May 2026: Visual Memory Anchor gate (streaming twin of the /chat
+  // gate around line 949). Mobile uses /chat/stream — without this twin the
+  // anchor request leaks into the LLM, which produces "Scene shot incoming."
+  // as plain prose and never sets selfieVibe, so the bubble shows text only
+  // (no image card, no spinner, no retry button — exactly Wren's repro).
+  // - Complete anchor → set imageGateSynth so the existing HARD GATE handler
+  //   at line ~3402 emits caption + done and arms /chat/selfie.
+  // - Missing fields → set visualMemoryAsk; a separate handler below emits
+  //   the clarifying question with selfieVibe=null (no selfie pipeline).
+  let visualMemoryAsk: string | null = null;
   if (!isContinue && userRow) {
+    try {
+      const matchedAnchor = findVisualMemoryInText(userRow.content);
+      if (matchedAnchor) {
+        const missing = detectVisualMemoryMissingFields(matchedAnchor);
+        if (missing.length > 0) {
+          visualMemoryAsk = formatMissingFieldsAsk(matchedAnchor, missing);
+          req.log.info(
+            {
+              deviceId,
+              memoryId: matchedAnchor.memoryId,
+              label: matchedAnchor.label,
+              missingFieldCount: missing.length,
+              missingFields: missing,
+              kind: "visual_memory_missing_fields",
+            },
+            "visual-memory (stream): anchor matched but incomplete — asking for missing details",
+          );
+        } else {
+          const memSpec = extractVisualSpecCompound(userRow.content);
+          memSpec.imageIntent = true;
+          memSpec.intentReason = `visual_memory_anchor:${matchedAnchor.memoryId}`;
+          const synth = synthesizeImageActionReplyFromSpec(memSpec, userRow.content, {
+            memoryId: matchedAnchor.memoryId,
+          });
+          if (synth) {
+            imageGateSynth = synth;
+            req.log.info(
+              {
+                deviceId,
+                memoryId: matchedAnchor.memoryId,
+                label: matchedAnchor.label,
+                importance: matchedAnchor.importance,
+                imageMode: synth.mode,
+                kind: "visual_memory_render",
+                IMAGE_INTENT: true,
+                IMAGE_MODE: synth.mode,
+                GENERATION_CALLED: true,
+                llmCallSkipped: true,
+              },
+              "visual-memory (stream): anchor matched + complete — routing to selfie pipeline",
+            );
+          }
+        }
+      }
+    } catch (err) {
+      req.log.warn({ err }, "visual-memory gate (/chat/stream): threw (non-fatal)");
+    }
+  }
+  if (!isContinue && userRow && !imageGateSynth && !visualMemoryAsk) {
     try {
       const followUpHistory: FollowUpHistoryTurn[] = history.map((m) => ({
         role: m.role === "user" ? "user" : "ashley",
@@ -3241,7 +3300,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     // intent=MUTATION + subject=ASHLEY, synthesise the marker from the spec
     // so the LLM narration branch never runs and the image pipeline takes
     // over. Same hard-gate guarantee as the resolver path.
-    if (!imageGateSynth) {
+    if (!imageGateSynth && !visualMemoryAsk) {
       try {
         const spec = extractVisualSpecCompound(userRow.content);
         if (spec.imageIntent) {
@@ -3394,6 +3453,39 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     // stream ownership and drop late tokens from mismatched streams.
     requestId: requestId ?? null,
   });
+
+  // ---- HARD GATE: visual-memory anchor matched but missing fields.
+  //      Emit the clarifying question + done, persist with selfieVibe=null
+  //      (no selfie pipeline). Mirrors the /chat behaviour at line ~976.
+  if (visualMemoryAsk) {
+    writeEvent("delta", { text: visualMemoryAsk });
+    try {
+      await db
+        .update(messagesTable)
+        .set({ content: visualMemoryAsk, status: "complete", selfieVibe: null })
+        .where(eq(messagesTable.id, streamId));
+      writeEvent("done", { content: visualMemoryAsk, selfieVibe: null });
+      req.log.info(
+        { streamId, deviceId, askPreview: visualMemoryAsk.slice(0, 200) },
+        "visual-memory (stream): missing-fields ask persisted",
+      );
+    } catch (err) {
+      req.log.error({ err, streamId }, "visual-memory ask (stream): persist failed");
+      try {
+        await db
+          .update(messagesTable)
+          .set({ status: "interrupted" })
+          .where(eq(messagesTable.id, streamId));
+      } catch (markErr) {
+        req.log.warn({ err: markErr, streamId }, "visual-memory ask (stream): also failed to mark row interrupted");
+      }
+      if (!res.writableEnded) writeEvent("error", { error: "Couldn't save reply." });
+    } finally {
+      inFlightStreams.delete(streamId);
+      if (!res.writableEnded) res.end();
+    }
+    return;
+  }
 
   // ---- HARD GATE: image-intent short-circuit. If the resolver upstream
   //      synthesised a marker, emit caption + done immediately and persist
