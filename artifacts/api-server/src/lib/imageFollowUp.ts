@@ -27,6 +27,15 @@ import {
   encodeStoredVibe,
   type ImageMode,
 } from "./imageIntent.js";
+import {
+  buildVisualDescription,
+  encodeVibeWithSpec,
+  extractVisualSpec,
+  extractVisualSpecFromVibe,
+  mergeVisualSpecs,
+  resolveImageModeFromSpec,
+  type VisualSpec,
+} from "./visualSpec.js";
 
 // ---------------------------------------------------------------------------
 // Trigger detection
@@ -772,6 +781,101 @@ export function resolveImageFollowUp(
     }
     // No prior attempt to retry — fall through and let the normal resolvers
     // (or the caller) decide what to do with the message.
+  }
+
+  // ---------------------------------------------------------------------
+  // PRIMARY decision path — VisualSpec category extractor.
+  // ---------------------------------------------------------------------
+  // Wren spec May 2026: the extractor IS the routing decision. The legacy
+  // hard-gates (seated-lengthwise, scene/costume/prop, send-again, direct,
+  // short follow-up) below run ONLY when the extractor decides the message
+  // has no visual intent — they are a fallback for prompts the category
+  // vocab doesn't cover yet.
+  //
+  // Behaviour:
+  //   1. extractVisualSpec(latestUserText) → delta spec
+  //   2. if delta.imageIntent === false → fall through to legacy gates
+  //   3. if delta.isFollowUp:
+  //        - load prior assistant attempt's stored VSPEC from history
+  //        - mergeVisualSpecs(priorSpec, delta) — modify only what changed
+  //        - resolve mode from merged spec
+  //        - return resolution with merged-spec description encoded so the
+  //          NEXT turn can rehydrate it again
+  //      else (first-pass visual ask):
+  //        - resolve mode from delta alone
+  //        - encode delta into the vibe so a follow-up can find it
+  const deltaSpec = extractVisualSpec(latestUserText);
+  if (deltaSpec.imageIntent) {
+    let workingSpec: VisualSpec = deltaSpec;
+    let priorAttemptVibe: string | null = null;
+    let priorAttemptDelivered = false;
+    let priorAttemptMode: ImageMode | null = null;
+    let mergedFromPrior = false;
+
+    if (deltaSpec.isFollowUp) {
+      const priorAttempt = findPriorImageAttempt(history);
+      if (priorAttempt) {
+        priorAttemptVibe = priorAttempt.vibe ?? null;
+        priorAttemptDelivered = Boolean(priorAttempt.imageUrl);
+        priorAttemptMode = priorAttempt.mode ?? null;
+        const { spec: priorSpec } = extractVisualSpecFromVibe(priorAttempt.vibe);
+        if (priorSpec) {
+          workingSpec = mergeVisualSpecs(priorSpec, deltaSpec);
+          mergedFromPrior = true;
+        }
+      }
+      // No prior spec to merge → fall through to legacy send-again path,
+      // which already handles "vibe carried forward without categorisation".
+      // We do NOT short-circuit here because send-again has prior-mode reuse
+      // logic the new branch can't yet match.
+      if (!mergedFromPrior) {
+        // Skip legacy direct-image-request when this is clearly a follow-up
+        // edit ("change", "make it", "different outfit") with no prior
+        // attempt — but DO let send-again / short-follow-up branches try.
+        // Falling through is correct here.
+      }
+    }
+
+    if (!deltaSpec.isFollowUp || mergedFromPrior) {
+      const resolved = resolveImageModeFromSpec(workingSpec, {
+        hasPriorAttempt: mergedFromPrior,
+      });
+      // SCENE_MODE override when the resolver returned a "retry" placeholder
+      // but we've actually merged a real spec → pick the mode the merged
+      // spec deserves on its own merits, ignoring the placeholder logic.
+      const resolvedFinal =
+        mergedFromPrior && resolved.reason.startsWith("retry/edit")
+          ? resolveImageModeFromSpec(
+              { ...workingSpec, isFollowUp: false, isRetryOrEdit: false },
+              { hasPriorAttempt: false },
+            )
+          : resolved;
+      const description = buildVisualDescription(workingSpec);
+      const encoded = encodeVibeWithSpec(description, workingSpec);
+      const reasonPrefix = mergedFromPrior
+        ? "follow-up merged with prior VSPEC"
+        : "first-pass visual intent";
+      // CRITICAL: synthesizeImageActionReply prefers `sanitisedVisualText`
+      // over `resolvedRequest` when building the stored selfieVibe. The
+      // VSPEC marker (which the NEXT turn needs to rehydrate prior state)
+      // therefore MUST go into sanitisedVisualText, not just resolvedRequest.
+      // Without this the stored vibe is plain user text and follow-up merges
+      // degrade silently to legacy behaviour.
+      return {
+        isFollowUp: true,
+        kind: mergedFromPrior ? "send_again" : "direct_image_request",
+        followUpText: latestUserText,
+        priorVisualText: null,
+        sanitisedVisualText: encoded,
+        sanitised: false,
+        priorAttemptVibe,
+        priorAttemptDelivered,
+        priorAttemptMode,
+        resolvedRequest: encoded,
+        suggestedMode: resolvedFinal.mode,
+        modeReason: `[VisualSpec] ${reasonPrefix} — ${resolvedFinal.reason} (triggers: ${workingSpec.matchedTriggers.join(", ") || "none"})`,
+      };
+    }
   }
 
   // Seated-lengthwise hard-gate path. Runs before the direct/short/send-again

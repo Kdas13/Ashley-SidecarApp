@@ -45,6 +45,7 @@ import {
   synthesizeImageActionReply,
   type HistoryTurn as FollowUpHistoryTurn,
 } from "../lib/imageFollowUp";
+import { extractVisualSpecFromVibe } from "../lib/visualSpec";
 import { approveTicketById } from "./tickets";
 import {
   generateImageBase64,
@@ -1582,7 +1583,14 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
   //   3. Legacy bare vibes get classified by keyword.
   const decoded = decodeStoredVibe(vibe);
   const imageMode: ImageMode = clientImageMode ?? decoded.mode;
-  const decodedVibe = decoded.vibe || vibe.trim();
+  // Strip the VSPEC marker block (if any) before the vibe goes to the image
+  // model. The marker is for state rehydration in /chat — feeding the base64
+  // blob into the image prompt is noise that hurts both prompt quality and
+  // any prompt-keyed cache. extractVisualSpecFromVibe returns the
+  // human-readable description with the marker removed; for legacy/plain
+  // vibes (no marker) it returns the text unchanged.
+  const { description: visibleVibe } = extractVisualSpecFromVibe(decoded.vibe);
+  const decodedVibe = (visibleVibe || decoded.vibe || vibe.trim()).trim();
   req.log.info(
     {
       messageId,
