@@ -1031,6 +1031,8 @@ router.post("/chat", async (req, res): Promise<void> => {
         hasImageMarker: Boolean(selfieVibe),
         phantomDetected: phantom.phantom,
         phantomMatchedPhrase: phantom.phantom ? phantom.matchedPhrase : null,
+        // Wren May 2026 #5c debug contract.
+        noArtifactGuardTriggered: phantom.phantom,
       },
       "image-attempt: post-model state",
     );
@@ -1039,6 +1041,7 @@ router.post("/chat", async (req, res): Promise<void> => {
         {
           matchedPhrase: phantom.matchedPhrase,
           assistantPreview: assistantText.slice(0, 240),
+          noArtifactGuardTriggered: true,
         },
         "phantom-image: replacing roleplay-only image delivery with diagnostic copy",
       );
@@ -3124,6 +3127,8 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
           hasImageMarker: Boolean(selfieVibe),
           phantomDetected: phantom.phantom,
           phantomMatchedPhrase: phantom.phantom ? phantom.matchedPhrase : null,
+          // Wren May 2026 #5c debug contract.
+          noArtifactGuardTriggered: phantom.phantom,
         },
         "image-attempt: post-stream state",
       );
@@ -3133,6 +3138,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
             streamId,
             matchedPhrase: phantom.matchedPhrase,
             finalTextPreview: finalText.slice(0, 240),
+            noArtifactGuardTriggered: true,
           },
           "phantom-image: replacing roleplay-only image delivery with diagnostic copy (stream)",
         );

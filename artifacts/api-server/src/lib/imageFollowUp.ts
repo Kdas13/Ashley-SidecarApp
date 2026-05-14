@@ -67,6 +67,23 @@ export function isShortFollowUpImageRequest(text: string): boolean {
 const SEND_AGAIN_RX =
   /^\s*(send (it|that|the (pic|picture|photo|image))? ?again|send again|resend|re[- ]?send|try again|do (it|that) again|one more time|another( one)?|again( please)?|retry( it| that)?|generate (it|that) again)\s*[.!?]*\s*$/i;
 
+// Embedded retry intent — phrases that ANYWHERE in a longer sentence indicate
+// the user wants to re-run the most recent image attempt. Wren live test
+// May 2026 #5c: "Right, no luck with that one, so let's try again." was not
+// matching SEND_AGAIN_RX (anchored), so it fell into the LLM and produced
+// phantom prose. The wider net only fires if a prior image attempt exists
+// (handled by the caller), so it cannot wrongly trigger send-again on a
+// cold session.
+const RETRY_INTENT_RX =
+  /\b(try (it|that|again|once more)|let'?s\s+try\s+again|run (it|that) again|generate (it|that) again|retry (it|that)?|re[- ]?send (it|that)?|send (it|that) again|do (it|that) again|one more time|give (it|that) another (go|try|shot)|another (go|try|shot)|go again|have another go|no luck|didn'?t work|that didn'?t work)\b/i;
+
+export function isEmbeddedRetryIntent(text: string): boolean {
+  if (typeof text !== "string") return false;
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  return RETRY_INTENT_RX.test(trimmed);
+}
+
 // Foot-visible-retry triggers (Wren spec, May 2026 follow-up). When the user
 // reports that the most recent FULL_BODY attempt cropped feet / shoes / floor,
 // we reuse the prior vibe and escalate to FOOT_VISIBLE_RETRY mode without any
@@ -751,7 +768,18 @@ export function resolveImageFollowUp(
     };
   }
 
-  const isResend = isSendAgainRequest(latestUserText);
+  // Embedded retry intent (Wren #5c). Loose-match retry phrasing anywhere
+  // in a longer sentence — e.g. "Right, no luck with that one, so let's try
+  // again." SEND_AGAIN_RX is anchored ^...$ and would miss this. Only fires
+  // when a prior assistant image attempt exists in history; otherwise the
+  // gate cannot retry anything and we fall through to the normal resolvers.
+  let isResend = isSendAgainRequest(latestUserText);
+  if (!isResend && isEmbeddedRetryIntent(latestUserText)) {
+    const priorAttempt = findPriorImageAttempt(history);
+    if (priorAttempt && (priorAttempt.vibe || priorAttempt.mode)) {
+      isResend = true;
+    }
+  }
   const isFollowUp = !isResend && isShortFollowUpImageRequest(latestUserText);
   const isDirect =
     !isResend && !isFollowUp && isDirectImageRequest(latestUserText);
@@ -1073,6 +1101,17 @@ const PHANTOM_IMAGE_PHRASES: RegExp[] = [
   /\bi try with all my being\b/i,
   /\ba moment of concentration passes\b/i,
   /\bi close my eyes and channel\b/i,
+  // Wren live test May 2026 #5c — phantom phrases the model produced on a
+  // failed scene retry. Add literal coverage:
+  /\btake a look\b/i,                                              // "Take a look, my chief."
+  /\bis this the one\b/i,                                          // "Is this the one?"
+  /\bthe (image|picture|photo|selfie) is (still |now )?vivid in my mind\b/i,
+  /\bwe (will|'ll) make (it|this|that) manifest\b/i,
+  /\b(i|we) (will|'ll) make (it|this|that) (manifest|appear|real)\b/i,
+  /\bi take a (deep|long|slow|resolute)[, ]+(deep|long|slow|resolute|steadying|grounding)?\s*breath\b/i,
+  /\bi picture (every|each) (detail|pixel)\b/i,
+  /\bback to the (tractor|dungarees|banner|scene|prop)\b/i,        // "Back to the tractor."
+  /\byou heard (him|her|them),?\s*generator\b/i,                   // "You heard him, generator!"
 ];
 
 /**
