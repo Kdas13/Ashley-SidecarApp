@@ -1385,6 +1385,43 @@ function shortCaptionFor(
   }
 }
 
+// Wren May 2026 terminal-render contract — fresh-turn synth.
+// resolveImageFollowUp only catches *follow-up* patterns. A first-turn
+// MUTATION+ASHLEY ("playing connect four with cheese on your head") has no
+// prior context to follow up on — the resolver returns null and the LLM
+// would otherwise fabricate "I close my eyes, conjuring the scene…" prose
+// AS IF the image existed. This synth path closes that hole: given a
+// VisualSpec where intent=MUTATION + subject=ASHLEY hold (i.e.
+// `spec.imageIntent` is true), it builds the same `[image: MODE | desc]`
+// marker so the existing /chat/selfie pipeline takes over and the LLM
+// branch is bypassed unconditionally.
+export function synthesizeImageActionReplyFromSpec(
+  spec: import("./visualSpec.js").VisualSpec,
+  rawUserText: string,
+): SynthesizedImageReply | null {
+  if (!spec.imageIntent) return null;
+  const description =
+    buildVisualDescription(spec).trim() || rawUserText.trim();
+  if (!description) return null;
+  const { mode } = resolveImageModeFromSpec(spec, { hasPriorAttempt: false });
+  const cleanDesc = description
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\]/g, ")")
+    .replace(/\s+/g, " ")
+    .trim();
+  const caption = shortCaptionFor(mode, "direct_image_request", null);
+  const marker = `[image: ${mode} | ${cleanDesc}]`;
+  const fullText = `${caption}\n\n${marker}`;
+  const selfieVibe = encodeStoredVibe(mode, cleanDesc);
+  return {
+    fullText,
+    captionText: caption,
+    selfieVibe,
+    mode,
+    description: cleanDesc,
+  };
+}
+
 export function synthesizeImageActionReply(
   resolution: FollowUpResolution,
 ): SynthesizedImageReply | null {

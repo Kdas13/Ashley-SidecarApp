@@ -43,9 +43,10 @@ import {
   detectPhantomImageDelivery,
   PHANTOM_IMAGE_DIAGNOSTIC,
   synthesizeImageActionReply,
+  synthesizeImageActionReplyFromSpec,
   type HistoryTurn as FollowUpHistoryTurn,
 } from "../lib/imageFollowUp";
-import { extractVisualSpecFromVibe } from "../lib/visualSpec";
+import { extractVisualSpec, extractVisualSpecFromVibe } from "../lib/visualSpec";
 import { approveTicketById } from "./tickets";
 import {
   generateImageBase64,
@@ -909,6 +910,66 @@ router.post("/chat", async (req, res): Promise<void> => {
     }
   } catch (err) {
     req.log.warn({ err }, "image-followup: resolver threw (non-fatal)");
+  }
+
+  // Wren May 2026 terminal-render contract — fresh-turn fallback.
+  // The follow-up resolver above only catches turns that match a follow-up
+  // pattern (send_again, foot_visible_retry, direct_image_request with prior
+  // context, etc.). A first-turn MUTATION+ASHLEY like "playing connect four
+  // with cheese on your head" won't match — without this gate it would fall
+  // through to the LLM, which would then fabricate "I close my eyes,
+  // conjuring the scene…" prose AS IF the image existed (the exact contract
+  // violation Wren flagged). Here we re-check the spec gate directly:
+  // intent=MUTATION + subject=ASHLEY → spec.imageIntent=true → synth marker
+  // from spec → /chat/selfie pipeline. The LLM never runs on this turn.
+  try {
+    const spec = extractVisualSpec(userContent);
+    if (spec.imageIntent) {
+      const synth = synthesizeImageActionReplyFromSpec(spec, userContent);
+      if (synth) {
+        req.log.info(
+          {
+            intent: "MUTATION",
+            subject: "ASHLEY",
+            diffNonEmpty: true,
+            renderReason: "MUTATION_ASHLEY_DIFF_NONEMPTY",
+            imageMode: synth.mode,
+            kind: "fresh_turn_spec",
+            descriptionPreview: synth.description.slice(0, 200),
+            IMAGE_INTENT: true,
+            IMAGE_MODE: synth.mode,
+            GENERATION_CALLED: true,
+            llmCallSkipped: true,
+          },
+          "visual-intent: terminal render",
+        );
+        let gateAshleyRow: Message;
+        try {
+          const [inserted] = await db
+            .insert(messagesTable)
+            .values({
+              id: newId(),
+              deviceId,
+              role: "ashley",
+              content: synth.captionText,
+              selfieVibe: synth.selfieVibe,
+            })
+            .returning();
+          gateAshleyRow = inserted!;
+        } catch (err) {
+          req.log.error(
+            { err },
+            "image-intent gate (spec): failed to persist synthesised reply",
+          );
+          res.status(500).json({ error: "Could not save Ashley's reply" });
+          return;
+        }
+        res.json({ userMessage: userRow, ashleyMessage: gateAshleyRow });
+        return;
+      }
+    }
+  } catch (err) {
+    req.log.warn({ err }, "image-intent gate (spec, /chat): threw (non-fatal)");
   }
 
   const claudeMessages: Array<{ role: "user" | "assistant"; content: string }> =
@@ -2868,6 +2929,46 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
       }
     } catch (err) {
       req.log.warn({ err }, "image-followup: resolver threw in /chat/stream (non-fatal)");
+    }
+
+    // Wren May 2026 terminal-render contract — fresh-turn fallback (stream).
+    // Mirror of the /chat block above. If the follow-up resolver didn't synth
+    // (no prior context to follow up on) but the spec gate says
+    // intent=MUTATION + subject=ASHLEY, synthesise the marker from the spec
+    // so the LLM narration branch never runs and the image pipeline takes
+    // over. Same hard-gate guarantee as the resolver path.
+    if (!imageGateSynth) {
+      try {
+        const spec = extractVisualSpec(userRow.content);
+        if (spec.imageIntent) {
+          const synth = synthesizeImageActionReplyFromSpec(spec, userRow.content);
+          if (synth) {
+            imageGateSynth = synth;
+            req.log.info(
+              {
+                deviceId,
+                intent: "MUTATION",
+                subject: "ASHLEY",
+                diffNonEmpty: true,
+                renderReason: "MUTATION_ASHLEY_DIFF_NONEMPTY",
+                imageMode: synth.mode,
+                kind: "fresh_turn_spec",
+                descriptionPreview: synth.description.slice(0, 200),
+                IMAGE_INTENT: true,
+                IMAGE_MODE: synth.mode,
+                GENERATION_CALLED: true,
+                llmCallSkipped: true,
+              },
+              "visual-intent: terminal render",
+            );
+          }
+        }
+      } catch (err) {
+        req.log.warn(
+          { err },
+          "image-intent gate (spec, /chat/stream): threw (non-fatal)",
+        );
+      }
     }
   }
 
