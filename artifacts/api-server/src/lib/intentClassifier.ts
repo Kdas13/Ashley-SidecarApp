@@ -213,6 +213,12 @@ const VISUAL_HINT_WORDS = [
   "frying", "pan", "guitar", "cup", "coffee", "book", "phone", "camera",
   "umbrella", "knife", "fork", "spoon", "bottle", "glass", "wine",
   "beer", "pint", "tractor", "car", "bike", "motorbike", "skateboard",
+  // Gestures / poses — "peace sign", "thumbs up", "blowing a kiss",
+  // "wave", "salute", "wink", "smirk". Bare gesture nouns count as a
+  // visual mutation request when subject resolves to Ashley.
+  "peace", "sign", "thumbs", "wave", "salute", "kiss", "wink", "smirk",
+  "grin", "frown", "pout", "fist", "palm", "finger", "fingers", "pose",
+  "gesture", "point", "shrug", "nod", "bow", "curtsy",
 ];
 
 const VISUAL_HINT_RX = new RegExp(
