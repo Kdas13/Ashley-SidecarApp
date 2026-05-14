@@ -27,6 +27,7 @@ import {
   encodeStoredVibe,
   type ImageMode,
 } from "./imageIntent.js";
+import { encodeMemoryIdInDescription } from "./visualMemory.js";
 import {
   buildVisualDescription,
   encodeVibeWithSpec,
@@ -1399,6 +1400,16 @@ function shortCaptionFor(
 export function synthesizeImageActionReplyFromSpec(
   spec: import("./visualSpec.js").VisualSpec,
   rawUserText: string,
+  opts?: {
+    /**
+     * Wren May 2026: Visual Memory Anchor id. When present, the synth
+     * description carries a `{{VMEM}}<id>{{/VMEM}}` marker alongside the
+     * VSPEC blob so generateAshleySelfie can re-resolve the anchor against
+     * the live store at render time and inject the formatted scene
+     * directive. Empty/null → no anchor injection.
+     */
+    memoryId?: string | null;
+  },
 ): SynthesizedImageReply | null {
   if (!spec.imageIntent) return null;
   const description =
@@ -1416,7 +1427,10 @@ export function synthesizeImageActionReplyFromSpec(
   // first-time requests like "Black hair, no lavender at all" and the diffusion
   // model gets the conflicting "She has lavender hair." identity sentence.
   // The follow-up path at line 852 already does this via sanitisedVisualText.
-  const cleanDescWithSpec = encodeVibeWithSpec(cleanDesc, spec);
+  let cleanDescWithSpec = encodeVibeWithSpec(cleanDesc, spec);
+  if (opts?.memoryId) {
+    cleanDescWithSpec = encodeMemoryIdInDescription(cleanDescWithSpec, opts.memoryId);
+  }
   const caption = shortCaptionFor(mode, "direct_image_request", null);
   const marker = `[image: ${mode} | ${cleanDescWithSpec}]`;
   const fullText = `${caption}\n\n${marker}`;

@@ -47,6 +47,15 @@ import {
   type HistoryTurn as FollowUpHistoryTurn,
 } from "../lib/imageFollowUp";
 import { buildHairColourDirective, composeAppearance, extractVisualSpec, extractVisualSpecCompound, extractVisualSpecFromVibe, scrubVibeForOverrides } from "../lib/visualSpec";
+import {
+  encodeMemoryIdInDescription,
+  extractMemoryIdFromVibe,
+  detectMissingFields as detectVisualMemoryMissingFields,
+  findVisualMemoryInText,
+  formatMissingFieldsAsk,
+  formatVisualMemoryDirective,
+  getVisualMemory,
+} from "../lib/visualMemory";
 import { approveTicketById } from "./tickets";
 import {
   generateImageBase64,
@@ -922,6 +931,102 @@ router.post("/chat", async (req, res): Promise<void> => {
   // violation Wren flagged). Here we re-check the spec gate directly:
   // intent=MUTATION + subject=ASHLEY → spec.imageIntent=true → synth marker
   // from spec → /chat/selfie pipeline. The LLM never runs on this turn.
+  // Wren May 2026: Visual Memory Anchor gate. Runs BEFORE the generic
+  // image-intent gate so an explicit "recreate the sofa from our date"
+  // request resolves the structured anchor instead of leaking into the LLM
+  // path or being interpreted as a free-form scene description.
+  // - Anchor found + complete → bake the memory id into the synth marker;
+  //   /chat/selfie re-resolves the anchor at render time and injects the
+  //   directive (no profile mutation, request-scoped).
+  // - Anchor found + missing fields → persist a clarifying assistant reply
+  //   (no [image: ...] marker, no selfie generation). Wren contract: do
+  //   not invent details, do not fake certainty.
+  // - No anchor match → fall through to the existing image-intent gate.
+  try {
+    const matchedAnchor = findVisualMemoryInText(userContent);
+    if (matchedAnchor) {
+      const missing = detectVisualMemoryMissingFields(matchedAnchor);
+      if (missing.length > 0) {
+        const askText = formatMissingFieldsAsk(matchedAnchor, missing);
+        req.log.info(
+          {
+            memoryId: matchedAnchor.memoryId,
+            label: matchedAnchor.label,
+            missingFieldCount: missing.length,
+            missingFields: missing,
+            kind: "visual_memory_missing_fields",
+          },
+          "visual-memory: anchor matched but incomplete — asking for missing details",
+        );
+        try {
+          const [inserted] = await db
+            .insert(messagesTable)
+            .values({
+              id: newId(),
+              deviceId,
+              role: "ashley",
+              content: askText,
+              selfieVibe: null,
+            })
+            .returning();
+          res.json({ userMessage: userRow, ashleyMessage: inserted! });
+          return;
+        } catch (err) {
+          req.log.error(
+            { err, memoryId: matchedAnchor.memoryId },
+            "visual-memory: failed to persist missing-fields ask",
+          );
+          res.status(500).json({ error: "Could not save Ashley's reply" });
+          return;
+        }
+      }
+      // Complete anchor: synth a selfie marker with the memory id baked in.
+      // Force imageIntent on the spec — an anchor request IS an image request,
+      // even if the user's phrasing didn't trip the standard intent triggers.
+      const memSpec = extractVisualSpecCompound(userContent);
+      memSpec.imageIntent = true;
+      memSpec.intentReason = `visual_memory_anchor:${matchedAnchor.memoryId}`;
+      const synth = synthesizeImageActionReplyFromSpec(memSpec, userContent, {
+        memoryId: matchedAnchor.memoryId,
+      });
+      if (synth) {
+        req.log.info(
+          {
+            memoryId: matchedAnchor.memoryId,
+            label: matchedAnchor.label,
+            importance: matchedAnchor.importance,
+            imageMode: synth.mode,
+            kind: "visual_memory_render",
+          },
+          "visual-memory: anchor matched + complete — routing to selfie pipeline",
+        );
+        try {
+          const [inserted] = await db
+            .insert(messagesTable)
+            .values({
+              id: newId(),
+              deviceId,
+              role: "ashley",
+              content: synth.captionText,
+              selfieVibe: synth.selfieVibe,
+            })
+            .returning();
+          res.json({ userMessage: userRow, ashleyMessage: inserted! });
+          return;
+        } catch (err) {
+          req.log.error(
+            { err, memoryId: matchedAnchor.memoryId },
+            "visual-memory: failed to persist memory-anchored synth reply",
+          );
+          res.status(500).json({ error: "Could not save Ashley's reply" });
+          return;
+        }
+      }
+    }
+  } catch (err) {
+    req.log.warn({ err }, "visual-memory gate (/chat): threw (non-fatal)");
+  }
+
   try {
     const spec = extractVisualSpecCompound(userContent);
     if (spec.imageIntent) {
@@ -1482,12 +1587,34 @@ async function generateAshleySelfie(
   // "ginger hair" mentions in the prompt body. Empty string when no
   // hair-colour intent is present — buildModePromptBlock filters it out.
   const hairDirective = carriedSpec ? buildHairColourDirective(carriedSpec) : "";
+  // Wren May 2026: Visual Memory Anchor injection. The `{{VMEM}}<id>{{/VMEM}}`
+  // marker (if present) was baked into the description by the chat-route
+  // synth path when Kane explicitly invoked a stored anchor. Re-resolve the
+  // anchor against the live STORE so anchor edits land on the next render
+  // without re-baking the assistant message; never invent fields. Goes
+  // through buildModePromptBlock as `sceneAnchor` — sits below identity in
+  // the prompt order but above the LLM-written vibe.
+  const { description: vibeNoMem, memoryId: anchorId } = extractMemoryIdFromVibe(scrubbedVibe);
+  const anchor = anchorId ? getVisualMemory(anchorId) : null;
+  const sceneAnchorDirective = anchor ? formatVisualMemoryDirective(anchor) : "";
+  if (anchor) {
+    logger.info(
+      {
+        memoryId: anchor.memoryId,
+        label: anchor.label,
+        importance: anchor.importance,
+        sceneAnchorPreview: sceneAnchorDirective.slice(0, 200),
+      },
+      "image-gen: visual memory anchor applied",
+    );
+  }
   const modeBlock = buildModePromptBlock({
     mode: imageMode,
-    vibe: scrubbedVibe,
+    vibe: vibeNoMem,
     subjectName: ashleyName,
     appearance,
     hairDirective,
+    sceneAnchor: sceneAnchorDirective,
   });
   // Discard the unused round-trip variable; declared for documentation +
   // future reuse if the cache key ever needs the full VSPEC form.

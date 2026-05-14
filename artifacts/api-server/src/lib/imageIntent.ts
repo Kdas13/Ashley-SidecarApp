@@ -390,8 +390,18 @@ export function buildModePromptBlock(opts: {
    * the second-highest-weight signal in the prompt. Empty string is a no-op.
    */
   hairDirective?: string;
+  /**
+   * Wren May 2026: optional Visual Memory Anchor directive. When the user
+   * explicitly invokes a stored scene memory ("recreate the sofa from our
+   * date"), the resolved anchor is formatted into a directive sentence and
+   * injected here. Goes AFTER the appearance sentence and BEFORE the vibe
+   * sentence so the remembered scene becomes the dominant scene signal but
+   * still sits below identity (hair colour anchor, identity sentence).
+   * Empty string is a no-op.
+   */
+  sceneAnchor?: string;
 }): string {
-  const { mode, vibe, subjectName, appearance, hairDirective } = opts;
+  const { mode, vibe, subjectName, appearance, hairDirective, sceneAnchor } = opts;
   const w = wrapperFor(mode);
   // Diffusion models follow natural-language description, not bulleted
   // instructions. The shot-type sentence is the framing anchor; the appearance
@@ -405,10 +415,12 @@ export function buildModePromptBlock(opts: {
   const vibeText = vibe.trim();
   const vibeSentence = vibeText ? `Scene: ${vibeText}.` : "";
   const hairBlock = hairDirective?.trim() ?? "";
+  const sceneAnchorBlock = sceneAnchor?.trim() ?? "";
   return [
     shot + ".",
     hairBlock,
     appearanceSentence,
+    sceneAnchorBlock,
     vibeSentence,
     w.styleLine + ".",
   ]
