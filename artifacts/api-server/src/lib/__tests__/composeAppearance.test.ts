@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildHairColourDirective,
   buildVisualDescription,
   composeAppearance,
   encodeVibeWithSpec,
@@ -12,6 +13,51 @@ import {
 import { synthesizeImageActionReplyFromSpec } from "../imageFollowUp.js";
 import { wrapperFor, buildModePromptBlock } from "../imageIntent.js";
 import { resolveImageModeFromSpec } from "../visualSpec.js";
+
+describe("buildHairColourDirective — Wren May 2026 colour-override anchor", () => {
+  it("emits positive synonym stack + explicit forbidden list for ginger+no-lavender", () => {
+    const spec = extractVisualSpecCompound("Ginger hair, no lavender. Black leather biker jacket. Sat on a bar stool at a bar.");
+    const directive = buildHairColourDirective(spec);
+    expect(directive).toContain("MUST be ginger");
+    expect(directive.toLowerCase()).toContain("auburn");
+    expect(directive.toLowerCase()).toContain("copper");
+    expect(directive.toLowerCase()).toContain("warm pigment");
+    expect(directive.toLowerCase()).toContain("non-negotiable");
+    expect(directive).toContain("MUST NOT be");
+    expect(directive.toLowerCase()).toContain("lavender");
+    expect(directive.toLowerCase()).toContain("purple");
+    expect(directive.toLowerCase()).toContain("violet");
+    expect(directive.toLowerCase()).toContain("lilac");
+    expect(directive.toLowerCase()).toContain("mauve");
+    expect(directive.toLowerCase()).toContain("pastel");
+    expect(directive.toLowerCase()).toContain("cool tone");
+  });
+
+  it("forbidden list excludes any colour that is in the positive family", () => {
+    const spec = extractVisualSpecCompound("Ginger hair, no lavender");
+    const directive = buildHairColourDirective(spec);
+    // Negation expansion does NOT include red/ginger/auburn/copper, so this
+    // is purely a defensive pin: forbidden list never contradicts the
+    // positive colour synonyms.
+    const forbiddenSegment = directive.split("MUST NOT be")[1] ?? "";
+    expect(forbiddenSegment.toLowerCase()).not.toContain("ginger");
+    expect(forbiddenSegment.toLowerCase()).not.toContain("auburn");
+    expect(forbiddenSegment.toLowerCase()).not.toContain("copper");
+  });
+
+  it("returns empty string when no hair colour and no negations present", () => {
+    const spec = extractVisualSpecCompound("Black leather biker jacket. Sat on a bar stool at a bar.");
+    expect(buildHairColourDirective(spec)).toBe("");
+  });
+
+  it("emits only the forbidden block when user negates without specifying a positive colour", () => {
+    const spec = extractVisualSpecCompound("No lavender hair");
+    const directive = buildHairColourDirective(spec);
+    expect(directive).not.toContain("MUST be");
+    expect(directive).toContain("MUST NOT be");
+    expect(directive.toLowerCase()).toContain("lavender");
+  });
+});
 
 describe("SCENE_MODE wrapper — anti-selfie framing contract", () => {
   it("scene mutation routes to SCENE_MODE with tall canvas + wide-shot wrapper", () => {

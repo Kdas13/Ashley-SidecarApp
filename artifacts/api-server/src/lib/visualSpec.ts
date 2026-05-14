@@ -577,6 +577,65 @@ function extractNegations(raw: string): string[] {
   return Array.from(hits);
 }
 
+/**
+ * Wren May 2026 hair-colour-override directive.
+ *
+ * When the user explicitly sets a hair colour OR negates one, diffusion still
+ * gravitates to the model's prior on "young woman = cool tones". Three
+ * positive "ginger hair" mentions in the prompt body are not enough — the
+ * Bar / jacket scene came back lavender-grey (Wren report 2026-05-14, image
+ * 95c226ab) despite zero "lavender" tokens in the prompt.
+ *
+ * Fix: emit a dedicated colour-anchor block with (a) every synonym in the
+ * requested colour family as positive reinforcement and (b) every negated
+ * family member named explicitly. gpt-image-1 (the OpenAI image model the
+ * pipeline targets) follows natural-language negatives reasonably well, much
+ * better than SD-style models. The explicit synonym stack defeats the
+ * "default cool tone" prior; the explicit negative list catches family-
+ * adjacent shades the diffusion model would otherwise substitute.
+ *
+ * Returns "" when neither a positive hair colour nor a negation is present —
+ * caller can concatenate unconditionally.
+ */
+export function buildHairColourDirective(spec: VisualSpec): string {
+  const positive = (spec.appearance.hairColour ?? "").trim().toLowerCase();
+  const negations = spec.negations ?? [];
+  if (!positive && negations.length === 0) return "";
+
+  const positiveSynonyms = new Set<string>();
+  if (positive) {
+    positiveSynonyms.add(positive);
+    for (const family of COLOUR_FAMILIES) {
+      if (family.includes(positive)) {
+        for (const member of family) positiveSynonyms.add(member);
+      }
+    }
+  }
+
+  // Forbidden colours = explicit negations, minus anything in the positive
+  // family (so "ginger hair, no lavender" doesn't list "ginger" as forbidden
+  // just because it's in the red family). Also drop any token that matches
+  // the positive colour itself.
+  const forbidden = negations.filter(
+    (n) => !positiveSynonyms.has(n.toLowerCase()),
+  );
+
+  const parts: string[] = [];
+  if (positive) {
+    const synList = Array.from(positiveSynonyms).join(", ");
+    parts.push(
+      `Hair colour requirement: the subject's hair MUST be ${positive} — explicitly ${synList}, with warm pigment fully visible. This colour is non-negotiable and overrides any other hair colour the model might default to.`,
+    );
+  }
+  if (forbidden.length > 0) {
+    const forbiddenList = forbidden.join(", ");
+    parts.push(
+      `The hair MUST NOT be ${forbiddenList}, NOT any pastel tint, NOT any cool tone, NOT any grey-${forbidden[0]} blend.`,
+    );
+  }
+  return parts.join(" ");
+}
+
 export function extractVisualSpec(text: string): VisualSpec {
   const raw = (text ?? "").toString();
   const lower = raw.toLowerCase();

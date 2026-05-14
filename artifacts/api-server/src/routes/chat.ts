@@ -46,7 +46,7 @@ import {
   synthesizeImageActionReplyFromSpec,
   type HistoryTurn as FollowUpHistoryTurn,
 } from "../lib/imageFollowUp";
-import { composeAppearance, extractVisualSpec, extractVisualSpecCompound, extractVisualSpecFromVibe, scrubVibeForOverrides } from "../lib/visualSpec";
+import { buildHairColourDirective, composeAppearance, extractVisualSpec, extractVisualSpecCompound, extractVisualSpecFromVibe, scrubVibeForOverrides } from "../lib/visualSpec";
 import { approveTicketById } from "./tickets";
 import {
   generateImageBase64,
@@ -1474,11 +1474,20 @@ async function generateAshleySelfie(
       "image-gen: appearance precedence applied (USER_EXPLICIT > SESSION > IDENTITY, negations stripped)",
     );
   }
+  // Wren May 2026: hair-colour-override directive. When the carried spec
+  // sets a hair colour OR negates one, emit a dedicated colour anchor
+  // (positive synonyms + explicit forbidden list) right after the framing
+  // sentence. Defeats the model's cool-tone gravity that produced
+  // lavender-grey hair on the bar-stool/jacket scene despite three
+  // "ginger hair" mentions in the prompt body. Empty string when no
+  // hair-colour intent is present — buildModePromptBlock filters it out.
+  const hairDirective = carriedSpec ? buildHairColourDirective(carriedSpec) : "";
   const modeBlock = buildModePromptBlock({
     mode: imageMode,
     vibe: scrubbedVibe,
     subjectName: ashleyName,
     appearance,
+    hairDirective,
   });
   // Discard the unused round-trip variable; declared for documentation +
   // future reuse if the cache key ever needs the full VSPEC form.

@@ -383,19 +383,35 @@ export function buildModePromptBlock(opts: {
   vibe: string;
   subjectName: string;
   appearance: string;
+  /**
+   * Wren May 2026: optional dedicated hair-colour-override block. When
+   * supplied (only when the user explicitly set a hair colour or negated
+   * one) it goes RIGHT AFTER the framing sentence so the colour anchor is
+   * the second-highest-weight signal in the prompt. Empty string is a no-op.
+   */
+  hairDirective?: string;
 }): string {
-  const { mode, vibe, subjectName, appearance } = opts;
+  const { mode, vibe, subjectName, appearance, hairDirective } = opts;
   const w = wrapperFor(mode);
   // Diffusion models follow natural-language description, not bulleted
   // instructions. The shot-type sentence is the framing anchor; the appearance
   // and vibe are blended in as narrative detail; the style line caps it.
-  // Crucially: NO negatives ("no cropped legs", "forbidden:") — diffusion
-  // models render whatever words appear, regardless of negation.
+  // Generic-form negatives ("no cropped legs") still don't work — but
+  // colour-specific anti-language ("hair MUST NOT be lavender") DOES work
+  // for gpt-image-1 in our testing, and is the only known way to defeat
+  // the model's cool-tone gravity for hair-colour overrides.
   const shot = w.shotType.replace("{subject}", subjectName);
   const appearanceSentence = appearance ? `She has ${appearance}.` : "";
   const vibeText = vibe.trim();
   const vibeSentence = vibeText ? `Scene: ${vibeText}.` : "";
-  return [shot + ".", appearanceSentence, vibeSentence, w.styleLine + "."]
+  const hairBlock = hairDirective?.trim() ?? "";
+  return [
+    shot + ".",
+    hairBlock,
+    appearanceSentence,
+    vibeSentence,
+    w.styleLine + ".",
+  ]
     .filter(Boolean)
     .join(" ");
 }
