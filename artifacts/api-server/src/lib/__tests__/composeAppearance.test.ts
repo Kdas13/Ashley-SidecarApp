@@ -187,6 +187,37 @@ describe("composeAppearance — Wren May 2026 precedence contract", () => {
     const desc = buildVisualDescription(spec);
     expect(desc.toLowerCase()).toContain("black leather biker jacket");
     expect(desc.toLowerCase()).toContain("bar stool");
+    // Verbatim directives must lead the description so diffusion weights
+    // the rich modifiers above the generic structured slots.
+    expect(desc).toMatch(/^Visual brief: Ginger hair\. Black leather biker jacket\. Sat on a bar stool at a bar\./);
+    // No orphan commas left behind by negation scrubbing.
+    expect(desc).not.toMatch(/,\s*\./);
+    expect(desc).not.toContain(", .");
+  });
+
+  it("compound: negation expands to colour family — 'no lavender' implies no purple/violet/lilac/mauve", () => {
+    const spec = extractVisualSpecCompound("Ginger hair, no lavender. Black leather biker jacket.");
+    expect(spec.negations).toEqual(expect.arrayContaining(["lavender", "purple", "violet", "lilac", "mauve"]));
+  });
+
+  it("composeAppearance: paren-aware split survives 'Lavender hair (long, wavy), pale skin' profile", () => {
+    const profile = "Lavender hair (long, wavy), pale skin, hazel-green eyes";
+    const spec = extractVisualSpecCompound("Ginger hair, no lavender");
+    const composed = composeAppearance(profile, spec);
+    // Critical: no orphan ")" or surviving fragment of the dropped clause.
+    expect(composed).not.toContain("wavy)");
+    expect(composed).not.toContain("(long");
+    expect(composed.toLowerCase()).not.toContain("lavender");
+    expect(composed.toLowerCase()).toContain("ginger hair");
+    expect(composed.toLowerCase()).toContain("pale skin");
+    expect(composed.toLowerCase()).toContain("hazel-green eyes");
+  });
+
+  it("scrubNegationPhrases: no orphan ', .' artefact between scrubbed clause and next sentence", () => {
+    // Indirect via buildVisualDescription which calls scrubNegationPhrases.
+    const spec = extractVisualSpecCompound("Ginger hair, no lavender. Black leather biker jacket.");
+    const desc = buildVisualDescription(spec);
+    expect(desc).not.toMatch(/,\s*\./);
   });
 
   it("compound: single-fragment input still falls through to single-pass extractor", () => {

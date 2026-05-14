@@ -514,6 +514,24 @@ const NEGATION_VOCAB: string[] = [
   ...SKIN_DESCRIPTORS,
 ];
 
+// Colour-family expansion (Wren May 2026): when a user negates a colour, the
+// neighbouring colours in the same family must also be excluded — otherwise
+// "no lavender" still ends up with purple/violet undertones because diffusion
+// treats those as adjacent. Keys are the explicit negation; values are the
+// implicit-also-negated tokens. Symmetric — listing once per family is fine
+// because we expand from any matched member to the whole family.
+const COLOUR_FAMILIES: ReadonlyArray<readonly string[]> = [
+  ["lavender", "purple", "violet", "lilac", "mauve", "plum", "magenta"],
+  ["pink", "rose", "salmon", "coral"],
+  ["blonde", "yellow", "golden", "honey blonde", "platinum blonde"],
+  ["red", "ginger", "auburn", "copper", "strawberry blonde"],
+  ["brown", "brunette", "chestnut", "chocolate", "espresso"],
+  ["black", "jet black", "raven", "ebony"],
+  ["grey", "gray", "silver", "white", "salt-and-pepper"],
+  ["blue", "navy", "teal", "turquoise", "cyan"],
+  ["green", "emerald", "olive", "forest"],
+];
+
 // "no <token>", "no <token> at all", "without <token>", "not <token>",
 // "remove the <token>", "drop the <token>", "lose the <token>", "get rid of
 // the <token>". Matches case-insensitively. We capture the token; the
@@ -537,6 +555,25 @@ function extractNegations(raw: string): string[] {
     );
     if (rx.test(lower)) hits.add(token);
   }
+  // Colour-family expansion. If any matched negation falls in a colour
+  // family, also negate every other member of that family. Wren spec:
+  // "no lavender" must exclude purple/violet/lilac/mauve too — diffusion
+  // treats family-adjacent colours as substitutes and leaks them in
+  // otherwise. Restricted to vocab tokens we already know are matchable.
+  // Expand to every family member regardless of NEGATION_VOCAB membership —
+  // downstream consumers (scrubVibeForOverrides, composeAppearance) treat
+  // each negation as a free-text token to strip, no vocab dependency. This
+  // lets us negate adjacent shades like "mauve" / "magenta" that aren't
+  // first-class HAIR_COLOURS but still leak into diffusion output.
+  const expansion = new Set<string>();
+  for (const hit of hits) {
+    for (const family of COLOUR_FAMILIES) {
+      if (family.includes(hit)) {
+        for (const sibling of family) expansion.add(sibling);
+      }
+    }
+  }
+  for (const e of expansion) hits.add(e);
   return Array.from(hits);
 }
 
@@ -1081,6 +1118,23 @@ export function extractVisualSpecCompound(text: string): VisualSpec {
 export function buildVisualDescription(spec: VisualSpec): string {
   const parts: string[] = [];
 
+  // Wren May 2026: emit the user's directives VERBATIM as the leading
+  // anchor of the description so diffusion sees the rich modifiers
+  // ("black leather biker jacket", "bar stool at a bar") as primary
+  // signal, not buried after generic structured slots ("wearing jacket",
+  // "set in the bar"). The structured slots that follow are redundancy,
+  // not the primary anchor.
+  //
+  // Per-directive scrubbing keeps each negation phrase localised and
+  // stops cross-directive comma orphans (split first, scrub each, rejoin).
+  const directives = (spec.rawUserText ?? "")
+    .split(/\n+|\.\s+|\.$/)
+    .map((d) => scrubNegationPhrases(d.trim(), spec.negations).trim())
+    .filter((d) => d.length > 0);
+  if (directives.length > 0) {
+    parts.push(`Visual brief: ${directives.join(". ")}.`);
+  }
+
   if (spec.environment.location || spec.environment.timeOfDay || spec.environment.weather) {
     const env: string[] = [];
     if (spec.environment.location) env.push(`set ${prepFor(spec.environment.location)} ${spec.environment.location}`);
@@ -1177,6 +1231,10 @@ function scrubNegationPhrases(raw: string, negations: string[]): string {
   // Tidy whitespace and orphaned punctuation left behind by the removals.
   out = out
     .replace(/\s*,\s*,+/g, ", ")
+    // Comma immediately before a sentence stop is the canonical artefact
+    // of a stripped negation clause — e.g. "Ginger hair, no lavender." →
+    // strip "no lavender" → "Ginger hair, ." Collapse the orphan.
+    .replace(/,\s*([.;:])/g, "$1")
     .replace(/^\s*[,;:.\-]+\s*/g, "")
     .replace(/\s*[,;:\-]+\s*$/g, "")
     .replace(/\s+/g, " ")
@@ -1412,6 +1470,26 @@ export function extractVisualSpecFromVibe(
 // This guarantees the diffusion model never receives contradictory clauses
 // like "She has lavender hair." next to "Scene: ... black hair ...".
 // ---------------------------------------------------------------------------
+function splitTopLevelCommas(text: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let buf = "";
+  for (const ch of text) {
+    if (ch === "(" || ch === "[" || ch === "{") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}") depth = Math.max(0, depth - 1);
+    if (ch === "," && depth === 0) {
+      const trimmed = buf.trim();
+      if (trimmed) out.push(trimmed);
+      buf = "";
+      continue;
+    }
+    buf += ch;
+  }
+  const tail = buf.trim();
+  if (tail) out.push(tail);
+  return out;
+}
+
 export function composeAppearance(
   profileAppearance: string | null | undefined,
   spec: VisualSpec | null | undefined,
@@ -1428,10 +1506,14 @@ export function composeAppearance(
   // If user explicitly set a slot, the carried negation for the same value
   // is moot — but if they negated a colour they did NOT replace, the
   // negation still prunes profile clauses.
-  const clauses = profile
-    .split(/\s*,\s*/)
-    .map((c) => c.trim())
-    .filter(Boolean);
+  //
+  // Paren-aware split: a naive `\s*,\s*` split breaks profiles like
+  // "Lavender hair (long, wavy), pale skin" into ["Lavender hair (long",
+  // "wavy)", "pale skin"] — the parenthetical comma is treated as a clause
+  // boundary, fragments are scrubbed independently, and the output ends up
+  // with an orphan ")". Track paren depth and only break on top-level
+  // commas. Profiles never nest brackets so depth tracking is enough.
+  const clauses = splitTopLevelCommas(profile);
 
   const out: string[] = [];
   let hairReplaced = false;
