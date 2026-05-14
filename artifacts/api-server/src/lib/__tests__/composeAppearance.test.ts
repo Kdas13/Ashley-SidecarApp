@@ -14,6 +14,31 @@ import { synthesizeImageActionReplyFromSpec } from "../imageFollowUp.js";
 import { wrapperFor, buildModePromptBlock } from "../imageIntent.js";
 import { resolveImageModeFromSpec } from "../visualSpec.js";
 
+describe("VSPEC marker round-trip — synth → encodeStoredVibe → decode → recover", () => {
+  it("hair-colour spec survives the full assistant-message round-trip used by /chat/selfie", async () => {
+    const { decodeStoredVibe } = await import("../imageIntent.js");
+    const input = "Blonde hair no lavender. Black leather biker jacket. Sat on a bar stool at a bar.";
+    const spec = extractVisualSpecCompound(input);
+    const synth = synthesizeImageActionReplyFromSpec(spec, input);
+    expect(synth).not.toBeNull();
+    // Step 1: assistant message stores selfieVibe (encoded MODE|vibe).
+    const stored = synth!.selfieVibe;
+    expect(stored).toContain("{{VSPEC}}");
+    // Step 2: /chat/selfie decodes the stored vibe — the marker MUST survive.
+    const decoded = decodeStoredVibe(stored);
+    expect(decoded.vibe).toContain("{{VSPEC}}");
+    // Step 3: generateAshleySelfie recovers the spec from the marker.
+    const { spec: carried } = extractVisualSpecFromVibe(decoded.vibe);
+    expect(carried).not.toBeNull();
+    expect(carried!.appearance.hairColour).toBe("blonde");
+    expect(carried!.negations).toEqual(expect.arrayContaining(["lavender", "purple", "violet", "lilac", "mauve"]));
+    // Step 4: the directive emits with the recovered spec.
+    const directive = buildHairColourDirective(carried!);
+    expect(directive).toContain("MUST be blonde");
+    expect(directive.toLowerCase()).toContain("lavender");
+  });
+});
+
 describe("buildHairColourDirective — Wren May 2026 colour-override anchor", () => {
   it("emits positive synonym stack + explicit forbidden list for ginger+no-lavender", () => {
     const spec = extractVisualSpecCompound("Ginger hair, no lavender. Black leather biker jacket. Sat on a bar stool at a bar.");

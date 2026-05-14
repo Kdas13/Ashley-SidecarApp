@@ -1834,20 +1834,28 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
   //   3. Legacy bare vibes get classified by keyword.
   const decoded = decodeStoredVibe(vibe);
   const imageMode: ImageMode = clientImageMode ?? decoded.mode;
-  // Strip the VSPEC marker block (if any) before the vibe goes to the image
-  // model. The marker is for state rehydration in /chat — feeding the base64
-  // blob into the image prompt is noise that hurts both prompt quality and
-  // any prompt-keyed cache. extractVisualSpecFromVibe returns the
-  // human-readable description with the marker removed; for legacy/plain
-  // vibes (no marker) it returns the text unchanged.
-  const { description: visibleVibe } = extractVisualSpecFromVibe(decoded.vibe);
-  const decodedVibe = (visibleVibe || decoded.vibe || vibe.trim()).trim();
+  // Wren May 2026 fix (regression: lavender hair on "Blonde hair no lavender"
+  // even though the spec was extracted correctly upstream): KEEP the VSPEC
+  // marker on the vibe forwarded to generateAshleySelfie. The marker is the
+  // only mechanism that round-trips the user's hair-colour overrides and
+  // negations from extractVisualSpecCompound through the assistant message
+  // back to the image generator. Stripping it here meant carriedSpec arrived
+  // null inside generateAshleySelfie, composeAppearance returned the raw
+  // profile (lavender hair survived in the identity sentence) and
+  // buildHairColourDirective was never called. generateAshleySelfie does its
+  // own extractVisualSpecFromVibe call to separate description from spec for
+  // prompt assembly, so the marker never reaches the diffusion prompt body.
+  // Cache keys are built from the FINAL prompt (post-extraction), so they
+  // also stay clean of marker bytes.
+  const { description: visibleVibePreview } = extractVisualSpecFromVibe(decoded.vibe);
+  const forwardedVibe = (decoded.vibe || vibe.trim()).trim();
   req.log.info(
     {
       messageId,
       imageMode,
       reason: clientImageMode ? "client-supplied imageMode override" : decoded.reason,
-      vibePreview: decodedVibe.slice(0, 120),
+      vibePreview: (visibleVibePreview || forwardedVibe).slice(0, 120),
+      vspecMarkerPresent: forwardedVibe.includes("{{VSPEC}}"),
     },
     "image-intent: /chat/selfie request resolved",
   );
@@ -1856,14 +1864,14 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
   const jobId = randomUUID();
   setSelfieJob(jobId, {
     status: "pending",
-    vibe: decodedVibe,
+    vibe: forwardedVibe,
     mode,
     imageMode,
     deviceId,
     messageId,
     createdAt: Date.now(),
   });
-  startSelfieGeneration(jobId, decodedVibe, mode, imageMode, deviceId, messageId);
+  startSelfieGeneration(jobId, forwardedVibe, mode, imageMode, deviceId, messageId);
   res.status(202).json({ jobId });
 });
 
