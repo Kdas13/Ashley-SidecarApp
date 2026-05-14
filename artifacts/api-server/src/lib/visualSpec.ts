@@ -426,6 +426,17 @@ export interface VisualSpec {
     isArtworkRequest: boolean;
   };
 
+  /**
+   * User-explicit NEGATIVE constraints — single-word appearance/clothing
+   * tokens the user said to drop ("no lavender", "no lavender at all",
+   * "without lavender", "not lavender", "remove the X"). Diffusion models
+   * cannot honour negation phrases at the prompt level, so we use this
+   * list to STRIP matching clauses from profile.appearance + the carried
+   * spec BEFORE the prompt is composed, rather than emitting "no lavender"
+   * to the provider (which would summon lavender). Lower-cased, deduped.
+   */
+  negations: string[];
+
   matchedTriggers: string[];
 }
 
@@ -480,8 +491,53 @@ export function makeEmptySpec(rawUserText = ""): VisualSpec {
     framing: {},
     props: { objects: [], vehicles: [] },
     style: { isArtworkRequest: false },
+    negations: [],
     matchedTriggers: [],
   };
+}
+
+// ---------------------------------------------------------------------------
+// Negation extraction — Wren May 2026 precedence contract.
+//
+// Diffusion models cannot honour "no X" / "without X" at the prompt level
+// (the negation gets ignored and the token tends to summon X). So instead of
+// passing negations to the provider, we extract them here and strip matching
+// clauses from profile.appearance + the carried spec BEFORE the final prompt
+// is composed. The final prompt only contains POSITIVE statements.
+//
+// Vocab is restricted to known appearance/clothing tokens so freeform user
+// text like "no idea what you mean" doesn't accidentally negate "idea".
+// ---------------------------------------------------------------------------
+const NEGATION_VOCAB: string[] = [
+  ...HAIR_COLOURS,
+  ...HAIRSTYLES,
+  ...SKIN_DESCRIPTORS,
+];
+
+// "no <token>", "no <token> at all", "without <token>", "not <token>",
+// "remove the <token>", "drop the <token>", "lose the <token>", "get rid of
+// the <token>". Matches case-insensitively. We capture the token; the
+// surrounding cue is the trigger.
+function extractNegations(raw: string): string[] {
+  if (!raw) return [];
+  const lower = raw.toLowerCase();
+  const hits = new Set<string>();
+  // Sort longest-first so multi-word vocab ("strawberry blonde", "jet black",
+  // "messy bun") wins over its single-word prefix.
+  const sortedVocab = [...NEGATION_VOCAB].sort((a, b) => b.length - a.length);
+  for (const token of sortedVocab) {
+    const tokenRx = token.includes(" ") || token.includes("-")
+      ? token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      : `\\b${token}\\b`;
+    // Cue patterns: "no <T>", "no <T> at all", "without <T>", "not <T>",
+    // "remove ... <T>", "drop ... <T>", "lose ... <T>", "get rid of ... <T>".
+    const rx = new RegExp(
+      `\\b(no|without|not|remove(?:\\s+the)?|drop(?:\\s+the)?|lose(?:\\s+the)?|get\\s+rid\\s+of(?:\\s+the)?)\\s+(?:any\\s+|all\\s+|the\\s+|that\\s+)?${tokenRx}\\b`,
+      "i",
+    );
+    if (rx.test(lower)) hits.add(token);
+  }
+  return Array.from(hits);
 }
 
 export function extractVisualSpec(text: string): VisualSpec {
@@ -492,17 +548,31 @@ export function extractVisualSpec(text: string): VisualSpec {
 
   if (!raw.trim()) return spec;
 
+  // Negations — extracted FIRST so we can strip them from positive matches
+  // below ("no lavender" must not also register lavender as the hair colour
+  // when the same phrase contains the word "hair" elsewhere).
+  spec.negations = extractNegations(raw);
+  if (spec.negations.length > 0) {
+    matched.push(`negations=${spec.negations.join(",")}`);
+  }
+
   // Hair colour: "<colour> hair" / "hair <colour>" / "make ... hair <colour>"
   // / "<colour> ... hair". We only count a colour as a hair-colour when the
   // word "hair" appears in the same message, otherwise "blue jeans" would
   // wrongly become hair colour.
   if (/\bhair\b/i.test(raw)) {
-    const colour = findFirstMatch(lower, HAIR_COLOURS);
+    // Filter the vocab to exclude any token the user explicitly negated
+    // this turn ("Black hair, no lavender at all" → must pick "black",
+    // not "lavender" — longest-first matching otherwise grabs lavender).
+    const negSet = new Set(spec.negations);
+    const hairVocab = HAIR_COLOURS.filter((c) => !negSet.has(c));
+    const colour = findFirstMatch(lower, hairVocab);
     if (colour) {
       spec.appearance.hairColour = colour;
       matched.push(`appearance.hairColour=${colour}`);
     }
-    const style = findFirstMatch(lower, HAIRSTYLES);
+    const styleVocab = HAIRSTYLES.filter((s) => !negSet.has(s));
+    const style = findFirstMatch(lower, styleVocab);
     if (style) {
       spec.appearance.hairstyle = style;
       matched.push(`appearance.hairstyle=${style}`);
@@ -512,7 +582,9 @@ export function extractVisualSpec(text: string): VisualSpec {
   // Skin tone — only count when paired with the word "skin" or "complexion"
   // to avoid "pale blue" / "darker shade" false positives.
   if (/\b(skin|complexion)\b/i.test(raw)) {
-    const tone = findFirstMatch(lower, SKIN_DESCRIPTORS);
+    const negSet = new Set(spec.negations);
+    const skinVocab = SKIN_DESCRIPTORS.filter((s) => !negSet.has(s));
+    const tone = findFirstMatch(lower, skinVocab);
     if (tone) {
       spec.appearance.skinTone = tone;
       matched.push(`appearance.skinTone=${tone}`);
@@ -995,9 +1067,58 @@ export function buildVisualDescription(spec: VisualSpec): string {
   // Always include the original user phrasing too — protects against
   // attributes the extractor missed. The structured lines above ANCHOR
   // the prompt; the raw line preserves nuance.
-  parts.push(`Original request: ${spec.rawUserText.trim()}`);
+  //
+  // CRITICAL: scrub negation phrases from the raw text before echoing it.
+  // Diffusion models cannot honour "no X" / "without X" — the negation gets
+  // dropped and the token tends to summon X. So if the user said "Black hair,
+  // no lavender at all" we strip "no lavender at all" out of the echoed line
+  // entirely. The negated token is also stripped from the spec elsewhere
+  // (composeAppearance prunes profile.appearance clauses), so the final
+  // prompt contains positive statements only.
+  const scrubbed = scrubNegationPhrases(spec.rawUserText, spec.negations);
+  if (scrubbed.trim().length > 0) {
+    parts.push(`Original request: ${scrubbed.trim()}`);
+  }
 
   return parts.join(" ");
+}
+
+/**
+ * Remove negation cue + token spans from the raw user text so the echoed
+ * "Original request:" line never contains the negated token. Mirrors the cue
+ * vocabulary used by extractNegations(). Also strips bare occurrences of the
+ * negated token if it survives elsewhere in the sentence — diffusion treats
+ * any mention as a positive cue regardless of surrounding negation.
+ */
+function scrubNegationPhrases(raw: string, negations: string[]): string {
+  if (!raw) return "";
+  if (!negations || negations.length === 0) return raw;
+  let out = raw;
+  // Sort longest-first so multi-word vocab matches before single-word
+  // prefixes.
+  const sorted = [...negations].sort((a, b) => b.length - a.length);
+  for (const token of sorted) {
+    const tokenRx = token.includes(" ") || token.includes("-")
+      ? token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      : `\\b${token}\\b`;
+    // 1) Strip the cue + token span (matches extractNegations cues).
+    const cueRx = new RegExp(
+      `\\b(no|without|not|remove(?:\\s+the)?|drop(?:\\s+the)?|lose(?:\\s+the)?|get\\s+rid\\s+of(?:\\s+the)?)\\s+(?:any\\s+|all\\s+|the\\s+|that\\s+)?${tokenRx}(?:\\s+at\\s+all)?`,
+      "gi",
+    );
+    out = out.replace(cueRx, "");
+    // 2) Belt-and-braces: strip any bare surviving mentions of the token.
+    const bareRx = new RegExp(tokenRx, "gi");
+    out = out.replace(bareRx, "");
+  }
+  // Tidy whitespace and orphaned punctuation left behind by the removals.
+  out = out
+    .replace(/\s*,\s*,+/g, ", ")
+    .replace(/^\s*[,;:.\-]+\s*/g, "")
+    .replace(/\s*[,;:\-]+\s*$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1072,6 +1193,12 @@ export function mergeVisualSpecs(prior: VisualSpec, delta: VisualSpec): VisualSp
       medium: delta.style.medium ?? prior.style.medium,
       isArtworkRequest: delta.style.isArtworkRequest || prior.style.isArtworkRequest,
     },
+    // Negations union — once the user said "no lavender" it stays no
+    // lavender for the rest of the session unless they explicitly bring
+    // it back ("lavender hair" in a later turn would re-set hairColour
+    // via the positive extractor; the user-explicit positive then beats
+    // the carried negation in composeAppearance).
+    negations: unionStrings(prior.negations ?? [], delta.negations ?? []),
     matchedTriggers: [
       ...prior.matchedTriggers.map((t) => `prior:${t}`),
       ...delta.matchedTriggers.map((t) => `delta:${t}`),
@@ -1136,6 +1263,7 @@ export function encodeVibeWithSpec(description: string, spec: VisualSpec): strin
     framing: spec.framing,
     props: spec.props,
     style: spec.style,
+    negations: spec.negations,
   };
   // BASE64 the JSON payload, NOT raw JSON. Why: synthesizeImageActionReply
   // runs `description.replace(/\]/g, ")")` to protect the `[image: MODE | desc]`
@@ -1191,12 +1319,118 @@ export function extractVisualSpecFromVibe(
         medium: parsed.style?.medium,
         isArtworkRequest: Boolean(parsed.style?.isArtworkRequest),
       },
+      negations: Array.isArray(parsed.negations) ? parsed.negations : [],
       matchedTriggers: Array.isArray(parsed.matchedTriggers) ? parsed.matchedTriggers : [],
     };
     return { description, spec };
   } catch {
     return { description, spec: null };
   }
+}
+
+// ---------------------------------------------------------------------------
+// composeAppearance — Wren May 2026 precedence contract.
+//
+// Resolves the final identity-anchor sentence for the image prompt with strict
+// precedence:
+//
+//   USER_EXPLICIT     (spec.appearance.* set this turn or carried in vibe)
+//     >  SESSION_MEMORY (carried via mergeVisualSpecs across turns)
+//        >  DEFAULT_IDENTITY (profile.appearance string)
+//
+// Process:
+//   1. Split profile.appearance by comma into clauses.
+//   2. Drop any clause containing a negated token (spec.negations).
+//   3. Replace per-slot clauses ("X hair", "Y skin", "Z expression") with the
+//      user-explicit value when present in spec.appearance — HARD REPLACE,
+//      not merge.
+//   4. Append any user-explicit slots that profile.appearance didn't carry.
+//
+// This guarantees the diffusion model never receives contradictory clauses
+// like "She has lavender hair." next to "Scene: ... black hair ...".
+// ---------------------------------------------------------------------------
+export function composeAppearance(
+  profileAppearance: string | null | undefined,
+  spec: VisualSpec | null | undefined,
+): string {
+  const profile = (profileAppearance ?? "").trim();
+  const negations = new Set(
+    (spec?.negations ?? []).map((s) => s.toLowerCase().trim()).filter(Boolean),
+  );
+  const userHair = spec?.appearance?.hairColour?.trim().toLowerCase();
+  const userStyle = spec?.appearance?.hairstyle?.trim().toLowerCase();
+  const userSkin = spec?.appearance?.skinTone?.trim().toLowerCase();
+  const userExpr = spec?.appearance?.expression?.trim().toLowerCase();
+
+  // If user explicitly set a slot, the carried negation for the same value
+  // is moot — but if they negated a colour they did NOT replace, the
+  // negation still prunes profile clauses.
+  const clauses = profile
+    .split(/\s*,\s*/)
+    .map((c) => c.trim())
+    .filter(Boolean);
+
+  const out: string[] = [];
+  let hairReplaced = false;
+  let skinReplaced = false;
+  let exprReplaced = false;
+
+  for (const clause of clauses) {
+    const lower = clause.toLowerCase();
+
+    // Drop clauses that mention any negated token.
+    let dropped = false;
+    for (const tok of negations) {
+      const rx = tok.includes(" ") || tok.includes("-")
+        ? new RegExp(tok.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")
+        : new RegExp(`\\b${tok}\\b`, "i");
+      if (rx.test(lower)) {
+        dropped = true;
+        break;
+      }
+    }
+    if (dropped) continue;
+
+    // Hair clause — replace whole clause with the user-explicit value if set.
+    if (/\bhair\b/i.test(lower) && (userHair || userStyle)) {
+      const parts: string[] = [];
+      if (userStyle) parts.push(userStyle);
+      if (userHair) parts.push(userHair);
+      parts.push("hair");
+      out.push(parts.join(" "));
+      hairReplaced = true;
+      continue;
+    }
+
+    // Skin clause.
+    if (/\b(skin|complexion)\b/i.test(lower) && userSkin) {
+      out.push(`${userSkin} skin`);
+      skinReplaced = true;
+      continue;
+    }
+
+    // Expression clause — rare in profile.appearance, but support it.
+    if (/\b(expression|smile|smiling|frown|grin|smirk)\b/i.test(lower) && userExpr) {
+      out.push(`${userExpr} expression`);
+      exprReplaced = true;
+      continue;
+    }
+
+    out.push(clause);
+  }
+
+  // Append user-explicit slots the profile didn't already carry.
+  if ((userHair || userStyle) && !hairReplaced) {
+    const parts: string[] = [];
+    if (userStyle) parts.push(userStyle);
+    if (userHair) parts.push(userHair);
+    parts.push("hair");
+    out.push(parts.join(" "));
+  }
+  if (userSkin && !skinReplaced) out.push(`${userSkin} skin`);
+  if (userExpr && !exprReplaced) out.push(`${userExpr} expression`);
+
+  return out.join(", ");
 }
 
 function prepFor(loc: string): string {

@@ -46,7 +46,7 @@ import {
   synthesizeImageActionReplyFromSpec,
   type HistoryTurn as FollowUpHistoryTurn,
 } from "../lib/imageFollowUp";
-import { extractVisualSpec, extractVisualSpecFromVibe } from "../lib/visualSpec";
+import { composeAppearance, extractVisualSpec, extractVisualSpecFromVibe } from "../lib/visualSpec";
 import { approveTicketById } from "./tickets";
 import {
   generateImageBase64,
@@ -1414,9 +1414,40 @@ async function generateAshleySelfie(
   mode: SelfieMode,
   imageMode: ImageMode,
 ): Promise<string | null> {
-  const appearance = (profile.appearance ?? "").trim();
+  const baseAppearance = (profile.appearance ?? "").trim();
   const ashleyName = (profile.name ?? "Ashley").trim() || "Ashley";
   const wrapper = wrapperFor(imageMode);
+  // Wren May 2026 precedence contract: USER_EXPLICIT > SESSION_MEMORY >
+  // DEFAULT_IDENTITY. Pull the carried VisualSpec out of the vibe (it was
+  // round-tripped through encodeVibeWithSpec when the assistant row was
+  // persisted) and resolve the final appearance string via composeAppearance.
+  // This HARD REPLACES per-slot identity ("lavender hair" → "black hair" when
+  // the user said "black hair") and STRIPS clauses matching any user-stated
+  // negation ("no lavender at all" → drop every "lavender ..." clause from
+  // profile.appearance) BEFORE the prompt is built — diffusion never sees
+  // contradictory clauses, and never sees a negation phrase.
+  const { spec: carriedSpec } = extractVisualSpecFromVibe(vibe);
+  const appearance = composeAppearance(baseAppearance, carriedSpec);
+  if (carriedSpec && (
+    carriedSpec.negations.length > 0 ||
+    carriedSpec.appearance.hairColour ||
+    carriedSpec.appearance.hairstyle ||
+    carriedSpec.appearance.skinTone ||
+    carriedSpec.appearance.expression
+  )) {
+    logger.info(
+      {
+        baseAppearancePreview: baseAppearance.slice(0, 200),
+        composedAppearancePreview: appearance.slice(0, 200),
+        userHair: carriedSpec.appearance.hairColour ?? null,
+        userStyle: carriedSpec.appearance.hairstyle ?? null,
+        userSkin: carriedSpec.appearance.skinTone ?? null,
+        userExpression: carriedSpec.appearance.expression ?? null,
+        negations: carriedSpec.negations,
+      },
+      "image-gen: appearance precedence applied (USER_EXPLICIT > SESSION > IDENTITY, negations stripped)",
+    );
+  }
   const modeBlock = buildModePromptBlock({
     mode: imageMode,
     vibe,

@@ -1409,16 +1409,23 @@ export function synthesizeImageActionReplyFromSpec(
     .replace(/\]/g, ")")
     .replace(/\s+/g, " ")
     .trim();
+  // Bake the VSPEC marker into the description so generateAshleySelfie can
+  // recover the user-explicit appearance overrides + negations on the FRESH
+  // turn (no prior attempt). Without this the precedence layer no-ops on
+  // first-time requests like "Black hair, no lavender at all" and the diffusion
+  // model gets the conflicting "She has lavender hair." identity sentence.
+  // The follow-up path at line 852 already does this via sanitisedVisualText.
+  const cleanDescWithSpec = encodeVibeWithSpec(cleanDesc, spec);
   const caption = shortCaptionFor(mode, "direct_image_request", null);
-  const marker = `[image: ${mode} | ${cleanDesc}]`;
+  const marker = `[image: ${mode} | ${cleanDescWithSpec}]`;
   const fullText = `${caption}\n\n${marker}`;
-  const selfieVibe = encodeStoredVibe(mode, cleanDesc);
+  const selfieVibe = encodeStoredVibe(mode, cleanDescWithSpec);
   return {
     fullText,
     captionText: caption,
     selfieVibe,
     mode,
-    description: cleanDesc,
+    description: cleanDescWithSpec,
   };
 }
 
