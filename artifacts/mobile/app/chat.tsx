@@ -1337,7 +1337,7 @@ export default function ChatScreen(): React.JSX.Element {
               <Image
                 source={{ uri: pickedImage.uri }}
                 style={styles.imagePickerPreview}
-                resizeMode="cover"
+                resizeMode="contain"
                 accessibilityLabel="Selected photo preview"
               />
             ) : null}
@@ -1551,6 +1551,19 @@ function MessageBubble({
   const hasText = !!message.content && message.content.trim().length > 0;
   const [imageFailed, setImageFailed] = useState(false);
   const showImage = hasImage && !imageFailed;
+  // Full-screen image viewer state. Tap the preview to open; modal renders
+  // the SAME imageUrl with resizeMode="contain" so we can tell whether the
+  // generator cropped the source vs whether the chat preview is hiding part
+  // of it. naturalDims is captured from the preview's onLoad event and shown
+  // in the viewer's debug bar — Wren needs it to confirm raw dims.
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [imageNaturalDims, setImageNaturalDims] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
+  // Safe-area inset for the viewer toolbar (avoids overlap with the status
+  // bar / dynamic island when statusBarTranslucent is on).
+  const bubbleInsets = useSafeAreaInsets();
 
   // selfieVibe is set by the server when Ashley wanted to send a photo.
   // While the background generation is still running (or after it failed),
@@ -1584,6 +1597,34 @@ function MessageBubble({
       Alert.alert("Couldn't copy", "Try again in a moment.");
     }
   }, [hasText, message.content]);
+
+  const onCopyImageUrl = useCallback(async () => {
+    if (!message.imageUrl) return;
+    try {
+      await Clipboard.setStringAsync(message.imageUrl);
+      console.log("[chat] copied raw image URL", message.imageUrl);
+      Alert.alert("URL copied", "Open it in a browser to inspect the raw image.");
+    } catch {
+      Alert.alert("Couldn't copy", "Try again in a moment.");
+    }
+  }, [message.imageUrl]);
+
+  const onImageLongPress = useCallback(() => {
+    if (!message.imageUrl) return;
+    Alert.alert(
+      "Image options",
+      message.imageUrl,
+      [
+        { text: "Open full screen", onPress: () => setViewerOpen(true) },
+        { text: "Copy raw URL", onPress: () => void onCopyImageUrl() },
+        { text: "Save to library", onPress: () => void onSaveImage() },
+        { text: "Cancel", style: "cancel" },
+      ],
+      { cancelable: true },
+    );
+  // onSaveImage is stable — defined below; eslint-disable to allow forward ref.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message.imageUrl, onCopyImageUrl]);
 
   const onSaveImage = useCallback(async () => {
     if (!message.imageUrl) return;
@@ -1689,26 +1730,125 @@ function MessageBubble({
           </View>
         ) : null}
         {showImage ? (
-          <Pressable
-            onLongPress={onSaveImage}
-            delayLongPress={350}
-            accessibilityLabel="Long-press to save photo"
-          >
-            <Image
-              source={{ uri: message.imageUrl! }}
-              style={styles.bubbleImage}
-              resizeMode="cover"
-              accessibilityLabel="Selfie from Ashley"
-              onError={(e) => {
-                console.warn(
-                  "[chat] selfie image failed to load",
-                  message.imageUrl,
-                  e?.nativeEvent,
-                );
-                setImageFailed(true);
+          <>
+            <Pressable
+              onPress={() => {
+                console.log("[chat] image preview tapped — opening viewer", {
+                  imageUrl: message.imageUrl,
+                  previewWidth: 240,
+                  previewHeight: 320,
+                  previewResizeMode: "contain",
+                  naturalWidth: imageNaturalDims?.width ?? null,
+                  naturalHeight: imageNaturalDims?.height ?? null,
+                });
+                setViewerOpen(true);
               }}
-            />
-          </Pressable>
+              onLongPress={onImageLongPress}
+              delayLongPress={350}
+              accessibilityLabel="Tap to view full screen, long-press for options"
+            >
+              <Image
+                source={{ uri: message.imageUrl! }}
+                style={styles.bubbleImage}
+                resizeMode="contain"
+                accessibilityLabel="Image from Ashley — tap to view full screen"
+                onLoad={(e) => {
+                  const src = e?.nativeEvent?.source;
+                  if (src && typeof src.width === "number" && typeof src.height === "number") {
+                    setImageNaturalDims({ width: src.width, height: src.height });
+                    console.log("[chat] image preview loaded", {
+                      imageUrl: message.imageUrl,
+                      naturalWidth: src.width,
+                      naturalHeight: src.height,
+                      previewWidth: 240,
+                      previewHeight: 320,
+                      previewResizeMode: "contain",
+                    });
+                  }
+                }}
+                onError={(e) => {
+                  console.warn(
+                    "[chat] selfie image failed to load",
+                    message.imageUrl,
+                    e?.nativeEvent,
+                  );
+                  setImageFailed(true);
+                }}
+              />
+            </Pressable>
+            <Modal
+              visible={viewerOpen}
+              transparent
+              animationType="fade"
+              onRequestClose={() => setViewerOpen(false)}
+              statusBarTranslucent
+            >
+              <View style={styles.viewerBackdrop}>
+                <Pressable
+                  style={styles.viewerDismissArea}
+                  onPress={() => setViewerOpen(false)}
+                  accessibilityLabel="Tap to close full-screen viewer"
+                />
+                <Image
+                  source={{ uri: message.imageUrl! }}
+                  style={styles.viewerImage}
+                  resizeMode="contain"
+                  accessibilityLabel="Full-screen image — entire frame visible"
+                  onLoad={(e) => {
+                    const src = e?.nativeEvent?.source;
+                    if (src) {
+                      console.log("[chat] full-screen viewer loaded image", {
+                        imageUrl: message.imageUrl,
+                        naturalWidth: src.width,
+                        naturalHeight: src.height,
+                        viewerResizeMode: "contain",
+                      });
+                    }
+                  }}
+                />
+                <View
+                  style={[styles.viewerToolbar, { top: bubbleInsets.top + 8 }]}
+                  pointerEvents="box-none"
+                >
+                  <Pressable
+                    onPress={() => setViewerOpen(false)}
+                    style={styles.viewerToolbarBtn}
+                    hitSlop={12}
+                    accessibilityLabel="Close viewer"
+                  >
+                    <Feather name="x" size={22} color="#fff" />
+                  </Pressable>
+                  <View style={{ flex: 1 }} />
+                  <Pressable
+                    onPress={onCopyImageUrl}
+                    style={styles.viewerToolbarBtn}
+                    hitSlop={12}
+                    accessibilityLabel="Copy raw image URL"
+                  >
+                    <Feather name="copy" size={20} color="#fff" />
+                  </Pressable>
+                  <Pressable
+                    onPress={onSaveImage}
+                    style={styles.viewerToolbarBtn}
+                    hitSlop={12}
+                    accessibilityLabel="Save image to library"
+                  >
+                    <Feather name="download" size={20} color="#fff" />
+                  </Pressable>
+                </View>
+                <View style={styles.viewerDebugBar} pointerEvents="box-none">
+                  <Text style={styles.viewerDebugText} numberOfLines={2}>
+                    {imageNaturalDims
+                      ? `raw ${imageNaturalDims.width}×${imageNaturalDims.height} · contain`
+                      : "raw dims pending · contain"}
+                  </Text>
+                  <Text style={styles.viewerDebugUrl} numberOfLines={1} selectable>
+                    {message.imageUrl}
+                  </Text>
+                </View>
+              </View>
+            </Modal>
+          </>
         ) : null}
         {imageFailed ? (
           <View style={styles.imageError}>
@@ -2149,6 +2289,59 @@ const styles = StyleSheet.create({
     height: 320,
     borderRadius: 14,
     backgroundColor: "rgba(0,0,0,0.2)",
+  },
+  // Full-screen viewer (per Wren May 2026 #3): black backdrop, contain-scaled
+  // image, toolbar with close/copy-url/save, debug bar showing raw dims + URL.
+  viewerBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.96)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  viewerDismissArea: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  viewerImage: {
+    width: "100%",
+    height: "100%",
+  },
+  viewerToolbar: {
+    position: "absolute",
+    top: 40,
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    gap: 8,
+  },
+  viewerToolbarBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  viewerDebugBar: {
+    position: "absolute",
+    bottom: 24,
+    left: 12,
+    right: 12,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  viewerDebugText: {
+    color: "#fff",
+    fontSize: 12,
+    fontWeight: "600",
+    marginBottom: 2,
+  },
+  viewerDebugUrl: {
+    color: "rgba(255,255,255,0.7)",
+    fontSize: 11,
   },
   bubbleTextWithImage: {
     paddingHorizontal: 10,
