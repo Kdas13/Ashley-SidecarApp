@@ -136,6 +136,101 @@ export function isSeatedLengthwiseImageRequest(text: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Scene / costume / prop / banner / meme hard-gate (Wren May 2026 follow-up #5)
+// ---------------------------------------------------------------------------
+//
+// Wren live test: "Generate an image of Ashley wearing dungarees beside a
+// tractor with a banner on the front saying #AmishLife" came back as romantic
+// prose with phantom delivery language ("There, my love — I poured every
+// ounce…") and no image artifact.
+//
+// Root cause: the message DID classify as a direct image request, but in
+// Wren's live multi-turn test the prompt was framed as a longer narrative
+// brief that exceeded the 18-word cap on isDirectImageRequest, so it fell
+// through to the LLM which improvised prose. SCENE_MODE / props / banners /
+// signs / hashtags / "scene of you on a tractor" had no hard gate of their
+// own.
+//
+// This gate fires for visual asks that carry ANY of:
+//   - a banner / sign / placard / poster "saying X"
+//   - meme-style / comedic / joke / silly / absurd image phrasing
+//   - a prop / vehicle / location after "of you" ("photo of you on a
+//     tractor", "picture of you beside a tractor", "image of you in
+//     front of the barn")
+//   - "scene of you" / "full picture of you"
+//   - "make/turn that into an image / a meme / a scene"
+//   - a hashtag (#word) paired with banner/sign/wearing/holding cues
+//
+// All branches require at least one image-noun / action-verb in the same
+// message — bare conversational text without image intent never fires.
+// IMAGE_DIAGNOSTIC_RX still suppresses (talking ABOUT a previous image is
+// not an ask). No word-count cap.
+
+const SCENE_BANNER_SIGN_RX =
+  /\b(banner|sign|placard|poster|board)\s+(that\s+(says|reads)|saying|reading)\b/i;
+
+// Meme-style adjectives only count as image intent when paired with an
+// imperative request verb (generate / create / render / draw / make / send /
+// show / want / give me / can you ...). Bare declarative ("a comedic image
+// can be harmful") must NOT trigger the gate. Architect review May 2026.
+const SCENE_MEME_STYLE_RX =
+  /\b(generate|create|render|draw|paint|illustrate|make|send|show|give|want|can\s+you|could\s+you|please)\b[\s\S]{0,80}\b(meme[- ]?style|comedic|joke|silly|absurd|funny)\s+(image|picture|photo|pic|render|shot|scene)\b/i;
+
+// "image / picture / photo of you on / beside / next to / in front of / with /
+// holding / wearing / dressed (as|in) / riding / driving / sitting in /
+// standing in <noun>". The trailing preposition / verb + a following word is
+// what makes this a prop or location compound, not just "image of you".
+// `wearing` and `dressed (as|in)` were added so prompts like "image of Ashley
+// wearing dungarees beside a tractor" hit the prop branch directly, not just
+// via the banner branch.
+const SCENE_PROP_LOCATION_RX =
+  /\b(image|picture|photo|photograph|pic|shot|render)\s+of\s+(you|her|ashley)\s+(on|beside|next\s+to|in\s+front\s+of|at|near|inside|outside|with|holding|wearing|dressed\s+(as|in)|riding|driving|sitting\s+in|sitting\s+on|standing\s+in|standing\s+on|leaning\s+on|leaning\s+against)\s+\S+/i;
+
+// "scene of you / full picture of you / full image of you / whole picture of
+// you" — explicit scene framing.
+const SCENE_OF_YOU_RX =
+  /\b(scene|full\s+picture|full\s+image|full\s+photo|whole\s+picture|whole\s+image|whole\s+photo)\s+of\s+(you|her|ashley)\b/i;
+
+// "make that an image / turn that into a picture / render that as a meme /
+// generate that as a scene". Wren's spec lists these as required triggers.
+const MAKE_THAT_SCENE_RX =
+  /\b(make|turn|render|generate)\s+(that|this|it)\s+(as|into)\s+(a |an )?(meme|image|picture|photo|scene)\b/i;
+
+// Hashtag inside the body (banner content like "#AmishLife"). Must be paired
+// with banner / sign / wearing / holding / costume / tractor / prop signals
+// to avoid firing on hashtag chatter.
+const HASHTAG_IN_TEXT_RX = /(?:^|\s)#\w+/;
+const HASHTAG_PROP_PARTNER_RX =
+  /\b(banner|sign|placard|poster|board|wearing|dressed|holding|costume|tractor|car|truck|bike|horse|sash|t[- ]?shirt|hoodie|jumper)\b/i;
+
+// STRICT image-handle vocabulary — concrete image nouns and explicit image-
+// generation verbs only. Adjectives like "comedic" / "joke" / "silly" are
+// deliberately NOT here because they fire on conversational chatter.
+// Architect review May 2026 #5.
+const SCENE_IMAGE_HANDLE_RX =
+  /\b(image|picture|photo|photograph|pic|render|shot|selfie|generate|create|draw|paint|illustrate|make\s+(me|that|an?\s+(image|picture|photo))|turn\s+(it|that)\s+into|scene\s+of|meme\s+of|full\s+picture|full\s+image)\b/i;
+
+export function isSceneCostumePropImageRequest(text: string): boolean {
+  if (typeof text !== "string") return false;
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (IMAGE_DIAGNOSTIC_RX.test(trimmed)) return false;
+  const hasImageHandle = SCENE_IMAGE_HANDLE_RX.test(trimmed);
+  if (SCENE_BANNER_SIGN_RX.test(trimmed) && hasImageHandle) return true;
+  if (SCENE_MEME_STYLE_RX.test(trimmed)) return true;
+  if (SCENE_PROP_LOCATION_RX.test(trimmed)) return true;
+  if (SCENE_OF_YOU_RX.test(trimmed) && hasImageHandle) return true;
+  if (MAKE_THAT_SCENE_RX.test(trimmed)) return true;
+  if (
+    HASHTAG_IN_TEXT_RX.test(trimmed) &&
+    HASHTAG_PROP_PARTNER_RX.test(trimmed) &&
+    hasImageHandle
+  )
+    return true;
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Direct image request detection (no prior visual context required)
 // ---------------------------------------------------------------------------
 //
@@ -601,6 +696,30 @@ export function resolveImageFollowUp(
       suggestedMode: "SEATED_LENGTHWISE_FULL_BODY_MODE",
       modeReason:
         "matched seated-lengthwise hard-gate trigger — bypassing romantic-prose path",
+    };
+  }
+
+  // Scene / costume / prop / banner / meme hard-gate (Wren May 2026 #5).
+  // Fires before the direct/short/send-again detectors so a long brief that
+  // exceeds the 18-word direct cap (e.g. "Generate an image of Ashley
+  // wearing dungarees beside a tractor with a banner on the front saying
+  // #AmishLife") still routes straight to image generation in SCENE_MODE
+  // instead of being answered as romantic prose. No prior history required.
+  if (isSceneCostumePropImageRequest(latestUserText)) {
+    const { text: sanitised, changed } = sanitiseExpression(latestUserText);
+    return {
+      isFollowUp: true,
+      kind: "direct_image_request",
+      followUpText: latestUserText,
+      priorVisualText: null,
+      sanitisedVisualText: sanitised,
+      sanitised: changed,
+      priorAttemptVibe: null,
+      priorAttemptDelivered: false,
+      resolvedRequest: `Generate a cinematic environmental image of Ashley: ${sanitised.trim()}.`,
+      suggestedMode: "SCENE_MODE",
+      modeReason:
+        "matched scene/costume/prop/banner/meme hard-gate trigger — bypassing romantic-prose path",
     };
   }
 

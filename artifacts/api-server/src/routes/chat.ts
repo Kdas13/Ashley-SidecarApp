@@ -844,6 +844,11 @@ router.post("/chat", async (req, res): Promise<void> => {
             modeReason: resolution.modeReason,
             imageGenerationTriggered: "yes — server-side marker synthesised, /chat/selfie will run",
             llmCallSkipped: true,
+            // Wren May 2026 #5 debug contract — uniform field names across
+            // gate paths so `adb logcat | grep IMAGE_INTENT` always lines up.
+            IMAGE_INTENT: true,
+            IMAGE_MODE: synth.mode,
+            GENERATION_CALLED: true,
           },
           "image-intent: HARD GATE — LLM bypassed, marker synthesised server-side",
         );
@@ -2783,6 +2788,10 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
               retryReason: isFootRetry ? resolution.modeReason : undefined,
               priorAttemptDelivered: isFootRetry ? resolution.priorAttemptDelivered : undefined,
               generation_called: true,
+              // Wren May 2026 #5 debug contract.
+              IMAGE_INTENT: true,
+              IMAGE_MODE: synth.mode,
+              GENERATION_CALLED: true,
             },
             "image-intent: HARD GATE (stream) — LLM bypassed, marker synthesised server-side",
           );
