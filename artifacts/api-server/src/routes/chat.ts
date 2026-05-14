@@ -836,6 +836,21 @@ router.post("/chat", async (req, res): Promise<void> => {
       if (synth) {
         const gateSelfieVibe = synth.selfieVibe;
         const gateAssistantText = synth.captionText;
+        // Wren May 2026 terminal-render contract — single canonical log so
+        // `grep "visual-intent: terminal render"` proves the render branch
+        // fired and the LLM narration branch did not.
+        req.log.info(
+          {
+            intent: "MUTATION",
+            subject: "ASHLEY",
+            diffNonEmpty: true,
+            renderReason: "MUTATION_ASHLEY_DIFF_NONEMPTY",
+            imageMode: synth.mode,
+            kind: resolution.kind,
+            descriptionPreview: synth.description.slice(0, 200),
+          },
+          "visual-intent: terminal render",
+        );
         req.log.info(
           {
             kind: resolution.kind,
@@ -924,6 +939,17 @@ router.post("/chat", async (req, res): Promise<void> => {
 
   // 4. Call the active chat model (Anthropic by default; Gemini when
   //    ASHLEY_TEXT_PROVIDER=gemini, for cost control).
+  // Wren May 2026 terminal-render contract — log the LLM fallback so
+  // `grep "visual-intent: fallback"` shows exactly which turns the LLM
+  // narration branch served (i.e. did NOT meet MUTATION+ASHLEY+diff).
+  req.log.info(
+    {
+      deviceId,
+      userTextPreview: userContent.slice(0, 200),
+      reason: "no terminal render — falling back to LLM narration",
+    },
+    "visual-intent: fallback",
+  );
   let assistantText = "";
   try {
     const text = await generateChatText({
@@ -2782,6 +2808,22 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
         if (synth) {
           imageGateSynth = synth;
           const isFootRetry = resolution.kind === "foot_visible_retry";
+          // Wren May 2026 terminal-render contract — single canonical log so
+          // `grep "visual-intent: terminal render"` proves the render branch
+          // fired on the streaming path too.
+          req.log.info(
+            {
+              deviceId,
+              intent: "MUTATION",
+              subject: "ASHLEY",
+              diffNonEmpty: true,
+              renderReason: "MUTATION_ASHLEY_DIFF_NONEMPTY",
+              imageMode: synth.mode,
+              kind: resolution.kind,
+              descriptionPreview: synth.description.slice(0, 200),
+            },
+            "visual-intent: terminal render",
+          );
           req.log.info(
             {
               deviceId,
@@ -3007,6 +3049,20 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
 
   // ---- Stream from the active chat model (Anthropic by default; Gemini
   //      when ASHLEY_TEXT_PROVIDER=gemini, for cost control).
+  // Wren May 2026 terminal-render contract — log the LLM fallback. If we
+  // reach this point with imageGateSynth still null, the turn did NOT
+  // meet MUTATION+ASHLEY+diffNonEmpty and the LLM narration branch is
+  // the correct path.
+  req.log.info(
+    {
+      deviceId,
+      streamId,
+      userTextPreview: userRow?.content.slice(0, 200) ?? null,
+      isContinue,
+      reason: "no terminal render — falling back to streaming LLM narration",
+    },
+    "visual-intent: fallback",
+  );
   let accumulated = "";
   let finishedNaturally = false;
   let upstreamErr: unknown = null;

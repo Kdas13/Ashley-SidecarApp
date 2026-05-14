@@ -225,6 +225,85 @@ const VISUAL_HINT_RX = new RegExp(
 // contain at least one visual signal (preposition of place,
 // article+noun, or a known visual hint word) so that bare conversation
 // like "i love you" / "ok cool" / "thanks" falls through to DESCRIPTION.
+// Public visual-signal probe — used by the visualSpec gate to enforce
+// Wren's "diff non-empty" half of the terminal-render contract. An
+// abstract MUTATION+ASHLEY ask like "show me your day" or "send me the
+// link" has zero visual signal: the diff against the empty world is
+// effectively empty and we must NOT render. Inputs that mention any
+// visual hint word, place preposition, article+noun, or follow-up
+// scene cue carry enough signal to pass the gate. Bare gerund clauses
+// also pass — "playing connect four with cheese on your head" has the
+// gerund + props.
+// Words that end in "ing" but are nouns / non-actionable in our context.
+// Used to filter the non-anchored gerund probe so "good morning" doesn't
+// fire as a visual signal. Real action verbs ("waving", "holding",
+// "playing", "balancing", "sitting", "lying") all pass.
+const NON_VERB_GERUND_NOUNS = new Set([
+  "morning",
+  "evening",
+  "ceiling",
+  "feeling",
+  "feelings",
+  "meeting",
+  "wedding",
+  "string",
+  "thing",
+  "anything",
+  "everything",
+  "something",
+  "nothing",
+  "king",
+  "ring",
+  "sing",
+  "thing",
+  "wing",
+  "bring",
+  "during",
+  "spring",
+  "swing",
+  "young",
+  "long",
+  "wrong",
+  "song",
+  "strong",
+  "warning",
+  "hearing",
+  "tuning",
+  "tooling",
+  "logging",
+]);
+
+const NON_ANCHORED_GERUND_RX = /\b([a-z]{3,}ing)\b/gi;
+
+function hasActionGerund(input: string): boolean {
+  for (const match of input.toLowerCase().matchAll(NON_ANCHORED_GERUND_RX)) {
+    const word = match[1] ?? "";
+    if (word.length < 5) continue;
+    if (NON_VERB_GERUND_NOUNS.has(word)) continue;
+    return true;
+  }
+  return false;
+}
+
+export function hasVisualSignal(input: string): boolean {
+  const trimmed = input.trim();
+  if (!trimmed) return false;
+  // Visual hint nouns (clothing, body parts, locations, props, colours).
+  if (VISUAL_HINT_RX.test(trimmed)) return true;
+  // Bare or non-anchored action gerund — "waving", "holding a paintbrush",
+  // "playing connect four", "balancing cheese". Excludes nominal "ing"
+  // words like "morning"/"feeling" via the blocklist above.
+  if (BARE_GERUND_RX.test(trimmed) && !FINITE_VERB_RX.test(trimmed)) {
+    return true;
+  }
+  if (hasActionGerund(trimmed)) return true;
+  // Imagine framing always passes — "imagine you in a red dress" must render.
+  if (IMAGINE_FRAMING_RX.test(trimmed) || IMAGINE_BARE_RX.test(trimmed)) {
+    return true;
+  }
+  return false;
+}
+
 function isFragmentNoFiniteVerb(input: string): boolean {
   const tokens = input.trim().split(/\s+/);
   if (tokens.length === 0 || tokens.length > 12) return false;
@@ -252,12 +331,18 @@ export function classifyIntent(rawInput: string): IntentClassification {
   // mutation cue (imperative verb, show-me framing, imagine framing, or
   // a follow-up cue). Wren writes casual asks like "Show me sitting on
   // the bonnet?" with a question mark — those are still requests.
+  // Wren May 2026 hardening: bare gerund and verbless visual fragments must
+  // also defeat the question-form rule. Casual asks like "playing connect
+  // four with cheese on your head?" or "you in a red dress?" are render
+  // requests, not narration.
   const hasMutationFraming =
     IMPERATIVE_VERBS_RX.test(input) ||
     SHOW_ME_RX.test(input) ||
     IMAGINE_FRAMING_RX.test(input) ||
     IMAGINE_BARE_RX.test(input) ||
-    FOLLOW_UP_CUE_RX.test(input);
+    FOLLOW_UP_CUE_RX.test(input) ||
+    (BARE_GERUND_RX.test(input) && !FINITE_VERB_RX.test(input)) ||
+    isFragmentNoFiniteVerb(input);
   if (QUESTION_END_RX.test(input) && !hasMutationFraming) {
     return { intent: "DESCRIPTION", reason: "question form (trailing ?)" };
   }

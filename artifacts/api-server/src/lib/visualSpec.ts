@@ -26,7 +26,7 @@
 // =============================================================================
 
 import type { ImageMode } from "./imageIntent.js";
-import { classifyIntent } from "./intentClassifier.js";
+import { classifyIntent, hasVisualSignal } from "./intentClassifier.js";
 import { classifySubject } from "./subjectClassifier.js";
 
 // ---------------------------------------------------------------------------
@@ -466,13 +466,9 @@ function findAllMatches(haystackLower: string, vocab: string[]): string[] {
 // Extractor
 // ---------------------------------------------------------------------------
 
-export function extractVisualSpec(text: string): VisualSpec {
-  const raw = (text ?? "").toString();
-  const lower = raw.toLowerCase();
-  const matched: string[] = [];
-
-  const spec: VisualSpec = {
-    rawUserText: raw,
+export function makeEmptySpec(rawUserText = ""): VisualSpec {
+  return {
+    rawUserText,
     imageIntent: false,
     intentReason: "",
     isFollowUp: false,
@@ -484,8 +480,15 @@ export function extractVisualSpec(text: string): VisualSpec {
     framing: {},
     props: { objects: [], vehicles: [] },
     style: { isArtworkRequest: false },
-    matchedTriggers: matched,
+    matchedTriggers: [],
   };
+}
+
+export function extractVisualSpec(text: string): VisualSpec {
+  const raw = (text ?? "").toString();
+  const lower = raw.toLowerCase();
+  const spec: VisualSpec = makeEmptySpec(raw);
+  const matched = spec.matchedTriggers;
 
   if (!raw.trim()) return spec;
 
@@ -749,33 +752,127 @@ export function extractVisualSpec(text: string): VisualSpec {
     spec.isRetryOrEdit = true;
   }
 
-  const hasMutation =
-    !!spec.appearance.hairColour ||
-    !!spec.appearance.hairstyle ||
-    !!spec.appearance.skinTone ||
-    !!spec.appearance.expression ||
-    spec.clothing.items.length > 0 ||
-    spec.clothing.accessories.length > 0 ||
-    !!spec.environment.location ||
-    !!spec.environment.timeOfDay ||
-    !!spec.environment.weather ||
-    !!spec.pose.bodyPosition ||
-    !!spec.pose.action ||
-    !!spec.pose.gesture ||
-    !!spec.framing.shotType ||
-    spec.props.vehicles.length > 0 ||
-    spec.props.objects.length > 0 ||
-    spec.style.isArtworkRequest;
-
-  if (hasMutation || spec.isFollowUp) {
+  // Wren spec May 2026 (terminal render contract): once intent=MUTATION and
+  // subject=ASHLEY hold, image generation is mandatory PROVIDED the diff
+  // against the empty world is non-empty. The structured parser's vocab
+  // (clothing/pose/props/etc.) is intentionally NOT the gate — its
+  // coverage is incomplete by design and a "no visible delta" miss must
+  // NOT silently send the turn to the LLM. Instead we use a coarse
+  // visual-signal probe on the raw text: does it mention any visual
+  // hint word, place preposition, follow-up cue, gerund clause, or
+  // imagine framing? If yes, that IS the diff. If no — abstract
+  // show-me asks like "show me your day", "send me the link", "how
+  // about Tuesday" — the diff is empty and we fall back to the LLM.
+  //
+  // The renderer always has the user's raw text via
+  // buildVisualDescription's "Original request: ${rawUserText}" tail,
+  // so even when structured fields are empty the marker carries the
+  // brief.
+  if (spec.isFollowUp || hasVisualSignal(raw)) {
     spec.imageIntent = true;
-    spec.intentReason = `intent=MUTATION subject=ASHLEY hasMutation=${hasMutation} isFollowUp=${spec.isFollowUp} — ${intent.reason}`;
+    spec.intentReason = `intent=MUTATION subject=ASHLEY diffNonEmpty=true isFollowUp=${spec.isFollowUp} — ${intent.reason}`;
     return spec;
   }
 
   spec.imageIntent = false;
-  spec.intentReason = `intent=MUTATION subject=ASHLEY but parser extracted no visible delta — ${intent.reason}`;
+  spec.intentReason = `intent=MUTATION subject=ASHLEY but no visual signal in raw text (diff empty) — ${intent.reason}`;
   return spec;
+}
+
+// ---------------------------------------------------------------------------
+// Diff helpers — Wren May 2026 terminal-render contract
+// ---------------------------------------------------------------------------
+// `diffVisualSpec(prev, next)` returns the field-by-field changes (used by
+// the chat route's "visual-intent: terminal render" log). `diffNonEmpty`
+// is the boolean form. Cold-start (no prev) treats every populated field
+// in next as a change vs the empty baseline — Wren's contract: if the
+// user said anything visual under MUTATION+ASHLEY, that IS a non-empty
+// diff against an empty world.
+
+export interface VisualSpecDiff {
+  appearance: Record<string, { from: unknown; to: unknown }>;
+  clothing: Record<string, { from: unknown; to: unknown }>;
+  environment: Record<string, { from: unknown; to: unknown }>;
+  pose: Record<string, { from: unknown; to: unknown }>;
+  props: Record<string, { from: unknown; to: unknown }>;
+  style: Record<string, { from: unknown; to: unknown }>;
+  framing: Record<string, { from: unknown; to: unknown }>;
+  rawUserTextChanged: boolean;
+}
+
+function changedScalar(
+  bucket: Record<string, { from: unknown; to: unknown }>,
+  key: string,
+  from: unknown,
+  to: unknown,
+): void {
+  if ((from ?? null) !== (to ?? null)) bucket[key] = { from, to };
+}
+
+function changedArray(
+  bucket: Record<string, { from: unknown; to: unknown }>,
+  key: string,
+  from: ReadonlyArray<string>,
+  to: ReadonlyArray<string>,
+): void {
+  const fromKey = [...from].sort().join("|");
+  const toKey = [...to].sort().join("|");
+  if (fromKey !== toKey) bucket[key] = { from, to };
+}
+
+export function diffVisualSpec(
+  prev: VisualSpec | null,
+  next: VisualSpec,
+): VisualSpecDiff {
+  const empty: VisualSpec = makeEmptySpec();
+  const p: VisualSpec = prev ?? empty;
+  const d: VisualSpecDiff = {
+    appearance: {},
+    clothing: {},
+    environment: {},
+    pose: {},
+    props: {},
+    style: {},
+    framing: {},
+    rawUserTextChanged: (p.rawUserText ?? "") !== (next.rawUserText ?? ""),
+  };
+  changedScalar(d.appearance, "hairColour", p.appearance.hairColour, next.appearance.hairColour);
+  changedScalar(d.appearance, "hairstyle", p.appearance.hairstyle, next.appearance.hairstyle);
+  changedScalar(d.appearance, "skinTone", p.appearance.skinTone, next.appearance.skinTone);
+  changedScalar(d.appearance, "expression", p.appearance.expression, next.appearance.expression);
+  changedArray(d.clothing, "items", p.clothing.items, next.clothing.items);
+  changedArray(d.clothing, "accessories", p.clothing.accessories, next.clothing.accessories);
+  changedScalar(d.environment, "location", p.environment.location, next.environment.location);
+  changedScalar(d.environment, "timeOfDay", p.environment.timeOfDay, next.environment.timeOfDay);
+  changedScalar(d.environment, "weather", p.environment.weather, next.environment.weather);
+  changedScalar(d.pose, "bodyPosition", p.pose.bodyPosition, next.pose.bodyPosition);
+  changedScalar(d.pose, "action", p.pose.action, next.pose.action);
+  changedScalar(d.pose, "gesture", p.pose.gesture, next.pose.gesture);
+  changedArray(d.props, "vehicles", p.props.vehicles, next.props.vehicles);
+  changedArray(d.props, "objects", p.props.objects, next.props.objects);
+  changedScalar(d.style, "medium", p.style.medium, next.style.medium);
+  changedScalar(d.style, "isArtworkRequest", p.style.isArtworkRequest, next.style.isArtworkRequest);
+  changedScalar(d.framing, "shotType", p.framing.shotType, next.framing.shotType);
+  return d;
+}
+
+export function diffNonEmpty(
+  prev: VisualSpec | null,
+  next: VisualSpec,
+): boolean {
+  const d = diffVisualSpec(prev, next);
+  if (d.rawUserTextChanged && (next.rawUserText ?? "").trim().length > 0) {
+    return true;
+  }
+  return (
+    Object.keys(d.appearance).length > 0 ||
+    Object.keys(d.clothing).length > 0 ||
+    Object.keys(d.environment).length > 0 ||
+    Object.keys(d.pose).length > 0 ||
+    Object.keys(d.props).length > 0 ||
+    Object.keys(d.style).length > 0 ||
+    Object.keys(d.framing).length > 0
+  );
 }
 
 // ---------------------------------------------------------------------------
