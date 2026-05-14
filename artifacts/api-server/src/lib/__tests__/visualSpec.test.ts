@@ -366,3 +366,228 @@ describe("end-to-end acceptance — prior attempt → follow-up edit → re-enco
     expect(rehydrated!.environment.location).toBe("field");
   });
 });
+
+// =============================================================================
+// Action-based visual intent (Wren spec May 2026)
+// "Stop thinking categories. Start thinking: can a camera capture this?"
+// =============================================================================
+describe("action-based visual intent — Wren acceptance set", () => {
+  // Wren's hard acceptance list. Every one MUST set imageIntent=true and
+  // route to a visual mode (anything other than ART_REFERENCE_MODE — these
+  // are scene/portrait asks).
+  const acceptance: { input: string; expectGesture?: string; expectAction?: string; expectObject?: string }[] = [
+    { input: "holding a frying pan", expectAction: "holding", expectObject: "frying pan" },
+    { input: "doing a peace sign", expectGesture: "peace sign" },
+    { input: "holding a guitar", expectAction: "holding", expectObject: "guitar" },
+    { input: "waving", expectAction: "waving" },
+    { input: "pointing at the camera", expectAction: "pointing" },
+    { input: "sitting with a cup of coffee", expectAction: "sitting", expectObject: "cup of coffee" },
+    // Wren's spec also lists these surface forms:
+    { input: "holding a frying pan doing a peace sign", expectAction: "holding", expectGesture: "peace sign", expectObject: "frying pan" },
+    { input: "with a coffee in her hand", expectAction: "holding", expectObject: "coffee" },
+    { input: "throwing a thumbs up", expectGesture: "thumbs up" },
+    { input: "flashing a v sign", expectGesture: "v sign" },
+    { input: "winking", expectAction: "winking" },
+    { input: "saluting", expectAction: "saluting" },
+    { input: "posing with a tractor", expectAction: "posing", expectObject: "tractor" },
+    { input: "playing the guitar", expectAction: "playing", expectObject: "guitar" },
+    { input: "reading a book", expectAction: "reading", expectObject: "book" },
+    { input: "drinking a pint", expectAction: "drinking", expectObject: "pint" },
+  ];
+
+  for (const tc of acceptance) {
+    it(`flips imageIntent for: "${tc.input}"`, () => {
+      const spec = extractVisualSpec(tc.input);
+      expect(
+        spec.imageIntent,
+        `"${tc.input}" should be image intent. reason="${spec.intentReason}"`,
+      ).toBe(true);
+      if (tc.expectGesture) expect(spec.pose.gesture).toBe(tc.expectGesture);
+      if (tc.expectAction) expect(spec.pose.action).toBe(tc.expectAction);
+      if (tc.expectObject) expect(spec.props.objects).toContain(tc.expectObject);
+
+      // And the resolver must route to a visual mode, not bail out.
+      const { mode } = resolveImageModeFromSpec(spec);
+      expect(mode).toMatch(/SCENE_MODE|FULL_BODY_MODE|SELFIE_MODE|PORTRAIT_MODE|FEET_DETAIL_MODE|SEATED_LENGTHWISE_FULL_BODY_MODE/);
+    });
+  }
+
+  it("does NOT flip on bare narrative pose without object/gesture", () => {
+    // Roleplay narration like "she sits down on the chair" should NOT
+    // trigger image gen — bodyPosition alone without an object / gesture /
+    // performative verb stays as-is.
+    const spec = extractVisualSpec("she sits down on the chair");
+    expect(spec.imageIntent).toBe(false);
+  });
+
+  it("captures gesture even when DOING_GESTURE_RX matches a non-vocab tail", () => {
+    // "doing the worm" — vocab miss, but pose.gesture is still set to the
+    // captured tail so downstream knows it's a performative pose.
+    const spec = extractVisualSpec("doing the worm");
+    expect(spec.imageIntent).toBe(true);
+    expect(spec.pose.gesture).toBeTruthy();
+  });
+
+  it("merge carries pose.action / pose.gesture forward across follow-ups", () => {
+    // Prime: "holding a frying pan doing a peace sign"
+    const turn1 = extractVisualSpec("holding a frying pan doing a peace sign");
+    expect(turn1.pose.action).toBe("holding");
+    expect(turn1.pose.gesture).toBe("peace sign");
+    // Follow-up: "same but on a beach" — environment delta only.
+    const turn2 = extractVisualSpec("same but on a beach");
+    const merged = mergeVisualSpecs(turn1, turn2);
+    expect(merged.pose.action).toBe("holding");
+    expect(merged.pose.gesture).toBe("peace sign");
+    expect(merged.props.objects).toContain("frying pan");
+    expect(merged.environment.location).toBe("beach");
+  });
+
+  it("encode/decode round-trip preserves pose.action and pose.gesture", () => {
+    const spec = extractVisualSpec("holding a guitar doing a peace sign");
+    const encoded = encodeVibeWithSpec(buildVisualDescription(spec), spec);
+    const { spec: rehydrated } = extractVisualSpecFromVibe(encoded);
+    expect(rehydrated!.pose.action).toBe("holding");
+    expect(rehydrated!.pose.gesture).toBe("peace sign");
+    expect(rehydrated!.props.objects).toContain("guitar");
+  });
+});
+
+// =============================================================================
+// Bare-performative narration NEGATIVES — must NOT flip imageIntent.
+// Architect-flagged false-positive class: common chat narration that
+// happens to contain a performative verb.
+// =============================================================================
+describe("action-based intent — narration negatives (must NOT trigger)", () => {
+  const negatives = [
+    "she's just smiling at me",
+    "I was waving him off",
+    "he was pointing the whole time",
+    "they were all laughing at the joke",
+    "I'm just shrugging it off honestly",
+    "we were dancing in the kitchen earlier",
+    "she had been winking at him all night",
+  ];
+  for (const input of negatives) {
+    it(`does NOT flip imageIntent for narration: "${input}"`, () => {
+      const spec = extractVisualSpec(input);
+      expect(
+        spec.imageIntent,
+        `narration "${input}" should NOT be image intent. reason="${spec.intentReason}"`,
+      ).toBe(false);
+    });
+  }
+
+  it("bare 'waving' (1-word imperative fragment) still flips intent", () => {
+    // Wren acceptance — short fragment with no narrative subject.
+    const spec = extractVisualSpec("waving");
+    expect(spec.imageIntent).toBe(true);
+    expect(spec.pose.action).toBe("waving");
+  });
+
+  it("'you waving' (second-person reference) still flips intent", () => {
+    const spec = extractVisualSpec("you waving at me");
+    expect(spec.imageIntent).toBe(true);
+  });
+
+  it("'show me you waving' (request cue) still flips intent", () => {
+    const spec = extractVisualSpec("show me you waving");
+    expect(spec.imageIntent).toBe(true);
+  });
+
+  it("follow-up 'same but waving' merges and flips intent on the merged spec", () => {
+    // Prime turn: scene with environment + appearance.
+    const turn1 = extractVisualSpec("on a beach with blonde hair");
+    // Delta turn: follow-up + bare performative. The delta itself (under
+    // narration heuristic) might or might not flip; what matters is the
+    // merged spec carries pose.action forward and the resolver routes it.
+    const turn2 = extractVisualSpec("same but waving");
+    expect(turn2.isFollowUp).toBe(true);
+    const merged = mergeVisualSpecs(turn1, turn2);
+    expect(merged.pose.action).toBe("waving");
+    expect(merged.environment.location).toBe("beach");
+    expect(merged.appearance.hairColour).toBe("blonde");
+  });
+});
+
+// =============================================================================
+// Boundary negatives — architect-flagged leaks (copula + discourse adverb).
+// =============================================================================
+describe("action-based intent — boundary narration negatives", () => {
+  const negatives = [
+    "just smiling at me",
+    "just waving at me",
+    "you are waving at me",
+    "smiling at me honestly",
+    "literally pointing at me",
+    "she is waving at the kids",
+    "i am dancing alone here",
+    "kinda smiling honestly",
+  ];
+  for (const input of negatives) {
+    it(`rejects boundary narration: "${input}"`, () => {
+      const spec = extractVisualSpec(input);
+      expect(
+        spec.imageIntent,
+        `"${input}" should NOT be image intent. reason="${spec.intentReason}"`,
+      ).toBe(false);
+    });
+  }
+  // Positive controls — these must still pass after the boundary guard.
+  const positives = [
+    "waving",
+    "you waving at me",
+    "show me you waving",
+    "pointing at the camera",
+  ];
+  for (const input of positives) {
+    it(`keeps positive after boundary guard: "${input}"`, () => {
+      const spec = extractVisualSpec(input);
+      expect(
+        spec.imageIntent,
+        `"${input}" should be image intent. reason="${spec.intentReason}"`,
+      ).toBe(true);
+    });
+  }
+});
+
+// =============================================================================
+// Final boundary pass — leaks flagged in the third architect review.
+// =============================================================================
+describe("action-based intent — final boundary pass", () => {
+  const negatives = [
+    "you're waving at me",
+    "youre waving at me",
+    "smiling at me",
+    "waving at her",
+    "pointing at them",
+    "smiling at the kids",
+  ];
+  for (const input of negatives) {
+    it(`rejects: "${input}"`, () => {
+      const spec = extractVisualSpec(input);
+      expect(
+        spec.imageIntent,
+        `"${input}" should NOT be image intent. reason="${spec.intentReason}"`,
+      ).toBe(false);
+    });
+  }
+  // Positive controls — all must still pass after the at-person tightening.
+  const positives = [
+    "waving",
+    "you waving at me",
+    "show me you waving",
+    "show me you smiling at the camera",
+    "pointing at the camera",
+    "doing a peace sign",
+    "holding a frying pan",
+  ];
+  for (const input of positives) {
+    it(`keeps positive: "${input}"`, () => {
+      const spec = extractVisualSpec(input);
+      expect(
+        spec.imageIntent,
+        `"${input}" should be image intent. reason="${spec.intentReason}"`,
+      ).toBe(true);
+    });
+  }
+});

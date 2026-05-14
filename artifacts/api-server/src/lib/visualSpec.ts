@@ -176,6 +176,128 @@ const POSE_VERBS = [
   "cross-legged", "cross legged",
 ];
 
+// ---------------------------------------------------------------------------
+// Action-based visual intent (Wren spec May 2026)
+// ---------------------------------------------------------------------------
+// "If a sentence describes something a camera can capture, generate an image."
+// These are the action signals that flip imageIntent=true ON THEIR OWN —
+// no "show me" / "send" request cue required. Stop thinking categories,
+// start thinking "can a camera see this?".
+
+// Verbs whose mere presence (even bare, no object) means the user is
+// describing a performative/visible state. "waving" alone is camera-worthy;
+// "sitting" alone is not (could be roleplay narration).
+const PERFORMATIVE_VERBS = [
+  "waving", "wave",
+  "pointing", "point",
+  "winking", "winks", "wink",
+  "saluting", "salutes", "salute",
+  "shrugging", "shrugs", "shrug",
+  "smirking", "smirks", "smirk",
+  "smiling", "smiles", "smile",
+  "laughing", "laughs", "laugh",
+  "blowing a kiss", "blowing kisses", "blows a kiss",
+  "kissing the camera", "kisses the camera",
+  "posing", "poses", "pose",
+  "modelling", "modeling", "models",
+  "dancing", "dances", "dance",
+  "twirling", "twirls", "twirl",
+  "spinning", "spins",
+  "jumping", "jumps", "leaps", "leaping",
+  "stretching", "stretches", "stretch",
+  "yawning", "yawns",
+  "crying", "cries",
+  "frowning", "frowns",
+  "nodding", "nods",
+  "clapping", "claps",
+];
+
+// Multi-word and single-word gesture names — when these appear (with or
+// without an action verb) we treat them as visual intent. Gestures exist
+// to be photographed.
+const GESTURE_VOCAB = [
+  "peace sign", "peace fingers", "v sign", "v-sign", "victory sign",
+  "thumbs up", "thumbs-up", "thumb up",
+  "thumbs down", "thumbs-down", "thumb down",
+  "ok sign", "ok hand", "okay sign",
+  "finger gun", "finger guns",
+  "finger heart", "finger hearts", "heart hands", "heart hand",
+  "double peace", "double peace sign",
+  "salute",
+  "wink", "winky face",
+  "shrug",
+  "fist bump", "high five", "high-five",
+  "blowing a kiss", "kiss to the camera", "air kiss",
+  "rock on", "horns up", "metal horns",
+  "pinky promise",
+  "shaka",
+];
+
+// "holding X" / "with X in (her|his|my|the) hand" / "using X" /
+// "carrying X" / "posing with X" / "interacting with X" /
+// "sitting/standing/walking with X" — captures the OBJECT X (1-4 word noun
+// phrase) into props.objects AND captures the verb into pose.action. This
+// is the primary action+object pattern.
+// Object-phrase capture: greedy 1-4 word noun phrase. We capture WORDS
+// atomically (each `[a-z'\-]+`) instead of arbitrary characters so the
+// non-greedy match doesn't bail out at the first inter-word space. The
+// trailing lookahead anchors on real clause boundaries (punctuation, end
+// of string, OR a stop-word like "doing"/"making"/"and"/"with"/"in"/...).
+// Without the stop-word list, "holding a frying pan doing a peace sign"
+// would gobble "frying pan doing a" because `\s` satisfies a permissive
+// lookahead — the explicit list keeps the object phrase tight.
+const NOUN_PHRASE = String.raw`([a-z][a-z'\-]+(?:\s+[a-z][a-z'\-]+){0,3})`;
+const NP_BOUNDARY =
+  String.raw`(?=\s+(?:doing|making|while|and|but|with|in|on|at|for|to|by|near|behind|under|over|beside|against|inside)\b|[.,!?;:]|$)`;
+
+const ACTION_WITH_OBJECT_RX = new RegExp(
+  String.raw`\b(holding|carrying|grasping|clutching|using|wielding|gripping|cradling|hugging|sipping|drinking|eating|reading|writing|painting|playing|strumming|riding|driving|petting|stroking|throwing|catching|kicking|chopping|cooking|stirring|pouring)\s+(?:a|an|the|some|her|his|my|two|three|four|five|several|a\s+few|a\s+couple\s+of|her\s+own|his\s+own|my\s+own)\s+` +
+    NOUN_PHRASE +
+    NP_BOUNDARY,
+  "i",
+);
+
+const WITH_X_IN_HAND_RX = new RegExp(
+  String.raw`\bwith\s+(?:a|an|the|some|her|his|my)\s+` +
+    NOUN_PHRASE +
+    String.raw`\s+in\s+(?:her|his|my|the|one|both)\s+hands?\b`,
+  "i",
+);
+
+const POSING_WITH_RX = new RegExp(
+  String.raw`\b(posing|stood|standing|seated|sitting|sat|kneeling|crouching|leaning|walking|jogging|running)\s+with\s+(?:a|an|the|some|her|his|my)\s+` +
+    NOUN_PHRASE +
+    NP_BOUNDARY,
+  "i",
+);
+
+// "doing X" / "making X (gesture|sign|face)?" / "doing the X" — captures
+// the gesture name. If X matches GESTURE_VOCAB it goes to pose.gesture;
+// otherwise it goes to pose.action.
+const DOING_GESTURE_RX = new RegExp(
+  String.raw`\b(?:doing|making|throwing|flashing|holding\s+up|giving)\s+(?:a|an|the|her|his|my|two)\s+` +
+    NOUN_PHRASE +
+    String.raw`(?:\s+(?:gesture|sign|face|pose|hand))?` +
+    NP_BOUNDARY,
+  "i",
+);
+
+// Camera-relative target — "at the camera", "to the lens", "toward the
+// viewer". Strong signal that the user wants the action photographed.
+// We deliberately do NOT include "at me / at us / at you" here — those
+// are conversational narration ("she's smiling at me") far more often
+// than image asks. The user can still get there via second-person or
+// request-cue branches if they really mean an image.
+const CAMERA_TARGET_RX =
+  /\b(at|to|toward|towards|into|down)\s+(?:the\s+)?(camera|lens|viewer)\b/i;
+
+// "at <someone>" tail — a conversational target that disqualifies the
+// imperative-fragment branch. "smiling at me" / "waving at her" /
+// "pointing at them" all pattern-match here and should NOT auto-flip
+// imageIntent on their own short length. They can still pass via
+// request cue or explicit second-person.
+const AT_PERSON_RX = /\bat\s+(me|us|him|her|them|the\s+kids?|the\s+dog)\b/i;
+
 // Multi-word / unambiguous art keywords only. Bare "painting" / "drawing" /
 // "sketch" are excluded because they collide with verb usage ("at an easel
 // painting something" is a SCENE, not an art-reference request). When the
@@ -279,6 +401,21 @@ export interface VisualSpec {
 
   pose: {
     bodyPosition?: string;
+    /**
+     * A camera-capturable action verb extracted from the user's text:
+     * "holding", "waving", "pointing", "saluting", "carrying", "using", ...
+     * Distinct from bodyPosition (sitting/standing/lying) — action implies
+     * the subject is DOING something visible to a camera, which is the
+     * action-based image-intent signal per Wren spec May 2026.
+     */
+    action?: string;
+    /**
+     * A specific named gesture: "peace sign", "thumbs up", "v sign",
+     * "salute", "finger heart", etc. Set when the user says "doing X" /
+     * "making X" / bare gesture noun. Strongest single signal that the
+     * user wants an image — gestures only exist to be photographed.
+     */
+    gesture?: string;
   };
 
   framing: {
@@ -437,11 +574,87 @@ export function extractVisualSpec(text: string): VisualSpec {
     matched.push(`environment.weather=${weather}`);
   }
 
-  // Pose
+  // Pose — bodyPosition (sitting / standing / lying / kneeling / ...)
   const pose = findFirstMatch(lower, POSE_VERBS);
   if (pose) {
     spec.pose.bodyPosition = pose;
     matched.push(`pose.bodyPosition=${pose}`);
+  }
+
+  // ---- Action-based extraction (Wren spec May 2026) ----
+  // 1) "holding/carrying/using/... <object>" — capture verb as pose.action,
+  //    object phrase as props.objects (additive, deduped against existing).
+  const objectMatch = raw.match(ACTION_WITH_OBJECT_RX);
+  if (objectMatch) {
+    const verb = objectMatch[1]!.toLowerCase();
+    const objectPhrase = objectMatch[2]!.trim().toLowerCase().replace(/\s+/g, " ");
+    spec.pose.action = verb;
+    matched.push(`pose.action=${verb}`);
+    if (objectPhrase && !spec.props.objects.includes(objectPhrase)) {
+      spec.props.objects = [...spec.props.objects, objectPhrase];
+      matched.push(`props.objects+=${objectPhrase}`);
+    }
+  }
+  // 2) "with <X> in (her|his|my|the) hand(s)" — same idea, just a different
+  //    surface form. Implies pose.action="holding" if not already set.
+  const inHandMatch = raw.match(WITH_X_IN_HAND_RX);
+  if (inHandMatch) {
+    const objectPhrase = inHandMatch[1]!.trim().toLowerCase().replace(/\s+/g, " ");
+    if (!spec.pose.action) {
+      spec.pose.action = "holding";
+      matched.push("pose.action=holding (in-hand cue)");
+    }
+    if (objectPhrase && !spec.props.objects.includes(objectPhrase)) {
+      spec.props.objects = [...spec.props.objects, objectPhrase];
+      matched.push(`props.objects+=${objectPhrase}`);
+    }
+  }
+  // 3) "sitting/standing/posing with <object>" — pose verb + object cue.
+  //    Acceptance test: "sitting with a cup of coffee".
+  const posingMatch = raw.match(POSING_WITH_RX);
+  if (posingMatch) {
+    const verb = posingMatch[1]!.toLowerCase();
+    const objectPhrase = posingMatch[2]!.trim().toLowerCase().replace(/\s+/g, " ");
+    if (!spec.pose.bodyPosition) {
+      spec.pose.bodyPosition = verb;
+      matched.push(`pose.bodyPosition=${verb} (posing-with cue)`);
+    }
+    if (!spec.pose.action) {
+      spec.pose.action = verb;
+      matched.push(`pose.action=${verb}`);
+    }
+    if (objectPhrase && !spec.props.objects.includes(objectPhrase)) {
+      spec.props.objects = [...spec.props.objects, objectPhrase];
+      matched.push(`props.objects+=${objectPhrase}`);
+    }
+  }
+  // 4) "doing <X>" / "making <X> (sign|gesture)?" — capture gesture name.
+  //    Prefer the GESTURE_VOCAB match over the captured tail so we
+  //    canonicalise ("doing a peace sign you know" → gesture="peace sign").
+  const doingMatch = raw.match(DOING_GESTURE_RX);
+  if (doingMatch) {
+    const tail = doingMatch[1]!.trim().toLowerCase();
+    const vocabHit = findFirstMatch(tail, GESTURE_VOCAB) ?? findFirstMatch(lower, GESTURE_VOCAB);
+    const gesture = vocabHit ?? tail;
+    spec.pose.gesture = gesture;
+    matched.push(`pose.gesture=${gesture}`);
+  } else {
+    // Bare gesture mention without "doing/making" — "throws a peace sign",
+    // "flashes a v sign", "with a thumbs up" — also counts.
+    const bareGesture = findFirstMatch(lower, GESTURE_VOCAB);
+    if (bareGesture) {
+      spec.pose.gesture = bareGesture;
+      matched.push(`pose.gesture=${bareGesture}`);
+    }
+  }
+  // 5) Bare performative verb (waving / pointing / winking / saluting / ...)
+  //    — these are camera-worthy on their own.
+  if (!spec.pose.action) {
+    const performative = findFirstMatch(lower, PERFORMATIVE_VERBS);
+    if (performative) {
+      spec.pose.action = performative;
+      matched.push(`pose.action=${performative} (performative)`);
+    }
   }
 
   // Framing — explicit shot-type wins
@@ -510,6 +723,8 @@ export function extractVisualSpec(text: string): VisualSpec {
     !!spec.environment.timeOfDay ||
     !!spec.environment.weather ||
     !!spec.pose.bodyPosition ||
+    !!spec.pose.action ||
+    !!spec.pose.gesture ||
     !!spec.framing.shotType ||
     spec.props.vehicles.length > 0 ||
     spec.props.objects.length > 0 ||
@@ -518,6 +733,94 @@ export function extractVisualSpec(text: string): VisualSpec {
   const hasRequestCue = REQUEST_VERBS_RX.test(raw) || REQUEST_FRAMING_RX.test(raw);
   const hasSecondPerson = SECOND_PERSON_RX.test(raw);
   const hasFollowUpCue = FOLLOW_UP_PHRASES_RX.test(raw);
+
+  // ---- Action-based visual intent (Wren spec May 2026) ----
+  // "If a sentence describes something a camera can capture, generate."
+  // STRONG signals (no extra guard required):
+  //   (a) a named gesture ("peace sign", "thumbs up") — gestures only
+  //       exist to be photographed
+  //   (b) an action verb paired with an object ("holding a frying pan")
+  //   (c) a pose verb paired with an object/vehicle
+  //       ("sitting with a cup of coffee", "standing by a tractor")
+  // SOFT signal — bare performative verb ("waving", "smiling", "winking"):
+  //   These also appear in chat narration ("she's just smiling at me",
+  //   "I was waving him off"), so they only count as visual intent when
+  //   accompanied by ANY of:
+  //     - a request cue ("show me waving")
+  //     - a second-person reference (Ashley/you/your/her/herself)
+  //     - a camera-target phrase ("at the camera")
+  //     - the message is a short imperative fragment (≤4 words and no
+  //       third-person/past-tense narrative subject like "she's was I'm")
+  //   Wren's acceptance list keeps bare "waving" working because a
+  //   one-word turn satisfies the imperative-fragment branch.
+  const hasCameraTarget = CAMERA_TARGET_RX.test(raw);
+  const hasActionObject = !!spec.pose.action && spec.props.objects.length > 0;
+  const isPerformativeAction =
+    !!spec.pose.action && PERFORMATIVE_VERBS.includes(spec.pose.action);
+  const hasPoseAndObject =
+    !!spec.pose.bodyPosition &&
+    (spec.props.objects.length > 0 || spec.props.vehicles.length > 0);
+
+  const wordCount = raw.trim().split(/\s+/).length;
+  // Narrative / observation markers that indicate the user is RECOUNTING
+  // or COMMENTING ON an event, not requesting an image. Rough heuristic
+  // covering: third-person/past pronouns, past auxiliaries
+  // (was/were/had/been), present copulas (is/are/am — "you are waving"
+  // is an observation, "you waving" is a request), and discourse adverbs
+  // that almost always sit inside narration ("just smiling at me",
+  // "honestly waving", "literally pointing"). When any of these match we
+  // refuse the soft performative path even if camera-target /
+  // second-person / imperative-fragment also fire.
+  const hasNarrativeSubject =
+    /\b(i|we|they|she|he|him|them|us|she'?s|he'?s|they'?re|you'?re|youre|i'?m|we'?re|i\s+was|we\s+were|they\s+were|she\s+was|he\s+was|i\s+had|she\s+had|he\s+had|was|were|had|been|is|are|am|just|honestly|literally|actually|kinda|sort\s+of|always|already|still)\b/i.test(
+      raw,
+    );
+  // Imperative-fragment also rejects "at me/us/him/her/them/..." tails —
+  // those are conversational ("smiling at me") not image asks.
+  const isImperativeFragment =
+    wordCount <= 4 && !hasNarrativeSubject && !AT_PERSON_RX.test(raw);
+  // Camera-target and second-person can appear inside narration too
+  // ("she's just smiling at me", "I was waving at her"), so for the SOFT
+  // performative path we additionally require !hasNarrativeSubject when
+  // the only positive signal is camera-target/second-person.  Explicit
+  // request cues stay strong on their own (the user asked for the image
+  // even if the surrounding clause is narrated).  isImperativeFragment
+  // already excludes narrative subjects by construction.
+  // For the soft performative path we need DIRECT ADDRESS (you / your /
+  // yourself / ashley) — not bare "her", which the wider second-person
+  // regex accepts as an Ashley referent. Without this, "waving at her"
+  // would qualify as second-person and false-fire. "you waving at me"
+  // still works because "you" satisfies direct address regardless of the
+  // at-person tail.
+  const hasDirectAddress = /\b(you|your|yours|yourself|ashley|ashley'?s)\b/i.test(raw);
+  const performativeAccepted =
+    isPerformativeAction &&
+    (hasRequestCue ||
+      (hasDirectAddress && !hasNarrativeSubject) ||
+      (hasCameraTarget && !hasNarrativeSubject) ||
+      isImperativeFragment);
+
+  if (
+    spec.pose.gesture ||
+    hasActionObject ||
+    hasPoseAndObject ||
+    performativeAccepted
+  ) {
+    spec.imageIntent = true;
+    spec.intentReason =
+      "action-based visual intent — describes a camera-capturable physical state " +
+      `(gesture=${spec.pose.gesture ?? "-"}, action=${spec.pose.action ?? "-"}, ` +
+      `objects=[${spec.props.objects.join(",")}], cameraTarget=${hasCameraTarget}, ` +
+      `performativeAccepted=${performativeAccepted})`;
+    // Action-intent and follow-up are NOT mutually exclusive: "same but
+    // waving" is both an edit (load prior spec) AND a fresh action
+    // attribute. Set the follow-up flags here too so the merge path runs.
+    if (hasFollowUpCue) {
+      spec.isFollowUp = true;
+      spec.isRetryOrEdit = true;
+    }
+    return spec;
+  }
 
   if (hasFollowUpCue) {
     spec.isFollowUp = true;
@@ -613,6 +916,8 @@ export function resolveImageModeFromSpec(
     !!spec.environment.timeOfDay ||
     !!spec.environment.weather ||
     !!spec.pose.bodyPosition ||
+    !!spec.pose.action ||
+    !!spec.pose.gesture ||
     spec.clothing.items.length > 0 ||
     spec.clothing.accessories.length > 0 ||
     spec.props.vehicles.length > 0 ||
@@ -654,8 +959,14 @@ export function buildVisualDescription(spec: VisualSpec): string {
     parts.push(`Environment: ${env.join(", ")}.`);
   }
 
-  if (spec.pose.bodyPosition) {
-    parts.push(`Pose: ${spec.pose.bodyPosition}.`);
+  if (spec.pose.bodyPosition || spec.pose.action || spec.pose.gesture) {
+    const poseParts: string[] = [];
+    if (spec.pose.bodyPosition) poseParts.push(spec.pose.bodyPosition);
+    if (spec.pose.action && spec.pose.action !== spec.pose.bodyPosition) {
+      poseParts.push(spec.pose.action);
+    }
+    if (spec.pose.gesture) poseParts.push(`doing a ${spec.pose.gesture}`);
+    parts.push(`Pose: ${poseParts.join(", ")}.`);
   }
 
   if (spec.clothing.items.length || spec.clothing.accessories.length) {
@@ -752,6 +1063,8 @@ export function mergeVisualSpecs(prior: VisualSpec, delta: VisualSpec): VisualSp
     },
     pose: {
       bodyPosition: delta.pose.bodyPosition ?? prior.pose.bodyPosition,
+      action: delta.pose.action ?? prior.pose.action,
+      gesture: delta.pose.gesture ?? prior.pose.gesture,
     },
     framing: {
       shotType: delta.framing.shotType ?? prior.framing.shotType,
