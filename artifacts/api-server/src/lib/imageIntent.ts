@@ -270,13 +270,16 @@ const WRAPPERS: Record<ImageMode, PromptWrapper> = {
     pendingLabel: "retrying full-body framing — wider",
   },
   FEET_DETAIL_MODE: {
-    // Wren May 2026 follow-up. Feet-only request — should NOT route to
-    // FULL_BODY_MODE. Casual outfit-detail composition: socked feet or
-    // shoes are the subject, both fully visible on a clear floor or sofa
-    // surface, no sexualised framing. All composition language positive
-    // (diffusion ignores negation).
+    // Wren May 2026 follow-up #2. Live result had socks too close to
+    // the bottom edge. Tightening: floor/cushion anchor object that the
+    // model has to render in full, explicit empty-space caps on every
+    // side of the feet, and percent caps on subject size. Subject capped
+    // at central 60 percent of the image area so toes/heels never touch
+    // the frame edge. All composition language stated as positive facts
+    // (diffusion ignores negation). Casual outfit-detail intent — both
+    // feet are the subject, harmless, not sexualised.
     shotType:
-      "Casual outfit-detail photograph of {subject}'s socked feet or shoes, framed as a close, harmless detail shot of her footwear; both feet are fully visible inside the frame, resting naturally on the floor or sofa cushion; the floor or cushion surface beneath both feet is clearly visible, anchoring the composition with empty space around the feet on every side; the camera is angled down toward the feet from a close standing distance with comfortable margins beyond the toes and heels",
+      "Casual harmless outfit-detail photograph of {subject}'s socked feet (or shoes), resting naturally on a sofa cushion or wood floor, photographed as a close detail shot of her footwear, framed tightly on the feet only with the rest of her body outside the frame, modest casual everyday composition. Both complete socked feet are fully visible inside the frame including all toes and both heels, both ankles visible up to roughly the ankle bone. The two feet are placed side by side on the cushion or floor with the soles or toe-fronts angled toward the camera. A small rectangular sofa cushion or floor mat sits underneath both feet and is fully visible inside the frame on every side of the feet, acting as a floor anchor object that the camera includes in full. Both feet together occupy the central sixty percent of the image area, with clear empty cushion or floor space visible beyond the toes (between the toes and the bottom or far edge of the frame), beyond the heels (between the heels and the near edge of the frame), and on both the left and right sides of the feet. Comfortable margin of empty cushion or floor on every side of the feet so neither foot touches any edge of the image. Camera is positioned at a close standing distance angled gently down toward the feet, far enough back to include the entire cushion or floor anchor object inside the frame",
     styleLine:
       "Outfit-detail composition focused on footwear, soft even natural lighting, photorealistic, single subject, no text or watermarks",
     framingHint: "square",
