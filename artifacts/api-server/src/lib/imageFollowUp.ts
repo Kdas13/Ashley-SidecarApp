@@ -280,6 +280,32 @@ export function isDirectImageRequest(text: string): boolean {
   // picture with your tongue out, as if to almost say like, yeah, gotcha"
   // — 14 words but the original verb set didn't include `try`).
   if (isTryImageRequest(trimmed)) return true;
+  // Feet-detail asks ("show me your feet", "image of your feet", "your
+  // socked feet on the sofa") have no strong image noun in IMAGE_NOUN_RX
+  // (`picture|image|photo|photograph|pic|selfie|portrait`) when the
+  // subject IS the feet/shoes themselves. The classifier already
+  // recognises these via FEET_DETAIL_RX with safe OUTFIT/FULL_BODY
+  // guards, so we early-return on FEET_DETAIL_MODE classifications and
+  // skip the noun/verb gate. Per Kane's May 2026 acceptance test.
+  if (trimmed.split(/\s+/).length <= 18) {
+    const cls = classifyImageIntent(trimmed);
+    if (cls.mode === "FEET_DETAIL_MODE") {
+      // Architect-review guard: don't promote declarative descriptions
+      // like "your feet on the floor are cold" — require either explicit
+      // request intent (verb / noun / request framing) OR the absence of
+      // a state-verb so bare imperative phrases ("your feet on the
+      // floor", "feet only", "just your feet") still fire.
+      const hasRequestIntent =
+        IMAGE_VERB_RX.test(trimmed) ||
+        IMAGE_NOUN_RX.test(trimmed) ||
+        REQUEST_FRAMING_RX.test(trimmed);
+      const hasStateVerb =
+        /\b(is|are|was|were|am|be|been|being|look|looks|looked|looking|feel|feels|felt|feeling|seem|seems|seemed|got|get|getting|became|hurt|hurts|ache|aches)\b/i.test(
+          trimmed,
+        );
+      if (hasRequestIntent || !hasStateVerb) return true;
+    }
+  }
   // Cap length — long messages with their own paragraphs of narrative go
   // through the model's normal intent detection.
   if (trimmed.split(/\s+/).length > 18) return false;
