@@ -22,6 +22,7 @@ export const IMAGE_MODES = [
   "SELFIE_MODE",
   "PORTRAIT_MODE",
   "FULL_BODY_MODE",
+  "FOOT_VISIBLE_RETRY",
   "OUTFIT_MODE",
   "POSE_REFERENCE_MODE",
   "SCENE_MODE",
@@ -184,17 +185,30 @@ const WRAPPERS: Record<ImageMode, PromptWrapper> = {
     pendingLabel: "framing a portrait",
   },
   FULL_BODY_MODE: {
-    // Catalogue-style framing language (per Wren spec): force the camera
-    // distance, the floor under the shoes, and empty space above head and
-    // below feet. The "fashion catalogue / not a close portrait" anchor is
-    // there to push the diffusion model out of its default selfie attractor.
+    // Catalogue-style framing language (per Wren spec, May 2026 follow-up).
+    // Pure positive composition — gpt-image-1 ignores negation, so we affirm
+    // the floor under the shoes, the empty space above head and below feet,
+    // and a wide camera distance with the subject smaller in the frame.
     shotType:
-      "Full-length vertical fashion-catalogue portrait of {subject}, a young woman, standing several metres from the camera, her entire body visible from the top of her head to the soles of her shoes, both legs and both feet fully inside the frame, the floor visible beneath both shoes, with clear empty space above her head and below her feet",
+      "Full-length vertical fashion-catalogue reference image of {subject}, a young woman, standing several metres from the camera; her complete figure is visible from the top of her head to the soles of both shoes; both shoes are fully visible and the floor is visible beneath and around both shoes; {subject} is smaller in the frame, centered, with clear empty space above her head and clear empty space below her shoes; the camera is wide enough to show the entire standing body comfortably inside the image",
     styleLine:
       "Vertical portrait composition, fashion catalogue full-body reference style, even readable lighting across the whole body, photorealistic, single subject, no text or watermarks",
     framingHint: "tall",
     requiresFullBodyValidation: true,
     pendingLabel: "framing a full-body shot",
+  },
+  FOOT_VISIBLE_RETRY: {
+    // Stricter retry wording (per Wren spec). Used when the user reports that
+    // a previous FULL_BODY_MODE attempt cropped feet / shoes / floor. Pushes
+    // the camera further back and over-affirms floor + margin to drag the
+    // diffusion model out of its default crop attractor.
+    shotType:
+      "Wider full-length standing reference image of {subject}, a young woman, placed farther from the camera so her whole body fits comfortably inside the frame; her entire figure is shown from head to toe, including both complete shoes and the floor underneath them; visible floor space below both shoes and empty margin above her head; the composition is a full-body clothing-catalogue shot",
+    styleLine:
+      "Vertical portrait composition, full-body clothing-catalogue framing, even readable lighting across the whole body, photorealistic, single subject, no text or watermarks",
+    framingHint: "tall",
+    requiresFullBodyValidation: true,
+    pendingLabel: "retrying full-body framing — wider",
   },
   OUTFIT_MODE: {
     shotType:

@@ -67,6 +67,26 @@ export function isShortFollowUpImageRequest(text: string): boolean {
 const SEND_AGAIN_RX =
   /^\s*(send (it|that|the (pic|picture|photo|image))? ?again|send again|resend|re[- ]?send|try again|do (it|that) again|one more time|another( one)?|again( please)?|retry( it| that)?|generate (it|that) again)\s*[.!?]*\s*$/i;
 
+// Foot-visible-retry triggers (Wren spec, May 2026 follow-up). When the user
+// reports that the most recent FULL_BODY attempt cropped feet / shoes / floor,
+// we reuse the prior vibe and escalate to FOOT_VISIBLE_RETRY mode without any
+// clarifying round-trip. These phrases overlap with IMAGE_DIAGNOSTIC_RX
+// (cropped / missing) so detection MUST run before the diagnostic suppression
+// in isDirectImageRequest — handled by checking foot-retry first in
+// resolveImageFollowUp below.
+const FOOT_VISIBLE_RETRY_RX =
+  /\b(no feet|feet missing|shoes? missing|floor missing|feet cropped|shoes? cropped|cut off at (the )?(ankles?|calves|feet|shoes?)|not head[- ]?to[- ]?toe|try stricter|retry stricter)\b/i;
+
+export function isFootVisibleRetryRequest(text: string): boolean {
+  if (typeof text !== "string") return false;
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  // Cap a little wider than other resolvers — phrases like "cut off at the
+  // ankles" are 5 words and a short complaint sentence around them is fine.
+  if (trimmed.split(/\s+/).length > 14) return false;
+  return FOOT_VISIBLE_RETRY_RX.test(trimmed);
+}
+
 // ---------------------------------------------------------------------------
 // Direct image request detection (no prior visual context required)
 // ---------------------------------------------------------------------------
@@ -325,7 +345,11 @@ export function findPriorImageAttempt(
 export type FollowUpResolution = {
   isFollowUp: true;
   /** Distinguishes `as-a-picture` style from explicit `send again`. */
-  kind: "render_prior_visual" | "send_again" | "direct_image_request";
+  kind:
+    | "render_prior_visual"
+    | "send_again"
+    | "direct_image_request"
+    | "foot_visible_retry";
   /** Raw latest user text (the "as a picture" / "send again" phrase). */
   followUpText: string;
   /** Prior user turn that the follow-up references, if found. */
@@ -352,6 +376,35 @@ export function resolveImageFollowUp(
   latestUserText: string,
   history: ReadonlyArray<HistoryTurn>,
 ): FollowUpResolution | null {
+  // Foot-visible-retry runs FIRST. The trigger phrases overlap with
+  // IMAGE_DIAGNOSTIC_RX ("cropped", "missing"), so deferring to the normal
+  // resolvers would suppress this path. Requires a prior assistant image
+  // attempt to reuse — without one we fall through.
+  if (isFootVisibleRetryRequest(latestUserText)) {
+    const priorAttempt = findPriorImageAttempt(history);
+    const priorVibe = priorAttempt?.vibe ?? null;
+    if (priorAttempt && priorVibe) {
+      const { text: sanitised, changed } = sanitiseExpression(priorVibe);
+      const usable = sanitised && sanitised.trim() ? sanitised : priorVibe;
+      return {
+        isFollowUp: true,
+        kind: "foot_visible_retry",
+        followUpText: latestUserText,
+        priorVisualText: null,
+        sanitisedVisualText: usable,
+        sanitised: changed,
+        priorAttemptVibe: priorVibe,
+        priorAttemptDelivered: Boolean(priorAttempt.imageUrl),
+        resolvedRequest: `STRICTER FULL-BODY RETRY (feet/shoes/floor were cropped on the previous attempt): ${usable.trim()}`,
+        suggestedMode: "FOOT_VISIBLE_RETRY",
+        modeReason:
+          "user reported feet/shoes/floor cropped — escalating to FOOT_VISIBLE_RETRY with prior vibe",
+      };
+    }
+    // No prior attempt to retry — fall through and let the normal resolvers
+    // (or the caller) decide what to do with the message.
+  }
+
   const isResend = isSendAgainRequest(latestUserText);
   const isFollowUp = !isResend && isShortFollowUpImageRequest(latestUserText);
   const isDirect =
@@ -507,6 +560,40 @@ export function buildFollowUpTurnHint(resolution: FollowUpResolution): string {
     );
     return lines.join("\n");
   }
+  if (resolution.kind === "foot_visible_retry") {
+    lines.push("## TURN HINT — foot-visible retry detected");
+    lines.push(
+      "The user reported that the most recent FULL_BODY attempt cropped feet, shoes, or the floor. This is an INSTRUCTION to re-run the same visual with stricter wider framing — NOT a capability question and NOT an invitation to apologise.",
+    );
+    lines.push(`- Follow-up text: "${resolution.followUpText.trim()}"`);
+    if (resolution.priorAttemptVibe) {
+      lines.push(
+        `- Most recent assistant image attempt (decoded vibe): "${resolution.priorAttemptVibe.trim()}"`,
+      );
+    }
+    if (resolution.sanitisedVisualText) {
+      lines.push(
+        `- Sanitised version to USE in the image tag: "${resolution.sanitisedVisualText.trim()}"`,
+      );
+    }
+    lines.push(`- Resolved request: ${resolution.resolvedRequest}`);
+    lines.push(
+      `- Suggested image mode: ${resolution.suggestedMode} (${resolution.modeReason}).`,
+    );
+    lines.push("");
+    lines.push("Required behaviour for THIS turn:");
+    lines.push(
+      "1. EMIT a fresh [image: FOOT_VISIBLE_RETRY | <description>] tag reusing the prior visual. Do NOT re-ask what to render.",
+    );
+    lines.push(
+      "2. Caption it briefly along the lines of: \"That attempt still failed full-body validation: feet/shoes/floor are not visible. I'll retry with wider framing.\" No apologies, no roleplay narration.",
+    );
+    lines.push(
+      "3. Do NOT use phantom-delivery phrases (\"here it is\", \"is this it?\", \"sending it now\") without an actual [image:] tag in the SAME reply.",
+    );
+    return lines.join("\n");
+  }
+
   if (resolution.kind === "send_again") {
     lines.push("## TURN HINT — send-again / retry image request detected");
     lines.push(
@@ -690,10 +777,15 @@ export type SynthesizedImageReply = {
 };
 
 function shortCaptionFor(mode: ImageMode, kind: FollowUpResolution["kind"]): string {
+  if (kind === "foot_visible_retry") {
+    return "That attempt still failed full-body validation: feet/shoes/floor were not visible. Retrying with wider framing.";
+  }
   if (kind === "send_again") return "Retrying — wait for the image to arrive before assuming it landed.";
   switch (mode) {
     case "FULL_BODY_MODE":
-      return "Full-body shot incoming. Tell me if both feet, shoes, and the floor aren't all visible — I'll retry stricter.";
+      return "Full-body shot incoming. If feet, shoes, or the floor are cropped, say \"feet missing\" / \"cut off at the ankles\" / \"retry stricter\" and I'll re-run wider.";
+    case "FOOT_VISIBLE_RETRY":
+      return "Wider full-body retry incoming. Same check — both shoes and the floor below them should be in frame.";
     case "OUTFIT_MODE":
       return "Outfit shot incoming — head-to-toe so the whole look is in frame.";
     case "POSE_REFERENCE_MODE":
