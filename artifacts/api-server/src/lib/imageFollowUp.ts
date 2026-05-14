@@ -31,6 +31,7 @@ import {
   buildVisualDescription,
   encodeVibeWithSpec,
   extractVisualSpec,
+  extractVisualSpecCompound,
   extractVisualSpecFromVibe,
   mergeVisualSpecs,
   resolveImageModeFromSpec,
@@ -804,7 +805,7 @@ export function resolveImageFollowUp(
   //      else (first-pass visual ask):
   //        - resolve mode from delta alone
   //        - encode delta into the vibe so a follow-up can find it
-  const deltaSpec = extractVisualSpec(latestUserText);
+  const deltaSpec = extractVisualSpecCompound(latestUserText);
   if (deltaSpec.imageIntent) {
     let workingSpec: VisualSpec = deltaSpec;
     let priorAttemptVibe: string | null = null;

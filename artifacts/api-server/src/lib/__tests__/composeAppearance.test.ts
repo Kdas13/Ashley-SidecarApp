@@ -7,6 +7,7 @@ import {
   extractVisualSpecFromVibe,
   mergeVisualSpecs,
   scrubVibeForOverrides,
+  extractVisualSpecCompound,
 } from "../visualSpec.js";
 import { synthesizeImageActionReplyFromSpec } from "../imageFollowUp.js";
 
@@ -145,6 +146,53 @@ describe("composeAppearance — Wren May 2026 precedence contract", () => {
     const llmVibe = "Ashley with lavender-tinted hair, pale lavender highlights, smiling";
     const out = scrubVibeForOverrides(llmVibe, "lavender hair", spec);
     expect(out.toLowerCase()).not.toContain("lavender");
+  });
+
+  it("compound: Wren canonical multi-directive input keeps every directive", () => {
+    const input =
+      "Ginger hair, no lavender. Black leather biker jacket. Sat on a bar stool at a bar.";
+    const spec = extractVisualSpecCompound(input);
+    expect(spec.imageIntent).toBe(true);
+    expect(spec.appearance.hairColour).toBe("ginger");
+    expect(spec.negations).toContain("lavender");
+    expect(spec.clothing.items).toContain("jacket");
+    expect(spec.environment.location).toBe("bar");
+    expect(spec.pose.bodyPosition).toBe("sat");
+    expect(spec.rawUserText).toBe(input);
+  });
+
+  it("compound: newline-separated directives are each parsed independently", () => {
+    const input = "Ginger hair, no lavender\nBlack leather biker jacket\nSat on a bar stool at a bar";
+    const spec = extractVisualSpecCompound(input);
+    expect(spec.appearance.hairColour).toBe("ginger");
+    expect(spec.negations).toContain("lavender");
+    expect(spec.clothing.items).toContain("jacket");
+    expect(spec.environment.location).toBe("bar");
+    expect(spec.pose.bodyPosition).toBe("sat");
+  });
+
+  it("compound: later directive on the SAME slot wins (delta semantics)", () => {
+    const spec = extractVisualSpecCompound("Ginger hair. Black hair.");
+    expect(spec.appearance.hairColour).toBe("black");
+  });
+
+  it("compound: array slots union across directives (clothing items)", () => {
+    const spec = extractVisualSpecCompound("Black leather jacket. White t-shirt.");
+    expect(spec.clothing.items).toEqual(expect.arrayContaining(["jacket", "t-shirt"]));
+  });
+
+  it("compound: full original message survives in rawUserText for diffusion anchor", () => {
+    const input = "Ginger hair, no lavender. Black leather biker jacket. Sat on a bar stool at a bar.";
+    const spec = extractVisualSpecCompound(input);
+    const desc = buildVisualDescription(spec);
+    expect(desc.toLowerCase()).toContain("black leather biker jacket");
+    expect(desc.toLowerCase()).toContain("bar stool");
+  });
+
+  it("compound: single-fragment input still falls through to single-pass extractor", () => {
+    const spec = extractVisualSpecCompound("Black hair, no lavender at all");
+    expect(spec.appearance.hairColour).toBe("black");
+    expect(spec.negations).toContain("lavender");
   });
 
   it("acceptance e2e: synth marker description for the canonical case contains 'black hair' and zero 'lavender'", () => {

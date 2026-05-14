@@ -46,7 +46,7 @@ import {
   synthesizeImageActionReplyFromSpec,
   type HistoryTurn as FollowUpHistoryTurn,
 } from "../lib/imageFollowUp";
-import { composeAppearance, extractVisualSpec, extractVisualSpecFromVibe, scrubVibeForOverrides } from "../lib/visualSpec";
+import { composeAppearance, extractVisualSpec, extractVisualSpecCompound, extractVisualSpecFromVibe, scrubVibeForOverrides } from "../lib/visualSpec";
 import { approveTicketById } from "./tickets";
 import {
   generateImageBase64,
@@ -923,7 +923,7 @@ router.post("/chat", async (req, res): Promise<void> => {
   // intent=MUTATION + subject=ASHLEY → spec.imageIntent=true → synth marker
   // from spec → /chat/selfie pipeline. The LLM never runs on this turn.
   try {
-    const spec = extractVisualSpec(userContent);
+    const spec = extractVisualSpecCompound(userContent);
     if (spec.imageIntent) {
       const synth = synthesizeImageActionReplyFromSpec(spec, userContent);
       if (synth) {
@@ -3094,7 +3094,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     // over. Same hard-gate guarantee as the resolver path.
     if (!imageGateSynth) {
       try {
-        const spec = extractVisualSpec(userRow.content);
+        const spec = extractVisualSpecCompound(userRow.content);
         if (spec.imageIntent) {
           const synth = synthesizeImageActionReplyFromSpec(spec, userRow.content);
           if (synth) {

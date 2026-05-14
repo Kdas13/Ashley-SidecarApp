@@ -1007,6 +1007,69 @@ export function resolveImageModeFromSpec(
   return { mode: "PORTRAIT_MODE", reason: "no specific cue — default portrait" };
 }
 
+/**
+ * Compound-directive extractor (Wren May 2026, multi-line input).
+ *
+ * The single-pass extractor does category-by-category vocab matching across
+ * the WHOLE message. That works for "ginger hair" but breaks the second a
+ * user stacks directives in one turn:
+ *
+ *   Ginger hair, no lavender
+ *   Black leather biker jacket
+ *   Sat on a bar stool at a bar
+ *
+ * The single-pass parser will still capture *some* slots (hairColour=ginger,
+ * negations=[lavender], clothing.items=[jacket], environment.location=bar,
+ * pose.bodyPosition=sat), but the rich modifiers ("black leather biker",
+ * "bar stool") only survive via the rawUserText "Original request:" line —
+ * and that line is one sentence buried under structured slots, so diffusion
+ * gives it less weight than a slot-named anchor.
+ *
+ * This compound pass:
+ *   1. Splits the input on hard directive delimiters (newlines and sentence
+ *      stops). Commas inside a directive stay (so "ginger hair, no lavender"
+ *      stays as one fragment and the negation cue still binds to "lavender").
+ *   2. Runs the single-pass extractor on each fragment in isolation, so each
+ *      directive's slots are scored without the other directives' tokens
+ *      crowding the vocab matchers.
+ *   3. Merges per-fragment specs left-to-right via mergeVisualSpecs — that
+ *      gives delta-wins for scalar slots (later directive overrides earlier
+ *      for the same attribute, which is the right semantics if Wren writes
+ *      "Ginger hair. Black hair.") and union for array slots (clothing
+ *      items, accessories, props.objects, negations).
+ *   4. Restores rawUserText to the FULL original message so the
+ *      "Original request:" anchor in buildVisualDescription preserves every
+ *      directive verbatim — no detail loss for diffusion to grip.
+ *
+ * Falls through to the single-pass extractor when the input is one fragment.
+ */
+export function extractVisualSpecCompound(text: string): VisualSpec {
+  const trimmed = (text ?? "").trim();
+  if (!trimmed) return extractVisualSpec(text);
+  // Split on newlines OR a period followed by whitespace/end. We do NOT
+  // split on commas — many single directives contain "X, no Y" cues where
+  // the negation needs to bind to its target inside one fragment.
+  const fragments = trimmed
+    .split(/\n+|\.\s+|\.$/)
+    .map((d) => d.trim())
+    .filter(Boolean);
+  if (fragments.length <= 1) return extractVisualSpec(text);
+
+  let merged: VisualSpec | null = null;
+  for (const fragment of fragments) {
+    const partial = extractVisualSpec(fragment);
+    merged = merged ? mergeVisualSpecs(merged, partial) : partial;
+  }
+  if (!merged) return extractVisualSpec(text);
+  // The merge layer's last-wins on rawUserText would erase earlier
+  // directives. Restore the FULL original text so buildVisualDescription's
+  // "Original request:" line — and all downstream regex probes that read
+  // rawUserText (FEET_ONLY_RX, SEATED_LENGTHWISE_RX, FOLLOW_UP_PHRASES_RX,
+  // SELFIE_RX) — see exactly what the user typed.
+  merged.rawUserText = trimmed;
+  return merged;
+}
+
 // ---------------------------------------------------------------------------
 // Structured description builder
 // ---------------------------------------------------------------------------
