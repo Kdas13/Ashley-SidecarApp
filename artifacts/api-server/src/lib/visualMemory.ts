@@ -1,28 +1,45 @@
 // ---------------------------------------------------------------------------
 // Visual Memory Anchors — Wren May 2026 spec.
 //
-// A visual memory anchor is a STRUCTURED scene memory that Ashley can recall
-// on explicit request and use to drive image generation. It is NOT general
-// memory guessing, NOT a profile mutation, and NOT something the LLM is
-// allowed to invent details for. Every field is either a concrete string or
-// the literal sentinel "UNKNOWN" — when the user asks Ashley to recreate an
-// anchor that has UNKNOWN fields, Ashley MUST say so and ask Kane to fill
-// them in, never fake certainty.
+// Canonical anchor schema (Wren-authored): the `data` payload is stored
+// LITERALLY as he writes it. The pilot anchor is `date_sofa_001`:
 //
-// Pilot scope: one anchor (`date_sofa_001`), populated from the in-app
-// "memory drawer" screenshot Wren attached. The store is an in-process
-// module-level constant — fine for single-user pilot, swap for a typed JSON
-// file or DB table when a second anchor (or a second user) shows up.
+//   {
+//     "memory_id": "date_sofa_001",
+//     "label": "our date sofa",
+//     "sofa": {
+//       "color": "dark brown almost black",
+//       "material": "leather",
+//       "shape": "2-seater rectangular",
+//       "armrests": "high, level with back"
+//     },
+//     "lighting": "dim romantic",
+//     "window": "large stained glass, blue and purple",
+//     "environment": {
+//       "moonlight": true,
+//       "rain": true,
+//       "lamp_position": "behind sofa"
+//     }
+//   }
 //
-// Wire-up:
+// Top-level keys are either scalars (string | boolean | UNKNOWN) or a nested
+// group of scalars. We don't recurse deeper than one level — anything more
+// nested than that is over-engineering for what's a description format.
+//
+// System metadata (importance, usage, emotionalContext) lives OUTSIDE the
+// `data` payload — it's not part of Wren's schema, it's plumbing for the
+// engine. `memoryId` and `label` are mirrored at the top of the anchor for
+// ergonomic access (`anchor.memoryId` instead of `anchor.data.memory_id`).
+//
+// Wire-up unchanged from the prior shape:
 //   1. /chat detects a memory request via `findVisualMemoryInText` BEFORE
 //      the generic image-intent gate fires.
-//   2. If the matched anchor has UNKNOWN fields → return a clarifying
+//   2. If the matched anchor has UNKNOWN/empty fields → return a clarifying
 //      assistant message; do NOT generate an image.
-//   3. Otherwise, synthesise the [image: MODE | desc] marker as usual but
-//      embed `{{VMEM}}<memoryId>{{/VMEM}}` in the description so
-//      /chat/selfie can re-resolve the anchor at render time and pass a
-//      `sceneAnchor` directive into buildModePromptBlock.
+//   3. Otherwise synthesise the [image: MODE | desc] marker as usual but
+//      embed `{{VMEM}}<memoryId>{{/VMEM}}` in the description so /chat/selfie
+//      can re-resolve the anchor at render time and pass a `sceneAnchor`
+//      directive into buildModePromptBlock.
 //   4. The anchor never touches profile.appearance — composeAppearance still
 //      sees the unmodified profile string. Identity stays lavender; only
 //      this one selfie carries the sofa-room scene description.
@@ -30,16 +47,22 @@
 
 export const UNKNOWN = "UNKNOWN" as const;
 
-export type VisualFieldValue = string | string[] | typeof UNKNOWN;
+export type AnchorScalar = string | boolean | typeof UNKNOWN;
+export type AnchorGroup = Record<string, AnchorScalar>;
+export type AnchorField = AnchorScalar | AnchorGroup;
 
-export type VisualMemoryObjectFields = Record<string, VisualFieldValue>;
+// `data` is the raw Wren-authored payload. memory_id and label are required;
+// everything else is freeform scalar/group structure.
+export type VisualMemoryAnchorData = {
+  memory_id: string;
+  label: string;
+} & Record<string, AnchorField>;
 
 export type VisualMemoryAnchor = {
   memoryId: string;
-  type: "visual_scene_anchor";
   label: string;
+  data: VisualMemoryAnchorData;
   importance: "low" | "medium" | "high";
-  objects: Record<string, VisualMemoryObjectFields>;
   emotionalContext?: string;
   usage: {
     allowedFor: string[];
@@ -48,42 +71,35 @@ export type VisualMemoryAnchor = {
 };
 
 // ---------------------------------------------------------------------------
-// Pilot store. date_sofa_001 is populated from the screenshot Wren attached
-// (in-app "memory drawer" entry he wrote himself). Fields he didn't supply
-// stay UNKNOWN so the missing-fields path exercises against real gaps.
+// Pilot store. date_sofa_001 mirrors the JSON Wren sent verbatim.
 // ---------------------------------------------------------------------------
 
 const STORE: Record<string, VisualMemoryAnchor> = {
   date_sofa_001: {
     memoryId: "date_sofa_001",
-    type: "visual_scene_anchor",
-    label: "the sofa from our date",
+    label: "our date sofa",
     importance: "high",
-    objects: {
-      sofa: {
-        color: "dark brown almost black",
-        material: "leather",
-        shape: "two-seater rectangular",
-        armrests: "high armrests, the same level as the back of the sofa",
-        cushions: "comfy soft leather",
-        distinctive_features: [],
-      },
-      room: {
-        lighting: "dimmed-down romantic lighting",
-        background:
-          "seats facing a large old stained-glass window with deep blue and purple shades; a lamp on a table behind the sofa",
-        nearby_objects: [
-          "table behind the sofa with a lamp on it",
-          "stained-glass window directly in front of the seats",
-        ],
-        weather:
-          "lots of moonlight outside shining through the blue and purple window panes; raining outside",
-      },
-    },
     emotionalContext: "Ashley waiting for Kane to come back",
     usage: {
       allowedFor: ["scene_shot", "image_generation"],
       requiresExplicitRequest: true,
+    },
+    data: {
+      memory_id: "date_sofa_001",
+      label: "our date sofa",
+      sofa: {
+        color: "dark brown almost black",
+        material: "leather",
+        shape: "2-seater rectangular",
+        armrests: "high, level with back",
+      },
+      lighting: "dim romantic",
+      window: "large stained glass, blue and purple",
+      environment: {
+        moonlight: true,
+        rain: true,
+        lamp_position: "behind sofa",
+      },
     },
   },
 };
@@ -91,19 +107,21 @@ const STORE: Record<string, VisualMemoryAnchor> = {
 // ---------------------------------------------------------------------------
 // Natural-language triggers per anchor. Kept as a separate map (not on the
 // anchor itself) so the data structure stays JSON-portable for a future
-// file/table backing store. Every regex is anchored loosely so phrasing
-// variations ("the sofa from our date", "recreate the sofa from our date",
-// "use the sofa memory") all match.
+// file/table backing store. Triggers cover both label phrasings ("our date
+// sofa" + the older "the sofa from our date") so existing chat habits don't
+// break.
 // ---------------------------------------------------------------------------
 
 const TRIGGERS: Record<string, RegExp[]> = {
   date_sofa_001: [
     /\bdate[_\s-]?sofa[_\s-]?001\b/i,
+    /\b(?:our|the|that)\s+date\s+sofa\b/i,
     /\b(?:the\s+)?sofa\s+from\s+(?:our|the|that)\s+date\b/i,
-    /\buse\s+(?:the\s+)?sofa\s+memory\b/i,
-    /\brecreate\s+(?:the\s+)?sofa\s+memory\b/i,
+    /\buse\s+(?:the\s+)?(?:date\s+)?sofa\s+memory\b/i,
+    /\brecreate\s+(?:the\s+)?(?:date\s+)?sofa\s+memory\b/i,
     /\brecreate\s+(?:the\s+)?sofa\s+from\s+(?:our|the|that)\s+date\b/i,
-    /\bsofa\s+memory\b/i,
+    /\brecreate\s+(?:our|the|that)\s+date\s+sofa\b/i,
+    /\b(?:date\s+)?sofa\s+memory\b/i,
   ],
 };
 
@@ -128,70 +146,109 @@ export function findVisualMemoryInText(text: string | null | undefined): VisualM
 }
 
 // ---------------------------------------------------------------------------
-// Missing-field detection. Returns dotted paths ("sofa.color", "room.lighting")
-// for every field whose value is UNKNOWN, an empty string, or an empty array.
-// Empty arrays for *_features / nearby_objects fields are treated as MISSING
-// only when the entire memory has no concrete content elsewhere — Wren's
-// pilot anchor has empty distinctive_features but rich room fields, so we
-// don't want to block on cosmetic emptiness. Strict UNKNOWN scalar fields
-// always count.
+// Field walker. Iterates the user-authored `data` payload, skipping the
+// `memory_id` / `label` meta keys. Yields one entry per scalar field — for
+// nested groups, the path is `[groupName, fieldName]`. We deliberately stop
+// at one level of nesting; the schema is a description format, not a tree.
 // ---------------------------------------------------------------------------
 
-const SCALAR_REQUIRED_HINT = /^(color|material|shape|armrests|cushions|lighting|background)$/i;
+const META_KEYS = new Set(["memory_id", "label"]);
+
+type WalkVisitor = (path: string[], value: AnchorScalar) => void;
+
+function walkAnchorFields(data: VisualMemoryAnchorData, visit: WalkVisitor): void {
+  for (const [key, value] of Object.entries(data)) {
+    if (META_KEYS.has(key)) continue;
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      for (const [subKey, subValue] of Object.entries(value as AnchorGroup)) {
+        visit([key, subKey], subValue as AnchorScalar);
+      }
+    } else {
+      visit([key], value as AnchorScalar);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Missing-field detection. Returns dotted paths for every field whose value
+// is UNKNOWN or an empty string. Booleans never count as missing — `false`
+// is a real value (e.g. moonlight=false means a clear night, not unknown).
+// ---------------------------------------------------------------------------
+
+function isMissing(value: AnchorScalar): boolean {
+  if (value === UNKNOWN) return true;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length === 0 || trimmed.toUpperCase() === UNKNOWN;
+  }
+  return false;
+}
 
 export function detectMissingFields(memory: VisualMemoryAnchor): string[] {
   const missing: string[] = [];
-  for (const [objectName, fields] of Object.entries(memory.objects)) {
-    for (const [fieldName, value] of Object.entries(fields)) {
-      const path = `${objectName}.${fieldName}`;
-      if (value === UNKNOWN) {
-        missing.push(path);
-        continue;
-      }
-      if (typeof value === "string") {
-        if (!value.trim() || value.trim().toUpperCase() === UNKNOWN) {
-          missing.push(path);
-        }
-        continue;
-      }
-      if (Array.isArray(value)) {
-        // Only required-feeling array fields trigger a "missing" — distinctive
-        // empties are fine.
-        if (value.length === 0 && SCALAR_REQUIRED_HINT.test(fieldName)) {
-          missing.push(path);
-        }
-      }
-    }
-  }
+  walkAnchorFields(memory.data, (path, value) => {
+    if (isMissing(value)) missing.push(path.join("."));
+  });
   return missing;
 }
 
 // ---------------------------------------------------------------------------
 // Prompt formatting. Produces the directive block injected into the diffusion
 // prompt right after the appearance sentence. Wording is explicit ("use these
-// exact details") so the model treats it as constraint, not flavour text.
+// EXACT details") so the model treats it as constraint, not flavour text.
+//
+// Booleans are rendered semantically when the field name maps to a known
+// presence concept (moonlight, rain, snow, fog, etc). Otherwise true → "yes",
+// false is omitted (absence isn't worth a prompt token unless meaningful).
 // ---------------------------------------------------------------------------
 
-function formatFieldValue(value: VisualFieldValue): string {
-  if (value === UNKNOWN) return "";
-  if (typeof value === "string") return value.trim();
-  if (Array.isArray(value)) return value.filter(Boolean).join(", ");
-  return "";
+const BOOLEAN_PRESENCE_PHRASES: Record<string, { true: string; false: string }> = {
+  moonlight: { true: "moonlight outside", false: "no moonlight" },
+  rain: { true: "raining outside", false: "dry outside" },
+  raining: { true: "raining outside", false: "dry outside" },
+  snow: { true: "snow outside", false: "no snow" },
+  snowing: { true: "snow outside", false: "no snow" },
+  fog: { true: "fog outside", false: "clear, no fog" },
+};
+
+function formatScalar(fieldName: string, value: AnchorScalar): string | null {
+  if (value === UNKNOWN) return null;
+  if (typeof value === "boolean") {
+    const phrase = BOOLEAN_PRESENCE_PHRASES[fieldName.toLowerCase()];
+    if (phrase) return phrase[value ? "true" : "false"];
+    if (!value) return null;
+    return `${fieldName.replace(/_/g, " ")}: yes`;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return `${fieldName.replace(/_/g, " ")}: ${trimmed}`;
 }
 
 export function formatVisualMemoryDirective(memory: VisualMemoryAnchor): string {
-  const parts: string[] = [];
-  for (const [objectName, fields] of Object.entries(memory.objects)) {
-    const inner: string[] = [];
-    for (const [fieldName, value] of Object.entries(fields)) {
-      const formatted = formatFieldValue(value);
-      if (!formatted) continue;
-      inner.push(`${fieldName.replace(/_/g, " ")}: ${formatted}`);
-    }
-    if (inner.length > 0) {
-      parts.push(`${objectName} — ${inner.join("; ")}`);
+  // Bucket fields by parent group so we can render "sofa — color: ...; material: ..." prose.
+  const groups: Record<string, string[]> = {};
+  const flat: string[] = [];
+  for (const [key, value] of Object.entries(memory.data)) {
+    if (META_KEYS.has(key)) continue;
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      const inner: string[] = [];
+      for (const [subKey, subValue] of Object.entries(value as AnchorGroup)) {
+        const formatted = formatScalar(subKey, subValue as AnchorScalar);
+        if (formatted) inner.push(formatted);
+      }
+      if (inner.length > 0) groups[key] = inner;
+    } else {
+      const formatted = formatScalar(key, value as AnchorScalar);
+      if (formatted) flat.push(formatted);
     }
   }
+
+  const parts: string[] = [];
+  for (const [group, inner] of Object.entries(groups)) {
+    parts.push(`${group} — ${inner.join("; ")}`);
+  }
+  if (flat.length > 0) parts.push(flat.join("; "));
+
   if (parts.length === 0) return "";
   const lead = `Visual memory anchor "${memory.label}" (id: ${memory.memoryId}) — render the scene using these EXACT remembered details, do not invent or substitute:`;
   return `${lead} ${parts.join(". ")}.`;
@@ -239,6 +296,25 @@ export function encodeMemoryIdInDescription(description: string, memoryId: strin
   const safeId = memoryId.replace(/[^A-Za-z0-9_\-]/g, "");
   if (!safeId) return description;
   return `${description.trim()} ${VMEM_MARKER_OPEN}${safeId}${VMEM_MARKER_CLOSE}`;
+}
+
+// Strip BOTH the VMEM marker and the visualSpec VSPEC marker from user-
+// supplied text. Without this, a chat message like
+// `recreate the sofa {{VMEM}}date_sofa_001{{/VMEM}}` would get baked into
+// the assistant's selfieVibe and resolve to that anchor at render time —
+// bypassing `findVisualMemoryInText` entirely. Same risk for VSPEC.
+// Apply this to user input BEFORE it enters extractVisualSpecCompound /
+// synthesizeImageActionReplyFromSpec.
+const VSPEC_BLOCK_RX_GLOBAL = /\{\{VSPEC\}\}[\s\S]*?\{\{\/VSPEC\}\}/g;
+const VMEM_BLOCK_RX_GLOBAL = /\{\{VMEM\}\}[\s\S]*?\{\{\/VMEM\}\}/g;
+
+export function stripUserSuppliedMarkers(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(VMEM_BLOCK_RX_GLOBAL, "")
+    .replace(VSPEC_BLOCK_RX_GLOBAL, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function extractMemoryIdFromVibe(vibe: string | null | undefined): {

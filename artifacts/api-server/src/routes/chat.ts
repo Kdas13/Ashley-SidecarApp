@@ -55,6 +55,7 @@ import {
   formatMissingFieldsAsk,
   formatVisualMemoryDirective,
   getVisualMemory,
+  stripUserSuppliedMarkers,
 } from "../lib/visualMemory";
 import { approveTicketById } from "./tickets";
 import {
@@ -639,7 +640,10 @@ router.post("/chat", async (req, res): Promise<void> => {
   }
   const { id: userId, content, replyTo } = parsed.data.userMessage;
   const { clientNow, clientTimezone, debug: debugMode = false } = parsed.data;
-  const userContent = content.trim();
+  // Strip {{VMEM}} / {{VSPEC}} markers from user input before any spec / synth
+  // / persistence path sees it — without this a user could smuggle a marker
+  // into chat to fake an anchor reference and bypass the visual-memory gate.
+  const userContent = stripUserSuppliedMarkers(content.trim());
   if (!userContent) {
     res.status(400).json({ error: "content is required" });
     return;
@@ -2982,7 +2986,8 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   // ---- New-turn mode: persist the user row idempotently (mirrors /chat).
   let userRow: Message | null = null;
   if (!isContinue && userMessage) {
-    const userContent = userMessage.content.trim();
+    // Strip {{VMEM}} / {{VSPEC}} markers — see the /chat endpoint for rationale.
+    const userContent = stripUserSuppliedMarkers(userMessage.content.trim());
     if (!userContent) {
       res.status(400).json({ error: "content is required" });
       return;
