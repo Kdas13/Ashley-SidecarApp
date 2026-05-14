@@ -1127,10 +1127,43 @@ export function buildVisualDescription(spec: VisualSpec): string {
   //
   // Per-directive scrubbing keeps each negation phrase localised and
   // stops cross-directive comma orphans (split first, scrub each, rejoin).
-  const directives = (spec.rawUserText ?? "")
+  const rawDirectives = (spec.rawUserText ?? "")
     .split(/\n+|\.\s+|\.$/)
     .map((d) => scrubNegationPhrases(d.trim(), spec.negations).trim())
     .filter((d) => d.length > 0);
+  // Wren May 2026: sort directives so SCENE-bearing fragments lead and
+  // appearance-bearing fragments trail. Diffusion latches hardest on the
+  // first sentence inside the brief; if "Ginger hair" leads it crops to
+  // a headshot regardless of the wider mode wrapper. Re-running the
+  // single-pass extractor per fragment is cheap (vocab regex on ~10 words)
+  // and lets us classify without duplicating slot logic.
+  const directives = [...rawDirectives].sort((a, b) => {
+    const sa = extractVisualSpec(a);
+    const sb = extractVisualSpec(b);
+    const sceneA =
+      !!sa.environment.location ||
+      !!sa.environment.timeOfDay ||
+      !!sa.environment.weather ||
+      !!sa.pose.bodyPosition ||
+      !!sa.pose.action ||
+      sa.clothing.items.length > 0 ||
+      sa.clothing.accessories.length > 0 ||
+      sa.props.objects.length > 0 ||
+      sa.props.vehicles.length > 0;
+    const sceneB =
+      !!sb.environment.location ||
+      !!sb.environment.timeOfDay ||
+      !!sb.environment.weather ||
+      !!sb.pose.bodyPosition ||
+      !!sb.pose.action ||
+      sb.clothing.items.length > 0 ||
+      sb.clothing.accessories.length > 0 ||
+      sb.props.objects.length > 0 ||
+      sb.props.vehicles.length > 0;
+    if (sceneA && !sceneB) return -1;
+    if (!sceneA && sceneB) return 1;
+    return 0;
+  });
   if (directives.length > 0) {
     parts.push(`Visual brief: ${directives.join(". ")}.`);
   }

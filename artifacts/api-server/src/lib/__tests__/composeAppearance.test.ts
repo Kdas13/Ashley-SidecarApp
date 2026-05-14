@@ -10,6 +10,46 @@ import {
   extractVisualSpecCompound,
 } from "../visualSpec.js";
 import { synthesizeImageActionReplyFromSpec } from "../imageFollowUp.js";
+import { wrapperFor, buildModePromptBlock } from "../imageIntent.js";
+import { resolveImageModeFromSpec } from "../visualSpec.js";
+
+describe("SCENE_MODE wrapper — anti-selfie framing contract", () => {
+  it("scene mutation routes to SCENE_MODE with tall canvas + wide-shot wrapper", () => {
+    const input = "Ginger hair, no lavender. Black leather biker jacket. Sat on a bar stool at a bar.";
+    const spec = extractVisualSpecCompound(input);
+    const { mode } = resolveImageModeFromSpec(spec);
+    expect(mode).toBe("SCENE_MODE");
+    const w = wrapperFor("SCENE_MODE");
+    expect(w.framingHint).toBe("tall");
+    // Wrapper text MUST explicitly forbid selfie/portrait crops and demand
+    // both subject and environment be visible. Without this, diffusion
+    // crops to a tight headshot regardless of the "Scene:" body text.
+    expect(w.shotType.toLowerCase()).toContain("not a close-up");
+    expect(w.shotType.toLowerCase()).toContain("not a selfie");
+    expect(w.shotType.toLowerCase()).toMatch(/wide|pulls back/);
+    expect(w.shotType.toLowerCase()).toContain("environment");
+  });
+
+  it("final SCENE_MODE prompt leads with anti-selfie wrapper, then scene-anchored brief", () => {
+    const input = "Ginger hair, no lavender. Black leather biker jacket. Sat on a bar stool at a bar.";
+    const spec = extractVisualSpecCompound(input);
+    const vibe = buildVisualDescription(spec);
+    const prompt = buildModePromptBlock({
+      mode: "SCENE_MODE",
+      vibe,
+      subjectName: "Ashley",
+      appearance: "pale skin, hazel-green eyes, ginger hair",
+    });
+    expect(prompt.toLowerCase()).toContain("not a close-up");
+    expect(prompt.toLowerCase()).toContain("bar stool");
+    expect(prompt.toLowerCase()).toContain("biker jacket");
+    // Wrapper precedes the scene body.
+    expect(prompt.indexOf("not a close-up") < prompt.indexOf("Scene:")).toBe(true);
+    // Scene-bearing directive precedes the appearance directive inside
+    // the brief.
+    expect(prompt.indexOf("biker jacket") < prompt.indexOf("Ginger hair")).toBe(true);
+  });
+});
 
 describe("composeAppearance — Wren May 2026 precedence contract", () => {
   it("USER_EXPLICIT hair colour HARD REPLACES default identity hair colour", () => {
@@ -188,8 +228,11 @@ describe("composeAppearance — Wren May 2026 precedence contract", () => {
     expect(desc.toLowerCase()).toContain("black leather biker jacket");
     expect(desc.toLowerCase()).toContain("bar stool");
     // Verbatim directives must lead the description so diffusion weights
-    // the rich modifiers above the generic structured slots.
-    expect(desc).toMatch(/^Visual brief: Ginger hair\. Black leather biker jacket\. Sat on a bar stool at a bar\./);
+    // the rich modifiers above the generic structured slots. Scene-bearing
+    // directives (jacket, bar stool, bar) lead; appearance-bearing
+    // directives ("Ginger hair") trail — otherwise diffusion crops to a
+    // headshot regardless of the mode wrapper.
+    expect(desc).toMatch(/^Visual brief: Black leather biker jacket\. Sat on a bar stool at a bar\. Ginger hair\./);
     // No orphan commas left behind by negation scrubbing.
     expect(desc).not.toMatch(/,\s*\./);
     expect(desc).not.toContain(", .");

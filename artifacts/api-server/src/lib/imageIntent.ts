@@ -339,9 +339,9 @@ const WRAPPERS: Record<ImageMode, PromptWrapper> = {
   },
   SCENE_MODE: {
     shotType:
-      "Cinematic environmental photograph featuring {subject}, a young woman, framed at whatever camera distance the scene demands, with environmental detail present and legible, in a vertical composition",
+      "Wide-framed cinematic environmental photograph showing {subject}, a young woman, situated inside her surroundings so that BOTH she AND the environment around her are clearly visible — the camera pulls back far enough to show her body, her clothing, and the scene she is in. This is NOT a close-up, NOT a portrait crop, NOT a selfie, NOT a headshot. The subject occupies a natural portion of a wider scene, in a vertical composition",
     styleLine:
-      "Photorealistic cinematic lighting that suits the scene, single subject, no text or watermarks",
+      "Photorealistic cinematic lighting that suits the scene, environmental detail present and legible, single subject, no text or watermarks",
     framingHint: "tall",
     requiresFullBodyValidation: false,
     pendingLabel: "composing a scene",
