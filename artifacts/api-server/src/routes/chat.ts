@@ -1496,10 +1496,63 @@ async function generateAshleySelfie(
 
   const promise: Promise<string | null> = (async () => {
     let b64: string;
+    // Wren May 2026 provider instrumentation: explicit START / CALLING /
+    // RESPONSE / ERROR breadcrumbs around the actual provider call so
+    // adb logcat (or pino-pretty) shows exactly what the image API
+    // returned. No assumption of success — we only log RESPONSE after
+    // the await resolves, and ERROR if it throws.
+    logger.info(
+      {
+        mode,
+        imageMode,
+        size,
+        quality,
+        cacheKey: cacheKey.slice(0, 12),
+        promptPreview: fullPrompt.slice(0, 240),
+        promptLength: fullPrompt.length,
+      },
+      "IMAGE REQUEST START",
+    );
+    logger.info(
+      { mode, imageMode, size, quality, cacheKey: cacheKey.slice(0, 12) },
+      "CALLING PROVIDER...",
+    );
     try {
       b64 = await generateImageBase64(fullPrompt, size, quality);
+      logger.info(
+        {
+          mode,
+          imageMode,
+          size,
+          quality,
+          cacheKey: cacheKey.slice(0, 12),
+          b64Length: b64?.length ?? 0,
+          gotArtifact: Boolean(b64 && b64.length > 0),
+        },
+        "PROVIDER RESPONSE",
+      );
     } catch (err) {
-      logger.warn({ err, mode }, "Selfie image generation failed");
+      logger.warn(
+        {
+          err,
+          errMessage: err instanceof Error ? err.message : String(err),
+          errName: err instanceof Error ? err.name : undefined,
+          mode,
+          imageMode,
+          size,
+          quality,
+          cacheKey: cacheKey.slice(0, 12),
+        },
+        "PROVIDER ERROR",
+      );
+      return null;
+    }
+
+    if (!b64 || b64.length === 0) {
+      logger.warn(
+        { mode, imageMode, cacheKey: cacheKey.slice(0, 12) },
+        "PROVIDER RETURNED EMPTY ARTIFACT — treating as failure",
+      );
       return null;
     }
 
@@ -1508,7 +1561,12 @@ async function generateAshleySelfie(
       const relUrl = await saveSelfie(id, Buffer.from(b64, "base64"));
       selfieCache.set(cacheKey, { selfieId: id, createdAt: Date.now() });
       persistSelfieCache();
-      return `${publicBaseUrl()}${relUrl}`;
+      const finalUrl = `${publicBaseUrl()}${relUrl}`;
+      logger.info(
+        { mode, imageMode, selfieId: id, relUrl, finalUrl },
+        "IMAGE REQUEST DONE — artifact persisted and URL ready",
+      );
+      return finalUrl;
     } catch (err) {
       logger.warn({ err }, "Failed to persist selfie");
       return null;
@@ -1530,8 +1588,34 @@ function startSelfieGeneration(
 ): void {
   void (async () => {
     try {
+      logger.info(
+        {
+          jobId,
+          messageId,
+          deviceId,
+          mode,
+          imageMode,
+          vibePreview: vibe.slice(0, 240),
+        },
+        "IMAGE REQUEST START (job)",
+      );
       const profile = await getOrCreateProfileFor(deviceId);
+      logger.info(
+        { jobId, messageId, mode, imageMode },
+        "CALLING PROVIDER... (job)",
+      );
       const imageUrl = await generateAshleySelfie(vibe, profile, mode, imageMode);
+      logger.info(
+        {
+          jobId,
+          messageId,
+          mode,
+          imageMode,
+          gotArtifact: Boolean(imageUrl),
+          imageUrl: imageUrl ?? null,
+        },
+        "PROVIDER RESPONSE (job)",
+      );
       if (imageUrl) {
         // Patch the assistant message row so the next /state hydration
         // reflects the photo even if the client misses the poll.
@@ -1599,7 +1683,18 @@ function startSelfieGeneration(
         });
       }
     } catch (err) {
-      logger.warn({ err, jobId, imageMode }, "Background image generation crashed");
+      logger.warn(
+        {
+          err,
+          errMessage: err instanceof Error ? err.message : String(err),
+          errName: err instanceof Error ? err.name : undefined,
+          jobId,
+          messageId,
+          mode,
+          imageMode,
+        },
+        "PROVIDER ERROR (job) — background image generation crashed",
+      );
       setSelfieJob(jobId, {
         status: "failed",
         error:
