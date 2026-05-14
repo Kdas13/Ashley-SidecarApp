@@ -199,10 +199,87 @@ const BARE_NOUN_REQUEST_RX =
 const REQUEST_FRAMING_RX =
   /\b(please|pls|can (you|i)|could (you|i)|would (you|i)|may i|i (want|need|would like|'?d like)|give me|let me see|let'?s see|how about|do you have|got (a |an )?(selfie|picture|photo|image|pic|shot|portrait))\b/i;
 
+// "Try a picture / try an image / try a selfie / do that as a picture /
+// make/show that as a picture" — natural-language image asks that the
+// original IMAGE_VERB_RX (`show me|send me|generate|create|draw|render`)
+// didn't catch. Wren's live test: "Try a picture with your tongue out"
+// was answered with romantic prose because `try` wasn't a recognised
+// image verb.
+//
+// Architect-review hardening (May 2026, second pass): the original
+// patterns false-fired on planning/conversational text like "I'll try
+// that image later", "let's do that as an image tomorrow", "try a shot
+// first", "could you show that visually in text". Three changes:
+//   1. Anchor TRY/DO to message start (after optional polite filler).
+//      Strips the "I'll try ..." / "we'll do ..." / "let's do ..." class.
+//   2. Drop weak noun `shot` — too many non-image senses ("a shot of
+//      vodka", "give it a shot first").
+//   3. Drop the bare "visually" branch from MAKE_THAT_VISUAL — keep only
+//      "make/show that/this/it as a/an picture|image|photo|selfie|...".
+//   4. Suppress matches whose clause carries explicit future-tense or
+//      planning markers (later|tomorrow|tonight|next time|in a bit).
+// `(?!\s+(?:frame|...))` blocks the most common noun-compound false-
+// positives ("try a picture frame for the wall", "try a photo book").
+const TRY_IMAGE_NOUN_COMPOUND_BLOCK = "(?!\\s+(?:frame|frames|book|books|album|albums|day|days|perfect|op|ops|hanger|hangers|message|messages))";
+const TRY_IMAGE_REQUEST_RX = new RegExp(
+  "^(\\s*(please|pls|ok|okay|hey|so|maybe|how about|why not|let'?s)\\s*[, ]+)?(try|do)\\s+(a|an|one|that|it|this)(\\s+as\\s+(a|an))?\\s+(picture|image|selfie|photo|photograph|pic|portrait)\\b" +
+    TRY_IMAGE_NOUN_COMPOUND_BLOCK,
+  "i",
+);
+const MAKE_THAT_VISUAL_RX = new RegExp(
+  "^(\\s*(please|pls|ok|okay|hey|so|maybe|how about|why not|let'?s)\\s*[, ]+)?(make|show)\\s+(that|this|it)\\s+as\\s+(a|an)\\s+(picture|image|photo|selfie|portrait|pic)\\b" +
+    TRY_IMAGE_NOUN_COMPOUND_BLOCK,
+  "i",
+);
+// Narrowed per architect-review pass 3: only explicitly temporal markers.
+// Bare `after` / `when you|we` was suppressing legitimate immediate asks
+// like "try a picture when you smile" or "try a picture after the wink".
+const TRY_IMAGE_FUTURE_PLAN_RX =
+  /\b(later|tomorrow|tonight|next time|in (a |the )?(bit|moment|sec(ond)?|minute|hour|while)|some other time|another time)\b/i;
+// Pass-4: catch deferred asks that use first-person `when i|we` clauses
+// or `after <activity-noun>` (work/dinner/the meeting/...). These are
+// not immediate. Distinct from immediate positives like "when you smile",
+// "after the wink", "when you can".
+const TRY_IMAGE_DEFERRED_PLAN_RX =
+  /\bwhen\s+(i|we)\b|\bafter\s+(work|dinner|lunch|breakfast|class|school|the\s+(meeting|call|appointment|appt|date|trip|drive|commute|gym|workout|nap|shower))\b/i;
+
+// Expression / face-focused descriptors that imply close-up framing. When
+// a try-image / direct request matches one of these, we override a
+// PORTRAIT_MODE classifier result to SELFIE_MODE — the user is asking for
+// an expression shot, not a head-and-shoulders portrait. Per Wren May 2026
+// spec ("tongue out, smile, playful, cheeky, expression, wink, bashful,
+// lip tucked, trying not to smile, gotcha").
+const EXPRESSION_DESCRIPTOR_RX =
+  /\b(tongue\s+out|tongue|smile|smiling|smirk|smirking|grin|grinning|playful|cheeky|wink|winking|bashful|lip\s+tucked|trying\s+not\s+to\s+smile|gotcha|expression|pout|pouting|laugh(ing)?|giggl(ing|e)|raised\s+eyebrow|side[-\s]eye|making\s+a\s+face|silly\s+face)\b/i;
+
+export function isTryImageRequest(text: string): boolean {
+  if (typeof text !== "string") return false;
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (trimmed.split(/\s+/).length > 30) return false;
+  if (IMAGE_DIAGNOSTIC_RX.test(trimmed)) return false;
+  // Suppress future-tense / planning matches: "let's try a picture later",
+  // "do that as an image tomorrow" — the user is sketching a plan, not
+  // asking right now.
+  if (TRY_IMAGE_FUTURE_PLAN_RX.test(trimmed)) return false;
+  if (TRY_IMAGE_DEFERRED_PLAN_RX.test(trimmed)) return false;
+  return TRY_IMAGE_REQUEST_RX.test(trimmed) || MAKE_THAT_VISUAL_RX.test(trimmed);
+}
+
+export function hasExpressionDescriptor(text: string): boolean {
+  return typeof text === "string" && EXPRESSION_DESCRIPTOR_RX.test(text);
+}
+
 export function isDirectImageRequest(text: string): boolean {
   if (typeof text !== "string") return false;
   const trimmed = text.trim();
   if (!trimmed) return false;
+  // "Try a picture..." / "Do that as an image" / "Make that visual" hard-
+  // fire BEFORE the word-cap and verb checks. They are unambiguous image
+  // asks even when the surrounding sentence is descriptive (e.g. "try a
+  // picture with your tongue out, as if to almost say like, yeah, gotcha"
+  // — 14 words but the original verb set didn't include `try`).
+  if (isTryImageRequest(trimmed)) return true;
   // Cap length — long messages with their own paragraphs of narrative go
   // through the model's normal intent detection.
   if (trimmed.split(/\s+/).length > 18) return false;
@@ -513,6 +590,22 @@ export function resolveImageFollowUp(
   if (isDirect) {
     const { text: sanitised, changed } = sanitiseExpression(latestUserText);
     const classified = classifyImageIntent(sanitised);
+    let finalMode: ImageMode = classified.mode;
+    let finalReason = classified.reason;
+    // "Try a picture with your tongue out" classifies as PORTRAIT_MODE
+    // (no full-body / outfit / scene cues, no explicit `selfie` keyword).
+    // When a try-image / make-that-visual ask is paired with an expression
+    // descriptor (tongue out, smirk, wink, gotcha, ...), prefer SELFIE_MODE
+    // so the framing stays close-up on the face. Per Wren May 2026 spec.
+    if (
+      isTryImageRequest(sanitised) &&
+      hasExpressionDescriptor(sanitised) &&
+      (finalMode === "PORTRAIT_MODE" || finalMode === "SELFIE_MODE")
+    ) {
+      finalMode = "SELFIE_MODE";
+      finalReason =
+        "try-a-picture / make-that-visual with expression descriptor — using SELFIE_MODE for face-focused framing";
+    }
     const resolvedRequest = `Generate an image of Ashley: ${sanitised.trim()}.`;
     return {
       isFollowUp: true,
@@ -524,8 +617,8 @@ export function resolveImageFollowUp(
       priorAttemptVibe: null,
       priorAttemptDelivered: false,
       resolvedRequest,
-      suggestedMode: classified.mode,
-      modeReason: `direct image request — ${classified.reason}`,
+      suggestedMode: finalMode,
+      modeReason: `direct image request — ${finalReason}`,
     };
   }
 
@@ -896,6 +989,9 @@ function shortCaptionFor(
   if (kind === "send_again") return "Retrying — wait for the image to arrive before assuming it landed.";
   if (mode === "SEATED_LENGTHWISE_FULL_BODY_MODE") {
     return "Wide landscape lengthways-sofa shot incoming. Confirm head, both legs, and both complete socked feet are visible on the cushion, with empty sofa space beyond the feet — if anything is cropped or the pose came out front-facing, say \"feet missing\" and I'll re-run.";
+  }
+  if (mode === "FEET_DETAIL_MODE") {
+    return "Feet detail shot incoming — close-up of the socked feet / shoes on the floor or cushion, not a full-body. Confirm both feet are fully visible with floor or cushion around them; if anything is cropped, say \"feet missing\" and I'll re-run.";
   }
   switch (mode) {
     case "FULL_BODY_MODE":

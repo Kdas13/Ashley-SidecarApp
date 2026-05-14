@@ -25,6 +25,7 @@ export const IMAGE_MODES = [
   "FOOT_VISIBLE_RETRY",
   "EXTREME_WIDE_FULL_BODY_RETRY",
   "SEATED_LENGTHWISE_FULL_BODY_MODE",
+  "FEET_DETAIL_MODE",
   "OUTFIT_MODE",
   "POSE_REFERENCE_MODE",
   "SCENE_MODE",
@@ -61,6 +62,30 @@ const FULL_BODY_RX =
 
 // Lower-body / footwear cues — strong signal that a portrait crop fails.
 const LIMB_RX = /\b(legs?|feet|ankles?|knees?|thighs?|boots?|footwear|shoes?)\b/i;
+
+// Feet-only / footwear-detail cues (Wren May 2026 follow-up). Routes to
+// FEET_DETAIL_MODE — a casual outfit-detail shot of just the feet/shoes,
+// NOT a full-body composition. Matches phrasings where feet/shoes are the
+// SOLE subject:
+//   - "image/picture/photo/close-up of your feet" (any image noun)
+//   - "just (your|her) feet" / "feet only" / "shoes only"
+//   - "show me your feet/shoes/socked feet"
+//   - "close-up of your shoes"
+//   - "your feet on the floor/sofa/cushion"
+// FEET_DETAIL_RX is checked BEFORE LIMB_RX/FULL_BODY_RX in the classifier
+// (and only fires when no concurrent FULL_BODY signal is present) so that
+// "show me head to toe with both feet visible" stays FULL_BODY_MODE while
+// "just an image of your feet" becomes FEET_DETAIL_MODE.
+// All branches except "X only" require explicit image-noun framing
+// ("image of your feet", "close-up of your shoes") or an imperative
+// ("show me your feet") or a possessive surface phrase ("your feet on
+// the floor") — they don't slip on conversational text. The "X only"
+// branch ("shoes only", "feet only") is split into its own clause-
+// anchored regex so "my shoes only lasted a week" can't false-fire.
+const FEET_DETAIL_RX =
+  /\b((image|picture|photo|photograph|pic|shot|snap|view|close[-\s]?up)\s+of\s+(your|her|the|ashley'?s)\s+(socked\s+feet|feet|shoes|socks|footwear)|just\s+(your|her|the)\s+(feet|shoes|socked\s+feet)|show\s+(me\s+)?(your|her)\s+(socked\s+feet|feet|shoes|socks|footwear)|close[-\s]?up\s+of\s+(your|her|the)\s+(shoes|feet|socks|socked\s+feet|footwear)|(your|her)\s+(socked\s+feet|feet|shoes)\s+on\s+the\s+(floor|sofa|couch|cushion|rug|carpet))\b/i;
+const FEET_DETAIL_ONLY_AT_CLAUSE_START_RX =
+  /(?:^|[.!?]\s+)\s*(feet|shoes|socked\s+feet)\s+only\b/i;
 
 // Standing / walking / pose-with-body cues.
 const STANDING_RX = /\b(standing|walking|running|sitting full[- ]frame|leaning|posing)\b/i;
@@ -130,6 +155,21 @@ export function classifyImageIntent(text: string): ClassifyResult {
     return {
       mode: "SEATED_LENGTHWISE_FULL_BODY_MODE",
       reason: "matched seated-lengthwise / lying-along-sofa keyword",
+    };
+  // Feet-detail must beat OUTFIT / FULL_BODY / LIMB / STANDING — but only
+  // when no explicit full-body signal is present in the same message. A
+  // message that asks for both ("head to toe with feet visible") still
+  // routes to FULL_BODY_MODE; a feet-only ask ("just an image of your
+  // feet") routes here. Per Wren May 2026 follow-up.
+  if (
+    (FEET_DETAIL_RX.test(t) || FEET_DETAIL_ONLY_AT_CLAUSE_START_RX.test(t)) &&
+    !FULL_BODY_RX.test(t) &&
+    !OUTFIT_RX.test(t)
+  )
+    return {
+      mode: "FEET_DETAIL_MODE",
+      reason:
+        "matched feet/shoes detail-only keyword (no full-body or outfit signal)",
     };
   if (OUTFIT_RX.test(t))
     return { mode: "OUTFIT_MODE", reason: "matched outfit / wardrobe keyword" };
@@ -228,6 +268,20 @@ const WRAPPERS: Record<ImageMode, PromptWrapper> = {
     framingHint: "tall",
     requiresFullBodyValidation: true,
     pendingLabel: "retrying full-body framing — wider",
+  },
+  FEET_DETAIL_MODE: {
+    // Wren May 2026 follow-up. Feet-only request — should NOT route to
+    // FULL_BODY_MODE. Casual outfit-detail composition: socked feet or
+    // shoes are the subject, both fully visible on a clear floor or sofa
+    // surface, no sexualised framing. All composition language positive
+    // (diffusion ignores negation).
+    shotType:
+      "Casual outfit-detail photograph of {subject}'s socked feet or shoes, framed as a close, harmless detail shot of her footwear; both feet are fully visible inside the frame, resting naturally on the floor or sofa cushion; the floor or cushion surface beneath both feet is clearly visible, anchoring the composition with empty space around the feet on every side; the camera is angled down toward the feet from a close standing distance with comfortable margins beyond the toes and heels",
+    styleLine:
+      "Outfit-detail composition focused on footwear, soft even natural lighting, photorealistic, single subject, no text or watermarks",
+    framingHint: "square",
+    requiresFullBodyValidation: false,
+    pendingLabel: "framing a feet detail shot",
   },
   SEATED_LENGTHWISE_FULL_BODY_MODE: {
     // Wren May 2026 follow-up #3. The default seated interpretation is a
