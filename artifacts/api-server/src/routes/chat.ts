@@ -46,7 +46,7 @@ import {
   synthesizeImageActionReplyFromSpec,
   type HistoryTurn as FollowUpHistoryTurn,
 } from "../lib/imageFollowUp";
-import { composeAppearance, extractVisualSpec, extractVisualSpecFromVibe } from "../lib/visualSpec";
+import { composeAppearance, extractVisualSpec, extractVisualSpecFromVibe, scrubVibeForOverrides } from "../lib/visualSpec";
 import { approveTicketById } from "./tickets";
 import {
   generateImageBase64,
@@ -1426,8 +1426,34 @@ async function generateAshleySelfie(
   // negation ("no lavender at all" → drop every "lavender ..." clause from
   // profile.appearance) BEFORE the prompt is built — diffusion never sees
   // contradictory clauses, and never sees a negation phrase.
-  const { spec: carriedSpec } = extractVisualSpecFromVibe(vibe);
+  const { description: vibeDesc, spec: carriedSpec } = extractVisualSpecFromVibe(vibe);
   const appearance = composeAppearance(baseAppearance, carriedSpec);
+  // Scrub the vibe TEXT itself of any negated tokens or profile-default
+  // colours that the user has overridden. The LLM writes the vibe with
+  // Ashley's persona context (profile.appearance) in the system prompt, so
+  // it happily includes "lavender hair" in the scene description even when
+  // the current turn says "Black hair, no lavender". Without this scrub,
+  // diffusion sees "She has black hair." next to "Scene: ... lavender hair
+  // tied up ..." and renders a lavender-tinted result. The composed
+  // appearance sentence remains the sole identity anchor.
+  const scrubbedVibe = scrubVibeForOverrides(vibeDesc, baseAppearance, carriedSpec);
+  // Re-encode the VSPEC marker onto the scrubbed vibe so any further
+  // round-trip (cache key, follow-up rehydration) preserves the spec.
+  const scrubbedVibeWithSpec = carriedSpec
+    ? `${scrubbedVibe} {{VSPEC}}${Buffer.from(JSON.stringify({
+        appearance: carriedSpec.appearance,
+        clothing: carriedSpec.clothing,
+        environment: carriedSpec.environment,
+        pose: carriedSpec.pose,
+        framing: carriedSpec.framing,
+        props: carriedSpec.props,
+        style: carriedSpec.style,
+        negations: carriedSpec.negations,
+      }), "utf8").toString("base64")}{{/VSPEC}}`
+    : scrubbedVibe;
+  // The buildModePromptBlock takes raw vibe text — pass the scrubbed
+  // (description-only) form, not the VSPEC-decorated version, so the marker
+  // tokens don't bleed into the diffusion prompt.
   if (carriedSpec && (
     carriedSpec.negations.length > 0 ||
     carriedSpec.appearance.hairColour ||
@@ -1450,10 +1476,13 @@ async function generateAshleySelfie(
   }
   const modeBlock = buildModePromptBlock({
     mode: imageMode,
-    vibe,
+    vibe: scrubbedVibe,
     subjectName: ashleyName,
     appearance,
   });
+  // Discard the unused round-trip variable; declared for documentation +
+  // future reuse if the cache key ever needs the full VSPEC form.
+  void scrubbedVibeWithSpec;
   const fullPrompt = [
     // Provider Floor for the IMAGE generator. Always first, never overridden
     // by mode/intimacy — see lib/contentPolicy.ts. The downstream image

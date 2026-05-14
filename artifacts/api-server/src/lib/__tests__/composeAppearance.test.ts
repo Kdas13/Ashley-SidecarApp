@@ -6,6 +6,7 @@ import {
   extractVisualSpec,
   extractVisualSpecFromVibe,
   mergeVisualSpecs,
+  scrubVibeForOverrides,
 } from "../visualSpec.js";
 import { synthesizeImageActionReplyFromSpec } from "../imageFollowUp.js";
 
@@ -115,6 +116,35 @@ describe("composeAppearance — Wren May 2026 precedence contract", () => {
     expect(desc).toContain("black hair");
     expect(desc).not.toContain("lavender");
     expect(desc).not.toContain("no lavender");
+  });
+
+  it("scrubVibeForOverrides strips the profile hair colour from LLM vibe when user overrode it", () => {
+    const spec = extractVisualSpec("Black hair, no lavender at all");
+    const llmVibe = "selfie of Ashley with her lavender hair tied up, smiling at the camera, lavender locks framing her face";
+    const out = scrubVibeForOverrides(llmVibe, "lavender hair, pale skin", spec);
+    expect(out.toLowerCase()).not.toContain("lavender");
+    expect(out.toLowerCase()).toContain("smiling");
+  });
+
+  it("scrubVibeForOverrides strips the negated token even when no positive override is set", () => {
+    const spec = extractVisualSpec("no lavender at all");
+    const llmVibe = "Ashley with lavender hair, lavender highlights, pale skin";
+    const out = scrubVibeForOverrides(llmVibe, "lavender hair", spec);
+    expect(out.toLowerCase()).not.toContain("lavender");
+  });
+
+  it("scrubVibeForOverrides leaves the vibe alone when there are no overrides or negations", () => {
+    const spec = extractVisualSpec("a selfie please");
+    const llmVibe = "Ashley with lavender hair, smiling";
+    const out = scrubVibeForOverrides(llmVibe, "lavender hair", spec);
+    expect(out).toBe(llmVibe);
+  });
+
+  it("scrubVibeForOverrides handles compound forms like 'lavender-tinted' and 'pale lavender'", () => {
+    const spec = extractVisualSpec("Black hair");
+    const llmVibe = "Ashley with lavender-tinted hair, pale lavender highlights, smiling";
+    const out = scrubVibeForOverrides(llmVibe, "lavender hair", spec);
+    expect(out.toLowerCase()).not.toContain("lavender");
   });
 
   it("acceptance e2e: synth marker description for the canonical case contains 'black hair' and zero 'lavender'", () => {

@@ -1433,6 +1433,79 @@ export function composeAppearance(
   return out.join(", ");
 }
 
+/**
+ * Scrub the LLM-generated vibe text of any colour/style tokens that the user
+ * has either explicitly overridden (their new value should be the only colour)
+ * or explicitly negated. Required because Ashley's system prompt feeds the
+ * LLM `What I look like: <profile.appearance>`, so the LLM happily writes
+ * "selfie of Ashley with her lavender hair tied up" into the vibe — and a
+ * downstream identity-anchor swap can't beat a model that sees "lavender" in
+ * the scene description too. After scrubbing we re-anchor with the composed
+ * appearance sentence in buildModePromptBlock.
+ *
+ * Tokens stripped:
+ *   - Every token in spec.negations
+ *   - The profile-default hair colour, when spec.appearance.hairColour is set
+ *     (a different colour means the default has been replaced)
+ *   - The profile-default skin tone, when spec.appearance.skinTone is set
+ */
+export function scrubVibeForOverrides(
+  vibe: string,
+  profileAppearance: string | null | undefined,
+  spec: VisualSpec | null | undefined,
+): string {
+  if (!vibe) return "";
+  const stripTokens = new Set<string>();
+  for (const n of spec?.negations ?? []) {
+    if (n) stripTokens.add(n.toLowerCase());
+  }
+  const profileLower = (profileAppearance ?? "").toLowerCase();
+  const userHair = spec?.appearance?.hairColour?.toLowerCase();
+  if (userHair) {
+    for (const colour of HAIR_COLOURS) {
+      if (colour === userHair) continue;
+      const rx = colour.includes(" ") || colour.includes("-")
+        ? new RegExp(colour.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")
+        : new RegExp(`\\b${colour}\\b`, "i");
+      if (rx.test(profileLower)) stripTokens.add(colour);
+    }
+  }
+  const userSkin = spec?.appearance?.skinTone?.toLowerCase();
+  if (userSkin) {
+    for (const tone of SKIN_DESCRIPTORS) {
+      if (tone === userSkin) continue;
+      const rx = new RegExp(`\\b${tone}\\b`, "i");
+      if (rx.test(profileLower)) stripTokens.add(tone);
+    }
+  }
+  if (stripTokens.size === 0) return vibe;
+
+  let out = vibe;
+  // Sort longest-first so multi-word tokens win over their prefix.
+  const sorted = [...stripTokens].sort((a, b) => b.length - a.length);
+  for (const token of sorted) {
+    const tokenRx = token.includes(" ") || token.includes("-")
+      ? token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      : `\\b${token}\\b`;
+    // Strip "<token> hair" / "<token> skin" / "<token>-toned" first to avoid
+    // leaving an orphan "hair" / "skin" word.
+    out = out.replace(new RegExp(`${tokenRx}\\s+(hair|skin|complexion|locks|tresses|undertone|tones?)\\b`, "gi"), "");
+    // Strip "<modifier>-<token>" / "<token>-<modifier>" compound forms.
+    out = out.replace(new RegExp(`\\b\\w+[- ]${tokenRx}\\b`, "gi"), "");
+    out = out.replace(new RegExp(`${tokenRx}[- ]\\w+\\b`, "gi"), "");
+    // Bare token last.
+    out = out.replace(new RegExp(tokenRx, "gi"), "");
+  }
+  // Tidy whitespace and orphaned punctuation.
+  out = out
+    .replace(/\s*,\s*,+/g, ", ")
+    .replace(/\(\s*\)/g, "")
+    .replace(/\s+([,.;:])/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+  return out;
+}
+
 function prepFor(loc: string): string {
   // Heuristic preposition for the location word. Outdoors = "in", surfaces = "on".
   const onSurfaces = new Set([
