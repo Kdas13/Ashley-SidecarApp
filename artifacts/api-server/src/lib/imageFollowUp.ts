@@ -824,19 +824,17 @@ export function resolveImageFollowUp(
           mergedFromPrior = true;
         }
       }
-      // No prior spec to merge → fall through to legacy send-again path,
-      // which already handles "vibe carried forward without categorisation".
-      // We do NOT short-circuit here because send-again has prior-mode reuse
-      // logic the new branch can't yet match.
-      if (!mergedFromPrior) {
-        // Skip legacy direct-image-request when this is clearly a follow-up
-        // edit ("change", "make it", "different outfit") with no prior
-        // attempt — but DO let send-again / short-follow-up branches try.
-        // Falling through is correct here.
-      }
+      // No prior attempt to merge with — but the new state-based pipeline
+      // has ALREADY decided this is a visual MUTATION addressed at Ashley
+      // (intent=MUTATION + subject=ASHLEY → imageIntent=true). Falling
+      // through to legacy regexes here misses prompts like "make your
+      // hair ginger" / "change the background" / "different outfit"
+      // because the legacy direct-image-request gate keys on image-noun
+      // vocab. Architect review May 2026: treat as a first-pass visual
+      // ask using deltaSpec alone. workingSpec is already deltaSpec.
     }
 
-    if (!deltaSpec.isFollowUp || mergedFromPrior) {
+    {
       const resolved = resolveImageModeFromSpec(workingSpec, {
         hasPriorAttempt: mergedFromPrior,
       });
