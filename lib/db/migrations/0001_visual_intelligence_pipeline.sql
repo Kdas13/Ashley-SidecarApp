@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS "media_attachments" (
   "intent"           text,
   "image_url"        text,
   "description"      text,
-  "attribute_scope"  text DEFAULT 'permanent' NOT NULL,
+  "attribute_scope"  text DEFAULT 'temporary' NOT NULL,
   "sort_order"       integer DEFAULT 0 NOT NULL,
   "job_id"           text,
   "created_at"       timestamp with time zone DEFAULT now() NOT NULL,

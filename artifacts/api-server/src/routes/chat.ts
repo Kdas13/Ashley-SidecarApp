@@ -4238,6 +4238,7 @@ router.post("/chat/image", async (req, res): Promise<void> => {
 
   // 2. Persist the user message (idempotent on id).
   let userRow: Message;
+  let freshInsert = false;
   try {
     const inserted = await db
       .insert(messagesTable)
@@ -4260,6 +4261,7 @@ router.post("/chat/image", async (req, res): Promise<void> => {
       .returning();
     if (inserted.length > 0) {
       userRow = inserted[0]!;
+      freshInsert = true;
     } else {
       const existing = await db
         .select()
@@ -4304,14 +4306,20 @@ router.post("/chat/image", async (req, res): Promise<void> => {
 
   // 2b. For multi-image uploads, insert a media_attachments row per image so
   //     /state hydration can annotate the user message with all uploaded URLs.
-  if (userVisualPacketId && allImageUrls.length > 1) {
+  //     Only do this on the initial (fresh) insert — retries must not create
+  //     duplicate attachment rows. Use visualPacketId from the persisted row
+  //     (not the locally-generated UUID) so retries that hit the conflict path
+  //     and get back an existing row can still read a coherent packet id, though
+  //     they will not reach this branch.
+  const packetIdForAttachments = userRow.visualPacketId;
+  if (freshInsert && packetIdForAttachments && allImageUrls.length > 1) {
     try {
       await db.insert(mediaAttachmentsTable).values(
         allImageUrls.map((url, i) => ({
           id: newId(),
           deviceId,
           messageId: userRow.id,
-          visualPacketId: userVisualPacketId,
+          visualPacketId: packetIdForAttachments,
           role: "user_input" as const,
           status: "ready" as const,
           imageUrl: url,
