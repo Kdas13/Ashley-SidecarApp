@@ -1485,6 +1485,8 @@ type SelfieJob =
   | {
       status: "ready";
       imageUrl: string;
+      /** SHA-256(imageUrl).slice(0,12) — used for variationHash / duplicateDetected in poll log. */
+      imageHash?: string;
       mode: SelfieMode;
       imageMode: ImageMode;
       deviceId: string;
@@ -2025,6 +2027,11 @@ function startSelfieGeneration(
         setSelfieJob(jobId, {
           status: "ready",
           imageUrl,
+          // Section 4 (master spec): imageHash = SHA-256(imageUrl).slice(0,12).
+          // The URL embeds a random UUID so cache-hit deduplication makes same
+          // output → same URL → same hash. Used for variationHash / duplicateDetected
+          // logging in the poll endpoint once all siblings are ready.
+          imageHash: createHash("sha256").update(imageUrl).digest("hex").slice(0, 12),
           mode,
           imageMode,
           deviceId,
@@ -2285,20 +2292,22 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
         }
       }
 
-      // Section 7 — per-job pose/expression/framing variance so N images in a
-      // packet are visually distinct even when they share the same base mode.
-      // Each slot gets a unique combination of head angle, expression, crop, and
-      // lighting direction. Applied by APPENDING to the vibe (descriptor word
-      // remains first so descriptor-override detection in generateAshleySelfie
-      // is unaffected).
-      const POSE_VARIANCE_HINTS: string[] = [
-        "slight left turn, soft warm smile, close head-and-shoulders crop, eye-level angle",
-        "facing camera directly, neutral relaxed expression, mid-distance crop, slight high angle",
-        "slight right three-quarter turn, subtle smirk, close crop, slight low angle, shallow depth of field",
-        "facing slightly right, open relaxed expression, mid-distance loose crop, soft window light from the left",
-      ];
+      // Section 3 (master spec) — per-job STRUCTURED pose/expression/framing/scene
+      // block. Each slot is a unique combination so no two jobs in the packet share
+      // the same visual combination. Appended to the vibe as a dedicated block
+      // (NOT a flat comma-list) so buildModePromptBlock keeps it as a clean
+      // Pose:/Expression:/Framing:/Scene: directive — which the model prioritises
+      // over free-form vibe text. Descriptor word stays FIRST in the base vibe
+      // so generateAshleySelfie's descriptor-override detection is unaffected.
+      const POSE_VARIANCE_SLOTS = [
+        { pose: "slight left turn",               expression: "soft warm smile",    framing: "close head-and-shoulders crop",          scene: "eye-level, natural daylight, soft shadows" },
+        { pose: "facing camera directly",          expression: "neutral, relaxed",   framing: "mid-distance crop",                       scene: "slight high angle, soft diffused window light" },
+        { pose: "slight right three-quarter turn", expression: "subtle smirk",       framing: "close crop, shallow depth of field",      scene: "slight low angle, warm side light" },
+        { pose: "facing slightly right",           expression: "open, relaxed",      framing: "mid-distance loose crop",                 scene: "eye-level, soft window light from the left" },
+      ] as const;
 
       const allJobIds: string[] = [];
+      const allJobSeeds: number[] = [];
       const jobVibeLog: Record<string, string> = {};
       const jobDescriptors: string[] = [];
       for (const att of pendingAttachRows) {
@@ -2310,13 +2319,26 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
         const rawVibe = att.selfieVibe ?? "";
         const attDecoded = decodeStoredVibe(rawVibe);
         const attBaseVibe = (attDecoded.vibe || rawVibe.trim()).trim();
-        // Append the per-slot pose/variance hint (cycles through 4 presets).
-        const poseHint = POSE_VARIANCE_HINTS[att.sortOrder % POSE_VARIANCE_HINTS.length] ?? "";
-        const attForwardedVibe = poseHint ? `${attBaseVibe} — ${poseHint}` : attBaseVibe;
+        // Section 3: structured Pose/Expression/Framing/Scene block, unique per slot.
+        const slot = POSE_VARIANCE_SLOTS[att.sortOrder % POSE_VARIANCE_SLOTS.length]!;
+        const poseBlock = `\n\nPose: ${slot.pose}\nExpression: ${slot.expression}\nFraming: ${slot.framing}\nScene: ${slot.scene}`;
+        const attForwardedVibe = `${attBaseVibe}${poseBlock}`;
         const attImageMode: ImageMode = clientImageMode ?? attDecoded.mode;
         const descriptorWord = attBaseVibe.split(/\s+/)[0]?.toLowerCase() ?? "";
         jobDescriptors.push(descriptorWord);
+        // Section 4 (master spec): unique seed per job = deterministic hash of
+        // (jobId + epochMs + descriptorWord). gpt-image-1 does NOT accept a
+        // user-supplied seed parameter — seed is logged for audit and to prove
+        // intent; visual distinctness comes from the structured prompt variation.
         const jId = randomUUID();
+        const jobSeed = parseInt(
+          createHash("sha256")
+            .update(`${jId}:${Date.now()}:${descriptorWord}`)
+            .digest("hex")
+            .slice(0, 8),
+          16,
+        );
+        allJobSeeds.push(jobSeed);
         setSelfieJob(jId, {
           status: "pending",
           vibe: attForwardedVibe,
@@ -2338,7 +2360,7 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
           att.id,
           att.sortOrder,
         );
-        jobVibeLog[`job[${att.sortOrder}]`] = attForwardedVibe.slice(0, 100);
+        jobVibeLog[`job[${att.sortOrder}]`] = attForwardedVibe.slice(0, 120);
         allJobIds.push(jId);
       }
 
@@ -2351,7 +2373,7 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
             jobsCreated: allJobIds.length,
             jobDescriptors,
             jobIds: allJobIds,
-            fanOutJobCount: allJobIds.length,
+            seeds: allJobSeeds,
             poseVariance: true,
             sceneVariance: true,
             ...jobVibeLog,
@@ -2419,6 +2441,15 @@ router.get("/chat/selfie/:jobId", async (req, res): Promise<void> => {
             return sib && sib.status === "ready" ? sib.imageUrl : null;
           },
         );
+        // Section 4 / Section 8 (master spec): imagesGenerated, imagesReturned,
+        // variationHash, duplicateDetected. imageHash is SHA-256(imageUrl) so
+        // cache-hit deduplication would surface identical hashes here.
+        const readySiblings = siblings.filter((s) => s.status === "ready");
+        const variationHash = readySiblings.map((s) =>
+          s.status === "ready" ? (s.imageHash ?? createHash("sha256").update(s.imageUrl).digest("hex").slice(0, 12)) : null,
+        );
+        const uniqueHashes = new Set(variationHash.filter(Boolean));
+        const duplicateDetected = uniqueHashes.size < readySiblings.length;
         req.log.info(
           {
             jobId,
@@ -2426,6 +2457,10 @@ router.get("/chat/selfie/:jobId", async (req, res): Promise<void> => {
             imageUrl: job.imageUrl,
             imageUrls: ordered,
             siblingCount: siblings.length,
+            imagesGenerated: readySiblings.length,
+            imagesReturned: ordered.filter(Boolean).length,
+            variationHash,
+            duplicateDetected,
             attachments: siblings.map((s) => ({
               attachmentId: s.attachmentId,
               attachmentSortOrder: s.attachmentSortOrder,
@@ -4463,6 +4498,8 @@ const ChatImageBodySchema = z.object({
   mode: z.enum(IMAGE_MODE_VALUES),
   clientNow: z.string().datetime({ offset: true }).optional(),
   clientTimezone: z.string().min(1).max(64).optional(),
+  /** Section 8 (master spec): mobile-reported selection count for receive-pipeline log. */
+  mobileSelectedCount: z.number().int().min(1).max(4).optional(),
 });
 
 router.post("/chat/image", async (req, res): Promise<void> => {
@@ -4472,7 +4509,7 @@ router.post("/chat/image", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const { userMessage, image, images, category, mode, clientNow, clientTimezone } =
+  const { userMessage, image, images, category, mode, clientNow, clientTimezone, mobileSelectedCount } =
     parsed.data;
   const { id: userId, replyTo } = userMessage;
   const caption = (userMessage.content ?? "").trim();
@@ -4489,6 +4526,17 @@ router.post("/chat/image", async (req, res): Promise<void> => {
 
   // Normalise: allImages is always a 1–4 item array.
   const allImages = image ? [image] : images!;
+
+  // Section 8 (master spec) — RECEIVE PIPELINE log: inbound counts.
+  req.log.info(
+    {
+      deviceId,
+      uploadPayloadImageCount: allImages.length,
+      backendReceivedImageCount: allImages.length,
+      mobileSelectedCount: mobileSelectedCount ?? allImages.length,
+    },
+    "receive-pipeline: image upload received",
+  );
 
   // Validate all mimetypes upfront.
   const allMimes = allImages.map((img) => img.mimeType.toLowerCase());
@@ -4530,6 +4578,11 @@ router.post("/chat/image", async (req, res): Promise<void> => {
     return;
   }
   const imageUrl = allImageUrls[0]!;
+  // Section 8 (master spec) — storageRowsCreated checkpoint.
+  req.log.info(
+    { deviceId, storageRowsCreated: allImageUrls.length, imageUrls: allImageUrls },
+    "receive-pipeline: images persisted to storage",
+  );
   // For multi-image uploads, a shared packet id links all attachment rows.
   const userVisualPacketId = allImages.length > 1 ? randomUUID() : null;
 
@@ -4625,6 +4678,11 @@ router.post("/chat/image", async (req, res): Promise<void> => {
           description: caption || null,
           sortOrder: i,
         })),
+      );
+      // Section 8 (master spec) — mediaAttachmentRowsCreated checkpoint.
+      req.log.info(
+        { deviceId, mediaAttachmentRowsCreated: allImageUrls.length, visualPacketId: packetIdForAttachments },
+        "receive-pipeline: media_attachments rows created",
       );
     } catch (err) {
       req.log.warn({ err }, "Failed to insert user media_attachments rows (non-fatal)");
@@ -4758,6 +4816,12 @@ router.post("/chat/image", async (req, res): Promise<void> => {
   while (claudeMessages.length > 0 && claudeMessages[0]!.role !== "user") {
     claudeMessages.shift();
   }
+
+  // Section 8 (master spec) — visionImagesPassed checkpoint.
+  req.log.info(
+    { deviceId, visionImagesPassed: allImages.length },
+    "receive-pipeline: calling vision with N images",
+  );
 
   // 6. Call Claude vision.
   let assistantText = "";

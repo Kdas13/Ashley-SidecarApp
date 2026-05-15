@@ -134,8 +134,8 @@ type PickedImage = {
   uri: string;
   base64: string;
   mimeType: string;
-  width: number;
-  height: number;
+  width?: number;
+  height?: number;
 };
 
 function mimeFromUri(uri: string, fallback: string | undefined): string {
@@ -801,6 +801,25 @@ export default function ChatScreen(): React.JSX.Element {
     setImagePickerError(null);
   }, []);
 
+  // Section 6 (master spec): remove a single image from the selection by index
+  // (0 = primary, 1..N = extras). Promotes the next extra to primary when idx=0.
+  const removePicked = useCallback(
+    (idx: number) => {
+      if (idx === 0) {
+        if (pickedExtraImages.length > 0) {
+          const [promoted, ...rest] = pickedExtraImages;
+          setPickedImage({ uri: promoted!.uri, base64: promoted!.base64, mimeType: promoted!.mimeType });
+          setPickedExtraImages(rest);
+        } else {
+          setPickedImage(null);
+        }
+      } else {
+        setPickedExtraImages((prev) => prev.filter((_, i) => i !== idx - 1));
+      }
+    },
+    [pickedExtraImages],
+  );
+
   const sendPickedImage = useCallback(async () => {
     if (!pickedImage || sendImageMutation.isPending) return;
     const replyToSnapshot = replyingTo;
@@ -816,6 +835,7 @@ export default function ChatScreen(): React.JSX.Element {
         base64: picked.base64,
         mimeType: picked.mimeType,
         ...(extras.length > 0 ? { extraImages: extras } : {}),
+        selectedCount: 1 + extras.length,
         category: cat,
         mode,
         caption: captionSnapshot,
@@ -1361,7 +1381,7 @@ export default function ChatScreen(): React.JSX.Element {
             </View>
             {pickedImage ? (
               pickedExtraImages.length > 0 ? (
-                // Multi-image: show a scrollable strip of all selected images
+                // Multi-image: scrollable strip with per-thumbnail remove button.
                 <ScrollView
                   horizontal
                   showsHorizontalScrollIndicator={false}
@@ -1369,22 +1389,44 @@ export default function ChatScreen(): React.JSX.Element {
                   contentContainerStyle={styles.imagePreviewStripContent}
                 >
                   {([pickedImage, ...pickedExtraImages] as Array<{ uri: string }>).map((img, idx) => (
-                    <Image
-                      key={img.uri + String(idx)}
-                      source={{ uri: img.uri }}
-                      style={styles.imagePreviewStripThumb}
-                      resizeMode="cover"
-                      accessibilityLabel={`Photo ${idx + 1} of ${1 + pickedExtraImages.length}`}
-                    />
+                    <View key={img.uri + String(idx)} style={styles.imagePreviewStripItem}>
+                      <Image
+                        source={{ uri: img.uri }}
+                        style={styles.imagePreviewStripThumb}
+                        resizeMode="cover"
+                        accessibilityLabel={`Photo ${idx + 1} of ${1 + pickedExtraImages.length}`}
+                      />
+                      <Pressable
+                        onPress={() => removePicked(idx)}
+                        disabled={sendImageMutation.isPending}
+                        style={styles.imagePreviewRemoveBtn}
+                        accessibilityLabel={`Remove photo ${idx + 1}`}
+                        hitSlop={4}
+                      >
+                        <Text style={styles.imagePreviewRemoveX}>✕</Text>
+                      </Pressable>
+                    </View>
                   ))}
                 </ScrollView>
               ) : (
-                <Image
-                  source={{ uri: pickedImage.uri }}
-                  style={styles.imagePickerPreview}
-                  resizeMode="contain"
-                  accessibilityLabel="Selected photo preview"
-                />
+                // Single image: full-width preview with remove button overlay.
+                <View style={styles.imagePickerPreviewWrap}>
+                  <Image
+                    source={{ uri: pickedImage.uri }}
+                    style={styles.imagePickerPreview}
+                    resizeMode="contain"
+                    accessibilityLabel="Selected photo preview"
+                  />
+                  <Pressable
+                    onPress={() => removePicked(0)}
+                    disabled={sendImageMutation.isPending}
+                    style={styles.imagePickerPreviewRemoveBtn}
+                    accessibilityLabel="Remove photo"
+                    hitSlop={4}
+                  >
+                    <Text style={styles.imagePreviewRemoveX}>✕</Text>
+                  </Pressable>
+                </View>
               )
             ) : null}
             <Text style={styles.modalLabel}>What is this?</Text>
@@ -2953,11 +2995,46 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     alignItems: "center",
   },
+  imagePreviewStripItem: {
+    position: "relative",
+  },
   imagePreviewStripThumb: {
     width: 96,
     height: 96,
     borderRadius: 8,
     backgroundColor: colors.light.muted,
+  },
+  imagePreviewRemoveBtn: {
+    position: "absolute",
+    top: 4,
+    right: 4,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  imagePreviewRemoveX: {
+    color: "#fff",
+    fontSize: 11,
+    lineHeight: 13,
+    fontFamily: "Inter_500Medium",
+  },
+  imagePickerPreviewWrap: {
+    position: "relative",
+    marginBottom: 4,
+  },
+  imagePickerPreviewRemoveBtn: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
   },
   modeHint: {
     color: colors.light.mutedForeground,

@@ -1392,6 +1392,8 @@ export type SendChatImageRequest = {
    * through the server's multi-image receive path.
    */
   extraImages?: { base64: string; mimeType: string }[];
+  /** Section 8 receive log: total images selected by the user (1 + extras.length). */
+  selectedCount?: number;
 };
 
 export async function sendChatImage(
@@ -1436,6 +1438,7 @@ export async function sendChatImage(
       ...imagePayload,
       category: req.category,
       mode: req.mode,
+      ...(req.selectedCount !== undefined ? { mobileSelectedCount: req.selectedCount } : {}),
       clientNow: new Date().toISOString(),
       clientTimezone:
         (typeof Intl !== "undefined" &&

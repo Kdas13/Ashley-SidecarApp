@@ -784,6 +784,8 @@ export type SendImageArgs = {
   replyTo?: ReplyToRef | null;
   /** Additional images beyond the first (max 3 extras). Forwarded to sendChatImage as `images[]`. */
   extraImages?: { base64: string; mimeType: string }[];
+  /** Section 8 receive log: how many images the user selected. Forwarded as mobileSelectedCount. */
+  selectedCount?: number;
 };
 
 export function useSendImage() {
@@ -827,6 +829,7 @@ export function useSendImage() {
           ...(args.extraImages && args.extraImages.length > 0
             ? { extraImages: args.extraImages }
             : {}),
+          ...(args.selectedCount !== undefined ? { selectedCount: args.selectedCount } : {}),
         });
       } catch (err) {
         throw err instanceof Error ? err : new Error("Could not send image");
