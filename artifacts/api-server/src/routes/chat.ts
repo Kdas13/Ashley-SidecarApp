@@ -1648,6 +1648,43 @@ function pruneSelfieCache(): void {
   if (pruned) persistSelfieCache();
 }
 
+// ── Descriptor Mode Helper ────────────────────────────────────────────────
+// Extracts Ashley's STABLE IDENTITY from her profile appearance — keeping
+// only face, skin, eye, and structural descriptors while removing ALL
+// hair-colour and hair-style clauses.  Used by the descriptor-mode prompt
+// builder so the stable identity section never leaks hair colour into a
+// descriptor job.
+//
+// Input:  "Lavender hair (long, wavy), pale complexion, green eyes, petite figure"
+// Output: "pale complexion, green eyes, petite figure"
+function buildStableIdentityFromProfile(baseAppearance: string): string {
+  if (!baseAppearance.trim()) return "";
+  // Leading tokens that mark a clause as hair-colour-primary.  "black" and
+  // "brown" are deliberately excluded — they appear in "black dress" / "brown
+  // eyes" too and would over-drop.
+  const HAIR_COLOUR_STARTS = [
+    "lavender", "purple", "violet", "lilac", "mauve", "plum",
+    "grey", "gray", "silver", "platinum", "white",
+    "red", "ginger", "auburn", "copper", "strawberry",
+    "blonde", "blond", "brunette", "chestnut",
+  ];
+  return baseAppearance
+    .split(",")
+    .map((c) => c.trim())
+    .filter((clause) => {
+      if (!clause) return false;
+      const lower = clause.toLowerCase();
+      // Drop any clause that explicitly mentions hair or hair-style words.
+      if (/\bhair\b|\blocke?s?\b|\bwavy\b|\bcurly\b|\bstraight\b|\bbraided\b/i.test(clause)) return false;
+      // Drop clauses whose LEADING descriptor is a hair-colour token.
+      if (HAIR_COLOUR_STARTS.some((tok) => lower.startsWith(tok))) return false;
+      return true;
+    })
+    .join(", ")
+    .trim();
+}
+// ─────────────────────────────────────────────────────────────────────────
+
 async function generateAshleySelfie(
   vibe: string,
   profile: AshleyProfile,
@@ -1815,28 +1852,82 @@ async function generateAshleySelfie(
       "image-gen: visual memory anchor applied",
     );
   }
-  const modeBlock = buildModePromptBlock({
-    mode: imageMode,
-    vibe: vibeNoMem,
-    subjectName: ashleyName,
-    appearance,
-    hairDirective,
-    sceneAnchor: sceneAnchorDirective,
-  });
   // Discard the unused round-trip variable; declared for documentation +
   // future reuse if the cache key ever needs the full VSPEC form.
   void scrubbedVibeWithSpec;
-  const fullPrompt = [
-    // Provider Floor for the IMAGE generator. Always first, never overridden
-    // by mode/intimacy — see lib/contentPolicy.ts. The downstream image
-    // provider has its own safety filter; this prefix keeps requests well
-    // inside it so we degrade by Ashley saying "couldn't get the shot —
-    // try a different vibe" rather than by hitting a hard provider error.
-    buildSelfiePromptSafetyPrefix(),
-    modeBlock,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+
+  // ── Section 4 prompt assembly: DESCRIPTOR MODE vs IDENTITY MODE ──────────
+  //
+  // DESCRIPTOR MODE (spec Sections 4/5/7):
+  //   Build a three-layer structured prompt that keeps the stable identity
+  //   anchor (face/skin/eyes) while completely replacing the hair layer.
+  //   Layer order is MANDATORY:
+  //     1. Safety prefix
+  //     2. STABLE ASHLEY IDENTITY  — face / eyes / skin only, NO hair colour
+  //     3. TEMPORARY APPEARANCE    — descriptor hair + pose / framing / scene
+  //     4. NEGATIVE DIRECTIVE      — the ONLY place forbidden colours may appear
+  //     5. Style line
+  //
+  // IDENTITY MODE (no descriptor): unchanged buildModePromptBlock path.
+  //
+  // DESCRIPTOR_NEGATIVE_DIRECTIVE is a module-scope constant so both the
+  // prompt builder and the audit block use the same string for stripping.
+  const DESCRIPTOR_NEGATIVE_DIRECTIVE =
+    "Hair colour MUST NOT be lavender, purple, violet, lilac, mauve, plum, grey, gray, or silver. This overrides any model default and is absolute.";
+
+  let descriptorStableIdentity = "";
+  let fullPrompt: string;
+
+  if (_descriptorOverride) {
+    // STABLE IDENTITY: strip hair clauses from the profile appearance.
+    descriptorStableIdentity = buildStableIdentityFromProfile(baseAppearance);
+
+    // POSE BLOCK: the scrubbed vibe is "<descriptor> portrait\n\nPose: ...\n..."
+    // Split on the first double-newline; everything AFTER it is the
+    // pose / expression / framing / scene block that is allowed through.
+    const vibeParts = vibeNoMem.split(/\n{2,}/);
+    const poseBlock = vibeParts.slice(1).join("\n\n").trim();
+
+    // Embed stable identity into the mode's shot-type sentence.
+    const shot = wrapper.shotType.replace(/{subject}/g, ashleyName);
+    const identityModifier = descriptorStableIdentity
+      ? ` with ${descriptorStableIdentity}`
+      : "";
+    const stableShot = shot.includes(", a young woman,")
+      ? shot.replace(", a young woman,", `, a young woman${identityModifier},`)
+      : shot;
+
+    fullPrompt = [
+      buildSelfiePromptSafetyPrefix(),
+      `STABLE ASHLEY IDENTITY: ${stableShot}.`,
+      [
+        `TEMPORARY APPEARANCE FOR THIS IMAGE: She has ${_descriptorOverride.hairColour} hair.`,
+        poseBlock,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      DESCRIPTOR_NEGATIVE_DIRECTIVE,
+      wrapper.styleLine + ".",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  } else {
+    const modeBlock = buildModePromptBlock({
+      mode: imageMode,
+      vibe: vibeNoMem,
+      subjectName: ashleyName,
+      appearance,
+      hairDirective,
+      sceneAnchor: sceneAnchorDirective,
+    });
+    fullPrompt = [
+      buildSelfiePromptSafetyPrefix(),
+      modeBlock,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+  // ─────────────────────────────────────────────────────────────────────────
 
   // Pre-generation log. Captures: imageMode, why (wrapper hint), final
   // framing/sizing, vibe preview. Required by the image-intent spec so we
@@ -1853,44 +1944,61 @@ async function generateAshleySelfie(
     "image-gen: pre-generation request",
   );
 
-  // ── Mandatory final-prompt audit (descriptor override contract) ──────────
-  // THE DESCRIPTOR IS THE SINGLE SOURCE OF TRUTH FOR HAIR COLOUR.
-  // Scan the EXACT text sent to the image model. The hair-directive block
-  // deliberately contains forbidden colour names (as negations), so we strip
-  // the directive itself before checking — what we cannot tolerate is those
-  // words appearing OUTSIDE the directive in the appearance sentence, vibe,
-  // or shot type.
+  // ── Section 7: Mandatory final-prompt audit (blocking) ───────────────────
+  // Audit the EXACT payload sent to the image model.
+  // In descriptor mode the ONLY legitimate location for forbidden colour names
+  // is DESCRIPTOR_NEGATIVE_DIRECTIVE — strip it before scanning.
+  // In identity mode strip the hairDirective block instead.
   {
     const FORBIDDEN_HAIR_WORDS = ["lavender", "purple", "grey", "gray", "silver", "violet", "lilac", "mauve", "plum"];
-    // All known hair colours for detection list.
     const KNOWN_HAIR_COLOURS = [
       "natural bright copper-red", "light blonde", "medium brown brunette", "solid jet black",
       "ginger", "red", "auburn", "copper", "strawberry blonde", "blonde", "blond", "platinum",
       "silver", "white", "grey", "gray", "brunette", "brown", "chestnut", "black", "jet black",
       "lavender", "purple", "lilac", "violet",
     ];
-    const promptWithoutDirective = hairDirective ? fullPrompt.replace(hairDirective, "") : fullPrompt;
+    // Strip the negation/directive section before scanning so legitimate
+    // "MUST NOT be lavender..." text doesn't trigger a false positive.
+    const promptWithoutNegation = _descriptorOverride
+      ? fullPrompt.replace(DESCRIPTOR_NEGATIVE_DIRECTIVE, "")
+      : (hairDirective ? fullPrompt.replace(hairDirective, "") : fullPrompt);
+
+    // Section 7.1 — stable identity checks (descriptor mode only).
+    const STABLE_ID_HAIR_WORDS = [
+      ...FORBIDDEN_HAIR_WORDS,
+      "hair", "locks", "wavy", "curly", "straight", "braided",
+      "ginger", "auburn", "copper", "blonde", "brunette", "chestnut", "redhead", "blackhair",
+    ];
+    const stableIdentityContainsHairColour = _descriptorOverride != null
+      && STABLE_ID_HAIR_WORDS.some((w) => new RegExp(`\\b${w}\\b`, "i").test(descriptorStableIdentity));
+    const stableIdentityContainsMutableAppearance = _descriptorOverride != null
+      && /\b(outfit|dress|wearing|pose|seated|standing|lighting|scene|setting)\b/i.test(descriptorStableIdentity);
+
+    // Section 7.2 — scan remaining prompt for forbidden colours.
     const detectedColours: string[] = [];
     for (const hc of KNOWN_HAIR_COLOURS) {
       const rx = hc.includes(" ")
         ? new RegExp(hc.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")
         : new RegExp(`\\b${hc}\\b`, "i");
-      if (rx.test(promptWithoutDirective) && !detectedColours.includes(hc)) detectedColours.push(hc);
+      if (rx.test(promptWithoutNegation) && !detectedColours.includes(hc)) detectedColours.push(hc);
     }
     const forbiddenFound = _descriptorOverride != null
-      ? FORBIDDEN_HAIR_WORDS.filter((fw) => new RegExp(`\\b${fw}\\b`, "i").test(promptWithoutDirective))
+      ? FORBIDDEN_HAIR_WORDS.filter((fw) => new RegExp(`\\b${fw}\\b`, "i").test(promptWithoutNegation))
       : [];
-    const hasForbidden = forbiddenFound.length > 0;
+    const hasForbidden = forbiddenFound.length > 0 || stableIdentityContainsHairColour;
     const overrideApplied = _descriptorOverride != null && !hasForbidden;
+
     logger.info(
       {
         jobId: jobId ?? null,
         descriptorSource: _descriptorOverride ? _descriptorWord : null,
         mappedHairColour: _descriptorOverride?.hairColour ?? null,
+        stableIdentityContainsHairColour: _descriptorOverride != null ? stableIdentityContainsHairColour : null,
+        stableIdentityContainsMutableAppearance: _descriptorOverride != null ? stableIdentityContainsMutableAppearance : null,
         finalModelInputHairColoursDetected: detectedColours,
-        finalModelInputContainsForbiddenHairColour: hasForbidden,
-        finalModelInputTextPreview: fullPrompt,
+        finalModelInputContainsForbiddenHairColourOutsideNegation: hasForbidden,
         overrideAppliedAtModelInput: overrideApplied,
+        finalModelInputTextPreview: fullPrompt,
       },
       "image-gen: FINAL MODEL INPUT AUDIT",
     );
@@ -1898,13 +2006,14 @@ async function generateAshleySelfie(
       logger.error(
         {
           jobId: jobId ?? null,
-          descriptorSource: _descriptorWord,
+          descriptorSource: _descriptorOverride ? _descriptorWord : null,
           mappedHairColour: _descriptorOverride?.hairColour ?? null,
           forbiddenColoursFound: forbiddenFound,
+          stableIdentityContainsHairColour,
           overrideFailure: true,
           finalModelInputTextPreview: fullPrompt,
         },
-        "image-gen: DESCRIPTOR OVERRIDE FAILURE — forbidden hair colour survives in final model input; job aborted without provider call",
+        "image-gen: DESCRIPTOR OVERRIDE FAILURE — forbidden hair colour in final model input; job aborted",
       );
       return null;
     }
