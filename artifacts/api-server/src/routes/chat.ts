@@ -2055,9 +2055,20 @@ loadSelfieCache();
 for (const [id, job] of selfieJobs) {
   if (job.status === "pending") {
     logger.info(
-      { jobId: id, mode: job.mode, imageMode: job.imageMode },
+      {
+        jobId: id,
+        mode: job.mode,
+        imageMode: job.imageMode,
+        attachmentId: job.attachmentId ?? null,
+        attachmentSortOrder: job.attachmentSortOrder ?? null,
+      },
       "Resuming image-gen job after server restart",
     );
+    // Pass persisted attachmentId and attachmentSortOrder so resumed multi-image
+    // jobs continue to patch the correct media_attachments row on completion
+    // and apply the correct messages.imageUrl backpatch semantics
+    // (first image only). Jobs written before these fields existed will have
+    // both as undefined, which safely defaults to single-image behaviour.
     startSelfieGeneration(
       id,
       job.vibe,
@@ -2065,6 +2076,8 @@ for (const [id, job] of selfieJobs) {
       job.imageMode,
       job.deviceId,
       job.messageId,
+      job.attachmentId,
+      job.attachmentSortOrder,
     );
   }
 }

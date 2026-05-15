@@ -1596,9 +1596,11 @@ function MessageBubble({
   const hasImage = !!message.imageUrl;
   const hasText = !!message.content && message.content.trim().length > 0;
   const [imageFailed, setImageFailed] = useState(false);
-  const showImage = hasImage && !imageFailed;
   /** Multi-image gallery: resolved imageUrls array from a visual packet. */
   const hasGallery = !!(message.imageUrls && message.imageUrls.length > 1);
+  // When a multi-image gallery is present, suppress the single-image block so
+  // the packet renders only as a gallery group — not as single image + gallery.
+  const showImage = hasImage && !imageFailed && !hasGallery;
   // Full-screen image viewer state. Tap the preview to open; modal renders
   // the SAME imageUrl with resizeMode="contain" so we can tell whether the
   // generator cropped the source vs whether the chat preview is hiding part
