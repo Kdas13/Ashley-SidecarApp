@@ -1653,6 +1653,7 @@ async function generateAshleySelfie(
   profile: AshleyProfile,
   mode: SelfieMode,
   imageMode: ImageMode,
+  jobId?: string,
 ): Promise<string | null> {
   const baseAppearance = (profile.appearance ?? "").trim();
   const ashleyName = (profile.name ?? "Ashley").trim() || "Ashley";
@@ -1678,19 +1679,47 @@ async function generateAshleySelfie(
   //   blonde    → "light blonde"               + negate lavender/purple/grey
   //   brunette  → "medium brown"               + negate lavender/purple/grey
   //   blackhair → "jet black"                  + negate lavender/purple/grey
+  // Mandatory descriptor map — hairColour values are used verbatim in the
+  // final prompt; the model sees e.g. "She has natural bright copper-red hair."
   const DESCRIPTOR_HAIR_OVERRIDES: Record<string, { hairColour: string; negations: string[] }> = {
-    redhead:   { hairColour: "natural bright copper-red", negations: ["lavender", "purple", "grey", "gray", "silver", "violet"] },
-    blonde:    { hairColour: "light blonde",              negations: ["lavender", "purple", "grey", "gray", "silver", "violet"] },
-    brunette:  { hairColour: "medium brown",              negations: ["lavender", "purple", "grey", "gray", "silver", "violet"] },
-    blackhair: { hairColour: "jet black",                 negations: ["lavender", "purple", "grey", "gray", "silver", "violet"] },
+    redhead:   { hairColour: "natural bright copper-red",  negations: ["lavender", "purple", "grey", "gray", "silver", "violet", "lilac"] },
+    blonde:    { hairColour: "light blonde",               negations: ["lavender", "purple", "grey", "gray", "silver", "violet", "lilac"] },
+    brunette:  { hairColour: "medium brown brunette",      negations: ["lavender", "purple", "grey", "gray", "silver", "violet", "lilac"] },
+    blackhair: { hairColour: "solid jet black",            negations: ["lavender", "purple", "grey", "gray", "silver", "violet", "lilac"] },
   };
   const _descriptorWord = vibeDesc.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
-  const _descriptorOverride = !carriedSpec ? (DESCRIPTOR_HAIR_OVERRIDES[_descriptorWord] ?? null) : null;
+  // FIX (root-cause May 2026): the imageGateSynth path calls encodeVibeWithSpec()
+  // which bakes an EMPTY VSPEC marker into the description. extractVisualSpecFromVibe
+  // then returns a non-null carriedSpec (appearance={}) which caused the old
+  // `!carriedSpec` guard to skip the descriptor override, leaving the lavender
+  // profile appearance untouched for every descriptor-driven job.
+  // Correct gate: fire the override whenever the carried spec has NO explicit
+  // hairColour — an empty VSPEC must not block the descriptor from controlling hair.
+  const _carriedHasHairColour = Boolean(carriedSpec?.appearance?.hairColour);
+  const _descriptorOverride = !_carriedHasHairColour
+    ? (DESCRIPTOR_HAIR_OVERRIDES[_descriptorWord] ?? null)
+    : null;
   // Section 3/5: NULL SPEC IS FORBIDDEN. Fall back to empty-but-non-null spec
   // for unknown descriptors (no-op overrides, profile defaults apply) rather
   // than passing null and silently skipping the whole override machinery.
+  // When the descriptor fires, MERGE with any carried spec (keeps pose/clothing
+  // slots already extracted) but HARD-REPLACE hairColour + add negations.
   const effectiveSpec = _descriptorOverride
-    ? { ...makeEmptySpec(vibeDesc), imageIntent: true, intentReason: `marker_descriptor:${_descriptorWord}`, appearance: { hairColour: _descriptorOverride.hairColour }, negations: _descriptorOverride.negations }
+    ? {
+        ...(carriedSpec ?? makeEmptySpec(vibeDesc)),
+        imageIntent: true,
+        intentReason: `marker_descriptor:${_descriptorWord}`,
+        appearance: {
+          ...(carriedSpec?.appearance ?? {}),
+          hairColour: _descriptorOverride.hairColour,
+        },
+        negations: [
+          ..._descriptorOverride.negations,
+          ...((carriedSpec?.negations ?? []).filter(
+            (n) => !_descriptorOverride.negations.includes(n),
+          )),
+        ],
+      }
     : (carriedSpec ?? makeEmptySpec(vibeDesc));
   const appearance = composeAppearance(baseAppearance, effectiveSpec);
   // Scrub the vibe TEXT itself of any negated tokens or profile-default
@@ -1806,6 +1835,64 @@ async function generateAshleySelfie(
     },
     "image-gen: pre-generation request",
   );
+
+  // ── Mandatory final-prompt audit (descriptor override contract) ──────────
+  // THE DESCRIPTOR IS THE SINGLE SOURCE OF TRUTH FOR HAIR COLOUR.
+  // Scan the EXACT text sent to the image model. The hair-directive block
+  // deliberately contains forbidden colour names (as negations), so we strip
+  // the directive itself before checking — what we cannot tolerate is those
+  // words appearing OUTSIDE the directive in the appearance sentence, vibe,
+  // or shot type.
+  {
+    const FORBIDDEN_HAIR_WORDS = ["lavender", "purple", "grey", "gray", "silver", "violet", "lilac", "mauve", "plum"];
+    // All known hair colours for detection list.
+    const KNOWN_HAIR_COLOURS = [
+      "natural bright copper-red", "light blonde", "medium brown brunette", "solid jet black",
+      "ginger", "red", "auburn", "copper", "strawberry blonde", "blonde", "blond", "platinum",
+      "silver", "white", "grey", "gray", "brunette", "brown", "chestnut", "black", "jet black",
+      "lavender", "purple", "lilac", "violet",
+    ];
+    const promptWithoutDirective = hairDirective ? fullPrompt.replace(hairDirective, "") : fullPrompt;
+    const detectedColours: string[] = [];
+    for (const hc of KNOWN_HAIR_COLOURS) {
+      const rx = hc.includes(" ")
+        ? new RegExp(hc.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")
+        : new RegExp(`\\b${hc}\\b`, "i");
+      if (rx.test(promptWithoutDirective) && !detectedColours.includes(hc)) detectedColours.push(hc);
+    }
+    const forbiddenFound = _descriptorOverride != null
+      ? FORBIDDEN_HAIR_WORDS.filter((fw) => new RegExp(`\\b${fw}\\b`, "i").test(promptWithoutDirective))
+      : [];
+    const hasForbidden = forbiddenFound.length > 0;
+    const overrideApplied = _descriptorOverride != null && !hasForbidden;
+    logger.info(
+      {
+        jobId: jobId ?? null,
+        descriptorSource: _descriptorOverride ? _descriptorWord : null,
+        mappedHairColour: _descriptorOverride?.hairColour ?? null,
+        finalModelInputHairColoursDetected: detectedColours,
+        finalModelInputContainsForbiddenHairColour: hasForbidden,
+        finalModelInputTextPreview: fullPrompt,
+        overrideAppliedAtModelInput: overrideApplied,
+      },
+      "image-gen: FINAL MODEL INPUT AUDIT",
+    );
+    if (hasForbidden) {
+      logger.error(
+        {
+          jobId: jobId ?? null,
+          descriptorSource: _descriptorWord,
+          mappedHairColour: _descriptorOverride?.hairColour ?? null,
+          forbiddenColoursFound: forbiddenFound,
+          overrideFailure: true,
+          finalModelInputTextPreview: fullPrompt,
+        },
+        "image-gen: DESCRIPTOR OVERRIDE FAILURE — forbidden hair colour survives in final model input; job aborted without provider call",
+      );
+      return null;
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
 
   // Cache check by (mode, fullPrompt). Cross-message reuse — saves 6-40s
   // when the same vibe + appearance + mode recurs within 24h.
@@ -1965,7 +2052,7 @@ function startSelfieGeneration(
         { jobId, messageId, mode, imageMode },
         "CALLING PROVIDER... (job)",
       );
-      const imageUrl = await generateAshleySelfie(vibe, profile, mode, imageMode);
+      const imageUrl = await generateAshleySelfie(vibe, profile, mode, imageMode, jobId);
       logger.info(
         {
           jobId,
