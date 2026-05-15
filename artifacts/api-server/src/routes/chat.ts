@@ -1187,6 +1187,7 @@ router.post("/chat", async (req, res): Promise<void> => {
 
   {
     const allMarkers = parseAllImageMarkers(assistantText);
+    req.log.info({ markersFound: allMarkers.length }, "image-intent: MARKERS FOUND in /chat reply");
     if (allMarkers.length > 4) {
       req.log.warn(
         { excess: allMarkers.length - 4 },
@@ -3834,6 +3835,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
 
     {
       const allMarkers = parseAllImageMarkers(finalText);
+      req.log.info({ streamId, markersFound: allMarkers.length }, "image-intent: MARKERS FOUND in /chat/stream reply");
       if (allMarkers.length > 4) {
         req.log.warn(
           { streamId, excess: allMarkers.length - 4 },

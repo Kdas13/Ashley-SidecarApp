@@ -519,11 +519,20 @@ export function parseImageMarker(text: string): ParsedMarker | null {
 }
 
 /**
- * Parse ALL [image: MODE | vibe] markers from an LLM reply in order of
- * appearance. Returns an empty array when none are found. Legacy [selfie:...]
- * markers are NOT included — only the modern [image:...] syntax qualifies
- * for multi-image packets (legacy markers are handled by the single-image
- * parseImageMarker path for backwards compat).
+ * Parse ALL [image: ...] markers from an LLM reply in order of appearance.
+ * Returns an empty array when none are found. Legacy [selfie:...] markers are
+ * NOT included — only the modern [image:...] syntax qualifies for multi-image
+ * packets (legacy markers are handled by the single-image parseImageMarker
+ * path for backwards compat).
+ *
+ * Two-stage extraction:
+ *   Stage 1 — permissive: `/[image:[^\]]+\]/g` grabs every raw [image:...]
+ *   token regardless of internal format (pipe optional, spacing irrelevant).
+ *   This is the global-match stage that MUST NOT stop at the first token.
+ *
+ *   Stage 2 — decode: for each raw token, attempt strict mode|vibe split; if
+ *   no pipe is present fall back to running the intent classifier on the full
+ *   inner content so a missing pipe never silently drops a marker.
  *
  * Cap: callers MUST discard markers beyond index 3 (maximum 4 images per
  * packet). The function itself returns all matches so the caller can log the
@@ -532,29 +541,45 @@ export function parseImageMarker(text: string): ParsedMarker | null {
 export function parseAllImageMarkers(text: string): ParsedMarker[] {
   if (!text) return [];
   const results: ParsedMarker[] = [];
-  // Create a fresh RegExp instance with the global flag — the IMAGE_MARKER_RX
-  // constant has no /g so we can't reuse it for exec-based iteration.
-  const rx = /\[image:\s*([^|\]]+)\|([^\]]+)\]/gi;
-  let match: RegExpExecArray | null;
-  while ((match = rx.exec(text)) !== null) {
-    const declared = (match[1] ?? "").trim().toUpperCase();
-    const vibe = (match[2] ?? "").trim();
+  // Stage 1: permissive global extraction — finds ALL [image:...] tokens.
+  // Deliberately does NOT require a pipe so markers emitted without one are
+  // still detected. The raw strings are decoded in Stage 2 below.
+  const rawRx = /\[image:[^\]]+\]/gi;
+  let rawMatch: RegExpExecArray | null;
+  while ((rawMatch = rawRx.exec(text)) !== null) {
+    const token = rawMatch[0];
+    const startIndex = rawMatch.index;
+    // Stage 2: decode mode + vibe from the raw token.
+    // Try strict MODE|vibe split first; fall back to classifier if no pipe.
+    const pipeRx = /\[image:\s*([^|\]]+)\|([^\]]+)\]/i;
+    const pipeMatch = token.match(pipeRx);
     let mode: ImageMode;
+    let vibe: string;
     let reason: string;
-    if (isImageMode(declared)) {
-      mode = declared;
-      reason = `model emitted explicit [image:${declared}|...] tag (multi-parse)`;
+    if (pipeMatch) {
+      const declared = (pipeMatch[1] ?? "").trim().toUpperCase();
+      vibe = (pipeMatch[2] ?? "").trim();
+      if (isImageMode(declared)) {
+        mode = declared;
+        reason = `model emitted explicit [image:${declared}|...] tag (multi-parse)`;
+      } else {
+        const classified = classifyImageIntent(`${declared} ${vibe}`);
+        mode = classified.mode;
+        reason = `model emitted [image:${declared}|...] unknown mode — classifier fallback: ${classified.reason} (multi-parse)`;
+      }
     } else {
-      const classified = classifyImageIntent(`${declared} ${vibe}`);
+      // No pipe: treat full inner content as the vibe and classify it.
+      vibe = token.replace(/^\[image:\s*/i, "").replace(/\]$/, "").trim();
+      const classified = classifyImageIntent(vibe);
       mode = classified.mode;
-      reason = `model emitted [image:${declared}|...] unknown mode — classifier fallback: ${classified.reason} (multi-parse)`;
+      reason = `model emitted [image:...] without pipe separator — classifier fallback: ${classified.reason} (multi-parse)`;
     }
     results.push({
       mode,
       vibe,
-      rawMatch: match[0],
-      startIndex: match.index,
-      length: match[0].length,
+      rawMatch: token,
+      startIndex,
+      length: token.length,
       reason,
     });
   }
