@@ -178,31 +178,70 @@ export interface MediaAttachment {
   updatedAt: string;
 }
 
+/**
+ * Optional reply-to reference (id, role, preview).
+ * @nullable
+ */
+export type SendImageRequestUserMessageReplyTo = {
+  [key: string]: unknown;
+} | null;
+
+/**
+ * Client-generated message metadata.
+ */
+export type SendImageRequestUserMessage = {
+  /**
+   * @minLength 8
+   * @maxLength 128
+   */
+  id: string;
+  /** Optional caption or user text accompanying the image(s). */
+  content?: string;
+  /**
+   * Optional reply-to reference (id, role, preview).
+   * @nullable
+   */
+  replyTo?: SendImageRequestUserMessageReplyTo;
+};
+
+/**
+ * Single-image path — kept for backwards compat with older clients.
+ */
+export type SendImageRequestImage = {
+  /** Base64-encoded image data. */
+  base64: string;
+  /** MIME type (e.g. image/jpeg, image/png, image/webp). */
+  mimeType: string;
+};
+
 export type SendImageRequestImagesItem = {
   base64: string;
   mimeType: string;
 };
 
 /**
- * Body for POST /chat/image. Supports a single image (legacy) or an array of images (multi-image packet). When images[] is provided, each entry's base64 and mimeType are used in order; the primary image field is ignored if images[] is non-empty.
+ * Body for POST /chat/image. Supports a single image (legacy) or an array of images (multi-image packet). Exactly one of `image` or `images` must be present; sending both or neither returns 400. The `userMessage` wrapper carries the client-generated message ID so the server can insert with a stable ID the client already knows about.
 
  */
 export interface SendImageRequest {
-  /** Base64-encoded primary image (single-image / legacy path). */
-  image?: string;
-  /** MIME type of the primary image. */
-  mimeType?: string;
+  /** Client-generated message metadata. */
+  userMessage: SendImageRequestUserMessage;
+  /** Single-image path — kept for backwards compat with older clients. */
+  image?: SendImageRequestImage;
   /**
-   * Array of images for multi-image sends (max 4).
+   * Multi-image path — up to 4 images, each with its own base64 + mimeType.
+   * @minItems 1
    * @maxItems 4
    */
   images?: SendImageRequestImagesItem[];
-  /** @nullable */
-  caption?: string | null;
-  /** @nullable */
-  category?: string | null;
-  /** @nullable */
-  mode?: string | null;
+  /** User-selected image category (e.g. selfie, medical, document, scene). */
+  category: string;
+  /** Analysis mode (e.g. quick, detailed, memory). */
+  mode: string;
+  /** Client wall-clock timestamp for quiet-hours calculation. */
+  clientNow?: string;
+  /** IANA timezone string from the client device. */
+  clientTimezone?: string;
 }
 
 export interface SendMessageBody {

@@ -5,26 +5,31 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { SendImageRequestImage } from "./sendImageRequestImage";
 import type { SendImageRequestImagesItem } from "./sendImageRequestImagesItem";
+import type { SendImageRequestUserMessage } from "./sendImageRequestUserMessage";
 
 /**
- * Body for POST /chat/image. Supports a single image (legacy) or an array of images (multi-image packet). When images[] is provided, each entry's base64 and mimeType are used in order; the primary image field is ignored if images[] is non-empty.
+ * Body for POST /chat/image. Supports a single image (legacy) or an array of images (multi-image packet). Exactly one of `image` or `images` must be present; sending both or neither returns 400. The `userMessage` wrapper carries the client-generated message ID so the server can insert with a stable ID the client already knows about.
 
  */
 export interface SendImageRequest {
-  /** Base64-encoded primary image (single-image / legacy path). */
-  image?: string;
-  /** MIME type of the primary image. */
-  mimeType?: string;
+  /** Client-generated message metadata. */
+  userMessage: SendImageRequestUserMessage;
+  /** Single-image path — kept for backwards compat with older clients. */
+  image?: SendImageRequestImage;
   /**
-   * Array of images for multi-image sends (max 4).
+   * Multi-image path — up to 4 images, each with its own base64 + mimeType.
+   * @minItems 1
    * @maxItems 4
    */
   images?: SendImageRequestImagesItem[];
-  /** @nullable */
-  caption?: string | null;
-  /** @nullable */
-  category?: string | null;
-  /** @nullable */
-  mode?: string | null;
+  /** User-selected image category (e.g. selfie, medical, document, scene). */
+  category: string;
+  /** Analysis mode (e.g. quick, detailed, memory). */
+  mode: string;
+  /** Client wall-clock timestamp for quiet-hours calculation. */
+  clientNow?: Date;
+  /** IANA timezone string from the client device. */
+  clientTimezone?: string;
 }
