@@ -482,8 +482,12 @@ components:
         imageUrls:
           type: ["array", "null"]
           items:
-            type: string
-          description: Resolved image URLs from ready media_attachments rows. Injected by /state hydration; null on single-image messages.
+            type: ["string", "null"]
+          description: >
+            Resolved image URLs from media_attachments rows, ordered by sort_order.
+            Null entries at specific positions indicate failed generation slots — position
+            is preserved so the UI can show an error tile in the correct slot.
+            Null on single-image messages.
         createdAt:
           type: string
           format: date-time

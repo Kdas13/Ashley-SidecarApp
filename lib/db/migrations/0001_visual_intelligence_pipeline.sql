@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS "media_attachments" (
   "category"         text,
   -- Lifecycle: pending | ready | failed.
   "status"           text DEFAULT 'pending' NOT NULL,
+  -- Raw marker string as emitted by the model, e.g. "[image:SELFIE_MODE|warm close-up]".
+  -- Null on user_input rows.
+  "marker"           text,
   -- Encoded MODE|vibe string from the AI marker. Null on user_input rows.
   "selfie_vibe"      text,
   -- Image-mode name (SELFIE_MODE, FULL_BODY_MODE, …). Null on user_input rows.

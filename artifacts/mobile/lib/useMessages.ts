@@ -957,13 +957,16 @@ export async function fetchAndAttachSelfieList(
     const settled = await Promise.allSettled(
       vibeList.map((vibe, i) => fetchSelfieForMessage(messageId, vibe, i)),
     );
-    const imageUrls = settled
-      .filter((r): r is PromiseFulfilledResult<string> => r.status === "fulfilled")
-      .map((r) => r.value);
-    if (imageUrls.length > 0) {
+    // Preserve position: null = failed slot. Spec requires array length === job
+    // count so the gallery renders an error tile at the correct index.
+    const imageUrls: (string | null)[] = settled.map((r) =>
+      r.status === "fulfilled" ? r.value : null,
+    );
+    const anySucceeded = imageUrls.some((u) => u !== null);
+    if (anySucceeded) {
       await patchInCache(qc, messageId, {
         imageUrls,
-        imageUrl: imageUrls[0] ?? null,
+        imageUrl: imageUrls.find((u) => u !== null) ?? null,
         selfieVibe: null,
         selfieVibeList: null,
       });

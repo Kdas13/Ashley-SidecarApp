@@ -161,7 +161,8 @@ export type Message = {
    * Set (length ≥ 2) when Ashley sent multiple selfies in one message.
    * When present the gallery row renders instead of the single-image bubble.
    */
-  imageUrls?: string[] | null;
+  /** Resolved image URLs from a multi-image packet. null entries = failed generation slots (position preserved). */
+  imageUrls?: (string | null)[] | null;
   /**
    * Multi-image: JSON-decoded array of encoded MODE|vibe payloads.
    * The client uses these to fire N parallel selfie jobs and then sets imageUrls.

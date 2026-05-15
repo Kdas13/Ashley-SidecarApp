@@ -109,10 +109,10 @@ export const ListMessagesResponseItem = zod.object({
       "UUID linking this message to its media_attachments rows. Null on single-image messages.",
     ),
   imageUrls: zod
-    .array(zod.string())
+    .array(zod.string().nullable())
     .nullish()
     .describe(
-      "Resolved image URLs from ready media_attachments rows. Injected by \/state hydration; null on single-image messages.",
+      "Resolved image URLs from media_attachments rows, ordered by sort_order. Null entries at specific positions indicate failed generation slots — position is preserved so the UI can show an error tile in the correct slot. Null on single-image messages.\n",
     ),
   createdAt: zod.coerce.date(),
 });
@@ -150,10 +150,10 @@ export const SendMessageResponse = zod.object({
         "UUID linking this message to its media_attachments rows. Null on single-image messages.",
       ),
     imageUrls: zod
-      .array(zod.string())
+      .array(zod.string().nullable())
       .nullish()
       .describe(
-        "Resolved image URLs from ready media_attachments rows. Injected by \/state hydration; null on single-image messages.",
+        "Resolved image URLs from media_attachments rows, ordered by sort_order. Null entries at specific positions indicate failed generation slots — position is preserved so the UI can show an error tile in the correct slot. Null on single-image messages.\n",
       ),
     createdAt: zod.coerce.date(),
   }),
@@ -181,10 +181,10 @@ export const SendMessageResponse = zod.object({
         "UUID linking this message to its media_attachments rows. Null on single-image messages.",
       ),
     imageUrls: zod
-      .array(zod.string())
+      .array(zod.string().nullable())
       .nullish()
       .describe(
-        "Resolved image URLs from ready media_attachments rows. Injected by \/state hydration; null on single-image messages.",
+        "Resolved image URLs from media_attachments rows, ordered by sort_order. Null entries at specific positions indicate failed generation slots — position is preserved so the UI can show an error tile in the correct slot. Null on single-image messages.\n",
       ),
     createdAt: zod.coerce.date(),
   }),
@@ -361,10 +361,10 @@ export const GenerateSelfieResponse = zod.object({
       "UUID linking this message to its media_attachments rows. Null on single-image messages.",
     ),
   imageUrls: zod
-    .array(zod.string())
+    .array(zod.string().nullable())
     .nullish()
     .describe(
-      "Resolved image URLs from ready media_attachments rows. Injected by \/state hydration; null on single-image messages.",
+      "Resolved image URLs from media_attachments rows, ordered by sort_order. Null entries at specific positions indicate failed generation slots — position is preserved so the UI can show an error tile in the correct slot. Null on single-image messages.\n",
     ),
   createdAt: zod.coerce.date(),
 });

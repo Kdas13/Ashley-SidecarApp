@@ -1973,26 +1973,37 @@ function MessageBubble({
             style={styles.galleryRow}
             contentContainerStyle={styles.galleryRowContent}
           >
-            {(message.imageUrls ?? []).map((uri, idx) => (
-              <Pressable
-                key={uri + idx}
-                onPress={() => {
-                  setGalleryViewerUrl(uri);
-                  setViewerOpen(true);
-                }}
-                accessibilityRole="button"
-                accessibilityLabel={`Open photo ${idx + 1} of ${(message.imageUrls ?? []).length} full screen`}
-              >
-                <View style={styles.galleryThumb}>
-                  <Image
-                    source={{ uri }}
-                    style={styles.galleryThumbImage}
-                    resizeMode="cover"
-                    accessibilityLabel={`Photo ${idx + 1} of ${(message.imageUrls ?? []).length}`}
-                  />
+            {(message.imageUrls ?? []).map((uri, idx) =>
+              uri ? (
+                <Pressable
+                  key={uri + idx}
+                  onPress={() => {
+                    setGalleryViewerUrl(uri);
+                    setViewerOpen(true);
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open photo ${idx + 1} of ${(message.imageUrls ?? []).length} full screen`}
+                >
+                  <View style={styles.galleryThumb}>
+                    <Image
+                      source={{ uri }}
+                      style={styles.galleryThumbImage}
+                      resizeMode="cover"
+                      accessibilityLabel={`Photo ${idx + 1} of ${(message.imageUrls ?? []).length}`}
+                    />
+                  </View>
+                </Pressable>
+              ) : (
+                // Failed generation slot — preserve position, show error tile.
+                <View
+                  key={`failed-${idx}`}
+                  style={[styles.galleryThumb, styles.galleryThumbFailed]}
+                  accessibilityLabel={`Photo ${idx + 1} failed to generate`}
+                >
+                  <Feather name="image" size={22} color={colors.light.mutedForeground} />
                 </View>
-              </Pressable>
-            ))}
+              )
+            )}
           </ScrollView>
         ) : null}
         {imageFailed ? (
@@ -2443,6 +2454,13 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     overflow: "hidden",
     backgroundColor: "rgba(0,0,0,0.12)",
+  },
+  galleryThumbFailed: {
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
   },
   galleryThumbImage: {
     width: 114,

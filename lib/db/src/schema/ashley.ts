@@ -435,6 +435,11 @@ export const mediaAttachmentsTable = pgTable(
     // User-input attachments are inserted with status="ready" since the URL
     // is already persisted at insert time.
     status: text("status").notNull().default("pending"),
+    // Raw marker text exactly as emitted by the model, e.g.
+    // "[image:SELFIE_MODE|warm close-up, lavender streaks, soft light]".
+    // Reconstructed from mode+vibe at insert time for traceability.
+    // Null on user_input rows.
+    marker: text("marker"),
     // Encoded MODE|vibe payload, same format as messages.selfie_vibe.
     // Null on user_input rows.
     selfieVibe: text("selfie_vibe"),

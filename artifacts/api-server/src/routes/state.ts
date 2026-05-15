@@ -91,32 +91,34 @@ router.get("/state", async (req, res): Promise<void> => {
         .from(conversationSummariesTable)
         .where(eq(conversationSummariesTable.deviceId, deviceId))
         .orderBy(asc(conversationSummariesTable.coveredThroughCreatedAt)),
-      // Fetch ready media_attachments so /state hydration can annotate
+      // Fetch ready + failed media_attachments so /state hydration can annotate
       // multi-image packet messages with their resolved imageUrls[].
+      // Failed rows emit null at their sort_order position so the gallery
+      // preserves slot positions and can render an error tile in place.
       db
         .select({
           messageId: mediaAttachmentsTable.messageId,
           imageUrl: mediaAttachmentsTable.imageUrl,
           sortOrder: mediaAttachmentsTable.sortOrder,
+          status: mediaAttachmentsTable.status,
         })
         .from(mediaAttachmentsTable)
         .where(
           and(
             eq(mediaAttachmentsTable.deviceId, deviceId),
-            eq(mediaAttachmentsTable.status, "ready"),
+            inArray(mediaAttachmentsTable.status, ["ready", "failed"]),
           ),
         )
         .orderBy(asc(mediaAttachmentsTable.sortOrder)),
     ]);
 
-    // Build messageId → sorted imageUrls[] from ready attachment rows.
-    const packetUrls = new Map<string, string[]>();
+    // Build messageId → sorted (string | null)[] from settled attachment rows.
+    // null = failed slot (position preserved for gallery error tiles).
+    const packetUrls = new Map<string, (string | null)[]>();
     for (const att of attachments) {
-      if (att.imageUrl) {
-        const list = packetUrls.get(att.messageId) ?? [];
-        list.push(att.imageUrl);
-        packetUrls.set(att.messageId, list);
-      }
+      const list = packetUrls.get(att.messageId) ?? [];
+      list.push(att.status === "ready" && att.imageUrl ? att.imageUrl : null);
+      packetUrls.set(att.messageId, list);
     }
 
     // Annotate messages that have multi-image packets with their imageUrls.

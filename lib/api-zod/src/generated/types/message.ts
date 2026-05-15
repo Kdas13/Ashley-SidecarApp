@@ -28,9 +28,10 @@ export interface Message {
    */
   visualPacketId?: string | null;
   /**
-   * Resolved image URLs from ready media_attachments rows. Injected by /state hydration; null on single-image messages.
+   * Resolved image URLs from media_attachments rows, ordered by sort_order. Null entries at specific positions indicate failed generation slots — position is preserved so the UI can show an error tile in the correct slot. Null on single-image messages.
+
    * @nullable
    */
-  imageUrls?: string[] | null;
+  imageUrls?: (string | null)[] | null;
   createdAt: Date;
 }
