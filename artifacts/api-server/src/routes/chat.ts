@@ -48,7 +48,7 @@ import {
   synthesizeImageActionReplyFromSpec,
   type HistoryTurn as FollowUpHistoryTurn,
 } from "../lib/imageFollowUp";
-import { buildHairColourDirective, composeAppearance, extractVisualSpec, extractVisualSpecCompound, extractVisualSpecFromVibe, scrubVibeForOverrides } from "../lib/visualSpec";
+import { buildHairColourDirective, composeAppearance, extractVisualSpec, extractVisualSpecCompound, extractVisualSpecFromVibe, makeEmptySpec, scrubVibeForOverrides } from "../lib/visualSpec";
 import {
   encodeMemoryIdInDescription,
   extractMemoryIdFromVibe,
@@ -1665,7 +1665,29 @@ async function generateAshleySelfie(
   // profile.appearance) BEFORE the prompt is built — diffusion never sees
   // contradictory clauses, and never sees a negation phrase.
   const { description: vibeDesc, spec: carriedSpec } = extractVisualSpecFromVibe(vibe);
-  const appearance = composeAppearance(baseAppearance, carriedSpec);
+  // Marker-descriptor override: when vibe has no VSPEC (e.g. "redhead portrait"
+  // from [image:redhead|portrait]) the descriptor word is just free text and the
+  // model defaults to Ashley's lavender hair profile. Detect the leading descriptor
+  // and synthesise a minimal VisualSpec so composeAppearance + buildHairColourDirective
+  // apply a hard hair-colour override — same precedence path as USER_EXPLICIT.
+  //
+  // Mapping (per product spec):
+  //   redhead   → "natural bright copper-red"  + negate lavender/purple/grey
+  //   blonde    → "light blonde"               + negate lavender/purple/grey
+  //   brunette  → "medium brown"               + negate lavender/purple/grey
+  //   blackhair → "jet black"                  + negate lavender/purple/grey
+  const DESCRIPTOR_HAIR_OVERRIDES: Record<string, { hairColour: string; negations: string[] }> = {
+    redhead:   { hairColour: "natural bright copper-red", negations: ["lavender", "purple", "grey", "gray", "silver", "violet"] },
+    blonde:    { hairColour: "light blonde",              negations: ["lavender", "purple", "grey", "gray", "silver", "violet"] },
+    brunette:  { hairColour: "medium brown",              negations: ["lavender", "purple", "grey", "gray", "silver", "violet"] },
+    blackhair: { hairColour: "jet black",                 negations: ["lavender", "purple", "grey", "gray", "silver", "violet"] },
+  };
+  const _descriptorWord = vibeDesc.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  const _descriptorOverride = !carriedSpec ? (DESCRIPTOR_HAIR_OVERRIDES[_descriptorWord] ?? null) : null;
+  const effectiveSpec = _descriptorOverride
+    ? { ...makeEmptySpec(vibeDesc), imageIntent: true, intentReason: `marker_descriptor:${_descriptorWord}`, appearance: { hairColour: _descriptorOverride.hairColour }, negations: _descriptorOverride.negations }
+    : carriedSpec;
+  const appearance = composeAppearance(baseAppearance, effectiveSpec);
   // Scrub the vibe TEXT itself of any negated tokens or profile-default
   // colours that the user has overridden. The LLM writes the vibe with
   // Ashley's persona context (profile.appearance) in the system prompt, so
@@ -1674,40 +1696,41 @@ async function generateAshleySelfie(
   // diffusion sees "She has black hair." next to "Scene: ... lavender hair
   // tied up ..." and renders a lavender-tinted result. The composed
   // appearance sentence remains the sole identity anchor.
-  const scrubbedVibe = scrubVibeForOverrides(vibeDesc, baseAppearance, carriedSpec);
+  const scrubbedVibe = scrubVibeForOverrides(vibeDesc, baseAppearance, effectiveSpec);
   // Re-encode the VSPEC marker onto the scrubbed vibe so any further
   // round-trip (cache key, follow-up rehydration) preserves the spec.
-  const scrubbedVibeWithSpec = carriedSpec
+  const scrubbedVibeWithSpec = effectiveSpec
     ? `${scrubbedVibe} {{VSPEC}}${Buffer.from(JSON.stringify({
-        appearance: carriedSpec.appearance,
-        clothing: carriedSpec.clothing,
-        environment: carriedSpec.environment,
-        pose: carriedSpec.pose,
-        framing: carriedSpec.framing,
-        props: carriedSpec.props,
-        style: carriedSpec.style,
-        negations: carriedSpec.negations,
+        appearance: effectiveSpec.appearance,
+        clothing: effectiveSpec.clothing,
+        environment: effectiveSpec.environment,
+        pose: effectiveSpec.pose,
+        framing: effectiveSpec.framing,
+        props: effectiveSpec.props,
+        style: effectiveSpec.style,
+        negations: effectiveSpec.negations,
       }), "utf8").toString("base64")}{{/VSPEC}}`
     : scrubbedVibe;
   // The buildModePromptBlock takes raw vibe text — pass the scrubbed
   // (description-only) form, not the VSPEC-decorated version, so the marker
   // tokens don't bleed into the diffusion prompt.
-  if (carriedSpec && (
-    carriedSpec.negations.length > 0 ||
-    carriedSpec.appearance.hairColour ||
-    carriedSpec.appearance.hairstyle ||
-    carriedSpec.appearance.skinTone ||
-    carriedSpec.appearance.expression
+  if (effectiveSpec && (
+    effectiveSpec.negations.length > 0 ||
+    effectiveSpec.appearance.hairColour ||
+    effectiveSpec.appearance.hairstyle ||
+    effectiveSpec.appearance.skinTone ||
+    effectiveSpec.appearance.expression
   )) {
     logger.info(
       {
         baseAppearancePreview: baseAppearance.slice(0, 200),
         composedAppearancePreview: appearance.slice(0, 200),
-        userHair: carriedSpec.appearance.hairColour ?? null,
-        userStyle: carriedSpec.appearance.hairstyle ?? null,
-        userSkin: carriedSpec.appearance.skinTone ?? null,
-        userExpression: carriedSpec.appearance.expression ?? null,
-        negations: carriedSpec.negations,
+        userHair: effectiveSpec.appearance.hairColour ?? null,
+        userStyle: effectiveSpec.appearance.hairstyle ?? null,
+        userSkin: effectiveSpec.appearance.skinTone ?? null,
+        userExpression: effectiveSpec.appearance.expression ?? null,
+        negations: effectiveSpec.negations,
+        descriptorSource: _descriptorOverride ? _descriptorWord : "carried_vspec",
       },
       "image-gen: appearance precedence applied (USER_EXPLICIT > SESSION > IDENTITY, negations stripped)",
     );
@@ -1719,7 +1742,7 @@ async function generateAshleySelfie(
   // lavender-grey hair on the bar-stool/jacket scene despite three
   // "ginger hair" mentions in the prompt body. Empty string when no
   // hair-colour intent is present — buildModePromptBlock filters it out.
-  const hairDirective = carriedSpec ? buildHairColourDirective(carriedSpec) : "";
+  const hairDirective = effectiveSpec ? buildHairColourDirective(effectiveSpec) : "";
   // Wren May 2026: Visual Memory Anchor injection. The `{{VMEM}}<id>{{/VMEM}}`
   // marker (if present) was baked into the description by the chat-route
   // synth path when Kane explicitly invoked a stored anchor. Re-resolve the
