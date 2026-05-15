@@ -192,6 +192,11 @@ type WireMessage = {
   selfieVibeList?: string | null;
   /** Multi-image: UUID linking this message to its media_attachments rows. */
   visualPacketId?: string | null;
+  /**
+   * Multi-image: resolved image URLs from ready media_attachments rows,
+   * injected by the /state hydration response. Null on single-image messages.
+   */
+  imageUrls?: string[] | null;
   imageMimeType: string | null;
   imageCategory: string | null;
   imageCaption: string | null;
@@ -284,6 +289,14 @@ function messageFromWire(m: WireMessage): Message {
     }
   }
 
+  // imageUrls is injected by the /state hydration endpoint from
+  // media_attachments rows. It is an array of resolved URLs for multi-image
+  // packet messages; null on single-image messages.
+  const imageUrls =
+    Array.isArray(m.imageUrls) && m.imageUrls.length > 0
+      ? (m.imageUrls as string[])
+      : null;
+
   return {
     id: m.id,
     role: m.role,
@@ -294,6 +307,7 @@ function messageFromWire(m: WireMessage): Message {
     selfieVibe: m.selfieVibe ?? null,
     selfieVibeList,
     visualPacketId: m.visualPacketId ?? null,
+    imageUrls,
     imageMimeType: m.imageMimeType ?? null,
     imageCategory: (m.imageCategory as ImageCategory | null) ?? null,
     imageCaption: m.imageCaption ?? null,

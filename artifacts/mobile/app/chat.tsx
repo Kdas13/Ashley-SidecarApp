@@ -1586,13 +1586,15 @@ function MessageBubble({
   const [imageFailed, setImageFailed] = useState(false);
   const showImage = hasImage && !imageFailed;
   /** Multi-image gallery: resolved imageUrls array from a visual packet. */
-  const hasGallery = !isUser && !!(message.imageUrls && message.imageUrls.length > 1);
+  const hasGallery = !!(message.imageUrls && message.imageUrls.length > 1);
   // Full-screen image viewer state. Tap the preview to open; modal renders
   // the SAME imageUrl with resizeMode="contain" so we can tell whether the
   // generator cropped the source vs whether the chat preview is hiding part
   // of it. naturalDims is captured from the preview's onLoad event and shown
   // in the viewer's debug bar — Wren needs it to confirm raw dims.
   const [viewerOpen, setViewerOpen] = useState(false);
+  /** When a gallery thumb is tapped, this holds the URL to show in the viewer. */
+  const [galleryViewerUrl, setGalleryViewerUrl] = useState<string | null>(null);
   const [imageNaturalDims, setImageNaturalDims] = useState<{
     width: number;
     height: number;
@@ -1635,15 +1637,16 @@ function MessageBubble({
   }, [hasText, message.content]);
 
   const onCopyImageUrl = useCallback(async () => {
-    if (!message.imageUrl) return;
+    const activeUrl = galleryViewerUrl ?? message.imageUrl;
+    if (!activeUrl) return;
     try {
-      await Clipboard.setStringAsync(message.imageUrl);
-      console.log("[chat] copied raw image URL", message.imageUrl);
+      await Clipboard.setStringAsync(activeUrl);
+      console.log("[chat] copied raw image URL", activeUrl);
       Alert.alert("URL copied", "Open it in a browser to inspect the raw image.");
     } catch {
       Alert.alert("Couldn't copy", "Try again in a moment.");
     }
-  }, [message.imageUrl]);
+  }, [galleryViewerUrl, message.imageUrl]);
 
   const onImageLongPress = useCallback(() => {
     if (!message.imageUrl) return;
@@ -1663,7 +1666,8 @@ function MessageBubble({
   }, [message.imageUrl, onCopyImageUrl]);
 
   const onSaveImage = useCallback(async () => {
-    if (!message.imageUrl) return;
+    const activeUrl = galleryViewerUrl ?? message.imageUrl;
+    if (!activeUrl) return;
     try {
       const perm = await MediaLibrary.requestPermissionsAsync();
       if (!perm.granted) {
@@ -1676,7 +1680,7 @@ function MessageBubble({
       const target =
         (FileSystem.cacheDirectory ?? "") +
         `ashley-${message.id}.jpg`;
-      const dl = await FileSystem.downloadAsync(message.imageUrl, target);
+      const dl = await FileSystem.downloadAsync(activeUrl, target);
       await MediaLibrary.saveToLibraryAsync(dl.uri);
       Alert.alert("Saved", "Photo saved to your library.");
     } catch (err) {
@@ -1687,7 +1691,7 @@ function MessageBubble({
           : "Something went wrong saving the photo.",
       );
     }
-  }, [message.id, message.imageUrl]);
+  }, [galleryViewerUrl, message.id, message.imageUrl]);
 
   const onRetrySelfie = useCallback(() => {
     if (!pendingSelfieVibe || retryingThis) return;
@@ -1868,17 +1872,17 @@ function MessageBubble({
               visible={viewerOpen}
               transparent
               animationType="fade"
-              onRequestClose={() => setViewerOpen(false)}
+              onRequestClose={() => { setViewerOpen(false); setGalleryViewerUrl(null); }}
               statusBarTranslucent
             >
               <View style={styles.viewerBackdrop}>
                 <Pressable
                   style={styles.viewerDismissArea}
-                  onPress={() => setViewerOpen(false)}
+                  onPress={() => { setViewerOpen(false); setGalleryViewerUrl(null); }}
                   accessibilityLabel="Tap to close full-screen viewer"
                 />
                 <Image
-                  source={{ uri: message.imageUrl! }}
+                  source={{ uri: galleryViewerUrl ?? message.imageUrl! }}
                   style={styles.viewerImage}
                   resizeMode="contain"
                   accessibilityLabel="Full-screen image — entire frame visible"
@@ -1886,7 +1890,7 @@ function MessageBubble({
                     const src = e?.nativeEvent?.source;
                     if (src) {
                       console.log("[chat] full-screen viewer loaded image", {
-                        imageUrl: message.imageUrl,
+                        imageUrl: galleryViewerUrl ?? message.imageUrl,
                         naturalWidth: src.width,
                         naturalHeight: src.height,
                         viewerResizeMode: "contain",
@@ -1899,7 +1903,7 @@ function MessageBubble({
                   pointerEvents="box-none"
                 >
                   <Pressable
-                    onPress={() => setViewerOpen(false)}
+                    onPress={() => { setViewerOpen(false); setGalleryViewerUrl(null); }}
                     style={styles.viewerToolbarBtn}
                     hitSlop={12}
                     accessibilityLabel="Close viewer"
@@ -1931,7 +1935,7 @@ function MessageBubble({
                       : "raw dims pending · contain"}
                   </Text>
                   <Text style={styles.viewerDebugUrl} numberOfLines={1} selectable>
-                    {message.imageUrl}
+                    {galleryViewerUrl ?? message.imageUrl}
                   </Text>
                 </View>
               </View>
@@ -1946,14 +1950,24 @@ function MessageBubble({
             contentContainerStyle={styles.galleryRowContent}
           >
             {(message.imageUrls ?? []).map((uri, idx) => (
-              <View key={uri + idx} style={styles.galleryThumb}>
-                <Image
-                  source={{ uri }}
-                  style={styles.galleryThumbImage}
-                  resizeMode="cover"
-                  accessibilityLabel={`Photo ${idx + 1} of ${(message.imageUrls ?? []).length} from Ashley`}
-                />
-              </View>
+              <Pressable
+                key={uri + idx}
+                onPress={() => {
+                  setGalleryViewerUrl(uri);
+                  setViewerOpen(true);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel={`Open photo ${idx + 1} of ${(message.imageUrls ?? []).length} full screen`}
+              >
+                <View style={styles.galleryThumb}>
+                  <Image
+                    source={{ uri }}
+                    style={styles.galleryThumbImage}
+                    resizeMode="cover"
+                    accessibilityLabel={`Photo ${idx + 1} of ${(message.imageUrls ?? []).length}`}
+                  />
+                </View>
+              </Pressable>
             ))}
           </ScrollView>
         ) : null}

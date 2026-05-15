@@ -1427,6 +1427,13 @@ type SelfieJob =
       createdAt: number;
       /** media_attachments row id to patch on completion. Undefined for legacy / single-image jobs. */
       attachmentId?: string;
+      /**
+       * Sort position of this image within a visual packet.
+       * Only the first image (sortOrder === 0) should back-patch messages.imageUrl
+       * for backwards compat; all others update only media_attachments.
+       * Undefined for single-image jobs (always patch messages.imageUrl).
+       */
+      attachmentSortOrder?: number;
     }
   | {
       status: "ready";
@@ -1437,6 +1444,7 @@ type SelfieJob =
       messageId: string;
       createdAt: number;
       attachmentId?: string;
+      attachmentSortOrder?: number;
     }
   | {
       status: "failed";
@@ -1447,6 +1455,7 @@ type SelfieJob =
       messageId: string;
       createdAt: number;
       attachmentId?: string;
+      attachmentSortOrder?: number;
     };
 
 const SELFIE_JOB_TTL_MS = 30 * 60 * 1000;
@@ -1859,6 +1868,7 @@ function startSelfieGeneration(
   deviceId: string,
   messageId: string,
   attachmentId?: string,
+  attachmentSortOrder?: number,
 ): void {
   void (async () => {
     try {
@@ -1893,28 +1903,35 @@ function startSelfieGeneration(
       if (imageUrl) {
         // Patch the assistant message row so the next /state hydration
         // reflects the photo even if the client misses the poll.
-        try {
-          // NOTE: do NOT clear selfieVibe here. The encoded `MODE|vibe`
-          // payload is the only record of which image mode + visual brief was
-          // used for this turn, and the foot-visible-retry path
-          // (findPriorImageAttempt → foot_visible_retry resolver) needs it to
-          // reconstruct the prior attempt when the user says "feet missing".
-          // Mobile's pending-UI is gated on `!hasImage && selfieVibe`, so a
-          // leftover vibe alongside a delivered imageUrl is harmless.
-          await db
-            .update(messagesTable)
-            .set({ imageUrl })
-            .where(
-              and(
-                eq(messagesTable.id, messageId),
-                eq(messagesTable.deviceId, deviceId),
-              ),
+        // For multi-image packets only the FIRST image (attachmentSortOrder===0)
+        // should patch messages.imageUrl — later completions must NOT overwrite
+        // it. Single-image jobs (no attachmentId) always patch.
+        const shouldPatchMessageRow =
+          !attachmentId || (attachmentSortOrder ?? 0) === 0;
+        if (shouldPatchMessageRow) {
+          try {
+            // NOTE: do NOT clear selfieVibe here. The encoded `MODE|vibe`
+            // payload is the only record of which image mode + visual brief was
+            // used for this turn, and the foot-visible-retry path
+            // (findPriorImageAttempt → foot_visible_retry resolver) needs it to
+            // reconstruct the prior attempt when the user says "feet missing".
+            // Mobile's pending-UI is gated on `!hasImage && selfieVibe`, so a
+            // leftover vibe alongside a delivered imageUrl is harmless.
+            await db
+              .update(messagesTable)
+              .set({ imageUrl })
+              .where(
+                and(
+                  eq(messagesTable.id, messageId),
+                  eq(messagesTable.deviceId, deviceId),
+                ),
+              );
+          } catch (err) {
+            logger.warn(
+              { err, messageId, deviceId },
+              "Failed to patch message row with selfie image",
             );
-        } catch (err) {
-          logger.warn(
-            { err, messageId, deviceId },
-            "Failed to patch message row with selfie image",
-          );
+          }
         }
         // Patch the media_attachments row for multi-image packets.
         if (attachmentId) {
@@ -2112,10 +2129,13 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
   // Look up the media_attachments row for this vibe (multi-image packets only).
   // Single-image jobs have no row; the lookup returns undefined gracefully and
   // the generation still proceeds normally — only the DB patch is skipped.
+  // sortOrder is also fetched so startSelfieGeneration knows whether to
+  // back-patch messages.imageUrl (only sortOrder===0 should do so).
   let attachmentId: string | undefined;
+  let attachmentSortOrder: number | undefined;
   try {
     const attRows = await db
-      .select({ id: mediaAttachmentsTable.id })
+      .select({ id: mediaAttachmentsTable.id, sortOrder: mediaAttachmentsTable.sortOrder })
       .from(mediaAttachmentsTable)
       .where(
         and(
@@ -2125,6 +2145,7 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
       )
       .limit(1);
     attachmentId = attRows[0]?.id;
+    attachmentSortOrder = attRows[0]?.sortOrder ?? undefined;
   } catch {
     // Non-fatal — single-image jobs never have attachment rows.
   }
@@ -2138,8 +2159,9 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
     messageId,
     createdAt: Date.now(),
     attachmentId,
+    attachmentSortOrder,
   });
-  startSelfieGeneration(jobId, forwardedVibe, mode, imageMode, deviceId, messageId, attachmentId);
+  startSelfieGeneration(jobId, forwardedVibe, mode, imageMode, deviceId, messageId, attachmentId, attachmentSortOrder);
   res.status(202).json({ jobId });
 });
 

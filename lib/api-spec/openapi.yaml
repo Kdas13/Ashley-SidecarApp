@@ -470,6 +470,20 @@ components:
           type: string
         imageUrl:
           type: ["string", "null"]
+        selfieVibe:
+          type: ["string", "null"]
+          description: Encoded MODE|vibe payload for the primary selfie job. Set on Ashley messages that triggered image generation; null otherwise.
+        selfieVibeList:
+          type: ["string", "null"]
+          description: JSON-encoded string[] of encoded MODE|vibe payloads for multi-image packets. Null on single-image messages.
+        visualPacketId:
+          type: ["string", "null"]
+          description: UUID linking this message to its media_attachments rows. Null on single-image messages.
+        imageUrls:
+          type: ["array", "null"]
+          items:
+            type: string
+          description: Resolved image URLs from ready media_attachments rows. Injected by /state hydration; null on single-image messages.
         createdAt:
           type: string
           format: date-time
