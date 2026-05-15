@@ -473,14 +473,17 @@ export function parseImageMarker(text: string): ParsedMarker | null {
 
   if (useNew && newMatch) {
     const declared = (newMatch[1] ?? "").trim().toUpperCase();
-    const vibe = (newMatch[2] ?? "").trim();
+    let vibe = (newMatch[2] ?? "").trim();
     let mode: ImageMode;
     let reason: string;
     if (isImageMode(declared)) {
       mode = declared;
       reason = `model emitted explicit [image:${declared}|...] tag`;
     } else {
-      const classified = classifyImageIntent(`${declared} ${vibe}`);
+      // The declared part is a descriptor (e.g. "redhead"), not a mode name.
+      // Fold it into the vibe text so it survives encoding and drives generation.
+      vibe = `${declared.toLowerCase()} ${vibe}`.trim();
+      const classified = classifyImageIntent(vibe);
       mode = classified.mode;
       reason = `model emitted [image:${declared}|...] with unknown mode label — classifier fallback: ${classified.reason}`;
     }
@@ -563,7 +566,10 @@ export function parseAllImageMarkers(text: string): ParsedMarker[] {
         mode = declared;
         reason = `model emitted explicit [image:${declared}|...] tag (multi-parse)`;
       } else {
-        const classified = classifyImageIntent(`${declared} ${vibe}`);
+        // The declared part is a descriptor (e.g. "redhead"), not a mode name.
+        // Fold it into vibe so each marker in a packet produces a unique prompt.
+        vibe = `${declared.toLowerCase()} ${vibe}`.trim();
+        const classified = classifyImageIntent(vibe);
         mode = classified.mode;
         reason = `model emitted [image:${declared}|...] unknown mode — classifier fallback: ${classified.reason} (multi-parse)`;
       }
