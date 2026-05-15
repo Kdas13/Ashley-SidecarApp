@@ -1350,18 +1350,40 @@ export async function fetchSelfieForMessage(
 export type SendChatImageRequest = {
   /** Stable client-generated id; the server is idempotent on it. */
   id: string;
-  /** Base64-encoded image bytes (no data: prefix). */
+  /** Base64-encoded image bytes (no data: prefix) for the primary image. */
   base64: string;
   mimeType: string;
   category: ImageCategory;
   mode: ImageAnalysisMode;
   caption: string;
   replyTo?: ReplyToRef | null;
+  /**
+   * Additional images beyond the first (max 3 extras, giving 4 total).
+   * When present the request uses `images[]` instead of `image`, routing
+   * through the server's multi-image receive path.
+   */
+  extraImages?: { base64: string; mimeType: string }[];
 };
 
 export async function sendChatImage(
   req: SendChatImageRequest,
 ): Promise<ChatResponse> {
+  // When the user has picked multiple images, send them as an `images[]`
+  // array (the server's multi-image receive path). Single-image sends use
+  // the legacy `image` field so older server versions aren't broken.
+  const hasExtras = req.extraImages && req.extraImages.length > 0;
+  const imagePayload = hasExtras
+    ? {
+        images: [
+          { base64: req.base64, mimeType: req.mimeType },
+          ...req.extraImages!.map((img) => ({
+            base64: img.base64,
+            mimeType: img.mimeType,
+          })),
+        ],
+      }
+    : { image: { base64: req.base64, mimeType: req.mimeType } };
+
   const data = await fetchJSON<{
     userMessage: WireMessage;
     ashleyMessage: WireMessage;
@@ -1382,10 +1404,7 @@ export async function sendChatImage(
             }
           : {}),
       },
-      image: {
-        base64: req.base64,
-        mimeType: req.mimeType,
-      },
+      ...imagePayload,
       category: req.category,
       mode: req.mode,
       clientNow: new Date().toISOString(),

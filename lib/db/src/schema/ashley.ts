@@ -408,13 +408,43 @@ export const mediaAttachmentsTable = pgTable(
     // Shared packet identifier — matches messages.visual_packet_id on the
     // parent Ashley message.
     visualPacketId: text("visual_packet_id").notNull(),
+    // Who originated this attachment:
+    //   "ashley_generated" — Ashley emitted an [image:] marker; the selfie
+    //     pipeline produces the image. Default.
+    //   "user_input"       — User uploaded the image via the paperclip flow.
+    role: text("role").notNull().default("ashley_generated"),
+    // Lifecycle status:
+    //   "pending" — job created, generation not yet complete (ashley_generated).
+    //   "ready"   — imageUrl is set and the image is available.
+    //   "failed"  — generation failed; no imageUrl.
+    // User-input attachments are inserted with status="ready" since the URL
+    // is already persisted at insert time.
+    status: text("status").notNull().default("pending"),
     // Encoded MODE|vibe payload, same format as messages.selfie_vibe.
+    // Null on user_input rows.
     selfieVibe: text("selfie_vibe"),
-    // Resolved URL from /api/selfies/<id>.png. Null until the job completes.
+    // The image-mode name ("SELFIE_MODE", "FULL_BODY_MODE", etc.) extracted
+    // from the marker. Null on user_input rows.
+    intent: text("intent"),
+    // Optional per-image description/caption (vibe description for generated
+    // images; user caption for user_input rows).
+    description: text("description"),
+    // Scope of any visual attributes applied via this image.
+    //   "temporary" — attributes applied in this image are scoped to the
+    //     current reply only and MUST NOT carry forward into future replies
+    //     unless the user explicitly requests them.
+    //   "permanent" — user has explicitly asked to remember the attribute.
+    // Defaults to "temporary"; flipped to "permanent" only on user request.
+    attributeScope: text("attribute_scope").notNull().default("temporary"),
+    // Resolved URL. Null until the job completes (ashley_generated) or on
+    // rows where saving failed.
     imageUrl: text("image_url"),
     // 0-based sort order within the packet (preserves the LLM's emission order).
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },

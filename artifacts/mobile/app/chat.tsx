@@ -9,6 +9,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -190,6 +191,11 @@ export default function ChatScreen(): React.JSX.Element {
   // Paperclip / image-upload modal state. Held open from "picked an
   // image" until either Send or Cancel.
   const [pickedImage, setPickedImage] = useState<PickedImage | null>(null);
+  // Extra images beyond the first when the user picks a set (max 3 extras = 4 total).
+  // Stored as base64 + mimeType only — no URI needed for send.
+  const [pickedExtraImages, setPickedExtraImages] = useState<
+    { base64: string; mimeType: string }[]
+  >([]);
   const [imageCategory, setImageCategory] = useState<ImageCategory>("other");
   const [imageMode, setImageMode] = useState<ImageAnalysisMode>("quick");
   const [imageCaption, setImageCaption] = useState("");
@@ -727,26 +733,27 @@ export default function ChatScreen(): React.JSX.Element {
       }
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsMultipleSelection: false,
+        allowsMultipleSelection: true,
+        selectionLimit: 4,
         base64: true,
         quality: 0.85,
         exif: false,
       });
       if (result.canceled) return;
-      const asset = result.assets[0];
-      if (!asset || !asset.base64) {
+      const [primaryAsset, ...extraAssets] = result.assets;
+      if (!primaryAsset || !primaryAsset.base64) {
         Alert.alert("Couldn't read image", "Try again with a different photo.");
         return;
       }
       // Base64 size cap mirrors the server (~7 MB of base64 string).
-      if (asset.base64.length > 7 * 1024 * 1024) {
+      if (primaryAsset.base64.length > 7 * 1024 * 1024) {
         Alert.alert(
           "Photo too large",
           "That image is over the 5 MB limit. Try a smaller one or take a new photo.",
         );
         return;
       }
-      const mimeType = mimeFromUri(asset.uri, asset.mimeType ?? undefined);
+      const mimeType = mimeFromUri(primaryAsset.uri, primaryAsset.mimeType ?? undefined);
       // Block HEIC at the picker — Claude vision can't read it. iOS users
       // can usually pick a JPEG version of the same photo.
       if (mimeType === "image/heic") {
@@ -757,12 +764,25 @@ export default function ChatScreen(): React.JSX.Element {
         return;
       }
       setPickedImage({
-        uri: asset.uri,
-        base64: asset.base64,
+        uri: primaryAsset.uri,
+        base64: primaryAsset.base64,
         mimeType,
-        width: asset.width,
-        height: asset.height,
+        width: primaryAsset.width,
+        height: primaryAsset.height,
       });
+      // Collect any additional images the user selected (beyond the first).
+      // Filter out HEIC and assets without base64 silently.
+      const extras = extraAssets
+        .filter(
+          (a) =>
+            a.base64 &&
+            mimeFromUri(a.uri, a.mimeType ?? undefined) !== "image/heic",
+        )
+        .map((a) => ({
+          base64: a.base64!,
+          mimeType: mimeFromUri(a.uri, a.mimeType ?? undefined),
+        }));
+      setPickedExtraImages(extras);
       setImageCategory("other");
       setImageMode("quick");
       setImageCaption("");
@@ -776,6 +796,7 @@ export default function ChatScreen(): React.JSX.Element {
 
   const cancelImagePicker = useCallback(() => {
     setPickedImage(null);
+    setPickedExtraImages([]);
     setImagePickerError(null);
   }, []);
 
@@ -784,6 +805,7 @@ export default function ChatScreen(): React.JSX.Element {
     const replyToSnapshot = replyingTo;
     const captionSnapshot = imageCaption.trim();
     const picked = pickedImage;
+    const extras = pickedExtraImages;
     const cat = imageCategory;
     const mode = imageMode;
     setImagePickerError(null);
@@ -792,12 +814,14 @@ export default function ChatScreen(): React.JSX.Element {
         uri: picked.uri,
         base64: picked.base64,
         mimeType: picked.mimeType,
+        ...(extras.length > 0 ? { extraImages: extras } : {}),
         category: cat,
         mode,
         caption: captionSnapshot,
         ...(replyToSnapshot ? { replyTo: replyToSnapshot } : {}),
       });
       setPickedImage(null);
+      setPickedExtraImages([]);
       setImageCaption("");
       setReplyingTo(null);
     } catch (err) {
@@ -809,6 +833,7 @@ export default function ChatScreen(): React.JSX.Element {
     }
   }, [
     pickedImage,
+    pickedExtraImages,
     sendImageMutation,
     imageCaption,
     imageCategory,
@@ -1334,12 +1359,21 @@ export default function ChatScreen(): React.JSX.Element {
               </Pressable>
             </View>
             {pickedImage ? (
-              <Image
-                source={{ uri: pickedImage.uri }}
-                style={styles.imagePickerPreview}
-                resizeMode="contain"
-                accessibilityLabel="Selected photo preview"
-              />
+              <View>
+                <Image
+                  source={{ uri: pickedImage.uri }}
+                  style={styles.imagePickerPreview}
+                  resizeMode="contain"
+                  accessibilityLabel="Selected photo preview"
+                />
+                {pickedExtraImages.length > 0 ? (
+                  <View style={styles.imageCountBadge}>
+                    <Text style={styles.imageCountBadgeText}>
+                      +{pickedExtraImages.length} more
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
             ) : null}
             <Text style={styles.modalLabel}>What is this?</Text>
             <View style={styles.chipsWrap}>
@@ -1905,18 +1939,23 @@ function MessageBubble({
           </>
         ) : null}
         {hasGallery ? (
-          <View style={styles.galleryRow}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.galleryRow}
+            contentContainerStyle={styles.galleryRowContent}
+          >
             {(message.imageUrls ?? []).map((uri, idx) => (
               <View key={uri + idx} style={styles.galleryThumb}>
                 <Image
                   source={{ uri }}
                   style={styles.galleryThumbImage}
                   resizeMode="cover"
-                  accessibilityLabel={`Photo ${idx + 1} from Ashley`}
+                  accessibilityLabel={`Photo ${idx + 1} of ${(message.imageUrls ?? []).length} from Ashley`}
                 />
               </View>
             ))}
-          </View>
+          </ScrollView>
         ) : null}
         {imageFailed ? (
           <View style={styles.imageError}>
@@ -2353,10 +2392,12 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   galleryRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 4,
     paddingVertical: 4,
+  },
+  galleryRowContent: {
+    flexDirection: "row",
+    gap: 4,
+    paddingHorizontal: 2,
   },
   galleryThumb: {
     width: 114,
@@ -2832,6 +2873,20 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     backgroundColor: colors.light.muted,
     marginBottom: 4,
+  },
+  imageCountBadge: {
+    position: "absolute",
+    bottom: 8,
+    right: 8,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  imageCountBadgeText: {
+    color: "#fff",
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
   },
   modeHint: {
     color: colors.light.mutedForeground,

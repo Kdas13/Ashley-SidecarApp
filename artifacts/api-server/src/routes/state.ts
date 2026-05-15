@@ -5,6 +5,7 @@ import {
   db,
   ashleyProfileTable,
   conversationSummariesTable,
+  mediaAttachmentsTable,
   memoriesTable,
   messagesTable,
   PROACTIVE_CADENCES,
@@ -74,7 +75,7 @@ router.get("/state", async (req, res): Promise<void> => {
   try {
     const profile = await getOrCreateProfileFor(deviceId);
     const policy = getPolicyFor(profile);
-    const [messages, memories, summaries] = await Promise.all([
+    const [messages, memories, summaries, attachments] = await Promise.all([
       db
         .select()
         .from(messagesTable)
@@ -90,14 +91,47 @@ router.get("/state", async (req, res): Promise<void> => {
         .from(conversationSummariesTable)
         .where(eq(conversationSummariesTable.deviceId, deviceId))
         .orderBy(asc(conversationSummariesTable.coveredThroughCreatedAt)),
+      // Fetch ready media_attachments so /state hydration can annotate
+      // multi-image packet messages with their resolved imageUrls[].
+      db
+        .select({
+          messageId: mediaAttachmentsTable.messageId,
+          imageUrl: mediaAttachmentsTable.imageUrl,
+          sortOrder: mediaAttachmentsTable.sortOrder,
+        })
+        .from(mediaAttachmentsTable)
+        .where(
+          and(
+            eq(mediaAttachmentsTable.deviceId, deviceId),
+            eq(mediaAttachmentsTable.status, "ready"),
+          ),
+        )
+        .orderBy(asc(mediaAttachmentsTable.sortOrder)),
     ]);
+
+    // Build messageId → sorted imageUrls[] from ready attachment rows.
+    const packetUrls = new Map<string, string[]>();
+    for (const att of attachments) {
+      if (att.imageUrl) {
+        const list = packetUrls.get(att.messageId) ?? [];
+        list.push(att.imageUrl);
+        packetUrls.set(att.messageId, list);
+      }
+    }
+
+    // Annotate messages that have multi-image packets with their imageUrls.
+    const annotatedMessages = messages.map((m) => ({
+      ...m,
+      imageUrls: packetUrls.get(m.id) ?? null,
+    }));
+
     // Surface the resolved policy + the operator switch alongside the raw
     // profile. The mobile app uses these to decide whether to show the
     // 18+ section at all and what its current state is, without re-running
     // the gating rules client-side.
     res.json({
       profile,
-      messages,
+      messages: annotatedMessages,
       memories,
       summaries,
       policy: {

@@ -1314,14 +1314,21 @@ router.post("/chat", async (req, res): Promise<void> => {
   if (selfieVibeList && selfieVibeList.length > 1 && visualPacketId) {
     try {
       await db.insert(mediaAttachmentsTable).values(
-        selfieVibeList.map((vibe, i) => ({
-          id: newId(),
-          deviceId,
-          messageId: ashleyRow.id,
-          visualPacketId: visualPacketId!,
-          selfieVibe: vibe,
-          sortOrder: i,
-        })),
+        selfieVibeList.map((vibe, i) => {
+          const dv = decodeStoredVibe(vibe);
+          return {
+            id: newId(),
+            deviceId,
+            messageId: ashleyRow.id,
+            visualPacketId: visualPacketId!,
+            role: "ashley_generated" as const,
+            status: "pending" as const,
+            selfieVibe: vibe,
+            intent: dv.mode,
+            description: dv.vibe.slice(0, 500) || null,
+            sortOrder: i,
+          };
+        }),
       );
     } catch (err) {
       req.log.warn({ err }, "Failed to insert media_attachments rows (non-fatal)");
@@ -1418,6 +1425,8 @@ type SelfieJob =
       deviceId: string;
       messageId: string;
       createdAt: number;
+      /** media_attachments row id to patch on completion. Undefined for legacy / single-image jobs. */
+      attachmentId?: string;
     }
   | {
       status: "ready";
@@ -1427,6 +1436,7 @@ type SelfieJob =
       deviceId: string;
       messageId: string;
       createdAt: number;
+      attachmentId?: string;
     }
   | {
       status: "failed";
@@ -1436,6 +1446,7 @@ type SelfieJob =
       deviceId: string;
       messageId: string;
       createdAt: number;
+      attachmentId?: string;
     };
 
 const SELFIE_JOB_TTL_MS = 30 * 60 * 1000;
@@ -1847,6 +1858,7 @@ function startSelfieGeneration(
   imageMode: ImageMode,
   deviceId: string,
   messageId: string,
+  attachmentId?: string,
 ): void {
   void (async () => {
     try {
@@ -1904,6 +1916,20 @@ function startSelfieGeneration(
             "Failed to patch message row with selfie image",
           );
         }
+        // Patch the media_attachments row for multi-image packets.
+        if (attachmentId) {
+          try {
+            await db
+              .update(mediaAttachmentsTable)
+              .set({ status: "ready", imageUrl, updatedAt: new Date() })
+              .where(eq(mediaAttachmentsTable.id, attachmentId));
+          } catch (err) {
+            logger.warn(
+              { err, attachmentId },
+              "Failed to patch media_attachments on selfie ready",
+            );
+          }
+        }
         setSelfieJob(jobId, {
           status: "ready",
           imageUrl,
@@ -1912,6 +1938,7 @@ function startSelfieGeneration(
           deviceId,
           messageId,
           createdAt: Date.now(),
+          attachmentId,
         });
       } else {
         const wrapper = wrapperFor(imageMode);
@@ -1934,6 +1961,20 @@ function startSelfieGeneration(
           : wrapper.requiresFullBodyValidation
             ? `Image attempt failed at the generator layer for ${imageMode}. That's a failed test, not proof I can't do full-body — want me to retry?`
             : `Image attempt failed at the generator layer for ${imageMode}. Want me to retry?`;
+        // Mark the attachment row as failed for multi-image packets.
+        if (attachmentId) {
+          try {
+            await db
+              .update(mediaAttachmentsTable)
+              .set({ status: "failed", updatedAt: new Date() })
+              .where(eq(mediaAttachmentsTable.id, attachmentId));
+          } catch (err) {
+            logger.warn(
+              { err, attachmentId },
+              "Failed to patch media_attachments on selfie failed",
+            );
+          }
+        }
         setSelfieJob(jobId, {
           status: "failed",
           error: failureCopy,
@@ -1942,6 +1983,7 @@ function startSelfieGeneration(
           deviceId,
           messageId,
           createdAt: Date.now(),
+          attachmentId,
         });
       }
     } catch (err) {
@@ -1957,6 +1999,16 @@ function startSelfieGeneration(
         },
         "PROVIDER ERROR (job) — background image generation crashed",
       );
+      if (attachmentId) {
+        try {
+          await db
+            .update(mediaAttachmentsTable)
+            .set({ status: "failed", updatedAt: new Date() })
+            .where(eq(mediaAttachmentsTable.id, attachmentId));
+        } catch {
+          // non-fatal
+        }
+      }
       setSelfieJob(jobId, {
         status: "failed",
         error:
@@ -1968,6 +2020,7 @@ function startSelfieGeneration(
         deviceId,
         messageId,
         createdAt: Date.now(),
+        attachmentId,
       });
     }
   })();
@@ -2055,6 +2108,27 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
 
   pruneSelfieJobs();
   const jobId = randomUUID();
+
+  // Look up the media_attachments row for this vibe (multi-image packets only).
+  // Single-image jobs have no row; the lookup returns undefined gracefully and
+  // the generation still proceeds normally — only the DB patch is skipped.
+  let attachmentId: string | undefined;
+  try {
+    const attRows = await db
+      .select({ id: mediaAttachmentsTable.id })
+      .from(mediaAttachmentsTable)
+      .where(
+        and(
+          eq(mediaAttachmentsTable.messageId, messageId),
+          eq(mediaAttachmentsTable.selfieVibe, vibe),
+        ),
+      )
+      .limit(1);
+    attachmentId = attRows[0]?.id;
+  } catch {
+    // Non-fatal — single-image jobs never have attachment rows.
+  }
+
   setSelfieJob(jobId, {
     status: "pending",
     vibe: forwardedVibe,
@@ -2063,8 +2137,9 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
     deviceId,
     messageId,
     createdAt: Date.now(),
+    attachmentId,
   });
-  startSelfieGeneration(jobId, forwardedVibe, mode, imageMode, deviceId, messageId);
+  startSelfieGeneration(jobId, forwardedVibe, mode, imageMode, deviceId, messageId, attachmentId);
   res.status(202).json({ jobId });
 });
 
@@ -3839,14 +3914,21 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
       if (selfieVibeList && selfieVibeList.length > 1 && visualPacketId) {
         try {
           await db.insert(mediaAttachmentsTable).values(
-            selfieVibeList.map((vibe, i) => ({
-              id: newId(),
-              deviceId,
-              messageId: streamId,
-              visualPacketId: visualPacketId!,
-              selfieVibe: vibe,
-              sortOrder: i,
-            })),
+            selfieVibeList.map((vibe, i) => {
+              const dv = decodeStoredVibe(vibe);
+              return {
+                id: newId(),
+                deviceId,
+                messageId: streamId,
+                visualPacketId: visualPacketId!,
+                role: "ashley_generated" as const,
+                status: "pending" as const,
+                selfieVibe: vibe,
+                intent: dv.mode,
+                description: dv.vibe.slice(0, 500) || null,
+                sortOrder: i,
+              };
+            }),
           );
         } catch (err) {
           req.log.warn({ err }, "Failed to insert media_attachments rows (non-fatal, stream)");
@@ -4081,19 +4163,30 @@ router.post("/chat/image", async (req, res): Promise<void> => {
   const mime = allMimes[0]!;
   const claudeMime: ClaudeImageMime = mime === "image/jpg" ? "image/jpeg" : (mime as ClaudeImageMime);
 
-  // 1. Persist the primary image to object storage / disk.
-  let imageUrl: string;
+  // 1. Persist all uploaded images to object storage / disk.
+  // Primary image uses the message id as filename; extras get -1, -2, … suffix.
+  let allImageUrls: string[];
   try {
-    const ext = userImageExtForMime(mime);
-    const filename = `${userId}.${ext}`;
-    const buf = Buffer.from(allImages[0]!.base64, "base64");
-    const relUrl = await saveUserImage(filename, buf, mime);
-    imageUrl = `${publicBaseUrl()}${relUrl}`;
+    allImageUrls = await Promise.all(
+      allImages.map(async (img, i) => {
+        const imgMime = img.mimeType.toLowerCase() === "image/jpg"
+          ? "image/jpeg"
+          : img.mimeType.toLowerCase();
+        const ext = userImageExtForMime(imgMime);
+        const filename = i === 0 ? `${userId}.${ext}` : `${userId}-${i}.${ext}`;
+        const buf = Buffer.from(img.base64, "base64");
+        const relUrl = await saveUserImage(filename, buf, imgMime);
+        return `${publicBaseUrl()}${relUrl}`;
+      }),
+    );
   } catch (err) {
     req.log.error({ err }, "Failed to save uploaded image");
     res.status(500).json({ error: "Could not save your image" });
     return;
   }
+  const imageUrl = allImageUrls[0]!;
+  // For multi-image uploads, a shared packet id links all attachment rows.
+  const userVisualPacketId = allImages.length > 1 ? randomUUID() : null;
 
   // 2. Persist the user message (idempotent on id).
   let userRow: Message;
@@ -4110,6 +4203,7 @@ router.post("/chat/image", async (req, res): Promise<void> => {
         imageCategory: category,
         imageCaption: caption,
         imageAnalysisMode: mode,
+        visualPacketId: userVisualPacketId,
         replyToId: replyTo?.id ?? null,
         replyToRole: replyTo?.role ?? null,
         replyToPreview: replyTo?.preview ?? null,
@@ -4158,6 +4252,28 @@ router.post("/chat/image", async (req, res): Promise<void> => {
     req.log.error({ err }, "Failed to persist user image message");
     res.status(500).json({ error: "Could not save your message" });
     return;
+  }
+
+  // 2b. For multi-image uploads, insert a media_attachments row per image so
+  //     /state hydration can annotate the user message with all uploaded URLs.
+  if (userVisualPacketId && allImageUrls.length > 1) {
+    try {
+      await db.insert(mediaAttachmentsTable).values(
+        allImageUrls.map((url, i) => ({
+          id: newId(),
+          deviceId,
+          messageId: userRow.id,
+          visualPacketId: userVisualPacketId,
+          role: "user_input" as const,
+          status: "ready" as const,
+          imageUrl: url,
+          description: caption || null,
+          sortOrder: i,
+        })),
+      );
+    } catch (err) {
+      req.log.warn({ err }, "Failed to insert user media_attachments rows (non-fatal)");
+    }
   }
 
   // 3. Load context from DB (same shape as /chat).
