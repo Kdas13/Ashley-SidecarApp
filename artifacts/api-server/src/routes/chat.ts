@@ -34,7 +34,6 @@ import {
   IMAGE_MODES,
   parseImageMarker,
   parseAllImageMarkers,
-  buildModePromptBlock,
   wrapperFor,
   encodeStoredVibe,
   decodeStoredVibe,
@@ -1750,6 +1749,28 @@ function renderIdentityCore(core: IdentityCore): string {
     .filter(Boolean)
     .join(", ");
 }
+
+// Returns the hair-related clauses from profile.appearance — the complement
+// of extractIdentityCore.  These form Ashley's DEFAULT VISUAL STATE for
+// identity-mode prompts (lavender hair when no override is requested).
+// In descriptor mode they are entirely bypassed — the descriptor replaces
+// the default visual state completely.
+function extractDefaultHairState(appearance: string): string {
+  if (!appearance.trim()) return "";
+  return appearance
+    .split(",")
+    .map((c) => c.trim())
+    .filter(
+      (clause) =>
+        clause &&
+        IDENTITY_CORE_HAIR_CONTAMINATION.some((w) =>
+          new RegExp(`\\b${w}\\b`, "i").test(clause),
+        ),
+    )
+    .join(", ")
+    .toLowerCase()
+    .trim();
+}
 // ─────────────────────────────────────────────────────────────────────────
 
 async function generateAshleySelfie(
@@ -1935,10 +1956,15 @@ async function generateAshleySelfie(
   //     4. NEGATIVE DIRECTIVE      — the ONLY place forbidden colours may appear
   //     5. Style line
   //
-  // IDENTITY MODE (no descriptor): unchanged buildModePromptBlock path.
+  // IDENTITY MODE (no descriptor): same two-layer structure as descriptor mode.
+  //   Layer 1 — STABLE ASHLEY IDENTITY: identityCore (face/eyes/complexion).
+  //             Hair is NEVER in this layer in either mode.
+  //   Layer 2 — VISUAL STATE: default hair (lavender from profile) unless
+  //             effectiveSpec.appearance.hairColour is set by the user's
+  //             message, in which case it replaces the default completely.
   //
-  // DESCRIPTOR_NEGATIVE_DIRECTIVE is a module-scope constant so both the
-  // prompt builder and the audit block use the same string for stripping.
+  // DESCRIPTOR_NEGATIVE_DIRECTIVE is declared here so both the descriptor-mode
+  // prompt builder and the Section 7 audit block use the identical string.
   const DESCRIPTOR_NEGATIVE_DIRECTIVE =
     "Hair colour MUST NOT be lavender, purple, violet, lilac, mauve, plum, grey, gray, or silver. This overrides any model default and is absolute.";
 
@@ -1987,17 +2013,48 @@ async function generateAshleySelfie(
       .filter(Boolean)
       .join("\n\n");
   } else {
-    const modeBlock = buildModePromptBlock({
-      mode: imageMode,
-      vibe: vibeNoMem,
-      subjectName: ashleyName,
-      appearance,
+    // IDENTITY MODE — two-layer prompt.
+    // Layer 1: STABLE ASHLEY IDENTITY — identityCore only (face/eyes/complexion).
+    //   Hair is never in this layer.
+    // Layer 2: VISUAL STATE — default hair from profile (lavender), OR
+    //   effectiveSpec.appearance.hairColour if the user's message set one
+    //   ("make her hair red today" → replaces default completely).
+    const _idCore = extractIdentityCore(baseAppearance);
+    try {
+      assertIdentityCoreIsClean(_idCore, jobId);
+    } catch {
+      return null;
+    }
+    const idStable = renderIdentityCore(_idCore);
+
+    // Default visual state: hair clauses from profile (e.g. "lavender hair (long, wavy)").
+    const defaultHair = extractDefaultHairState(baseAppearance);
+    // effectiveSpec override wins when the message turn set a hairColour.
+    const activeHairSentence = effectiveSpec?.appearance?.hairColour
+      ? `She has ${effectiveSpec.appearance.hairColour} hair.`
+      : (defaultHair ? `She has ${defaultHair}.` : "");
+
+    const shot = wrapper.shotType.replace(/{subject}/g, ashleyName);
+    const identityModifier = idStable ? ` with ${idStable}` : "";
+    const stableShot = shot.includes(", a young woman,")
+      ? shot.replace(", a young woman,", `, a young woman${identityModifier},`)
+      : shot;
+
+    // Visual state block — active hair → colour directive (if override) →
+    // scene anchor → vibe/scene. Joins with newline within the block;
+    // double-newline separates it from the identity layer above.
+    const visualStateLines = [
+      activeHairSentence,
       hairDirective,
-      sceneAnchor: sceneAnchorDirective,
-    });
+      sceneAnchorDirective,
+      vibeNoMem.trim() ? `Scene: ${vibeNoMem.trim()}.` : "",
+    ].filter(Boolean).join("\n");
+
     fullPrompt = [
       buildSelfiePromptSafetyPrefix(),
-      modeBlock,
+      `STABLE ASHLEY IDENTITY: ${stableShot}.`,
+      visualStateLines,
+      wrapper.styleLine + ".",
     ]
       .filter(Boolean)
       .join("\n\n");
