@@ -1297,7 +1297,7 @@ export async function fetchSelfieForMessage(
   messageId: string,
   vibe: string,
   sortOrder?: number,
-): Promise<string> {
+): Promise<{ imageUrl: string; imageUrls?: string[] }> {
   let jobId = await startSelfieJob(messageId, vibe, sortOrder);
   let restartsLeft = 2;
   const base = getApiBase();
@@ -1339,7 +1339,7 @@ export async function fetchSelfieForMessage(
     }
     if (!res.ok) continue;
 
-    let data: { status?: unknown; imageUrl?: unknown; error?: unknown };
+    let data: { status?: unknown; imageUrl?: unknown; imageUrls?: unknown; error?: unknown };
     try {
       data = (await res.json()) as typeof data;
     } catch {
@@ -1349,7 +1349,16 @@ export async function fetchSelfieForMessage(
       if (typeof data.imageUrl !== "string" || !data.imageUrl.trim()) {
         throw new Error("Selfie was ready but no image URL was returned.");
       }
-      return data.imageUrl.trim();
+      const imageUrl = data.imageUrl.trim();
+      // Multi-image packet: server returns the full ordered array once all
+      // sibling jobs are done. Carry it through so callers can patch the
+      // gallery in one shot instead of firing N separate requests.
+      const imageUrls =
+        Array.isArray(data.imageUrls) &&
+        (data.imageUrls as unknown[]).length > 1
+          ? (data.imageUrls as string[])
+          : undefined;
+      return { imageUrl, imageUrls };
     }
     if (data.status === "failed") {
       const msg =

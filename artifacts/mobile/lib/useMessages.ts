@@ -925,8 +925,21 @@ export async function fetchAndAttachSelfie(
   try {
     for (let attempt = 0; attempt < SELFIE_AUTO_RETRY_ATTEMPTS; attempt++) {
       try {
-        const imageUrl = await fetchSelfieForMessage(messageId, vibe);
-        await patchInCache(qc, messageId, { imageUrl, selfieVibe: null });
+        const result = await fetchSelfieForMessage(messageId, vibe);
+        if (result.imageUrls && result.imageUrls.length > 1) {
+          // Server fan-out: all N images arrived in one response.
+          await patchInCache(qc, messageId, {
+            imageUrls: result.imageUrls,
+            imageUrl: result.imageUrls.find((u) => u !== null) ?? null,
+            selfieVibe: null,
+            selfieVibeList: null,
+          });
+        } else {
+          await patchInCache(qc, messageId, {
+            imageUrl: result.imageUrl,
+            selfieVibe: null,
+          });
+        }
         return;
       } catch {
         if (attempt < SELFIE_AUTO_RETRY_ATTEMPTS - 1) {
@@ -957,10 +970,27 @@ export async function fetchAndAttachSelfieList(
     const settled = await Promise.allSettled(
       vibeList.map((vibe, i) => fetchSelfieForMessage(messageId, vibe, i)),
     );
-    // Preserve position: null = failed slot. Spec requires array length === job
-    // count so the gallery renders an error tile at the correct index.
+    // Fast path: server fan-out already assembled the full imageUrls array
+    // on the first completed job — use it directly.
+    for (const r of settled) {
+      if (
+        r.status === "fulfilled" &&
+        r.value.imageUrls &&
+        r.value.imageUrls.length > 1
+      ) {
+        await patchInCache(qc, messageId, {
+          imageUrls: r.value.imageUrls,
+          imageUrl: r.value.imageUrls.find((u) => u !== null) ?? null,
+          selfieVibe: null,
+          selfieVibeList: null,
+        });
+        return;
+      }
+    }
+    // Standard path: collect individual results, preserving position.
+    // Null = failed slot; gallery renders an error tile at that index.
     const imageUrls: (string | null)[] = settled.map((r) =>
-      r.status === "fulfilled" ? r.value : null,
+      r.status === "fulfilled" ? r.value.imageUrl : null,
     );
     const anySucceeded = imageUrls.some((u) => u !== null);
     if (anySucceeded) {
@@ -986,8 +1016,20 @@ export function useRetrySelfie(): {
       if (inFlightSelfies.has(messageId)) return;
       setInFlight(messageId, true);
       try {
-        const imageUrl = await fetchSelfieForMessage(messageId, vibe);
-        await patchInCache(qc, messageId, { imageUrl, selfieVibe: null });
+        const result = await fetchSelfieForMessage(messageId, vibe);
+        if (result.imageUrls && result.imageUrls.length > 1) {
+          await patchInCache(qc, messageId, {
+            imageUrls: result.imageUrls,
+            imageUrl: result.imageUrls.find((u) => u !== null) ?? null,
+            selfieVibe: null,
+            selfieVibeList: null,
+          });
+        } else {
+          await patchInCache(qc, messageId, {
+            imageUrl: result.imageUrl,
+            selfieVibe: null,
+          });
+        }
       } finally {
         setInFlight(messageId, false);
       }

@@ -2003,6 +2003,7 @@ function startSelfieGeneration(
           messageId,
           createdAt: Date.now(),
           attachmentId,
+          attachmentSortOrder,
         });
       } else {
         const wrapper = wrapperFor(imageMode);
@@ -2217,6 +2218,92 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
     // Non-fatal — single-image jobs never have attachment rows.
   }
 
+  // Fan-out for multi-image packets when the caller did NOT supply sortOrder
+  // (old-APK / single-blind-call path). Look up every pending attachment for
+  // this message and start a job for each one, deduplicating against any jobs
+  // already running. Returns primary jobId (sortOrder=0) for backward compat,
+  // plus jobIds[] so newer clients can poll all in parallel.
+  if (typeof clientSortOrder !== "number") {
+    let pendingAttachRows: Array<{
+      id: string;
+      sortOrder: number;
+      selfieVibe: string | null;
+    }> = [];
+    try {
+      pendingAttachRows = await db
+        .select({
+          id: mediaAttachmentsTable.id,
+          sortOrder: mediaAttachmentsTable.sortOrder,
+          selfieVibe: mediaAttachmentsTable.selfieVibe,
+        })
+        .from(mediaAttachmentsTable)
+        .where(
+          and(
+            eq(mediaAttachmentsTable.messageId, messageId),
+            eq(mediaAttachmentsTable.status, "pending"),
+          ),
+        )
+        .orderBy(mediaAttachmentsTable.sortOrder);
+    } catch {
+      // Non-fatal — fall through to single-job path.
+    }
+
+    if (pendingAttachRows.length > 1) {
+      // Build a map of attachmentId → already-running jobId.
+      const activeByAttachId = new Map<string, string>();
+      for (const [jId, j] of selfieJobs.entries()) {
+        if (j.messageId === messageId && j.attachmentId) {
+          activeByAttachId.set(j.attachmentId, jId);
+        }
+      }
+
+      const allJobIds: string[] = [];
+      for (const att of pendingAttachRows) {
+        const existing = activeByAttachId.get(att.id);
+        if (existing) {
+          allJobIds.push(existing);
+          continue;
+        }
+        const rawVibe = att.selfieVibe ?? "";
+        const attDecoded = decodeStoredVibe(rawVibe);
+        const attForwardedVibe = (attDecoded.vibe || rawVibe.trim()).trim();
+        const attImageMode: ImageMode = clientImageMode ?? attDecoded.mode;
+        const jId = randomUUID();
+        setSelfieJob(jId, {
+          status: "pending",
+          vibe: attForwardedVibe,
+          mode,
+          imageMode: attImageMode,
+          deviceId,
+          messageId,
+          createdAt: Date.now(),
+          attachmentId: att.id,
+          attachmentSortOrder: att.sortOrder,
+        });
+        startSelfieGeneration(
+          jId,
+          attForwardedVibe,
+          mode,
+          attImageMode,
+          deviceId,
+          messageId,
+          att.id,
+          att.sortOrder,
+        );
+        allJobIds.push(jId);
+      }
+
+      if (allJobIds.length > 0) {
+        req.log.info(
+          { messageId, deviceId, fanOutJobCount: allJobIds.length },
+          "image-intent: multi-image fan-out from single POST /chat/selfie",
+        );
+        res.status(202).json({ jobId: allJobIds[0], jobIds: allJobIds });
+        return;
+      }
+    }
+  }
+
   setSelfieJob(jobId, {
     status: "pending",
     vibe: forwardedVibe,
@@ -2246,6 +2333,41 @@ router.get("/chat/selfie/:jobId", async (req, res): Promise<void> => {
     return;
   }
   if (job.status === "ready") {
+    // Multi-image packet: hold the "ready" response until all sibling jobs
+    // (same messageId, same packet) have also finished. This lets a single
+    // poll call carry the full imageUrls array back to the client, whether
+    // the client fired one job (old-APK fan-out path) or N parallel jobs.
+    if (job.attachmentId !== undefined) {
+      const siblings = [...selfieJobs.values()].filter(
+        (j) => j.messageId === job.messageId && j.attachmentId !== undefined,
+      );
+      if (siblings.length > 1) {
+        if (siblings.some((j) => j.status === "pending")) {
+          // Still waiting for other images in the packet.
+          res.json({ status: "pending" });
+          return;
+        }
+        // All siblings done — build an ordered array (null for failed slots).
+        const maxOrder = siblings.reduce(
+          (m, s) => Math.max(m, s.attachmentSortOrder ?? 0),
+          0,
+        );
+        const ordered: (string | null)[] = Array.from(
+          { length: maxOrder + 1 },
+          (_, i) => {
+            const sib = siblings.find((s) => (s.attachmentSortOrder ?? 0) === i);
+            return sib && sib.status === "ready" ? sib.imageUrl : null;
+          },
+        );
+        res.json({
+          status: "ready",
+          imageUrl: job.imageUrl,
+          imageUrls: ordered,
+          messageId: job.messageId,
+        });
+        return;
+      }
+    }
     res.json({
       status: "ready",
       imageUrl: job.imageUrl,
