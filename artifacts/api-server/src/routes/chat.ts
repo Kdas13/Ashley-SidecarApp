@@ -2359,6 +2359,22 @@ router.get("/chat/selfie/:jobId", async (req, res): Promise<void> => {
             return sib && sib.status === "ready" ? sib.imageUrl : null;
           },
         );
+        req.log.info(
+          {
+            jobId,
+            messageId: job.messageId,
+            imageUrl: job.imageUrl,
+            imageUrls: ordered,
+            siblingCount: siblings.length,
+            attachments: siblings.map((s) => ({
+              attachmentId: s.attachmentId,
+              attachmentSortOrder: s.attachmentSortOrder,
+              status: s.status,
+              imageUrl: s.status === "ready" ? s.imageUrl : null,
+            })),
+          },
+          "selfie-poll: multi-image packet ready — returning imageUrls",
+        );
         res.json({
           status: "ready",
           imageUrl: job.imageUrl,
@@ -2368,6 +2384,17 @@ router.get("/chat/selfie/:jobId", async (req, res): Promise<void> => {
         return;
       }
     }
+    req.log.info(
+      {
+        jobId,
+        messageId: job.messageId,
+        imageUrl: job.imageUrl,
+        imageUrls: null,
+        attachmentId: job.attachmentId,
+        attachmentSortOrder: job.attachmentSortOrder,
+      },
+      "selfie-poll: single-image ready — returning imageUrl",
+    );
     res.json({
       status: "ready",
       imageUrl: job.imageUrl,
