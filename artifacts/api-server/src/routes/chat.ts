@@ -1702,26 +1702,43 @@ async function generateAshleySelfie(
   // Section 3/5: NULL SPEC IS FORBIDDEN. Fall back to empty-but-non-null spec
   // for unknown descriptors (no-op overrides, profile defaults apply) rather
   // than passing null and silently skipping the whole override machinery.
-  // When the descriptor fires, MERGE with any carried spec (keeps pose/clothing
-  // slots already extracted) but HARD-REPLACE hairColour + add negations.
+  //
+  // DESCRIPTOR MODE — HARD ISOLATION (spec Sections 2/3/4/7):
+  //   carriedSpec.appearance is COMPLETELY IGNORED.
+  //   No merge, no blending, no inheritance of any identity appearance fields.
+  //   effectiveSpec starts from makeEmptySpec() (zero identity data) and
+  //   receives ONLY: descriptor hairColour, descriptor negations, and the
+  //   pose/environment/framing slots from carriedSpec (non-appearance, allowed
+  //   by Section 3). Everything else from carriedSpec is discarded.
+  //
+  // IDENTITY MODE (no descriptor): normal carriedSpec pass-through.
+  const _emptyBase = makeEmptySpec(vibeDesc);
   const effectiveSpec = _descriptorOverride
     ? {
-        ...(carriedSpec ?? makeEmptySpec(vibeDesc)),
+        ..._emptyBase,
         imageIntent: true,
         intentReason: `marker_descriptor:${_descriptorWord}`,
-        appearance: {
-          ...(carriedSpec?.appearance ?? {}),
-          hairColour: _descriptorOverride.hairColour,
-        },
-        negations: [
-          ..._descriptorOverride.negations,
-          ...((carriedSpec?.negations ?? []).filter(
-            (n) => !_descriptorOverride.negations.includes(n),
-          )),
-        ],
+        // Appearance: descriptor hairColour ONLY — no profile, no carriedSpec.
+        appearance: { hairColour: _descriptorOverride.hairColour },
+        // Negations: descriptor list only — no carriedSpec residue.
+        negations: [..._descriptorOverride.negations],
+        // Pose / environment / framing — the ONLY carriedSpec fields allowed
+        // through (spec Section 3: these are not identity / appearance data).
+        pose: carriedSpec?.pose ?? _emptyBase.pose,
+        environment: carriedSpec?.environment ?? _emptyBase.environment,
+        framing: carriedSpec?.framing ?? _emptyBase.framing,
       }
-    : (carriedSpec ?? makeEmptySpec(vibeDesc));
-  const appearance = composeAppearance(baseAppearance, effectiveSpec);
+    : (carriedSpec ?? _emptyBase);
+  // DESCRIPTOR_MODE hard switch (spec Section 7):
+  //   When descriptor is active, identity appearance is COMPLETELY DISABLED.
+  //   Skip composeAppearance entirely — it would inject Ashley's lavender profile.
+  //   The appearance string is ONLY the mapped hair colour; the shot type in
+  //   buildModePromptBlock already anchors "young woman" as neutral baseline.
+  //
+  // IDENTITY_MODE: normal composeAppearance path (unchanged).
+  const appearance = _descriptorOverride
+    ? `${_descriptorOverride.hairColour} hair`
+    : composeAppearance(baseAppearance, effectiveSpec);
   // Scrub the vibe TEXT itself of any negated tokens or profile-default
   // colours that the user has overridden. The LLM writes the vibe with
   // Ashley's persona context (profile.appearance) in the system prompt, so
