@@ -1648,40 +1648,107 @@ function pruneSelfieCache(): void {
   if (pruned) persistSelfieCache();
 }
 
-// ── Descriptor Mode Helper ────────────────────────────────────────────────
-// Extracts Ashley's STABLE IDENTITY from her profile appearance — keeping
-// only face, skin, eye, and structural descriptors while removing ALL
-// hair-colour and hair-style clauses.  Used by the descriptor-mode prompt
-// builder so the stable identity section never leaks hair colour into a
-// descriptor job.
+// ── identityCore isolation (spec Section 2 / Section 4) ──────────────────
 //
-// Input:  "Lavender hair (long, wavy), pale complexion, green eyes, petite figure"
-// Output: "pale complexion, green eyes, petite figure"
-function buildStableIdentityFromProfile(baseAppearance: string): string {
-  if (!baseAppearance.trim()) return "";
-  // Leading tokens that mark a clause as hair-colour-primary.  "black" and
-  // "brown" are deliberately excluded — they appear in "black dress" / "brown
-  // eyes" too and would over-drop.
-  const HAIR_COLOUR_STARTS = [
-    "lavender", "purple", "violet", "lilac", "mauve", "plum",
-    "grey", "gray", "silver", "platinum", "white",
-    "red", "ginger", "auburn", "copper", "strawberry",
-    "blonde", "blond", "brunette", "chestnut",
-  ];
-  return baseAppearance
-    .split(",")
-    .map((c) => c.trim())
-    .filter((clause) => {
-      if (!clause) return false;
-      const lower = clause.toLowerCase();
-      // Drop any clause that explicitly mentions hair or hair-style words.
-      if (/\bhair\b|\blocke?s?\b|\bwavy\b|\bcurly\b|\bstraight\b|\bbraided\b/i.test(clause)) return false;
-      // Drop clauses whose LEADING descriptor is a hair-colour token.
-      if (HAIR_COLOUR_STARTS.some((tok) => lower.startsWith(tok))) return false;
-      return true;
-    })
-    .join(", ")
-    .trim();
+// identityCore = { eyeColour, complexion, bodyType, identityAnchors }
+//
+// STRICTLY EXCLUDED from identityCore: hairColour, hairStyle, hairLength,
+// clothing, pose, environment, framing, lighting.
+//
+// The extraction builds a typed struct from profile.appearance by mapping
+// each comma-clause into its destination field.  A clause is HARD-SKIPPED
+// before classification if it contains ANY hair-contamination word — so
+// hair data cannot reach any field by construction.
+//
+// assertIdentityCoreIsClean() then verifies every field BEFORE prompt
+// construction begins (Section 9 contract: correctness exists before the
+// prompt — the prompt describes the system, it does not correct the system).
+// If any contamination is found → job aborted, model is never called.
+
+// Words that unambiguously mark a clause as hair-related.
+// "red", "black", "brown", "white" are intentionally omitted — they appear
+// in "dark brown eyes", "pale white skin" etc. and would over-drop.
+const IDENTITY_CORE_HAIR_CONTAMINATION: readonly string[] = [
+  // Hair-structure / style words
+  "hair", "locks", "wavy", "curly", "straight", "braided",
+  // Forbidden base colours (appear in Ashley's lavender profile)
+  "lavender", "purple", "violet", "lilac", "mauve", "plum",
+  "grey", "gray", "silver", "platinum",
+  // Hair-specific colour descriptors (never used for eyes or skin)
+  "ginger", "auburn", "copper", "strawberry",
+  "blonde", "blond", "brunette", "chestnut",
+  // Compound descriptor tokens used in image markers
+  "redhead", "blackhair",
+];
+
+interface IdentityCore {
+  eyeColour: string | null;
+  complexion: string | null;
+  bodyType: string | null;
+  identityAnchors: string[];
+}
+
+// Build identityCore from a free-text appearance string.
+// Each clause is FIRST checked against IDENTITY_CORE_HAIR_CONTAMINATION;
+// contaminated clauses are entirely discarded before classification.
+function extractIdentityCore(appearance: string): IdentityCore {
+  const core: IdentityCore = {
+    eyeColour: null,
+    complexion: null,
+    bodyType: null,
+    identityAnchors: [],
+  };
+  if (!appearance.trim()) return core;
+
+  for (const clause of appearance.split(",").map((c) => c.trim()).filter(Boolean)) {
+    // HARD SKIP — any clause containing a contamination word is discarded.
+    if (IDENTITY_CORE_HAIR_CONTAMINATION.some(
+      (w) => new RegExp(`\\b${w}\\b`, "i").test(clause),
+    )) continue;
+
+    // Classify into typed fields — vocabulary-driven from the destination.
+    if (/\beyes?\b/i.test(clause) && core.eyeColour === null) {
+      core.eyeColour = clause;
+    } else if (/\b(complexion|skin)\b/i.test(clause) && core.complexion === null) {
+      core.complexion = clause;
+    } else if (/\b(figure|frame|build|height|stature|petite|tall|slender|curvy)\b/i.test(clause) && core.bodyType === null) {
+      core.bodyType = clause;
+    } else {
+      core.identityAnchors.push(clause);
+    }
+  }
+  return core;
+}
+
+// Hard guard (Section 2): if ANY field in identityCore contains a
+// hair-contamination word, log and throw.  Called BEFORE prompt construction
+// so the prompt is never built from contaminated data.
+function assertIdentityCoreIsClean(core: IdentityCore, jobId?: string): void {
+  const allText = [
+    core.eyeColour ?? "",
+    core.complexion ?? "",
+    core.bodyType ?? "",
+    ...core.identityAnchors,
+  ].join(" ");
+  const found = IDENTITY_CORE_HAIR_CONTAMINATION.filter(
+    (w) => new RegExp(`\\b${w}\\b`, "i").test(allText),
+  );
+  if (found.length > 0) {
+    logger.error(
+      { jobId: jobId ?? null, contaminationWords: found, identityCore: core },
+      "image-gen: identityCore CONTAMINATION — hair data reached identity struct; job aborted before prompt construction",
+    );
+    throw new Error(`identityCore contamination: [${found.join(", ")}]`);
+  }
+}
+
+// Render the clean identityCore struct to a compact string for prompt
+// embedding.  Field order: complexion, eyes, body, anchors — most
+// identity-anchoring attributes first.
+function renderIdentityCore(core: IdentityCore): string {
+  return [core.complexion, core.eyeColour, core.bodyType, ...core.identityAnchors]
+    .filter(Boolean)
+    .join(", ");
 }
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -1879,8 +1946,16 @@ async function generateAshleySelfie(
   let fullPrompt: string;
 
   if (_descriptorOverride) {
-    // STABLE IDENTITY: strip hair clauses from the profile appearance.
-    descriptorStableIdentity = buildStableIdentityFromProfile(baseAppearance);
+    // STABLE IDENTITY: extract typed identityCore, verify clean, render.
+    // assertIdentityCoreIsClean throws on contamination — job aborts before
+    // any prompt string is constructed (Section 9 contract).
+    const _identityCore = extractIdentityCore(baseAppearance);
+    try {
+      assertIdentityCoreIsClean(_identityCore, jobId);
+    } catch {
+      return null;
+    }
+    descriptorStableIdentity = renderIdentityCore(_identityCore);
 
     // POSE BLOCK: the scrubbed vibe is "<descriptor> portrait\n\nPose: ...\n..."
     // Split on the first double-newline; everything AFTER it is the
