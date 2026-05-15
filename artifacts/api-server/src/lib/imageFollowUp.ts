@@ -21,10 +21,12 @@
 // than refuse.
 // =============================================================================
 
+import { randomUUID } from "node:crypto";
 import {
   classifyImageIntent,
   decodeStoredVibe,
   encodeStoredVibe,
+  parseAllImageMarkers,
   type ImageMode,
 } from "./imageIntent.js";
 import { encodeMemoryIdInDescription } from "./visualMemory.js";
@@ -1326,8 +1328,16 @@ export type SynthesizedImageReply = {
   fullText: string;
   /** Same text after parseImageMarker would strip the marker — what the user sees. */
   captionText: string;
-  /** Encoded `MODE|vibe` payload to write into messages.selfieVibe. */
+  /** Encoded `MODE|vibe` payload for messages.selfieVibe (first/only vibe). */
   selfieVibe: string;
+  /**
+   * Non-null when the original request contained multiple [image:] markers.
+   * Callers must write this to messages.selfieVibeList (as JSON) and insert
+   * one media_attachments row per entry so the gallery renders N images.
+   */
+  selfieVibeList: string[] | null;
+  /** Non-null when selfieVibeList is non-null. */
+  visualPacketId: string | null;
   /** Mode the marker carries (for logging). */
   mode: ImageMode;
   /** Description the marker carries (for logging). */
@@ -1439,6 +1449,8 @@ export function synthesizeImageActionReplyFromSpec(
     fullText,
     captionText: caption,
     selfieVibe,
+    selfieVibeList: null,
+    visualPacketId: null,
     mode,
     description: cleanDescWithSpec,
   };
@@ -1466,9 +1478,30 @@ export function synthesizeImageActionReply(
   }
   if (!description) return null;
 
-  // Strip newlines / collapse whitespace inside the marker so parseImageMarker
-  // sees a single-line `[image: MODE | desc]` payload. parseImageMarker uses a
-  // non-greedy match terminated by `]`, so embedded brackets would confuse it.
+  // Multi-image detection: parse the raw description BEFORE the ] → )
+  // replacement so [image:] markers are still recognisable. If multiple
+  // markers are present (e.g. user sent "[image:red|portrait] [image:blonde|portrait]")
+  // produce a selfieVibeList instead of collapsing everything into one job.
+  const rawMarkers = parseAllImageMarkers(description);
+  if (rawMarkers.length > 1) {
+    const cappedMarkers = rawMarkers.slice(0, 4);
+    const vibeList = cappedMarkers.map((m) => encodeStoredVibe(m.mode, m.vibe));
+    const packetId = randomUUID();
+    const n = vibeList.length;
+    const caption = n === 2 ? "Two photos incoming." : `${n} photos incoming.`;
+    return {
+      fullText: caption,
+      captionText: caption,
+      selfieVibe: vibeList[0]!,
+      selfieVibeList: vibeList,
+      visualPacketId: packetId,
+      mode: cappedMarkers[0]!.mode,
+      description,
+    };
+  }
+
+  // Single-image path — strip newlines / collapse whitespace so parseImageMarker
+  // sees a single-line `[image: MODE | desc]` payload (embedded ] confuses it).
   const cleanDesc = description.replace(/[\r\n]+/g, " ").replace(/\]/g, ")").replace(/\s+/g, " ").trim();
   const caption = shortCaptionFor(
     resolution.suggestedMode,
@@ -1483,6 +1516,8 @@ export function synthesizeImageActionReply(
     fullText,
     captionText: caption,
     selfieVibe,
+    selfieVibeList: null,
+    visualPacketId: null,
     mode: resolution.suggestedMode,
     description: cleanDesc,
   };

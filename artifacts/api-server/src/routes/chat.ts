@@ -851,7 +851,10 @@ router.post("/chat", async (req, res): Promise<void> => {
       const synth = synthesizeImageActionReply(resolution);
       if (synth) {
         const gateSelfieVibe = synth.selfieVibe;
+        const gateSelfieVibeList = synth.selfieVibeList;
+        const gateVisualPacketId = synth.visualPacketId;
         const gateAssistantText = synth.captionText;
+        const jobsStarted = gateSelfieVibeList ? gateSelfieVibeList.length : 1;
         // Wren May 2026 terminal-render contract — single canonical log so
         // `grep "visual-intent: terminal render"` proves the render branch
         // fired and the LLM narration branch did not.
@@ -876,6 +879,7 @@ router.post("/chat", async (req, res): Promise<void> => {
             modeReason: resolution.modeReason,
             imageGenerationTriggered: "yes — server-side marker synthesised, /chat/selfie will run",
             llmCallSkipped: true,
+            jobsStarted,
             // Wren May 2026 #5 debug contract — uniform field names across
             // gate paths so `adb logcat | grep IMAGE_INTENT` always lines up.
             IMAGE_INTENT: true,
@@ -894,6 +898,12 @@ router.post("/chat", async (req, res): Promise<void> => {
               role: "ashley",
               content: gateAssistantText,
               selfieVibe: gateSelfieVibe,
+              ...(gateSelfieVibeList
+                ? {
+                    selfieVibeList: JSON.stringify(gateSelfieVibeList),
+                    visualPacketId: gateVisualPacketId,
+                  }
+                : {}),
             })
             .returning();
           gateAshleyRow = inserted!;
@@ -901,6 +911,36 @@ router.post("/chat", async (req, res): Promise<void> => {
           req.log.error({ err }, "image-intent gate: failed to persist synthesised reply");
           res.status(500).json({ error: "Could not save Ashley's reply" });
           return;
+        }
+        // Insert one media_attachments row per vibe for multi-image packets.
+        if (gateSelfieVibeList && gateVisualPacketId) {
+          try {
+            await db.insert(mediaAttachmentsTable).values(
+              gateSelfieVibeList.map((vibe, i) => {
+                const dv = decodeStoredVibe(vibe);
+                return {
+                  id: newId(),
+                  deviceId,
+                  messageId: gateAshleyRow.id,
+                  visualPacketId: gateVisualPacketId,
+                  role: "generated_option" as const,
+                  status: "pending" as const,
+                  marker: `[image:${dv.mode}|${dv.vibe}]`,
+                  selfieVibe: vibe,
+                  intent: dv.mode,
+                  category: dv.mode || null,
+                  description: dv.vibe.slice(0, 500) || null,
+                  sortOrder: i,
+                };
+              }),
+            );
+            req.log.info(
+              { messageId: gateAshleyRow.id, mediaAttachmentRowsCreated: gateSelfieVibeList.length, jobsStarted },
+              "image-intent gate: media_attachments rows inserted",
+            );
+          } catch (err) {
+            req.log.warn({ err }, "image-intent gate: failed to insert media_attachments (non-fatal)");
+          }
         }
         res.json({ userMessage: userRow, ashleyMessage: gateAshleyRow });
         return;
@@ -3680,13 +3720,56 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   if (imageGateSynth) {
     const gateText = imageGateSynth.captionText;
     const gateVibe = imageGateSynth.selfieVibe;
+    const gateVibeList = imageGateSynth.selfieVibeList;
+    const gatePacketId = imageGateSynth.visualPacketId;
+    const jobsStarted = gateVibeList ? gateVibeList.length : 1;
     writeEvent("delta", { text: gateText });
     try {
       await db
         .update(messagesTable)
-        .set({ content: gateText, status: "complete", selfieVibe: gateVibe })
+        .set({
+          content: gateText,
+          status: "complete",
+          selfieVibe: gateVibe,
+          ...(gateVibeList
+            ? {
+                selfieVibeList: JSON.stringify(gateVibeList),
+                visualPacketId: gatePacketId,
+              }
+            : {}),
+        })
         .where(eq(messagesTable.id, streamId));
-      writeEvent("done", { content: gateText, selfieVibe: gateVibe });
+      // Insert one media_attachments row per vibe for multi-image packets.
+      if (gateVibeList && gatePacketId) {
+        try {
+          await db.insert(mediaAttachmentsTable).values(
+            gateVibeList.map((vibe, i) => {
+              const dv = decodeStoredVibe(vibe);
+              return {
+                id: newId(),
+                deviceId,
+                messageId: streamId,
+                visualPacketId: gatePacketId,
+                role: "generated_option" as const,
+                status: "pending" as const,
+                marker: `[image:${dv.mode}|${dv.vibe}]`,
+                selfieVibe: vibe,
+                intent: dv.mode,
+                category: dv.mode || null,
+                description: dv.vibe.slice(0, 500) || null,
+                sortOrder: i,
+              };
+            }),
+          );
+          req.log.info(
+            { streamId, deviceId, mediaAttachmentRowsCreated: gateVibeList.length, jobsStarted },
+            "image-intent gate (stream): media_attachments rows inserted",
+          );
+        } catch (err) {
+          req.log.warn({ err, streamId }, "image-intent gate (stream): failed to insert media_attachments (non-fatal)");
+        }
+      }
+      writeEvent("done", { content: gateText, selfieVibe: gateVibe, selfieVibeList: gateVibeList, visualPacketId: gatePacketId });
       req.log.info(
         {
           streamId,
@@ -3694,6 +3777,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
           imageMode: imageGateSynth.mode,
           captionPreview: gateText.slice(0, 200),
           descriptionPreview: imageGateSynth.description.slice(0, 200),
+          jobsStarted,
         },
         "image-intent: HARD GATE (stream) — marker persisted, selfie pipeline armed",
       );
