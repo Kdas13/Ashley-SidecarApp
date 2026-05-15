@@ -1882,79 +1882,89 @@ function MessageBubble({
               <Feather name="maximize-2" size={11} color={colors.light.mutedForeground} />
               <Text style={styles.tapToEnlargePillText}>Tap to enlarge</Text>
             </Pressable>
-            <Modal
-              visible={viewerOpen}
-              transparent
-              animationType="fade"
-              onRequestClose={() => { setViewerOpen(false); setGalleryViewerUrl(null); }}
-              statusBarTranslucent
-            >
-              <View style={styles.viewerBackdrop}>
-                <Pressable
-                  style={styles.viewerDismissArea}
-                  onPress={() => { setViewerOpen(false); setGalleryViewerUrl(null); }}
-                  accessibilityLabel="Tap to close full-screen viewer"
-                />
-                <Image
-                  source={{ uri: galleryViewerUrl ?? message.imageUrl! }}
-                  style={styles.viewerImage}
-                  resizeMode="contain"
-                  accessibilityLabel="Full-screen image — entire frame visible"
-                  onLoad={(e) => {
-                    const src = e?.nativeEvent?.source;
-                    if (src) {
-                      console.log("[chat] full-screen viewer loaded image", {
-                        imageUrl: galleryViewerUrl ?? message.imageUrl,
-                        naturalWidth: src.width,
-                        naturalHeight: src.height,
-                        viewerResizeMode: "contain",
-                      });
-                    }
-                  }}
-                />
-                <View
-                  style={[styles.viewerToolbar, { top: bubbleInsets.top + 8 }]}
-                  pointerEvents="box-none"
-                >
-                  <Pressable
-                    onPress={() => { setViewerOpen(false); setGalleryViewerUrl(null); }}
-                    style={styles.viewerToolbarBtn}
-                    hitSlop={12}
-                    accessibilityLabel="Close viewer"
-                  >
-                    <Feather name="x" size={22} color="#fff" />
-                  </Pressable>
-                  <View style={{ flex: 1 }} />
-                  <Pressable
-                    onPress={onCopyImageUrl}
-                    style={styles.viewerToolbarBtn}
-                    hitSlop={12}
-                    accessibilityLabel="Copy raw image URL"
-                  >
-                    <Feather name="copy" size={20} color="#fff" />
-                  </Pressable>
-                  <Pressable
-                    onPress={onSaveImage}
-                    style={styles.viewerToolbarBtn}
-                    hitSlop={12}
-                    accessibilityLabel="Save image to library"
-                  >
-                    <Feather name="download" size={20} color="#fff" />
-                  </Pressable>
-                </View>
-                <View style={styles.viewerDebugBar} pointerEvents="box-none">
-                  <Text style={styles.viewerDebugText} numberOfLines={2}>
-                    {imageNaturalDims
-                      ? `raw ${imageNaturalDims.width}×${imageNaturalDims.height} · contain`
-                      : "raw dims pending · contain"}
-                  </Text>
-                  <Text style={styles.viewerDebugUrl} numberOfLines={1} selectable>
-                    {galleryViewerUrl ?? message.imageUrl}
-                  </Text>
-                </View>
-              </View>
-            </Modal>
           </>
+        ) : null}
+        {/*
+          Full-screen viewer modal — shared by single-image and multi-image
+          gallery paths. Rendered unconditionally (outside the showImage branch)
+          so gallery thumbnail taps (which set viewerOpen + galleryViewerUrl)
+          can open it even when hasGallery=true suppresses the single-image block.
+          galleryViewerUrl takes priority; falls back to message.imageUrl for
+          the single-image case.
+        */}
+        {(showImage || hasGallery) && (viewerOpen || galleryViewerUrl) ? (
+          <Modal
+            visible={viewerOpen}
+            transparent
+            animationType="fade"
+            onRequestClose={() => { setViewerOpen(false); setGalleryViewerUrl(null); }}
+            statusBarTranslucent
+          >
+            <View style={styles.viewerBackdrop}>
+              <Pressable
+                style={styles.viewerDismissArea}
+                onPress={() => { setViewerOpen(false); setGalleryViewerUrl(null); }}
+                accessibilityLabel="Tap to close full-screen viewer"
+              />
+              <Image
+                source={{ uri: galleryViewerUrl ?? message.imageUrl! }}
+                style={styles.viewerImage}
+                resizeMode="contain"
+                accessibilityLabel="Full-screen image — entire frame visible"
+                onLoad={(e) => {
+                  const src = e?.nativeEvent?.source;
+                  if (src) {
+                    console.log("[chat] full-screen viewer loaded image", {
+                      imageUrl: galleryViewerUrl ?? message.imageUrl,
+                      naturalWidth: src.width,
+                      naturalHeight: src.height,
+                      viewerResizeMode: "contain",
+                    });
+                  }
+                }}
+              />
+              <View
+                style={[styles.viewerToolbar, { top: bubbleInsets.top + 8 }]}
+                pointerEvents="box-none"
+              >
+                <Pressable
+                  onPress={() => { setViewerOpen(false); setGalleryViewerUrl(null); }}
+                  style={styles.viewerToolbarBtn}
+                  hitSlop={12}
+                  accessibilityLabel="Close viewer"
+                >
+                  <Feather name="x" size={22} color="#fff" />
+                </Pressable>
+                <View style={{ flex: 1 }} />
+                <Pressable
+                  onPress={onCopyImageUrl}
+                  style={styles.viewerToolbarBtn}
+                  hitSlop={12}
+                  accessibilityLabel="Copy raw image URL"
+                >
+                  <Feather name="copy" size={20} color="#fff" />
+                </Pressable>
+                <Pressable
+                  onPress={onSaveImage}
+                  style={styles.viewerToolbarBtn}
+                  hitSlop={12}
+                  accessibilityLabel="Save image to library"
+                >
+                  <Feather name="download" size={20} color="#fff" />
+                </Pressable>
+              </View>
+              <View style={styles.viewerDebugBar} pointerEvents="box-none">
+                <Text style={styles.viewerDebugText} numberOfLines={2}>
+                  {imageNaturalDims
+                    ? `raw ${imageNaturalDims.width}×${imageNaturalDims.height} · contain`
+                    : "raw dims pending · contain"}
+                </Text>
+                <Text style={styles.viewerDebugUrl} numberOfLines={1} selectable>
+                  {galleryViewerUrl ?? message.imageUrl}
+                </Text>
+              </View>
+            </View>
+          </Modal>
         ) : null}
         {hasGallery ? (
           <ScrollView

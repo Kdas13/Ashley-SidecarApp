@@ -1329,7 +1329,7 @@ export async function fetchSelfieForMessage(
       if (restartsLeft > 0) {
         restartsLeft -= 1;
         try {
-          jobId = await startSelfieJob(messageId, vibe);
+          jobId = await startSelfieJob(messageId, vibe, sortOrder);
           continue;
         } catch {
           continue;
