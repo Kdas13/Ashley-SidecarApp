@@ -17,7 +17,7 @@ export interface MediaAttachment {
   id: string;
   messageId: string;
   visualPacketId: string;
-  /** "generated_option" = Ashley offered this image; treat as temporary unless user confirms. "user_input" = user uploaded this image as reference material.
+  /** Active: "generated_option" (Ashley offered this image; temporary attributes only) and "user_input" (user uploaded as reference material). Reserved future values: "reference" (canonical pinned photo), "corrected_output" (user-corrected version of a prior generated_option), "comparison_set" (side-by-side options in one packet), "approved_anchor" (user explicitly approved as long-term visual anchor), "rejected_example" (user rejected; model should avoid similar outputs).
    */
   role: MediaAttachmentRole;
   status: MediaAttachmentStatus;

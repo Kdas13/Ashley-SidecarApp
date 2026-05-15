@@ -1267,11 +1267,16 @@ const SELFIE_POLL_MAX_ATTEMPTS = 90; // ~3 min of foregrounded polling
 async function startSelfieJob(
   messageId: string,
   vibe: string,
+  sortOrder?: number,
 ): Promise<string> {
   const data = await fetchJSON<{ jobId?: unknown }>("/chat/selfie", {
     method: "POST",
     headers: apiHeaders(),
-    body: JSON.stringify({ messageId, vibe }),
+    body: JSON.stringify(
+      typeof sortOrder === "number"
+        ? { messageId, vibe, sortOrder }
+        : { messageId, vibe },
+    ),
   });
   if (typeof data.jobId !== "string" || !data.jobId.trim()) {
     throw new Error("Selfie generation didn't return a job id.");
@@ -1291,8 +1296,9 @@ async function startSelfieJob(
 export async function fetchSelfieForMessage(
   messageId: string,
   vibe: string,
+  sortOrder?: number,
 ): Promise<string> {
-  let jobId = await startSelfieJob(messageId, vibe);
+  let jobId = await startSelfieJob(messageId, vibe, sortOrder);
   let restartsLeft = 2;
   const base = getApiBase();
 

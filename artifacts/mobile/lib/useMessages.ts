@@ -955,7 +955,7 @@ export async function fetchAndAttachSelfieList(
   setInFlight(messageId, true);
   try {
     const settled = await Promise.allSettled(
-      vibeList.map((vibe) => fetchSelfieForMessage(messageId, vibe)),
+      vibeList.map((vibe, i) => fetchSelfieForMessage(messageId, vibe, i)),
     );
     const imageUrls = settled
       .filter((r): r is PromiseFulfilledResult<string> => r.status === "fulfilled")

@@ -1325,6 +1325,7 @@ router.post("/chat", async (req, res): Promise<void> => {
             status: "pending" as const,
             selfieVibe: vibe,
             intent: dv.mode,
+            category: dv.mode || null,
             description: dv.vibe.slice(0, 500) || null,
             sortOrder: i,
           };
@@ -1414,6 +1415,10 @@ const ChatSelfieBodySchema = z.object({
   imageMode: z
     .enum(IMAGE_MODES as unknown as [ImageMode, ...ImageMode[]])
     .optional(),
+  // 0-based position of this image within a multi-image visual packet.
+  // When provided, attachment row lookup uses sortOrder instead of selfieVibe
+  // to avoid mis-association when two markers emit identical encoded vibes.
+  sortOrder: z.number().int().min(0).optional(),
 });
 
 type SelfieJob =
@@ -2131,6 +2136,11 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
   // the generation still proceeds normally — only the DB patch is skipped.
   // sortOrder is also fetched so startSelfieGeneration knows whether to
   // back-patch messages.imageUrl (only sortOrder===0 should do so).
+  //
+  // When sortOrder is supplied by the client we prefer it as the lookup key to
+  // avoid mis-association when two markers in a packet share identical encoded
+  // vibes. Fallback to selfieVibe lookup for older / single-image callers.
+  const { sortOrder: clientSortOrder } = parsed.data;
   let attachmentId: string | undefined;
   let attachmentSortOrder: number | undefined;
   try {
@@ -2140,7 +2150,9 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
       .where(
         and(
           eq(mediaAttachmentsTable.messageId, messageId),
-          eq(mediaAttachmentsTable.selfieVibe, vibe),
+          typeof clientSortOrder === "number"
+            ? eq(mediaAttachmentsTable.sortOrder, clientSortOrder)
+            : eq(mediaAttachmentsTable.selfieVibe, vibe),
         ),
       )
       .limit(1);
@@ -3947,6 +3959,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
                 status: "pending" as const,
                 selfieVibe: vibe,
                 intent: dv.mode,
+                category: dv.mode || null,
                 description: dv.vibe.slice(0, 500) || null,
                 sortOrder: i,
               };
@@ -4289,6 +4302,7 @@ router.post("/chat/image", async (req, res): Promise<void> => {
           role: "user_input" as const,
           status: "ready" as const,
           imageUrl: url,
+          category: category || null,
           description: caption || null,
           sortOrder: i,
         })),

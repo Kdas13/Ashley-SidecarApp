@@ -194,7 +194,7 @@ export default function ChatScreen(): React.JSX.Element {
   // Extra images beyond the first when the user picks a set (max 3 extras = 4 total).
   // Stored as base64 + mimeType only — no URI needed for send.
   const [pickedExtraImages, setPickedExtraImages] = useState<
-    { base64: string; mimeType: string }[]
+    { base64: string; mimeType: string; uri: string }[]
   >([]);
   const [imageCategory, setImageCategory] = useState<ImageCategory>("other");
   const [imageMode, setImageMode] = useState<ImageAnalysisMode>("quick");
@@ -781,6 +781,7 @@ export default function ChatScreen(): React.JSX.Element {
         .map((a) => ({
           base64: a.base64!,
           mimeType: mimeFromUri(a.uri, a.mimeType ?? undefined),
+          uri: a.uri,
         }));
       setPickedExtraImages(extras);
       setImageCategory("other");
@@ -1359,21 +1360,32 @@ export default function ChatScreen(): React.JSX.Element {
               </Pressable>
             </View>
             {pickedImage ? (
-              <View>
+              pickedExtraImages.length > 0 ? (
+                // Multi-image: show a scrollable strip of all selected images
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.imagePreviewStrip}
+                  contentContainerStyle={styles.imagePreviewStripContent}
+                >
+                  {([pickedImage, ...pickedExtraImages] as Array<{ uri: string }>).map((img, idx) => (
+                    <Image
+                      key={img.uri + String(idx)}
+                      source={{ uri: img.uri }}
+                      style={styles.imagePreviewStripThumb}
+                      resizeMode="cover"
+                      accessibilityLabel={`Photo ${idx + 1} of ${1 + pickedExtraImages.length}`}
+                    />
+                  ))}
+                </ScrollView>
+              ) : (
                 <Image
                   source={{ uri: pickedImage.uri }}
                   style={styles.imagePickerPreview}
                   resizeMode="contain"
                   accessibilityLabel="Selected photo preview"
                 />
-                {pickedExtraImages.length > 0 ? (
-                  <View style={styles.imageCountBadge}>
-                    <Text style={styles.imageCountBadgeText}>
-                      +{pickedExtraImages.length} more
-                    </Text>
-                  </View>
-                ) : null}
-              </View>
+              )
             ) : null}
             <Text style={styles.modalLabel}>What is this?</Text>
             <View style={styles.chipsWrap}>
@@ -2901,6 +2913,21 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontFamily: "Inter_500Medium",
     fontSize: 12,
+  },
+  imagePreviewStrip: {
+    maxHeight: 108,
+    marginBottom: 12,
+  },
+  imagePreviewStripContent: {
+    gap: 6,
+    paddingHorizontal: 4,
+    alignItems: "center",
+  },
+  imagePreviewStripThumb: {
+    width: 96,
+    height: 96,
+    borderRadius: 8,
+    backgroundColor: colors.light.muted,
   },
   modeHint: {
     color: colors.light.mutedForeground,
