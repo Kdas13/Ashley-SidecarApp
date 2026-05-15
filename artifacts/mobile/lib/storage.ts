@@ -156,6 +156,23 @@ export type Message = {
    *   false → user dismissed the card.
    */
   imageRemembered?: boolean | null;
+  /**
+   * Multi-image: array of absolute image URLs generated for a visual packet.
+   * Set (length ≥ 2) when Ashley sent multiple selfies in one message.
+   * When present the gallery row renders instead of the single-image bubble.
+   */
+  imageUrls?: string[] | null;
+  /**
+   * Multi-image: JSON-decoded array of encoded MODE|vibe payloads.
+   * The client uses these to fire N parallel selfie jobs and then sets imageUrls.
+   * Null once all images have resolved (or on single-image messages).
+   */
+  selfieVibeList?: string[] | null;
+  /**
+   * Multi-image: UUID that links this message to its media_attachments rows
+   * on the server. Null on single-image messages.
+   */
+  visualPacketId?: string | null;
   /** Quoted earlier message attached to a swipe-to-reply. */
   replyTo?: ReplyToRef | null;
   /**

@@ -188,6 +188,10 @@ type WireMessage = {
   status?: string | null;
   imageUrl: string | null;
   selfieVibe: string | null;
+  /** Multi-image: JSON-encoded string[] of encoded vibes. Null on single-image messages. */
+  selfieVibeList?: string | null;
+  /** Multi-image: UUID linking this message to its media_attachments rows. */
+  visualPacketId?: string | null;
   imageMimeType: string | null;
   imageCategory: string | null;
   imageCaption: string | null;
@@ -268,6 +272,18 @@ function messageFromWire(m: WireMessage): Message {
     m.status === "streaming" || m.status === "interrupted"
       ? m.status
       : "complete";
+
+  // selfieVibeList is stored as a JSON string on the server; decode it here.
+  let selfieVibeList: string[] | null = null;
+  if (typeof m.selfieVibeList === "string" && m.selfieVibeList.trim()) {
+    try {
+      const parsed = JSON.parse(m.selfieVibeList) as unknown;
+      if (Array.isArray(parsed)) selfieVibeList = parsed as string[];
+    } catch {
+      // malformed JSON — treat as absent
+    }
+  }
+
   return {
     id: m.id,
     role: m.role,
@@ -276,6 +292,8 @@ function messageFromWire(m: WireMessage): Message {
     status,
     imageUrl: m.imageUrl ?? null,
     selfieVibe: m.selfieVibe ?? null,
+    selfieVibeList,
+    visualPacketId: m.visualPacketId ?? null,
     imageMimeType: m.imageMimeType ?? null,
     imageCategory: (m.imageCategory as ImageCategory | null) ?? null,
     imageCaption: m.imageCaption ?? null,
@@ -852,6 +870,10 @@ export type StreamReplyMeta = {
 export type StreamReplyDoneEvent = {
   content: string;
   selfieVibe: string | null;
+  /** Multi-image: array of encoded MODE|vibe payloads (one per image). Null on single-image messages. */
+  selfieVibeList: string[] | null;
+  /** Multi-image: UUID linking this message to its media_attachments rows. Null on single-image. */
+  visualPacketId: string | null;
 };
 
 export type StreamReplyCallbacks = {
@@ -1055,6 +1077,12 @@ export async function streamAshleyReply(
         content: typeof d["content"] === "string" ? (d["content"] as string) : "",
         selfieVibe:
           typeof d["selfieVibe"] === "string" ? (d["selfieVibe"] as string) : null,
+        selfieVibeList:
+          Array.isArray(d["selfieVibeList"])
+            ? (d["selfieVibeList"] as string[])
+            : null,
+        visualPacketId:
+          typeof d["visualPacketId"] === "string" ? (d["visualPacketId"] as string) : null,
       };
       callbacks.onDone?.(final);
       if (meta) outcome = { kind: "done", final, meta };

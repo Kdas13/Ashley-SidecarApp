@@ -1551,6 +1551,8 @@ function MessageBubble({
   const hasText = !!message.content && message.content.trim().length > 0;
   const [imageFailed, setImageFailed] = useState(false);
   const showImage = hasImage && !imageFailed;
+  /** Multi-image gallery: resolved imageUrls array from a visual packet. */
+  const hasGallery = !isUser && !!(message.imageUrls && message.imageUrls.length > 1);
   // Full-screen image viewer state. Tap the preview to open; modal renders
   // the SAME imageUrl with resizeMode="contain" so we can tell whether the
   // generator cropped the source vs whether the chat preview is hiding part
@@ -1687,7 +1689,7 @@ function MessageBubble({
         style={[
           styles.bubble,
           isUser ? styles.bubbleUser : styles.bubbleAshley,
-          (showImage || pendingSelfieVibe) && styles.bubbleWithImage,
+          (showImage || pendingSelfieVibe || hasGallery) && styles.bubbleWithImage,
           quoted && styles.bubbleWithQuote,
         ]}
       >
@@ -1902,6 +1904,20 @@ function MessageBubble({
             </Modal>
           </>
         ) : null}
+        {hasGallery ? (
+          <View style={styles.galleryRow}>
+            {(message.imageUrls ?? []).map((uri, idx) => (
+              <View key={uri + idx} style={styles.galleryThumb}>
+                <Image
+                  source={{ uri }}
+                  style={styles.galleryThumbImage}
+                  resizeMode="cover"
+                  accessibilityLabel={`Photo ${idx + 1} from Ashley`}
+                />
+              </View>
+            ))}
+          </View>
+        ) : null}
         {imageFailed ? (
           <View style={styles.imageError}>
             <Feather
@@ -1925,7 +1941,7 @@ function MessageBubble({
             </Pressable>
           </View>
         ) : null}
-        {pendingSelfieVibe && !showImage && !imageFailed ? (
+        {pendingSelfieVibe && !showImage && !imageFailed && !hasGallery ? (
           (() => {
             const generating = retryingThis || autoInFlight;
             return (
@@ -2335,6 +2351,23 @@ const styles = StyleSheet.create({
     paddingTop: 4,
     paddingBottom: 6,
     overflow: "hidden",
+  },
+  galleryRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 4,
+    paddingVertical: 4,
+  },
+  galleryThumb: {
+    width: 114,
+    height: 114,
+    borderRadius: 10,
+    overflow: "hidden",
+    backgroundColor: "rgba(0,0,0,0.12)",
+  },
+  galleryThumbImage: {
+    width: 114,
+    height: 114,
   },
   bubbleImageHitBox: {
     width: 240,

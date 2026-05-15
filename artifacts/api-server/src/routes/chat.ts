@@ -9,6 +9,7 @@ import {
   ashleyProfileTable,
   ashleyTicketsTable,
   conversationSummariesTable,
+  mediaAttachmentsTable,
   memoriesTable,
   messagesTable,
   type AshleyProfile,
@@ -32,6 +33,7 @@ import {
   isImageMode,
   IMAGE_MODES,
   parseImageMarker,
+  parseAllImageMarkers,
   buildModePromptBlock,
   wrapperFor,
   encodeStoredVibe,
@@ -1174,34 +1176,74 @@ router.post("/chat", async (req, res): Promise<void> => {
     return;
   }
 
-  // 5. Strip image marker (first one only) and remember the (mode, vibe).
-  //    The selfieVibe column carries an encoded `MODE|vibe` payload so the
-  //    /chat/selfie generation endpoint can replay the same mode without a
-  //    schema change. Legacy [selfie:...] tags route through the classifier.
+  // 5. Parse ALL [image:] markers and decide single vs multi-image path.
+  //    selfieVibe (single) is always set to the FIRST vibe for backwards
+  //    compat with the /chat/selfie endpoint and legacy mobile clients.
+  //    selfieVibeList (JSON array) and visualPacketId are set on multi-image
+  //    replies (2–4 markers) so the mobile can fire N parallel selfie jobs.
   let selfieVibe: string | null = null;
-  const parsedMarker = parseImageMarker(assistantText);
-  if (parsedMarker) {
-    selfieVibe = encodeStoredVibe(parsedMarker.mode, parsedMarker.vibe);
-    req.log.info(
-      {
-        userText: userContent.slice(0, 200),
-        imageMode: parsedMarker.mode,
-        reason: parsedMarker.reason,
-        vibePreview: parsedMarker.vibe.slice(0, 120),
-      },
-      "image-intent: marker detected in /chat reply",
-    );
-    const before = assistantText.slice(0, parsedMarker.startIndex).trim();
-    const after = assistantText
-      .slice(parsedMarker.startIndex + parsedMarker.length)
-      .replace(ANY_IMAGE_MARKER_STRIP_RE, "")
-      .trim();
-    const joined = [before, after].filter((s) => s.length > 0).join("\n\n");
-    assistantText = joined;
-    if (!assistantText) {
-      assistantText = selfieVibe
-        ? "*holds up the camera* one sec…"
-        : "*tries to take a selfie but fumbles the camera* one sec — try again?";
+  let selfieVibeList: string[] | null = null;
+  let visualPacketId: string | null = null;
+
+  {
+    const allMarkers = parseAllImageMarkers(assistantText);
+    if (allMarkers.length > 4) {
+      req.log.warn(
+        { excess: allMarkers.length - 4 },
+        "image-intent: LLM emitted >4 markers; excess truncated to 4",
+      );
+    }
+    const markers = allMarkers.slice(0, 4);
+
+    if (markers.length > 1) {
+      // Multi-image path.
+      selfieVibeList = markers.map((m) => encodeStoredVibe(m.mode, m.vibe));
+      selfieVibe = selfieVibeList[0]!;
+      visualPacketId = newId();
+      req.log.info(
+        {
+          imageCount: markers.length,
+          visualPacketId,
+          modes: markers.map((m) => m.mode),
+        },
+        "image-intent: multi-image markers detected in /chat reply",
+      );
+      // Strip ALL markers from the reply text.
+      assistantText = assistantText
+        .replace(ANY_IMAGE_MARKER_STRIP_RE, "")
+        .replace(/\s{2,}/g, " ")
+        .trim();
+      if (!assistantText) {
+        assistantText = "*holds up the camera* give me a second — sending a few…";
+      }
+    } else {
+      // Single-image path: existing behaviour unchanged. Fall back to the
+      // single-marker parser (which also handles legacy [selfie:...] tags).
+      const parsedMarker = markers[0] ?? parseImageMarker(assistantText);
+      if (parsedMarker) {
+        selfieVibe = encodeStoredVibe(parsedMarker.mode, parsedMarker.vibe);
+        req.log.info(
+          {
+            userText: userContent.slice(0, 200),
+            imageMode: parsedMarker.mode,
+            reason: parsedMarker.reason,
+            vibePreview: parsedMarker.vibe.slice(0, 120),
+          },
+          "image-intent: marker detected in /chat reply",
+        );
+        const before = assistantText.slice(0, parsedMarker.startIndex).trim();
+        const after = assistantText
+          .slice(parsedMarker.startIndex + parsedMarker.length)
+          .replace(ANY_IMAGE_MARKER_STRIP_RE, "")
+          .trim();
+        const joined = [before, after].filter((s) => s.length > 0).join("\n\n");
+        assistantText = joined;
+        if (!assistantText) {
+          assistantText = selfieVibe
+            ? "*holds up the camera* one sec…"
+            : "*tries to take a selfie but fumbles the camera* one sec — try again?";
+        }
+      }
     }
   }
 
@@ -1257,6 +1299,8 @@ router.post("/chat", async (req, res): Promise<void> => {
         role: "ashley",
         content: assistantText,
         selfieVibe,
+        visualPacketId,
+        selfieVibeList: selfieVibeList ? JSON.stringify(selfieVibeList) : null,
       })
       .returning();
     ashleyRow = inserted!;
@@ -1264,6 +1308,24 @@ router.post("/chat", async (req, res): Promise<void> => {
     req.log.error({ err }, "Failed to persist Ashley reply");
     res.status(500).json({ error: "Could not save Ashley's reply" });
     return;
+  }
+
+  // 6b. For multi-image packets, write one media_attachments row per vibe.
+  if (selfieVibeList && selfieVibeList.length > 1 && visualPacketId) {
+    try {
+      await db.insert(mediaAttachmentsTable).values(
+        selfieVibeList.map((vibe, i) => ({
+          id: newId(),
+          deviceId,
+          messageId: ashleyRow.id,
+          visualPacketId: visualPacketId!,
+          selfieVibe: vibe,
+          sortOrder: i,
+        })),
+      );
+    } catch (err) {
+      req.log.warn({ err }, "Failed to insert media_attachments rows (non-fatal)");
+    }
   }
 
   // 7. Fire-and-forget: distill memories + maybe roll up older messages.
@@ -3635,37 +3697,75 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     }
   }
 
-  // ---- Strip image marker on the FINAL accumulated text (mirrors /chat).
+  // ---- Strip image marker(s) on the FINAL accumulated text (mirrors /chat).
   //      We only do this for naturally-finished replies — partials get
   //      stored verbatim so a Continue can flow without losing the marker
   //      that the model may complete on the next pass. selfieVibe column
   //      carries the encoded `MODE|vibe` payload; see imageIntent.ts.
   let finalText = accumulated;
   let selfieVibe: string | null = null;
+  let selfieVibeList: string[] | null = null;
+  let visualPacketId: string | null = null;
   if (finishedNaturally) {
     finalText = finalText.trim();
-    const parsedMarker = parseImageMarker(finalText);
-    if (parsedMarker) {
-      selfieVibe = encodeStoredVibe(parsedMarker.mode, parsedMarker.vibe);
-      req.log.info(
-        {
-          imageMode: parsedMarker.mode,
-          reason: parsedMarker.reason,
-          vibePreview: parsedMarker.vibe.slice(0, 120),
-        },
-        "image-intent: marker detected in /chat/stream reply",
-      );
-      const before = finalText.slice(0, parsedMarker.startIndex).trim();
-      const after = finalText
-        .slice(parsedMarker.startIndex + parsedMarker.length)
-        .replace(ANY_IMAGE_MARKER_STRIP_RE, "")
-        .trim();
-      const joined = [before, after].filter((s) => s.length > 0).join("\n\n");
-      finalText = joined;
-      if (!finalText) {
-        finalText = selfieVibe
-          ? "*holds up the camera* one sec…"
-          : "*tries to take a selfie but fumbles the camera* one sec — try again?";
+
+    {
+      const allMarkers = parseAllImageMarkers(finalText);
+      if (allMarkers.length > 4) {
+        req.log.warn(
+          { streamId, excess: allMarkers.length - 4 },
+          "image-intent: LLM emitted >4 markers in stream; excess truncated to 4",
+        );
+      }
+      const markers = allMarkers.slice(0, 4);
+
+      if (markers.length > 1) {
+        // Multi-image stream path.
+        selfieVibeList = markers.map((m) => encodeStoredVibe(m.mode, m.vibe));
+        selfieVibe = selfieVibeList[0]!;
+        visualPacketId = newId();
+        req.log.info(
+          {
+            streamId,
+            imageCount: markers.length,
+            visualPacketId,
+            modes: markers.map((m) => m.mode),
+          },
+          "image-intent: multi-image markers detected in /chat/stream reply",
+        );
+        finalText = finalText
+          .replace(ANY_IMAGE_MARKER_STRIP_RE, "")
+          .replace(/\s{2,}/g, " ")
+          .trim();
+        if (!finalText) {
+          finalText = "*holds up the camera* give me a second — sending a few…";
+        }
+      } else {
+        // Single-image stream path: existing behaviour unchanged.
+        const parsedMarker = markers[0] ?? parseImageMarker(finalText);
+        if (parsedMarker) {
+          selfieVibe = encodeStoredVibe(parsedMarker.mode, parsedMarker.vibe);
+          req.log.info(
+            {
+              imageMode: parsedMarker.mode,
+              reason: parsedMarker.reason,
+              vibePreview: parsedMarker.vibe.slice(0, 120),
+            },
+            "image-intent: marker detected in /chat/stream reply",
+          );
+          const before = finalText.slice(0, parsedMarker.startIndex).trim();
+          const after = finalText
+            .slice(parsedMarker.startIndex + parsedMarker.length)
+            .replace(ANY_IMAGE_MARKER_STRIP_RE, "")
+            .trim();
+          const joined = [before, after].filter((s) => s.length > 0).join("\n\n");
+          finalText = joined;
+          if (!finalText) {
+            finalText = selfieVibe
+              ? "*holds up the camera* one sec…"
+              : "*tries to take a selfie but fumbles the camera* one sec — try again?";
+          }
+        }
       }
     }
 
@@ -3731,9 +3831,28 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
           content: finalText,
           status: "complete",
           selfieVibe,
+          visualPacketId,
+          selfieVibeList: selfieVibeList ? JSON.stringify(selfieVibeList) : null,
         })
         .where(eq(messagesTable.id, streamId));
-      writeEvent("done", { content: finalText, selfieVibe });
+      // For multi-image packets, write one media_attachments row per vibe.
+      if (selfieVibeList && selfieVibeList.length > 1 && visualPacketId) {
+        try {
+          await db.insert(mediaAttachmentsTable).values(
+            selfieVibeList.map((vibe, i) => ({
+              id: newId(),
+              deviceId,
+              messageId: streamId,
+              visualPacketId: visualPacketId!,
+              selfieVibe: vibe,
+              sortOrder: i,
+            })),
+          );
+        } catch (err) {
+          req.log.warn({ err }, "Failed to insert media_attachments rows (non-fatal, stream)");
+        }
+      }
+      writeEvent("done", { content: finalText, selfieVibe, selfieVibeList, visualPacketId });
       if (requestId) requestIdempotencyMap.set(requestId, { status: "done", createdAt: Date.now() });
     } else if (userAborted) {
       await db
@@ -3890,10 +4009,29 @@ const ChatImageBodySchema = z.object({
     content: z.string().max(MAX_CONTENT_LEN).optional().default(""),
     replyTo: ReplyToSchema.nullish(),
   }),
-  image: z.object({
-    base64: z.string().min(64).max(MAX_IMAGE_BASE64_LEN),
-    mimeType: z.string().min(3).max(64),
-  }),
+  /**
+   * Single-image path — kept for backwards compat with older mobile clients.
+   * New multi-image path uses `images` array (max 4). Exactly one of `image`
+   * or `images` must be present; the route handler rejects requests with both
+   * or neither.
+   */
+  image: z
+    .object({
+      base64: z.string().min(64).max(MAX_IMAGE_BASE64_LEN),
+      mimeType: z.string().min(3).max(64),
+    })
+    .optional(),
+  /** Multi-image path: up to 4 images, each with its own base64 + mimeType. */
+  images: z
+    .array(
+      z.object({
+        base64: z.string().min(64).max(MAX_IMAGE_BASE64_LEN),
+        mimeType: z.string().min(3).max(64),
+      }),
+    )
+    .min(1)
+    .max(4)
+    .optional(),
   category: z.enum(IMAGE_CATEGORY_VALUES),
   mode: z.enum(IMAGE_MODE_VALUES),
   clientNow: z.string().datetime({ offset: true }).optional(),
@@ -3907,30 +4045,48 @@ router.post("/chat/image", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const { userMessage, image, category, mode, clientNow, clientTimezone } =
+  const { userMessage, image, images, category, mode, clientNow, clientTimezone } =
     parsed.data;
   const { id: userId, replyTo } = userMessage;
   const caption = (userMessage.content ?? "").trim();
 
-  const mime = image.mimeType.toLowerCase();
-  if (!ALLOWED_IMAGE_MIME.includes(mime as (typeof ALLOWED_IMAGE_MIME)[number])) {
-    res.status(415).json({ error: `Unsupported image type: ${mime}` });
+  // Validate exactly one of `image` or `images`.
+  if (!image && !images) {
+    res.status(400).json({ error: "Provide either `image` or `images`" });
     return;
   }
-  // HEIC isn't supported by Claude vision — clients should re-encode before
-  // upload, but reject here too for safety.
-  const claudeMime: ClaudeImageMime = mime === "image/jpg" ? "image/jpeg" : (mime as ClaudeImageMime);
-  if (!CLAUDE_IMAGE_MIME.includes(claudeMime)) {
-    res.status(415).json({ error: `Image type ${mime} can't be analysed` });
+  if (image && images) {
+    res.status(400).json({ error: "Provide only one of `image` or `images`, not both" });
     return;
   }
 
-  // 1. Persist the image to object storage / disk.
+  // Normalise: allImages is always a 1–4 item array.
+  const allImages = image ? [image] : images!;
+
+  // Validate all mimetypes upfront.
+  const allMimes = allImages.map((img) => img.mimeType.toLowerCase());
+  for (const mime of allMimes) {
+    if (!ALLOWED_IMAGE_MIME.includes(mime as (typeof ALLOWED_IMAGE_MIME)[number])) {
+      res.status(415).json({ error: `Unsupported image type: ${mime}` });
+      return;
+    }
+    const claudeMimeCheck: ClaudeImageMime = mime === "image/jpg" ? "image/jpeg" : (mime as ClaudeImageMime);
+    if (!CLAUDE_IMAGE_MIME.includes(claudeMimeCheck)) {
+      res.status(415).json({ error: `Image type ${mime} can't be analysed` });
+      return;
+    }
+  }
+
+  // For backwards compat, `mime` and `claudeMime` refer to the PRIMARY image.
+  const mime = allMimes[0]!;
+  const claudeMime: ClaudeImageMime = mime === "image/jpg" ? "image/jpeg" : (mime as ClaudeImageMime);
+
+  // 1. Persist the primary image to object storage / disk.
   let imageUrl: string;
   try {
     const ext = userImageExtForMime(mime);
     const filename = `${userId}.${ext}`;
-    const buf = Buffer.from(image.base64, "base64");
+    const buf = Buffer.from(allImages[0]!.base64, "base64");
     const relUrl = await saveUserImage(filename, buf, mime);
     imageUrl = `${publicBaseUrl()}${relUrl}`;
   } catch (err) {
@@ -4099,16 +4255,24 @@ router.post("/chat/image", async (req, res): Promise<void> => {
     if (!text) continue;
     claudeMessages.push({ role, content: text });
   }
-  // Final turn: the image itself + caption + mode hint as a tiny nudge.
+  // Final turn: all images + caption + mode hint as a tiny nudge.
   const captionForModel = caption.length > 0 ? caption : "(no caption)";
-  const modelHint = `[Photo attached. Category: ${category}. Mode: ${mode}. Caption: ${captionForModel}]`;
+  const countHint = allImages.length > 1 ? ` (${allImages.length} photos)` : "";
+  const modelHint = `[Photo attached${countHint}. Category: ${category}. Mode: ${mode}. Caption: ${captionForModel}]`;
   const finalContent: ContentBlock[] = [
-    {
-      type: "image",
-      source: { type: "base64", media_type: claudeMime, data: image.base64 },
-    },
+    ...allImages.map((img, i): ImageBlock => {
+      const m = img.mimeType.toLowerCase();
+      const cm: ClaudeImageMime = m === "image/jpg" ? "image/jpeg" : (m as ClaudeImageMime);
+      return {
+        type: "image",
+        source: { type: "base64", media_type: cm, data: img.base64 },
+        ...(allImages.length > 1 ? { title: `Photo ${i + 1} of ${allImages.length}` } as unknown as object : {}),
+      };
+    }),
     { type: "text", text: modelHint },
   ];
+  // Unused variable warning guard — claudeMime kept for mime validation above.
+  void claudeMime;
   claudeMessages.push({ role: "user", content: finalContent });
 
   while (claudeMessages.length > 0 && claudeMessages[0]!.role !== "user") {

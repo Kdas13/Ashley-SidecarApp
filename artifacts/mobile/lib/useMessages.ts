@@ -137,10 +137,15 @@ export function useSendMessage() {
       // stays current.
       qc.invalidateQueries({ queryKey: SUMMARIES_KEY });
 
-      // 4. If Ashley wanted to send a selfie, kick off the (slow) image
-      //    generation in the background. The bubble is already on screen
-      //    showing its "taking a selfie..." state.
-      if (response.ashleyMessage.selfieVibe) {
+      // 4. If Ashley wanted to send selfie(s), kick off generation in the
+      //    background. Multi-image path fires N jobs in parallel.
+      if (response.ashleyMessage.selfieVibeList && response.ashleyMessage.selfieVibeList.length > 1) {
+        void fetchAndAttachSelfieList(
+          qc,
+          response.ashleyMessage.id,
+          response.ashleyMessage.selfieVibeList,
+        );
+      } else if (response.ashleyMessage.selfieVibe) {
         void fetchAndAttachSelfie(
           qc,
           response.ashleyMessage.id,
@@ -388,7 +393,7 @@ async function runStream(args: RunStreamArgs): Promise<StreamReplyOutcome> {
         pendingDelta += text;
         scheduleFlush();
       },
-      onDone: ({ content, selfieVibe }) => {
+      onDone: ({ content, selfieVibe, selfieVibeList, visualPacketId }) => {
         cancelFlush();
         pendingDelta = "";
         if (!ashleyId) return;
@@ -421,6 +426,8 @@ async function runStream(args: RunStreamArgs): Promise<StreamReplyOutcome> {
             content,
             status: "complete" as const,
             selfieVibe: selfieVibe ?? m.selfieVibe ?? null,
+            selfieVibeList: selfieVibeList ?? m.selfieVibeList ?? null,
+            visualPacketId: visualPacketId ?? m.visualPacketId ?? null,
           };
         });
         qc.setQueryData(MESSAGES_KEY, next);
@@ -595,16 +602,12 @@ export function useStreamMessage() {
         : null;
 
       // Selfie kickoff — only on a clean done with a vibe.
-      if (
-        outcome.kind === "done" &&
-        outcome.final.selfieVibe &&
-        finalAshley
-      ) {
-        void fetchAndAttachSelfie(
-          qc,
-          finalAshley.id,
-          outcome.final.selfieVibe,
-        );
+      if (outcome.kind === "done" && finalAshley) {
+        if (outcome.final.selfieVibeList && outcome.final.selfieVibeList.length > 1) {
+          void fetchAndAttachSelfieList(qc, finalAshley.id, outcome.final.selfieVibeList);
+        } else if (outcome.final.selfieVibe) {
+          void fetchAndAttachSelfie(qc, finalAshley.id, outcome.final.selfieVibe);
+        }
       }
 
       // Surface a real error to the mutation so the UI banner shows.
@@ -670,16 +673,12 @@ export function useContinueMessage() {
           ) ?? null
         : null;
 
-      if (
-        outcome.kind === "done" &&
-        outcome.final.selfieVibe &&
-        finalAshley
-      ) {
-        void fetchAndAttachSelfie(
-          qc,
-          finalAshley.id,
-          outcome.final.selfieVibe,
-        );
+      if (outcome.kind === "done" && finalAshley) {
+        if (outcome.final.selfieVibeList && outcome.final.selfieVibeList.length > 1) {
+          void fetchAndAttachSelfieList(qc, finalAshley.id, outcome.final.selfieVibeList);
+        } else if (outcome.final.selfieVibe) {
+          void fetchAndAttachSelfie(qc, finalAshley.id, outcome.final.selfieVibe);
+        }
       }
 
       if (outcome.kind === "error") {
@@ -753,7 +752,13 @@ export function useRetryUnansweredReply() {
       await withStorageLock(STORAGE_KEYS.messages, () => saveMessages(next));
       qc.invalidateQueries({ queryKey: SUMMARIES_KEY });
 
-      if (response.ashleyMessage.selfieVibe) {
+      if (response.ashleyMessage.selfieVibeList && response.ashleyMessage.selfieVibeList.length > 1) {
+        void fetchAndAttachSelfieList(
+          qc,
+          response.ashleyMessage.id,
+          response.ashleyMessage.selfieVibeList,
+        );
+      } else if (response.ashleyMessage.selfieVibe) {
         void fetchAndAttachSelfie(
           qc,
           response.ashleyMessage.id,
@@ -930,6 +935,40 @@ export async function fetchAndAttachSelfie(
       }
     }
     // Leave selfieVibe in place so the bubble surfaces a manual retry button.
+  } finally {
+    setInFlight(messageId, false);
+  }
+}
+
+/**
+ * Fetch all selfies for a multi-image packet and patch them into the cache
+ * as an `imageUrls` array. All jobs are fired in parallel; on partial failure
+ * the resolved URLs are still stored so the gallery can render what arrived.
+ */
+export async function fetchAndAttachSelfieList(
+  qc: ReturnType<typeof useQueryClient>,
+  messageId: string,
+  vibeList: string[],
+): Promise<void> {
+  if (vibeList.length === 0) return;
+  if (inFlightSelfies.has(messageId)) return;
+  setInFlight(messageId, true);
+  try {
+    const settled = await Promise.allSettled(
+      vibeList.map((vibe) => fetchSelfieForMessage(messageId, vibe)),
+    );
+    const imageUrls = settled
+      .filter((r): r is PromiseFulfilledResult<string> => r.status === "fulfilled")
+      .map((r) => r.value);
+    if (imageUrls.length > 0) {
+      await patchInCache(qc, messageId, {
+        imageUrls,
+        imageUrl: imageUrls[0] ?? null,
+        selfieVibe: null,
+        selfieVibeList: null,
+      });
+    }
+    // If ALL failed, leave selfieVibeList in place so the retry button shows.
   } finally {
     setInFlight(messageId, false);
   }

@@ -519,6 +519,49 @@ export function parseImageMarker(text: string): ParsedMarker | null {
 }
 
 /**
+ * Parse ALL [image: MODE | vibe] markers from an LLM reply in order of
+ * appearance. Returns an empty array when none are found. Legacy [selfie:...]
+ * markers are NOT included — only the modern [image:...] syntax qualifies
+ * for multi-image packets (legacy markers are handled by the single-image
+ * parseImageMarker path for backwards compat).
+ *
+ * Cap: callers MUST discard markers beyond index 3 (maximum 4 images per
+ * packet). The function itself returns all matches so the caller can log the
+ * excess rather than silently dropping them here.
+ */
+export function parseAllImageMarkers(text: string): ParsedMarker[] {
+  if (!text) return [];
+  const results: ParsedMarker[] = [];
+  // Create a fresh RegExp instance with the global flag — the IMAGE_MARKER_RX
+  // constant has no /g so we can't reuse it for exec-based iteration.
+  const rx = /\[image:\s*([^|\]]+)\|([^\]]+)\]/gi;
+  let match: RegExpExecArray | null;
+  while ((match = rx.exec(text)) !== null) {
+    const declared = (match[1] ?? "").trim().toUpperCase();
+    const vibe = (match[2] ?? "").trim();
+    let mode: ImageMode;
+    let reason: string;
+    if (isImageMode(declared)) {
+      mode = declared;
+      reason = `model emitted explicit [image:${declared}|...] tag (multi-parse)`;
+    } else {
+      const classified = classifyImageIntent(`${declared} ${vibe}`);
+      mode = classified.mode;
+      reason = `model emitted [image:${declared}|...] unknown mode — classifier fallback: ${classified.reason} (multi-parse)`;
+    }
+    results.push({
+      mode,
+      vibe,
+      rawMatch: match[0],
+      startIndex: match.index,
+      length: match[0].length,
+      reason,
+    });
+  }
+  return results;
+}
+
+/**
  * Encode (mode, vibe) into the single `selfieVibe` column without a schema
  * change. Encoded form: `MODE|vibe text`. Decoder is `decodeStoredVibe`.
  *

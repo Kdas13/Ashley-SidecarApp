@@ -7,6 +7,7 @@ import {
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -199,6 +200,14 @@ export const messagesTable = pgTable(
     replyToId: text("reply_to_id"),
     replyToRole: text("reply_to_role"),
     replyToPreview: text("reply_to_preview"),
+    // For multi-image sends (Ashley emits N [image:] markers in one reply):
+    //   visual_packet_id — shared UUID linking all attachment rows in
+    //     media_attachments to this message. Null on single-image messages.
+    //   selfie_vibe_list — JSON-encoded string[] of encoded MODE|vibe payloads
+    //     (one per marker). Null on single-image messages. Persisted so the
+    //     mobile can re-fetch all images after a restart / hydration.
+    visualPacketId: text("visual_packet_id"),
+    selfieVibeList: text("selfie_vibe_list"),
     // Origin marker for proactive ("Ashley reaches out first") messages.
     //   "user"      — normal user-initiated turn (default; covers both user
     //                 messages and Ashley's replies in a user-driven thread).
@@ -380,6 +389,46 @@ export const insertProactiveSendSchema = createInsertSchema(
 ).omit({ sentAt: true });
 export type InsertProactiveSend = z.infer<typeof insertProactiveSendSchema>;
 export type ProactiveSend = typeof proactiveSendsTable.$inferSelect;
+
+// One row per image in a multi-image visual packet. Created by the chat
+// route whenever Ashley emits 2–4 [image:] markers in one reply. Each row
+// holds the encoded selfie vibe for that frame and is patched with the
+// resolved image URL when the selfie job completes.
+//
+// For single-image replies this table is NOT used — the existing
+// messages.selfie_vibe / messages.image_url columns carry the data.
+export const mediaAttachmentsTable = pgTable(
+  "media_attachments",
+  {
+    id: text("id").primaryKey(),
+    deviceId: text("device_id").notNull(),
+    // Loose reference to messages.id — not a hard FK so a chat-history wipe
+    // doesn't cascade-delete the attachment metadata.
+    messageId: text("message_id").notNull(),
+    // Shared packet identifier — matches messages.visual_packet_id on the
+    // parent Ashley message.
+    visualPacketId: text("visual_packet_id").notNull(),
+    // Encoded MODE|vibe payload, same format as messages.selfie_vibe.
+    selfieVibe: text("selfie_vibe"),
+    // Resolved URL from /api/selfies/<id>.png. Null until the job completes.
+    imageUrl: text("image_url"),
+    // 0-based sort order within the packet (preserves the LLM's emission order).
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    byMessage: index("media_attachments_message_idx").on(t.messageId),
+    byPacket: index("media_attachments_packet_idx").on(t.visualPacketId),
+  }),
+);
+
+export const insertMediaAttachmentSchema = createInsertSchema(
+  mediaAttachmentsTable,
+).omit({ createdAt: true });
+export type InsertMediaAttachment = z.infer<typeof insertMediaAttachmentSchema>;
+export type MediaAttachment = typeof mediaAttachmentsTable.$inferSelect;
 
 // Allowed values for `ashleyProfileTable.proactiveCadence`. Mirrored in the
 // API spec / zod validators so wire validation and DB validation stay in
