@@ -2258,6 +2258,7 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
       }
 
       const allJobIds: string[] = [];
+      const jobVibeLog: Record<string, string> = {};
       for (const att of pendingAttachRows) {
         const existing = activeByAttachId.get(att.id);
         if (existing) {
@@ -2290,12 +2291,13 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
           att.id,
           att.sortOrder,
         );
+        jobVibeLog[`job[${att.sortOrder}]`] = attForwardedVibe.slice(0, 80);
         allJobIds.push(jId);
       }
 
       if (allJobIds.length > 0) {
         req.log.info(
-          { messageId, deviceId, fanOutJobCount: allJobIds.length },
+          { messageId, deviceId, fanOutJobCount: allJobIds.length, ...jobVibeLog },
           "image-intent: multi-image fan-out from single POST /chat/selfie",
         );
         res.status(202).json({ jobId: allJobIds[0], jobIds: allJobIds });
