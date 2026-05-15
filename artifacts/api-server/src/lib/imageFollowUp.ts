@@ -1482,9 +1482,21 @@ export function synthesizeImageActionReply(
   // replacement so [image:] markers are still recognisable. If multiple
   // markers are present (e.g. user sent "[image:red|portrait] [image:blonde|portrait]")
   // produce a selfieVibeList instead of collapsing everything into one job.
+  //
+  // Deduplicate by (mode, vibe) first: the compound description format used by
+  // synthesizeImageActionReplyFromSpec embeds the same marker twice —
+  // "Visual brief: [image:blonde|portrait]. Original request: [image:blonde|portrait]"
+  // — which would otherwise be counted as 2 distinct images from a single marker.
   const rawMarkers = parseAllImageMarkers(description);
-  if (rawMarkers.length > 1) {
-    const cappedMarkers = rawMarkers.slice(0, 4);
+  const seenMarkerKeys = new Set<string>();
+  const uniqueMarkers = rawMarkers.filter((m) => {
+    const k = `${m.mode}|${m.vibe}`;
+    if (seenMarkerKeys.has(k)) return false;
+    seenMarkerKeys.add(k);
+    return true;
+  });
+  if (uniqueMarkers.length > 1) {
+    const cappedMarkers = uniqueMarkers.slice(0, 4);
     const vibeList = cappedMarkers.map((m) => encodeStoredVibe(m.mode, m.vibe));
     const packetId = randomUUID();
     const n = vibeList.length;
