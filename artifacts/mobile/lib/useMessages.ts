@@ -782,6 +782,8 @@ export type SendImageArgs = {
   mode: ImageAnalysisMode;
   caption: string;
   replyTo?: ReplyToRef | null;
+  /** Additional images beyond the first (max 3 extras). Forwarded to sendChatImage as `images[]`. */
+  extraImages?: { base64: string; mimeType: string }[];
 };
 
 export function useSendImage() {
@@ -822,6 +824,9 @@ export function useSendImage() {
           mode: args.mode,
           caption: args.caption,
           ...(args.replyTo ? { replyTo: args.replyTo } : {}),
+          ...(args.extraImages && args.extraImages.length > 0
+            ? { extraImages: args.extraImages }
+            : {}),
         });
       } catch (err) {
         throw err instanceof Error ? err : new Error("Could not send image");
