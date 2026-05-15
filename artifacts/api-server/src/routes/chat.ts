@@ -1684,9 +1684,12 @@ async function generateAshleySelfie(
   };
   const _descriptorWord = vibeDesc.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
   const _descriptorOverride = !carriedSpec ? (DESCRIPTOR_HAIR_OVERRIDES[_descriptorWord] ?? null) : null;
+  // Section 3/5: NULL SPEC IS FORBIDDEN. Fall back to empty-but-non-null spec
+  // for unknown descriptors (no-op overrides, profile defaults apply) rather
+  // than passing null and silently skipping the whole override machinery.
   const effectiveSpec = _descriptorOverride
     ? { ...makeEmptySpec(vibeDesc), imageIntent: true, intentReason: `marker_descriptor:${_descriptorWord}`, appearance: { hairColour: _descriptorOverride.hairColour }, negations: _descriptorOverride.negations }
-    : carriedSpec;
+    : (carriedSpec ?? makeEmptySpec(vibeDesc));
   const appearance = composeAppearance(baseAppearance, effectiveSpec);
   // Scrub the vibe TEXT itself of any negated tokens or profile-default
   // colours that the user has overridden. The LLM writes the vibe with
@@ -1725,12 +1728,12 @@ async function generateAshleySelfie(
       {
         baseAppearancePreview: baseAppearance.slice(0, 200),
         composedAppearancePreview: appearance.slice(0, 200),
-        userHair: effectiveSpec.appearance.hairColour ?? null,
+        descriptorSource: _descriptorOverride ? _descriptorWord : "carried_vspec",
+        appliedHairColour: effectiveSpec.appearance.hairColour ?? null,
+        forbiddenColours: effectiveSpec.negations,
         userStyle: effectiveSpec.appearance.hairstyle ?? null,
         userSkin: effectiveSpec.appearance.skinTone ?? null,
         userExpression: effectiveSpec.appearance.expression ?? null,
-        negations: effectiveSpec.negations,
-        descriptorSource: _descriptorOverride ? _descriptorWord : "carried_vspec",
       },
       "image-gen: appearance precedence applied (USER_EXPLICIT > SESSION > IDENTITY, negations stripped)",
     );
@@ -1950,6 +1953,8 @@ function startSelfieGeneration(
           mode,
           imageMode,
           vibePreview: vibe.slice(0, 240),
+          poseVariance: true,
+          sceneVariance: true,
         },
         "IMAGE REQUEST START (job)",
       );
@@ -2280,8 +2285,22 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
         }
       }
 
+      // Section 7 — per-job pose/expression/framing variance so N images in a
+      // packet are visually distinct even when they share the same base mode.
+      // Each slot gets a unique combination of head angle, expression, crop, and
+      // lighting direction. Applied by APPENDING to the vibe (descriptor word
+      // remains first so descriptor-override detection in generateAshleySelfie
+      // is unaffected).
+      const POSE_VARIANCE_HINTS: string[] = [
+        "slight left turn, soft warm smile, close head-and-shoulders crop, eye-level angle",
+        "facing camera directly, neutral relaxed expression, mid-distance crop, slight high angle",
+        "slight right three-quarter turn, subtle smirk, close crop, slight low angle, shallow depth of field",
+        "facing slightly right, open relaxed expression, mid-distance loose crop, soft window light from the left",
+      ];
+
       const allJobIds: string[] = [];
       const jobVibeLog: Record<string, string> = {};
+      const jobDescriptors: string[] = [];
       for (const att of pendingAttachRows) {
         const existing = activeByAttachId.get(att.id);
         if (existing) {
@@ -2290,8 +2309,13 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
         }
         const rawVibe = att.selfieVibe ?? "";
         const attDecoded = decodeStoredVibe(rawVibe);
-        const attForwardedVibe = (attDecoded.vibe || rawVibe.trim()).trim();
+        const attBaseVibe = (attDecoded.vibe || rawVibe.trim()).trim();
+        // Append the per-slot pose/variance hint (cycles through 4 presets).
+        const poseHint = POSE_VARIANCE_HINTS[att.sortOrder % POSE_VARIANCE_HINTS.length] ?? "";
+        const attForwardedVibe = poseHint ? `${attBaseVibe} — ${poseHint}` : attBaseVibe;
         const attImageMode: ImageMode = clientImageMode ?? attDecoded.mode;
+        const descriptorWord = attBaseVibe.split(/\s+/)[0]?.toLowerCase() ?? "";
+        jobDescriptors.push(descriptorWord);
         const jId = randomUUID();
         setSelfieJob(jId, {
           status: "pending",
@@ -2314,13 +2338,24 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
           att.id,
           att.sortOrder,
         );
-        jobVibeLog[`job[${att.sortOrder}]`] = attForwardedVibe.slice(0, 80);
+        jobVibeLog[`job[${att.sortOrder}]`] = attForwardedVibe.slice(0, 100);
         allJobIds.push(jId);
       }
 
       if (allJobIds.length > 0) {
         req.log.info(
-          { messageId, deviceId, fanOutJobCount: allJobIds.length, ...jobVibeLog },
+          {
+            messageId,
+            deviceId,
+            markersParsed: pendingAttachRows.length,
+            jobsCreated: allJobIds.length,
+            jobDescriptors,
+            jobIds: allJobIds,
+            fanOutJobCount: allJobIds.length,
+            poseVariance: true,
+            sceneVariance: true,
+            ...jobVibeLog,
+          },
           "image-intent: multi-image fan-out from single POST /chat/selfie",
         );
         res.status(202).json({ jobId: allJobIds[0], jobIds: allJobIds });
