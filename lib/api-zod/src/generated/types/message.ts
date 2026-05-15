@@ -12,5 +12,25 @@ export interface Message {
   content: string;
   /** @nullable */
   imageUrl: string | null;
+  /**
+   * Encoded MODE|vibe payload for the primary selfie job. Set on Ashley messages that triggered image generation; null otherwise.
+   * @nullable
+   */
+  selfieVibe?: string | null;
+  /**
+   * JSON-encoded string[] of encoded MODE|vibe payloads for multi-image packets. Null on single-image messages.
+   * @nullable
+   */
+  selfieVibeList?: string | null;
+  /**
+   * UUID linking this message to its media_attachments rows. Null on single-image messages.
+   * @nullable
+   */
+  visualPacketId?: string | null;
+  /**
+   * Resolved image URLs from ready media_attachments rows. Injected by /state hydration; null on single-image messages.
+   * @nullable
+   */
+  imageUrls?: string[] | null;
   createdAt: Date;
 }

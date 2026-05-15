@@ -494,6 +494,101 @@ components:
         - imageUrl
         - createdAt
 
+    MediaAttachment:
+      type: object
+      description: >
+        Represents a single image within a multi-image visual packet.
+        Generated images have role "generated_option" and start with status "pending"
+        until the selfie pipeline completes. User-uploaded images have role "user_input"
+        and are inserted with status "ready". The attributeScope field governs whether
+        visual attributes from this image may carry forward into future replies.
+      properties:
+        id:
+          type: string
+        messageId:
+          type: string
+        visualPacketId:
+          type: string
+        role:
+          type: string
+          enum: [generated_option, user_input]
+          description: >
+            "generated_option" = Ashley offered this image; treat as temporary unless user confirms.
+            "user_input" = user uploaded this image as reference material.
+        status:
+          type: string
+          enum: [pending, ready, failed]
+        selfieVibe:
+          type: ["string", "null"]
+          description: Encoded MODE|vibe payload (generated_option rows only).
+        intent:
+          type: ["string", "null"]
+          description: Image-mode name extracted from the marker (generated_option rows only).
+        description:
+          type: ["string", "null"]
+          description: Per-image description or user caption, capped at 500 chars.
+        attributeScope:
+          type: string
+          enum: [temporary, permanent]
+          default: temporary
+        imageUrl:
+          type: ["string", "null"]
+          description: Resolved URL. Null until the selfie job completes.
+        sortOrder:
+          type: integer
+          description: 0-based position within the visual packet.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - messageId
+        - visualPacketId
+        - role
+        - status
+        - attributeScope
+        - sortOrder
+        - createdAt
+        - updatedAt
+
+    SendImageRequest:
+      type: object
+      description: >
+        Body for POST /chat/image. Supports a single image (legacy) or an array of
+        images (multi-image packet). When images[] is provided, each entry's base64
+        and mimeType are used in order; the primary image field is ignored if images[]
+        is non-empty.
+      properties:
+        image:
+          type: string
+          description: Base64-encoded primary image (single-image / legacy path).
+        mimeType:
+          type: string
+          description: MIME type of the primary image.
+        images:
+          type: array
+          description: Array of images for multi-image sends (max 4).
+          maxItems: 4
+          items:
+            type: object
+            properties:
+              base64:
+                type: string
+              mimeType:
+                type: string
+            required:
+              - base64
+              - mimeType
+        caption:
+          type: ["string", "null"]
+        category:
+          type: ["string", "null"]
+        mode:
+          type: ["string", "null"]
+
     SendMessageBody:
       type: object
       properties:

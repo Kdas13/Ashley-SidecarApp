@@ -82,7 +82,122 @@ export interface Message {
   content: string;
   /** @nullable */
   imageUrl: string | null;
+  /**
+   * Encoded MODE|vibe payload for the primary selfie job. Set on Ashley messages that triggered image generation; null otherwise.
+   * @nullable
+   */
+  selfieVibe?: string | null;
+  /**
+   * JSON-encoded string[] of encoded MODE|vibe payloads for multi-image packets. Null on single-image messages.
+   * @nullable
+   */
+  selfieVibeList?: string | null;
+  /**
+   * UUID linking this message to its media_attachments rows. Null on single-image messages.
+   * @nullable
+   */
+  visualPacketId?: string | null;
+  /**
+   * Resolved image URLs from ready media_attachments rows. Injected by /state hydration; null on single-image messages.
+   * @nullable
+   */
+  imageUrls?: string[] | null;
   createdAt: string;
+}
+
+/**
+ * "generated_option" = Ashley offered this image; treat as temporary unless user confirms. "user_input" = user uploaded this image as reference material.
+
+ */
+export type MediaAttachmentRole =
+  (typeof MediaAttachmentRole)[keyof typeof MediaAttachmentRole];
+
+export const MediaAttachmentRole = {
+  generated_option: "generated_option",
+  user_input: "user_input",
+} as const;
+
+export type MediaAttachmentStatus =
+  (typeof MediaAttachmentStatus)[keyof typeof MediaAttachmentStatus];
+
+export const MediaAttachmentStatus = {
+  pending: "pending",
+  ready: "ready",
+  failed: "failed",
+} as const;
+
+export type MediaAttachmentAttributeScope =
+  (typeof MediaAttachmentAttributeScope)[keyof typeof MediaAttachmentAttributeScope];
+
+export const MediaAttachmentAttributeScope = {
+  temporary: "temporary",
+  permanent: "permanent",
+} as const;
+
+/**
+ * Represents a single image within a multi-image visual packet. Generated images have role "generated_option" and start with status "pending" until the selfie pipeline completes. User-uploaded images have role "user_input" and are inserted with status "ready". The attributeScope field governs whether visual attributes from this image may carry forward into future replies.
+
+ */
+export interface MediaAttachment {
+  id: string;
+  messageId: string;
+  visualPacketId: string;
+  /** "generated_option" = Ashley offered this image; treat as temporary unless user confirms. "user_input" = user uploaded this image as reference material.
+   */
+  role: MediaAttachmentRole;
+  status: MediaAttachmentStatus;
+  /**
+   * Encoded MODE|vibe payload (generated_option rows only).
+   * @nullable
+   */
+  selfieVibe?: string | null;
+  /**
+   * Image-mode name extracted from the marker (generated_option rows only).
+   * @nullable
+   */
+  intent?: string | null;
+  /**
+   * Per-image description or user caption, capped at 500 chars.
+   * @nullable
+   */
+  description?: string | null;
+  attributeScope: MediaAttachmentAttributeScope;
+  /**
+   * Resolved URL. Null until the selfie job completes.
+   * @nullable
+   */
+  imageUrl?: string | null;
+  /** 0-based position within the visual packet. */
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type SendImageRequestImagesItem = {
+  base64: string;
+  mimeType: string;
+};
+
+/**
+ * Body for POST /chat/image. Supports a single image (legacy) or an array of images (multi-image packet). When images[] is provided, each entry's base64 and mimeType are used in order; the primary image field is ignored if images[] is non-empty.
+
+ */
+export interface SendImageRequest {
+  /** Base64-encoded primary image (single-image / legacy path). */
+  image?: string;
+  /** MIME type of the primary image. */
+  mimeType?: string;
+  /**
+   * Array of images for multi-image sends (max 4).
+   * @maxItems 4
+   */
+  images?: SendImageRequestImagesItem[];
+  /** @nullable */
+  caption?: string | null;
+  /** @nullable */
+  category?: string | null;
+  /** @nullable */
+  mode?: string | null;
 }
 
 export interface SendMessageBody {

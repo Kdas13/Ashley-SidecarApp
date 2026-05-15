@@ -90,6 +90,30 @@ export const ListMessagesResponseItem = zod.object({
   role: zod.string(),
   content: zod.string(),
   imageUrl: zod.string().nullable(),
+  selfieVibe: zod
+    .string()
+    .nullish()
+    .describe(
+      "Encoded MODE|vibe payload for the primary selfie job. Set on Ashley messages that triggered image generation; null otherwise.",
+    ),
+  selfieVibeList: zod
+    .string()
+    .nullish()
+    .describe(
+      "JSON-encoded string[] of encoded MODE|vibe payloads for multi-image packets. Null on single-image messages.",
+    ),
+  visualPacketId: zod
+    .string()
+    .nullish()
+    .describe(
+      "UUID linking this message to its media_attachments rows. Null on single-image messages.",
+    ),
+  imageUrls: zod
+    .array(zod.string())
+    .nullish()
+    .describe(
+      "Resolved image URLs from ready media_attachments rows. Injected by \/state hydration; null on single-image messages.",
+    ),
   createdAt: zod.coerce.date(),
 });
 export const ListMessagesResponse = zod.array(ListMessagesResponseItem);
@@ -107,6 +131,30 @@ export const SendMessageResponse = zod.object({
     role: zod.string(),
     content: zod.string(),
     imageUrl: zod.string().nullable(),
+    selfieVibe: zod
+      .string()
+      .nullish()
+      .describe(
+        "Encoded MODE|vibe payload for the primary selfie job. Set on Ashley messages that triggered image generation; null otherwise.",
+      ),
+    selfieVibeList: zod
+      .string()
+      .nullish()
+      .describe(
+        "JSON-encoded string[] of encoded MODE|vibe payloads for multi-image packets. Null on single-image messages.",
+      ),
+    visualPacketId: zod
+      .string()
+      .nullish()
+      .describe(
+        "UUID linking this message to its media_attachments rows. Null on single-image messages.",
+      ),
+    imageUrls: zod
+      .array(zod.string())
+      .nullish()
+      .describe(
+        "Resolved image URLs from ready media_attachments rows. Injected by \/state hydration; null on single-image messages.",
+      ),
     createdAt: zod.coerce.date(),
   }),
   assistantMessage: zod.object({
@@ -114,6 +162,30 @@ export const SendMessageResponse = zod.object({
     role: zod.string(),
     content: zod.string(),
     imageUrl: zod.string().nullable(),
+    selfieVibe: zod
+      .string()
+      .nullish()
+      .describe(
+        "Encoded MODE|vibe payload for the primary selfie job. Set on Ashley messages that triggered image generation; null otherwise.",
+      ),
+    selfieVibeList: zod
+      .string()
+      .nullish()
+      .describe(
+        "JSON-encoded string[] of encoded MODE|vibe payloads for multi-image packets. Null on single-image messages.",
+      ),
+    visualPacketId: zod
+      .string()
+      .nullish()
+      .describe(
+        "UUID linking this message to its media_attachments rows. Null on single-image messages.",
+      ),
+    imageUrls: zod
+      .array(zod.string())
+      .nullish()
+      .describe(
+        "Resolved image URLs from ready media_attachments rows. Injected by \/state hydration; null on single-image messages.",
+      ),
     createdAt: zod.coerce.date(),
   }),
 });
@@ -270,5 +342,29 @@ export const GenerateSelfieResponse = zod.object({
   role: zod.string(),
   content: zod.string(),
   imageUrl: zod.string().nullable(),
+  selfieVibe: zod
+    .string()
+    .nullish()
+    .describe(
+      "Encoded MODE|vibe payload for the primary selfie job. Set on Ashley messages that triggered image generation; null otherwise.",
+    ),
+  selfieVibeList: zod
+    .string()
+    .nullish()
+    .describe(
+      "JSON-encoded string[] of encoded MODE|vibe payloads for multi-image packets. Null on single-image messages.",
+    ),
+  visualPacketId: zod
+    .string()
+    .nullish()
+    .describe(
+      "UUID linking this message to its media_attachments rows. Null on single-image messages.",
+    ),
+  imageUrls: zod
+    .array(zod.string())
+    .nullish()
+    .describe(
+      "Resolved image URLs from ready media_attachments rows. Injected by \/state hydration; null on single-image messages.",
+    ),
   createdAt: zod.coerce.date(),
 });

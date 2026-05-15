@@ -408,11 +408,14 @@ export const mediaAttachmentsTable = pgTable(
     // Shared packet identifier — matches messages.visual_packet_id on the
     // parent Ashley message.
     visualPacketId: text("visual_packet_id").notNull(),
-    // Who originated this attachment:
-    //   "ashley_generated" — Ashley emitted an [image:] marker; the selfie
-    //     pipeline produces the image. Default.
+    // Who originated this attachment and how it should be interpreted:
+    //   "generated_option" — Ashley emitted an [image:] marker; the selfie
+    //     pipeline produces the image. Default. The model should treat this
+    //     as an offered visual option, not a confirmed permanent attribute.
     //   "user_input"       — User uploaded the image via the paperclip flow.
-    role: text("role").notNull().default("ashley_generated"),
+    //     The model should interpret this as reference material provided by
+    //     the user, with attribute_scope=temporary unless the user says otherwise.
+    role: text("role").notNull().default("generated_option"),
     // Lifecycle status:
     //   "pending" — job created, generation not yet complete (ashley_generated).
     //   "ready"   — imageUrl is set and the image is available.

@@ -1321,7 +1321,7 @@ router.post("/chat", async (req, res): Promise<void> => {
             deviceId,
             messageId: ashleyRow.id,
             visualPacketId: visualPacketId!,
-            role: "ashley_generated" as const,
+            role: "generated_option" as const,
             status: "pending" as const,
             selfieVibe: vibe,
             intent: dv.mode,
@@ -3943,7 +3943,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
                 deviceId,
                 messageId: streamId,
                 visualPacketId: visualPacketId!,
-                role: "ashley_generated" as const,
+                role: "generated_option" as const,
                 status: "pending" as const,
                 selfieVibe: vibe,
                 intent: dv.mode,
@@ -4397,18 +4397,27 @@ router.post("/chat/image", async (req, res): Promise<void> => {
   const captionForModel = caption.length > 0 ? caption : "(no caption)";
   const countHint = allImages.length > 1 ? ` (${allImages.length} photos)` : "";
   const modelHint = `[Photo attached${countHint}. Category: ${category}. Mode: ${mode}. Caption: ${captionForModel}]`;
-  const finalContent: ContentBlock[] = [
-    ...allImages.map((img, i): ImageBlock => {
-      const m = img.mimeType.toLowerCase();
-      const cm: ClaudeImageMime = m === "image/jpg" ? "image/jpeg" : (m as ClaudeImageMime);
-      return {
-        type: "image",
-        source: { type: "base64", media_type: cm, data: img.base64 },
-        ...(allImages.length > 1 ? { title: `Photo ${i + 1} of ${allImages.length}` } as unknown as object : {}),
-      };
-    }),
-    { type: "text", text: modelHint },
-  ];
+  // For multi-image sends, interleave a role-labelled text block before each
+  // image so the model can reason about each photo in context.
+  // Single-image sends use a plain image block (no label needed).
+  const toImageBlock = (img: (typeof allImages)[number]): ImageBlock => {
+    const m = img.mimeType.toLowerCase();
+    const cm: ClaudeImageMime = m === "image/jpg" ? "image/jpeg" : (m as ClaudeImageMime);
+    return { type: "image", source: { type: "base64", media_type: cm, data: img.base64 } };
+  };
+  const finalContent: ContentBlock[] =
+    allImages.length > 1
+      ? [
+          ...allImages.flatMap((img, i): ContentBlock[] => [
+            {
+              type: "text",
+              text: `Image ${i + 1} of ${allImages.length} [role: user_input]:`,
+            },
+            toImageBlock(img),
+          ]),
+          { type: "text", text: modelHint },
+        ]
+      : [toImageBlock(allImages[0]!), { type: "text", text: modelHint }];
   // Unused variable warning guard — claudeMime kept for mime validation above.
   void claudeMime;
   claudeMessages.push({ role: "user", content: finalContent });
