@@ -261,6 +261,9 @@ router.delete("/chat/messages", async (req, res): Promise<void> => {
     await db
       .delete(conversationSummariesTable)
       .where(eq(conversationSummariesTable.deviceId, deviceId));
+    await db
+      .delete(mediaAttachmentsTable)
+      .where(eq(mediaAttachmentsTable.deviceId, deviceId));
     res.json({ ok: true });
   } catch (err) {
     req.log.error({ err }, "DELETE /chat/messages failed");
@@ -566,6 +569,9 @@ router.delete("/state", async (req, res): Promise<void> => {
       db
         .delete(ashleyProfileTable)
         .where(eq(ashleyProfileTable.deviceId, deviceId)),
+      db
+        .delete(mediaAttachmentsTable)
+        .where(eq(mediaAttachmentsTable.deviceId, deviceId)),
     ]);
     res.json({ ok: true });
   } catch (err) {

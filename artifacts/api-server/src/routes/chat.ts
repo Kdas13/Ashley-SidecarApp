@@ -4324,6 +4324,7 @@ router.post("/chat/image", async (req, res): Promise<void> => {
           status: "ready" as const,
           imageUrl: url,
           category: category || null,
+          intent: mode || null,
           description: caption || null,
           sortOrder: i,
         })),
