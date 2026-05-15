@@ -41,9 +41,13 @@ const HAIR_COLOURS = [
   "blonde", "blond", "platinum", "silver", "white", "grey", "gray",
   "brunette", "brown", "chestnut", "chocolate", "caramel",
   "black", "jet black", "raven",
+  "electric blue", "cobalt blue", "icy blue", "steel blue", "neon blue",
   "blue", "navy", "turquoise", "teal", "aqua",
+  "electric pink", "neon pink", "hot pink",
   "pink", "rose", "magenta",
+  "electric purple", "neon purple",
   "purple", "lavender", "lilac", "violet",
+  "electric green", "neon green",
   "green", "emerald", "mint",
   "orange", "peach",
   "rainbow", "ombre", "balayage",
@@ -521,15 +525,15 @@ const NEGATION_VOCAB: string[] = [
 // implicit-also-negated tokens. Symmetric — listing once per family is fine
 // because we expand from any matched member to the whole family.
 const COLOUR_FAMILIES: ReadonlyArray<readonly string[]> = [
-  ["lavender", "purple", "violet", "lilac", "mauve", "plum", "magenta"],
-  ["pink", "rose", "salmon", "coral"],
+  ["lavender", "purple", "violet", "lilac", "mauve", "plum", "magenta", "electric purple", "neon purple"],
+  ["pink", "rose", "salmon", "coral", "electric pink", "neon pink", "hot pink"],
   ["blonde", "yellow", "golden", "honey blonde", "platinum blonde"],
   ["red", "ginger", "auburn", "copper", "strawberry blonde"],
   ["brown", "brunette", "chestnut", "chocolate", "espresso"],
   ["black", "jet black", "raven", "ebony"],
   ["grey", "gray", "silver", "white", "salt-and-pepper"],
-  ["blue", "navy", "teal", "turquoise", "cyan"],
-  ["green", "emerald", "olive", "forest"],
+  ["blue", "navy", "teal", "turquoise", "cyan", "electric blue", "cobalt blue", "icy blue", "steel blue", "neon blue"],
+  ["green", "emerald", "olive", "forest", "electric green", "neon green"],
 ];
 
 // "no <token>", "no <token> at all", "without <token>", "not <token>",
@@ -656,7 +660,17 @@ export function extractVisualSpec(text: string): VisualSpec {
   // / "<colour> ... hair". We only count a colour as a hair-colour when the
   // word "hair" appears in the same message, otherwise "blue jeans" would
   // wrongly become hair colour.
-  if (/\bhair\b/i.test(raw)) {
+  //
+  // EXCEPTION: compound fantasy/vivid colours ("electric blue", "cobalt blue",
+  // "neon pink", etc.) are multi-word entries in HAIR_COLOURS and unambiguous
+  // enough to be treated as hair-colour signals even without the word "hair"
+  // being present. This covers the case where Ashley's LLM-generated image
+  // vibe says "electric blue radiance" without explicitly writing "hair".
+  const hasHairWord = /\bhair\b/i.test(raw);
+  const hasCompoundFantasyColour = HAIR_COLOURS.some(
+    (c) => c.includes(" ") && lower.includes(c),
+  );
+  if (hasHairWord || hasCompoundFantasyColour) {
     // Filter the vocab to exclude any token the user explicitly negated
     // this turn ("Black hair, no lavender at all" → must pick "black",
     // not "lavender" — longest-first matching otherwise grabs lavender).

@@ -2203,6 +2203,19 @@ async function generateAshleySelfie(
     // adb logcat (or pino-pretty) shows exactly what the image API
     // returned. No assumption of success — we only log RESPONSE after
     // the await resolves, and ERROR if it throws.
+    // DIAGNOSTIC: if FORCE_HAIR_DIAGNOSTIC env var is set, replace whatever
+    // hair sentence is in fullPrompt with the forced colour at the very last
+    // stage before the model call. If the output image changes → the pipeline
+    // is dropping the override upstream. If not → model bias / seed cache.
+    // Remove this block once the pipeline failure is confirmed and fixed.
+    const _forceHairColour = process.env["FORCE_HAIR_DIAGNOSTIC"];
+    const _promptToSend = _forceHairColour
+      ? fullPrompt.replace(
+          /She has [^.]+?hair[^.]*\./gi,
+          `She has ${_forceHairColour} hair.`,
+        )
+      : fullPrompt;
+
     logger.info(
       {
         mode,
@@ -2210,17 +2223,18 @@ async function generateAshleySelfie(
         size,
         quality,
         cacheKey: cacheKey.slice(0, 12),
-        promptPreview: fullPrompt.slice(0, 240),
-        promptLength: fullPrompt.length,
+        forceHairDiagnostic: _forceHairColour ?? null,
+        promptFull: _promptToSend,
+        promptLength: _promptToSend.length,
       },
-      "IMAGE REQUEST START",
+      "IMAGE REQUEST START — FULL PROMPT",
     );
     logger.info(
       { mode, imageMode, size, quality, cacheKey: cacheKey.slice(0, 12) },
       "CALLING PROVIDER...",
     );
     try {
-      b64 = await generateImageBase64(fullPrompt, size, quality);
+      b64 = await generateImageBase64(_promptToSend, size, quality);
       logger.info(
         {
           mode,
