@@ -782,8 +782,9 @@ export type SendImageArgs = {
   mode: ImageAnalysisMode;
   caption: string;
   replyTo?: ReplyToRef | null;
-  /** Additional images beyond the first (max 3 extras). Forwarded to sendChatImage as `images[]`. */
-  extraImages?: { base64: string; mimeType: string }[];
+  /** Additional images beyond the first (max 3 extras). Forwarded to sendChatImage as `images[]`.
+   *  `uri` is the local file:// URI — used for the optimistic gallery preview, not sent to the server. */
+  extraImages?: { base64: string; mimeType: string; uri?: string }[];
   /** Section 8 receive log: how many images the user selected. Forwarded as mobileSelectedCount. */
   selectedCount?: number;
 };
@@ -793,6 +794,21 @@ export function useSendImage() {
   return useMutation({
     mutationFn: async (args: SendImageArgs): Promise<SendMessageResult> => {
       const userId = newId();
+      // Build an optimistic imageUrls array from the local file:// URIs so the
+      // gallery shows immediately while the upload is in flight, not just after
+      // the server round-trip completes. Only populated when every extra image
+      // carries a uri (extras from the picker always do; typed as optional for
+      // external callers). Falls back gracefully — single-image sends keep
+      // the standard imageUrl-only shape.
+      const extraUris =
+        args.extraImages && args.extraImages.length > 0
+          ? args.extraImages.map((e) => e.uri).filter((u): u is string => typeof u === "string")
+          : [];
+      const optimisticImageUrls =
+        extraUris.length > 0 && extraUris.length === (args.extraImages?.length ?? 0)
+          ? [args.uri, ...extraUris]
+          : null;
+
       // Optimistic insert: show the local file:// URI in the user's bubble
       // immediately so the chat doesn't appear frozen during upload.
       const optimisticUser: Message = {
@@ -807,6 +823,9 @@ export function useSendImage() {
         imageAnalysisMode: args.mode,
         imageRemembered: null,
         replyTo: args.replyTo ?? null,
+        ...(optimisticImageUrls && optimisticImageUrls.length > 1
+          ? { imageUrls: optimisticImageUrls }
+          : {}),
       };
       const previous = qc.getQueryData<Message[]>(MESSAGES_KEY) ?? [];
       const optimisticList = [...previous, optimisticUser];

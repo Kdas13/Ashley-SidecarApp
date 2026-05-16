@@ -1390,8 +1390,10 @@ export type SendChatImageRequest = {
    * Additional images beyond the first (max 3 extras, giving 4 total).
    * When present the request uses `images[]` instead of `image`, routing
    * through the server's multi-image receive path.
+   * `uri` is the local file:// URI — carried for the optimistic gallery
+   * preview in useSendImage; never forwarded to the server.
    */
-  extraImages?: { base64: string; mimeType: string }[];
+  extraImages?: { base64: string; mimeType: string; uri?: string }[];
   /** Section 8 receive log: total images selected by the user (1 + extras.length). */
   selectedCount?: number;
 };

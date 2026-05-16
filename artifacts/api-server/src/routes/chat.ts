@@ -5236,7 +5236,17 @@ router.post("/chat/image", async (req, res): Promise<void> => {
   void distillMemories(deviceId, userTextForDistill, assistantText);
   void maybeRollUpOlderMessages(deviceId);
 
-  res.json({ userMessage: userRow, ashleyMessage: ashleyRow });
+  // Include all uploaded URLs on the user message so the mobile can render
+  // the full gallery immediately without waiting for the next /state hydration.
+  // Single-image sends keep the standard shape; imageUrls is only set for
+  // 2–4 image uploads so the gallery condition (imageUrls.length > 1) skips
+  // single-image messages.
+  const userMessageOut =
+    allImageUrls.length > 1
+      ? { ...userRow, imageUrls: allImageUrls }
+      : userRow;
+
+  res.json({ userMessage: userMessageOut, ashleyMessage: ashleyRow });
 });
 
 // ---------------------------------------------------------------------------
