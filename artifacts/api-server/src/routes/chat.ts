@@ -610,11 +610,15 @@ async function supplementVibesForMultiImage(
     `Output ONLY the descriptions, one per line, no numbers, no brackets, no preamble, max 20 words each.`;
 
   try {
+    // Force Anthropic for this structured count-critical call.
+    // Gemini drops structured markers and cannot reliably return exactly N lines —
+    // this must not be routed through the cost-lever provider switch.
     const result = await generateChatText({
       system:
         "You are an image scene planner. Output only the requested plain descriptions, one per line, nothing else.",
       messages: [{ role: "user", content: prompt }],
       maxTokens: 300,
+      forceProvider: "anthropic",
     });
     const lines = result
       .trim()

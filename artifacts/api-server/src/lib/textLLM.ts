@@ -8,6 +8,12 @@ export type GenerateOpts = {
   system: string;
   messages: LLMMessage[];
   maxTokens: number;
+  /**
+   * Pin this call to a specific provider, bypassing ASHLEY_TEXT_PROVIDER.
+   * Use for structured / count-critical tasks (e.g. multi-image scene planning)
+   * where Gemini's tendency to drop structured markers is not acceptable.
+   */
+  forceProvider?: ChatProvider;
 };
 
 export type StreamOpts = GenerateOpts & {
@@ -49,11 +55,12 @@ function isRateLimit(err: unknown): boolean {
 const RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
 
 export async function generateChatText(opts: GenerateOpts): Promise<string> {
+  const provider = opts.forceProvider ?? activeChatProvider();
   let lastErr: unknown;
   for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
     if (attempt > 0) await sleep(RETRY_DELAYS_MS[attempt - 1]!);
     try {
-      if (activeChatProvider() === "gemini") {
+      if (provider === "gemini") {
         const result = await getGemini().models.generateContent({
           model: GEMINI_CHAT_MODEL,
           contents: toGeminiContents(opts.messages),
