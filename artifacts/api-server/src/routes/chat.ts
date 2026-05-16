@@ -604,8 +604,9 @@ async function supplementVibesForMultiImage(
 
   const prompt =
     `Generate ${shortfall} short selfie scene description${shortfall > 1 ? "s" : ""} for a young woman with lavender hair and blue eyes. ` +
-    `Existing scenes already planned (must NOT overlap): ${existingSummary}. ` +
-    `Each description must have a completely different setting, pose, and lighting. ` +
+    (existingSummary
+      ? `Existing scenes already planned (must NOT overlap): ${existingSummary}. Each description must have a completely different setting, pose, and lighting. `
+      : `Each description must have a unique setting, pose, and lighting. `) +
     `Output ONLY the descriptions, one per line, no numbers, no brackets, no preamble, max 20 words each.`;
 
   try {
@@ -1395,16 +1396,16 @@ router.post("/chat", async (req, res): Promise<void> => {
   // with a secondary LLM call so the fan-out always delivers the full count.
   {
     const _reqCount = detectRequestedImageCount(userContent);
-    if (_reqCount && _reqCount > 1 && selfieVibe) {
-      const _existing = selfieVibeList ?? [selfieVibe];
+    if (_reqCount && _reqCount > 1) {
+      const _existing = selfieVibeList ?? (selfieVibe ? [selfieVibe] : []);
       if (_existing.length < _reqCount) {
         const _supplemented = await supplementVibesForMultiImage(_existing, _reqCount);
-        if (_supplemented.length > 1) {
+        if (_supplemented.length > 0) {
           selfieVibeList = _supplemented;
           selfieVibe = _supplemented[0]!;
           if (!visualPacketId) visualPacketId = newId();
           req.log.info(
-            { requestedCount: _reqCount, actualCount: _supplemented.length, visualPacketId },
+            { requestedCount: _reqCount, actualCount: _supplemented.length, visualPacketId, hadZeroMarkers: _existing.length === 0 },
             "image-intent: multi-image deficit corrected in /chat",
           );
         }
@@ -4711,16 +4712,16 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
       const _reqCount = !isContinue && userRow
         ? detectRequestedImageCount(userRow.content)
         : null;
-      if (_reqCount && _reqCount > 1 && selfieVibe) {
-        const _existing = selfieVibeList ?? [selfieVibe];
+      if (_reqCount && _reqCount > 1) {
+        const _existing = selfieVibeList ?? (selfieVibe ? [selfieVibe] : []);
         if (_existing.length < _reqCount) {
           const _supplemented = await supplementVibesForMultiImage(_existing, _reqCount);
-          if (_supplemented.length > 1) {
+          if (_supplemented.length > 0) {
             selfieVibeList = _supplemented;
             selfieVibe = _supplemented[0]!;
             if (!visualPacketId) visualPacketId = newId();
             req.log.info(
-              { streamId, requestedCount: _reqCount, actualCount: _supplemented.length, visualPacketId },
+              { streamId, requestedCount: _reqCount, actualCount: _supplemented.length, visualPacketId, hadZeroMarkers: _existing.length === 0 },
               "image-intent: multi-image deficit corrected in /chat/stream",
             );
           }
