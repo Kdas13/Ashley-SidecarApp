@@ -1906,7 +1906,7 @@ function MessageBubble({
                   }}
                 />
                 <View style={styles.bubbleImageExpandBadge} pointerEvents="none">
-                  <Feather name="maximize-2" size={14} color="#fff" />
+                  <Text style={styles.bubbleImageExpandIcon}>⤢</Text>
                 </View>
               </Pressable>
             </View>
@@ -1925,7 +1925,7 @@ function MessageBubble({
               accessibilityRole="button"
               accessibilityLabel="Open image full screen"
             >
-              <Feather name="maximize-2" size={11} color={colors.light.mutedForeground} />
+              <Text style={[styles.bubbleImageExpandIcon, { fontSize: 11, color: colors.light.mutedForeground }]}>⤢</Text>
               <Text style={styles.tapToEnlargePillText}>Tap to enlarge</Text>
             </Pressable>
           </>
@@ -2539,6 +2539,11 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.55)",
     alignItems: "center",
     justifyContent: "center",
+  },
+  bubbleImageExpandIcon: {
+    fontSize: 14,
+    color: "#fff",
+    includeFontPadding: false,
   },
   tapToEnlargePill: {
     alignSelf: "flex-start",
