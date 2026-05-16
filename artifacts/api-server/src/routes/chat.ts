@@ -548,6 +548,107 @@ async function findDuplicateTicket(rawSummary: string): Promise<string | null> {
 }
 
 // ---------------------------------------------------------------------------
+// Multi-image deficit correction helpers
+//
+// Gemini (and Claude) reliably emit exactly ONE [image:] marker per reply
+// even when the user asks for 4. Rather than fighting that behaviour via
+// system-prompt instructions (which have proven ineffective), the server
+// detects the shortfall and supplements the missing vibes with a separate
+// lightweight LLM call, then fans them out as normal multi-image jobs.
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse an explicit image-count request from the user's message.
+ * Matches "send 4 photos", "four individual pictures", "FOUR separate selfies",
+ * "3 images" etc. Returns the count (2–4) or null when none is found.
+ */
+function detectRequestedImageCount(userText: string): number | null {
+  const WORD_NUM: Record<string, number> = { two: 2, three: 3, four: 4 };
+  const re =
+    /\b(four|three|two|\d)\s+(?:individual\s+)?(?:separate\s+)?(?:singular\s+)?(?:random\s+)?(?:different\s+)?(?:unique\s+)?(?:photo|image|picture|selfie)/i;
+  const m = userText.match(re);
+  if (!m) return null;
+  const word = m[1]!.toLowerCase();
+  const n = WORD_NUM[word] ?? parseInt(word, 10);
+  return Number.isFinite(n) && n >= 2 && n <= 4 ? n : null;
+}
+
+const SUPPLEMENT_FALLBACK_SCENES = [
+  "outdoors in natural afternoon light, looking slightly away, soft smile",
+  "café table, warm amber lighting, glancing down, relaxed",
+  "by a window, soft diffuse daylight, peaceful expression",
+  "low golden evening light from the side, hair slightly wind-blown",
+];
+
+/**
+ * When the LLM emits fewer [image:] markers than the user requested, call a
+ * short secondary LLM prompt to generate the missing scene descriptions, then
+ * return a full list of `targetCount` encoded vibes.
+ *
+ * Falls back to template variants if the secondary call fails — the user
+ * always gets something rather than nothing.
+ */
+async function supplementVibesForMultiImage(
+  existingVibes: string[],
+  targetCount: number,
+): Promise<string[]> {
+  const shortfall = targetCount - existingVibes.length;
+  if (shortfall <= 0) return existingVibes.slice(0, targetCount);
+
+  const existingSummary = existingVibes
+    .map((v, i) => {
+      const dv = decodeStoredVibe(v);
+      return `${i + 1}. ${dv.vibe}`;
+    })
+    .join("; ");
+
+  const prompt =
+    `Generate ${shortfall} short selfie scene description${shortfall > 1 ? "s" : ""} for a young woman with lavender hair and blue eyes. ` +
+    `Existing scenes already planned (must NOT overlap): ${existingSummary}. ` +
+    `Each description must have a completely different setting, pose, and lighting. ` +
+    `Output ONLY the descriptions, one per line, no numbers, no brackets, no preamble, max 20 words each.`;
+
+  try {
+    const result = await generateChatText({
+      system:
+        "You are an image scene planner. Output only the requested plain descriptions, one per line, nothing else.",
+      messages: [{ role: "user", content: prompt }],
+      maxTokens: 300,
+    });
+    const lines = result
+      .trim()
+      .split("\n")
+      .map((l) => l.replace(/^\d+[\.\)]\s*/, "").trim())
+      .filter(Boolean)
+      .slice(0, shortfall);
+    const supplemented = lines.map((line) =>
+      encodeStoredVibe("SELFIE_MODE", line),
+    );
+    logger.info(
+      { shortfall, generated: supplemented.length },
+      "image-intent: supplemented vibes for multi-image deficit",
+    );
+    return [...existingVibes, ...supplemented].slice(0, targetCount);
+  } catch (err) {
+    logger.warn(
+      { err },
+      "image-intent: supplement vibe generation failed — using fallback scenes",
+    );
+    const base =
+      existingVibes[0] ??
+      encodeStoredVibe("SELFIE_MODE", "warm close-up portrait, soft indoor light");
+    const baseLabel = decodeStoredVibe(base).vibe.split(",")[0]!.trim();
+    const extras = Array.from({ length: shortfall }, (_, i) =>
+      encodeStoredVibe(
+        "SELFIE_MODE",
+        `${SUPPLEMENT_FALLBACK_SCENES[i % SUPPLEMENT_FALLBACK_SCENES.length]!}, ${baseLabel}`,
+      ),
+    );
+    return [...existingVibes, ...extras].slice(0, targetCount);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // POST /chat — the one chat endpoint
 // ---------------------------------------------------------------------------
 
@@ -1282,6 +1383,30 @@ router.post("/chat", async (req, res): Promise<void> => {
           assistantText = selfieVibe
             ? "*holds up the camera* one sec…"
             : "*tries to take a selfie but fumbles the camera* one sec — try again?";
+        }
+      }
+    }
+  }
+
+  // 5b-pre. Multi-image deficit correction (non-streaming path).
+  //
+  // If the user explicitly asked for N images (e.g. "send 4 photos") but the
+  // model only emitted fewer [image:] markers, supplement the shortfall now
+  // with a secondary LLM call so the fan-out always delivers the full count.
+  {
+    const _reqCount = detectRequestedImageCount(userContent);
+    if (_reqCount && _reqCount > 1 && selfieVibe) {
+      const _existing = selfieVibeList ?? [selfieVibe];
+      if (_existing.length < _reqCount) {
+        const _supplemented = await supplementVibesForMultiImage(_existing, _reqCount);
+        if (_supplemented.length > 1) {
+          selfieVibeList = _supplemented;
+          selfieVibe = _supplemented[0]!;
+          if (!visualPacketId) visualPacketId = newId();
+          req.log.info(
+            { requestedCount: _reqCount, actualCount: _supplemented.length, visualPacketId },
+            "image-intent: multi-image deficit corrected in /chat",
+          );
         }
       }
     }
@@ -4576,6 +4701,28 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
             finalText = selfieVibe
               ? "*holds up the camera* one sec…"
               : "*tries to take a selfie but fumbles the camera* one sec — try again?";
+          }
+        }
+      }
+    }
+
+    // Multi-image deficit correction (streaming path, mirror of /chat).
+    {
+      const _reqCount = !isContinue && userRow
+        ? detectRequestedImageCount(userRow.content)
+        : null;
+      if (_reqCount && _reqCount > 1 && selfieVibe) {
+        const _existing = selfieVibeList ?? [selfieVibe];
+        if (_existing.length < _reqCount) {
+          const _supplemented = await supplementVibesForMultiImage(_existing, _reqCount);
+          if (_supplemented.length > 1) {
+            selfieVibeList = _supplemented;
+            selfieVibe = _supplemented[0]!;
+            if (!visualPacketId) visualPacketId = newId();
+            req.log.info(
+              { streamId, requestedCount: _reqCount, actualCount: _supplemented.length, visualPacketId },
+              "image-intent: multi-image deficit corrected in /chat/stream",
+            );
           }
         }
       }
