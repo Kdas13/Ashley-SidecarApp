@@ -736,7 +736,11 @@ export default function ChatScreen(): React.JSX.Element {
         allowsMultipleSelection: true,
         selectionLimit: 4,
         base64: true,
-        quality: 0.85,
+        // Multi-image sends encode all photos as base64 in one JSON body.
+        // Lower quality keeps the total payload well under the 40 MB server
+        // limit (4 × ~6 MB base64 = ~24 MB at q=0.65; 4 × ~9 MB = ~36 MB
+        // at q=0.85 — too close to the ceiling with real camera images).
+        quality: 0.65,
         exif: false,
       });
       if (result.canceled) return;
