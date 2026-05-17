@@ -1134,6 +1134,18 @@ router.post("/chat", async (req, res): Promise<void> => {
   );
   let systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}${buildSystemEventsSection()}\n\n${buildOpenTicketsBlock(openTickets)}`;
 
+  // Image generation hard gate — tell the LLM images are off so it
+  // produces an explanation rather than selfie-directive prose.
+  if (!imageGenerationEnabled) {
+    systemPrompt +=
+      "\n\n[SYSTEM: Image generation is currently disabled by the user. " +
+      "If they request a photo, pic, selfie, or any image, respond with a " +
+      "short friendly message — one or two sentences — explaining that images " +
+      "are switched off and they can turn them back on in her profile settings. " +
+      "Do not emit any selfie directive, [image: …] marker, or image-related " +
+      "content. Plain text only.]";
+  }
+
   // 3b. Short follow-up image intent resolver. If the latest user message is
   //     "as a picture" / "show me" / "make it an image" etc., look back at
   //     the most recent user turn that described a visual and inject a TURN
@@ -1147,7 +1159,7 @@ router.post("/chat", async (req, res): Promise<void> => {
       imageUrl: m.role === "user" ? null : m.imageUrl ?? null,
     }));
     const resolution = resolveImageFollowUp(userContent, followUpHistory);
-    if (resolution) {
+    if (resolution && imageGenerationEnabled) {
       // HARD SERVER-SIDE GATE. Wren follow-up: TURN HINT alone wasn't enough —
       // the model still produced refusal prose / phantom success. Synthesise
       // the [image: MODE | description] marker server-side and short-circuit
@@ -4508,6 +4520,19 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   // trigger doesn't fire, no block is injected and Section 9 of the Core
   // Spec tells Ashley not to present fresh facts as if she'd just checked.
   let systemPrompt = baseSystemPrompt;
+
+  // Image generation hard gate — tell the LLM images are off so it
+  // produces an explanation rather than selfie-directive prose.
+  if (!imageGenerationEnabled) {
+    systemPrompt +=
+      "\n\n[SYSTEM: Image generation is currently disabled by the user. " +
+      "If they request a photo, pic, selfie, or any image, respond with a " +
+      "short friendly message — one or two sentences — explaining that images " +
+      "are switched off and they can turn them back on in her profile settings. " +
+      "Do not emit any selfie directive, [image: …] marker, or image-related " +
+      "content. Plain text only.]";
+  }
+
   if (!isContinue && userRow) {
     const builderAware = profile.builderAwareMode !== false;
     const lookup = await maybeRunWebLookup(userRow.content, builderAware);
@@ -4546,7 +4571,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   // - Missing fields → set visualMemoryAsk; a separate handler below emits
   //   the clarifying question with selfieVibe=null (no selfie pipeline).
   let visualMemoryAsk: string | null = null;
-  if (!isContinue && userRow) {
+  if (!isContinue && userRow && imageGenerationEnabled) {
     try {
       const matchedAnchor = findVisualMemoryInText(userRow.content);
       if (matchedAnchor) {
@@ -4595,7 +4620,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
       req.log.warn({ err }, "visual-memory gate (/chat/stream): threw (non-fatal)");
     }
   }
-  if (!isContinue && userRow && !imageGateSynth && !visualMemoryAsk) {
+  if (!isContinue && userRow && !imageGateSynth && !visualMemoryAsk && imageGenerationEnabled) {
     try {
       const followUpHistory: FollowUpHistoryTurn[] = history.map((m) => ({
         role: m.role === "user" ? "user" : "ashley",
@@ -4884,6 +4909,14 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   //      synthesised a marker, emit caption + done immediately and persist
   //      the row WITH selfieVibe set, bypassing the LLM entirely. The
   //      mobile then polls /chat/selfie/:streamId for the actual image.
+  //
+  //      Defence-in-depth: if imageGateSynth was set via any code path
+  //      despite imageGenerationEnabled being false, clear it now so the
+  //      LLM handles the message with the IMAGES_DISABLED system prompt
+  //      note injected above — never leak a selfie pipeline when OFF.
+  if (imageGateSynth && !imageGenerationEnabled) {
+    imageGateSynth = null;
+  }
   if (imageGateSynth) {
     const gateText = imageGateSynth.captionText;
     const gateVibe = imageGateSynth.selfieVibe;

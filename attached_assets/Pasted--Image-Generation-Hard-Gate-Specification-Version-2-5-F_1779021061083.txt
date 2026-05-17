@@ -1,0 +1,108 @@
+🔒 Image Generation Hard Gate Specification
+Version: 2.5 – Final (Mobile Production Ready)
+Project: Project Ashley
+Last Updated: May 2026
+Audience: Replit Agent / Implementation Team
+Overview
+This document defines a strict, defense-in-depth system-level ON/OFF gate for all image generation, rendering, transmission, and handling functionality in Project Ashley (mobile-first application).
+Core Requirement:
+When imageGenerationEnabled is false, the app must behave as if image generation and image handling do not exist at all — no loopholes, no residual functionality, no leaks.
+Core State
+imageGenerationEnabled: boolean
+Default: true
+Persistence: Secure cross-platform storage (AsyncStorage, MMKV, Keychain + SharedPreferences, EncryptedSharedPreferences, etc.)
+Must survive: App restarts, background/foreground transitions, and device reboots
+Critical Invariant
+When imageGenerationEnabled === false, the system guarantees:
+No image generation
+No camera/gallery access or photo capture
+No image rendering
+No base64, blobs, or file-based image storage
+No image API calls or payload construction
+No queuing, retrying, or background image jobs
+No transmission of image data
+Central Guard & Architecture
+All image-related operations must route through a centralized ImageService:
+const ImageService = {
+canUseImageGeneration(): boolean,
+generateImage(...),
+renderImage(...),
+sanitizeMessage(...),
+handleCameraRequest(...),
+// ... all other image/camera/gallery operations
+};
+Strict Rules:
+canUseImageGeneration() must be called at the very start of every image-related flow.
+Direct usage of camera libraries, image pickers, rendering components, or image APIs outside ImageService is strictly prohibited.
+Optional build-time kill switch: IMAGE_GEN_DISABLED=true (for full code stripping).
+Concurrency Safety
+All async operations must re-check canUseImageGeneration() at these critical points:
+Before starting the operation
+Before sending any network request
+Before resolving any promise/future
+Before rendering or persisting results
+If the gate switches to OFF during execution:
+Immediately abort using AbortController, cancellation tokens, or platform-native equivalents
+Discard all partial or completed results
+Clean up temporary resources (files, memory buffers, caches)
+Prevent any UI updates, storage, or network transmission
+State Reactivity
+Use a centralized reactive state solution (Zustand, Redux, Riverpod, etc.)
+All subscribers must update immediately when the gate is toggled
+Guard against stale closures and cached references
+Mobile-Specific Controls
+1. Permissions
+When OFF: Never request CAMERA, PHOTO_LIBRARY, MEDIA_LIBRARY, or equivalent permissions.
+2. Hardware / Media Access
+When OFF: Disable camera launch, gallery/image picker, and image-related file system access.
+3. UI Layer
+When OFF:
+Hide all image generation buttons, camera/gallery inputs, selfie triggers, image previews, and carousels
+Do not render any image components (<Image>, FastImage, ExpoImage, UIImageView, etc.)
+Sanitization Rules
+When ON: Messages pass through unchanged.
+When OFF:
+Run sanitization before render, persistence, and network transmission
+Recursively strip all image-related fields: image_url, image, images, base64, data:image/..., image MIME types, photo, selfie, generatedImage, file URIs, asset IDs, etc.
+If a message becomes image-only → discard or replace with neutral text
+Message Pipeline
+All messages (incoming, outgoing, cached, persisted) must pass through ImageService.sanitizeMessage().
+Job / Background System
+When the gate is turned OFF:
+Cancel all image jobs immediately
+Mark as blockedForever = true
+Purge persisted queues
+Jobs must not execute, retry, or resume.
+Re-enable Behavior: Do not resume old jobs. Require fresh user action.
+API & Network Layer
+When OFF:
+Do not construct image payloads
+Do not call image endpoints
+Do not send image data
+Assistant Behavior
+When OFF:
+Text-only responses
+No proactive image suggestions or triggers
+If the user explicitly asks for an image: “Image generation is currently unavailable.”
+Acceptance Tests
+Toggle OFF → All UI image controls hidden, no execution paths active
+Image request while OFF → No API calls, no permission prompts, text-only response
+Forced backend image response → Stripped before render/storage
+Toggle OFF during in-flight operation → Operation aborted and result discarded
+Background job + toggle OFF → Immediate cancellation
+App restart and lifecycle events → State persists with no leaks
+Concurrency race conditions → Safely handled
+Full sanitization + audit pass
+Audit Requirements
+Search the entire codebase for:
+image, photo, selfie, camera, gallery, image_url, base64, data:image, FastImage, launchCamera, launchImageLibrary, job, queue, retry, background, generateImage, etc.
+All matches must route through ImageService and respect the gate.
+Guarantee
+When imageGenerationEnabled === false, there must be no possible execution path (UI, logic, API, storage, background, concurrent, or stale) that can produce, transmit, render, or store an image.
+The app must behave as if image functionality was never implemented.
+Implementation Notes
+Use AbortController / cancellation tokens for robust async safety
+Aggressively clear image-related memory caches when the gate is disabled
+Add comprehensive unit and integration tests covering concurrency and lifecycle scenarios
+Consider extending the gate to vision/image understanding features in the future
+Final Call
