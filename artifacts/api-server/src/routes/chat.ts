@@ -676,6 +676,16 @@ function extractImageSubjects(userText: string, count: number): string[] {
 }
 
 /**
+ * Returns true when the subject explicitly involves a person, character, or
+ * Ashley herself — meaning the normal selfie pipeline should run.
+ * Returns false for objects, environments, abstract concepts, etc. — those
+ * must be generated without injecting Ashley or any human figure.
+ */
+function subjectNeedsPerson(subject: string): boolean {
+  return /\b(ashley|selfie|self(?:ie)?|portrait|me\b|us\b|her\b|him\b|myself|herself|himself|ourself|girl|woman|man|boy|person|character|face|model|figure|human|people|someone|somebody|friend|couple|duo|us together)\b/i.test(subject.trim());
+}
+
+/**
  * When the LLM emits fewer [image:] markers than the user requested, call a
  * short secondary LLM prompt to generate the missing scene descriptions, then
  * return a full list of `targetCount` encoded vibes.
@@ -688,48 +698,96 @@ async function supplementVibesForMultiImage(
   targetCount: number,
   subjects?: string[],
 ): Promise<string[]> {
-  // When the user supplied explicit subjects (e.g. "1. Car 2. Landscape 3. Artwork
-  // 4. Planet"), we must generate one independent prompt per subject and discard
-  // any LLM-merged vibe entirely.  Each subject → one isolated generation call.
   const hasSubjects = subjects && subjects.length >= targetCount;
 
-  const shortfall = hasSubjects ? targetCount : targetCount - existingVibes.length;
-  const base = hasSubjects ? [] : existingVibes;
-  if (!hasSubjects && shortfall <= 0) return existingVibes.slice(0, targetCount);
-
-  let prompt: string;
+  // ── Subject-isolation path ───────────────────────────────────────────────
+  // Each listed subject drives one independent generation call.
+  // Person/character subjects → Ashley selfie scene (Anthropic-generated).
+  // Object/environment subjects → object-only prompt, NO Ashley, NO person.
   if (hasSubjects) {
-    prompt =
-      `Generate exactly ${targetCount} selfie scene descriptions for Ashley ` +
-      `(a young woman with lavender hair and blue eyes).\n` +
-      `Each scene must be inspired by EXACTLY ONE of the following subjects, in order:\n` +
-      subjects!
-        .slice(0, targetCount)
-        .map((s, i) => `${i + 1}. ${s}`)
-        .join("\n") +
-      `\n\nRules:\n` +
-      `- One description per subject, same order as listed above\n` +
-      `- Each description must capture that specific subject — do NOT blend subjects\n` +
-      `- Each description must have a completely different setting, pose, and lighting\n` +
-      `- Max 20 words per description\n` +
-      `- Output ONLY the descriptions, one per line, no numbers, no brackets, no preamble`;
-  } else {
-    const existingSummary = existingVibes
-      .map((v, i) => {
-        const dv = decodeStoredVibe(v);
-        return `${i + 1}. ${dv.vibe}`;
-      })
-      .join("; ");
-    prompt =
-      `Generate ${shortfall} short selfie scene description${shortfall > 1 ? "s" : ""} for a young woman with lavender hair and blue eyes. ` +
-      (existingSummary
-        ? `Existing scenes already planned (must NOT overlap): ${existingSummary}. Each description must have a completely different setting, pose, and lighting. `
-        : `Each description must have a unique setting, pose, and lighting. `) +
-      `Output ONLY the descriptions, one per line, no numbers, no brackets, no preamble, max 20 words each.`;
+    const results: (string | null)[] = Array(targetCount).fill(null);
+    const personQueue: Array<{ subject: string; idx: number }> = [];
+
+    for (let i = 0; i < targetCount; i++) {
+      const subject = subjects![i]!;
+      if (subjectNeedsPerson(subject)) {
+        // Ashley selfie — defer to Anthropic batch below.
+        personQueue.push({ subject, idx: i });
+      } else {
+        // Pure object/environment — no person injected, ever.
+        const cleanSubject = subject.trim().replace(/^(a |an |the )/i, "");
+        results[i] = encodeStoredVibe(
+          "SELFIE_MODE",
+          `[OBJECT_ONLY] photorealistic photograph of ${cleanSubject}, no people, crisp studio lighting`,
+        );
+      }
+    }
+
+    // Anthropic batch for any person-requiring subjects.
+    if (personQueue.length > 0) {
+      const personSubjects = personQueue.map((p) => p.subject);
+      const personPrompt =
+        `Generate ${personSubjects.length} selfie scene description${personSubjects.length > 1 ? "s" : ""} ` +
+        `for Ashley (a young woman with lavender hair and blue eyes).\n` +
+        `Each scene must be inspired by EXACTLY ONE subject, in order:\n` +
+        personSubjects.map((s, i) => `${i + 1}. ${s}`).join("\n") +
+        `\n\nRules:\n` +
+        `- One description per subject, same order\n` +
+        `- Capture the specific subject — do NOT blend subjects\n` +
+        `- Different setting, pose, and lighting per description\n` +
+        `- Max 20 words each\n` +
+        `- Output ONLY the descriptions, one per line, no numbers, no preamble`;
+      try {
+        const result = await generateChatText({
+          system:
+            "You are an image scene planner. Output only the requested plain descriptions, one per line, nothing else.",
+          messages: [{ role: "user", content: personPrompt }],
+          maxTokens: 300,
+          forceProvider: "anthropic",
+        });
+        const lines = result
+          .trim()
+          .split("\n")
+          .map((l) => l.replace(/^\d+[\.\)]\s*/, "").trim())
+          .filter(Boolean);
+        personQueue.forEach(({ subject, idx }, qi) => {
+          const line = lines[qi] ?? `selfie moment, ${subject}`;
+          results[idx] = encodeStoredVibe("SELFIE_MODE", line);
+        });
+      } catch {
+        personQueue.forEach(({ subject, idx }) => {
+          results[idx] = encodeStoredVibe("SELFIE_MODE", `selfie, ${subject}, warm portrait lighting`);
+        });
+      }
+    }
+
+    const finalVibes = results.filter(Boolean) as string[];
+    logger.info(
+      { targetCount, personCount: personQueue.length, objectCount: targetCount - personQueue.length },
+      "image-intent: subject-isolated vibes built",
+    );
+    return finalVibes.slice(0, targetCount);
   }
 
+  // ── Generic shortfall path (no explicit subjects) ────────────────────────
+  const shortfall = targetCount - existingVibes.length;
+  if (shortfall <= 0) return existingVibes.slice(0, targetCount);
+
+  const existingSummary = existingVibes
+    .map((v, i) => {
+      const dv = decodeStoredVibe(v);
+      return `${i + 1}. ${dv.vibe}`;
+    })
+    .join("; ");
+
+  const prompt =
+    `Generate ${shortfall} short selfie scene description${shortfall > 1 ? "s" : ""} for a young woman with lavender hair and blue eyes. ` +
+    (existingSummary
+      ? `Existing scenes already planned (must NOT overlap): ${existingSummary}. Each description must have a completely different setting, pose, and lighting. `
+      : `Each description must have a unique setting, pose, and lighting. `) +
+    `Output ONLY the descriptions, one per line, no numbers, no brackets, no preamble, max 20 words each.`;
+
   try {
-    // Force Anthropic — Gemini cannot reliably return exactly N ordered lines.
     const result = await generateChatText({
       system:
         "You are an image scene planner. Output only the requested plain descriptions, one per line, nothing else.",
@@ -742,28 +800,31 @@ async function supplementVibesForMultiImage(
       .split("\n")
       .map((l) => l.replace(/^\d+[\.\)]\s*/, "").trim())
       .filter(Boolean)
-      .slice(0, hasSubjects ? targetCount : shortfall);
+      .slice(0, shortfall);
     const supplemented = lines.map((line) =>
       encodeStoredVibe("SELFIE_MODE", line),
     );
     logger.info(
-      { targetCount, shortfall, generated: supplemented.length, hasSubjects },
-      "image-intent: supplemented vibes for multi-image request",
+      { shortfall, generated: supplemented.length },
+      "image-intent: supplemented vibes for multi-image deficit",
     );
-    return [...base, ...supplemented].slice(0, targetCount);
+    return [...existingVibes, ...supplemented].slice(0, targetCount);
   } catch (err) {
     logger.warn(
       { err },
       "image-intent: supplement vibe generation failed — using fallback scenes",
     );
-    // Fallback: subject-keyed when available, otherwise generic template.
-    const fallbacks = Array.from({ length: shortfall }, (_, i) => {
-      const scene = hasSubjects && subjects![i]
-        ? `selfie inspired by: ${subjects![i]}, ${SUPPLEMENT_FALLBACK_SCENES[i % SUPPLEMENT_FALLBACK_SCENES.length]!}`
-        : SUPPLEMENT_FALLBACK_SCENES[i % SUPPLEMENT_FALLBACK_SCENES.length]!;
-      return encodeStoredVibe("SELFIE_MODE", scene);
-    });
-    return [...base, ...fallbacks].slice(0, targetCount);
+    const base =
+      existingVibes[0] ??
+      encodeStoredVibe("SELFIE_MODE", "warm close-up portrait, soft indoor light");
+    const baseLabel = decodeStoredVibe(base).vibe.split(",")[0]!.trim();
+    const extras = Array.from({ length: shortfall }, (_, i) =>
+      encodeStoredVibe(
+        "SELFIE_MODE",
+        `${SUPPLEMENT_FALLBACK_SCENES[i % SUPPLEMENT_FALLBACK_SCENES.length]!}, ${baseLabel}`,
+      ),
+    );
+    return [...existingVibes, ...extras].slice(0, targetCount);
   }
 }
 
@@ -2065,6 +2126,82 @@ async function generateAshleySelfie(
   // profile.appearance) BEFORE the prompt is built — diffusion never sees
   // contradictory clauses, and never sees a negation phrase.
   const { description: vibeDesc, spec: carriedSpec } = extractVisualSpecFromVibe(vibe);
+
+  // ── OBJECT_ONLY early branch ─────────────────────────────────────────────
+  // When the subject does not involve a person, the supplement encodes the vibe
+  // with an "[OBJECT_ONLY] " prefix.  Bypass ALL identity/Ashley machinery and
+  // build a clean object-photography prompt instead.
+  const OBJECT_ONLY_PREFIX = "[OBJECT_ONLY] ";
+  if (vibeDesc.startsWith(OBJECT_ONLY_PREFIX)) {
+    // Strip the prefix and the pose-variance block (irrelevant for objects).
+    const rawObjectDesc = vibeDesc.slice(OBJECT_ONLY_PREFIX.length).trim();
+    const objectDesc = rawObjectDesc.split(/\n{2,}/)[0]!.trim();
+    const objectPrompt = [
+      buildSelfiePromptSafetyPrefix(),
+      `Subject: ${objectDesc}.`,
+      "IMPORTANT: No people. No persons. No human figures. No characters. No faces. No Ashley. The image must contain ONLY the subject described above.",
+      "Professional photography. Natural or studio lighting. Sharp focus. High detail.",
+      wrapper.styleLine + ".",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    logger.info(
+      { imageMode, objectDesc: objectDesc.slice(0, 120), promptPreview: objectPrompt.slice(0, 280) },
+      "image-gen: OBJECT_ONLY — bypassing identity pipeline",
+    );
+
+    pruneSelfieCache();
+    const objCacheKey = selfieCacheKey(objectPrompt, mode);
+    const objCached = selfieCache.get(objCacheKey);
+    if (objCached) {
+      logger.info(
+        { mode, imageMode, cacheKey: objCacheKey.slice(0, 12), selfieId: objCached.selfieId },
+        "image-gen: OBJECT_ONLY cache hit",
+      );
+      return `${publicBaseUrl()}/api/selfies/${objCached.selfieId}.png`;
+    }
+
+    const objInflight = selfieInFlight.get(objCacheKey);
+    if (objInflight) {
+      logger.info({ mode, imageMode, cacheKey: objCacheKey.slice(0, 12) }, "image-gen: OBJECT_ONLY in-flight dedup");
+      return objInflight;
+    }
+
+    const objPromise = (async () => {
+      let objB64: string | null = null;
+      try {
+        objB64 = await generateImageBase64(objectPrompt, "1024x1024", "medium");
+      } catch (err) {
+        logger.warn({ err }, "image-gen: OBJECT_ONLY provider error");
+        selfieInFlight.delete(objCacheKey);
+        return null;
+      }
+      if (!objB64 || objB64.length === 0) {
+        selfieInFlight.delete(objCacheKey);
+        return null;
+      }
+      const objId = randomUUID();
+      try {
+        const relUrl = await saveSelfie(objId, Buffer.from(objB64, "base64"));
+        selfieCache.set(objCacheKey, { selfieId: objId, createdAt: Date.now() });
+        persistSelfieCache();
+        const finalUrl = `${publicBaseUrl()}${relUrl}`;
+        logger.info({ mode, imageMode, selfieId: objId, relUrl, finalUrl }, "image-gen: OBJECT_ONLY done");
+        return finalUrl;
+      } catch (err) {
+        logger.warn({ err }, "image-gen: OBJECT_ONLY save failed");
+        return null;
+      } finally {
+        selfieInFlight.delete(objCacheKey);
+      }
+    })();
+
+    selfieInFlight.set(objCacheKey, objPromise);
+    return objPromise;
+  }
+  // ── end OBJECT_ONLY branch ───────────────────────────────────────────────
+
   // Marker-descriptor override: when vibe has no VSPEC (e.g. "redhead portrait"
   // from [image:redhead|portrait]) the descriptor word is just free text and the
   // model defaults to Ashley's lavender hair profile. Detect the leading descriptor
