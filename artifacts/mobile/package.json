@@ -4,7 +4,7 @@
   "private": true,
   "main": "expo-router/entry",
   "scripts": {
-    "dev": "bash -c 'if [ -z \"$EXPO_PUBLIC_API_KEY\" ]; then echo \"FATAL: EXPO_PUBLIC_API_KEY is empty. Set it in Replit Secrets and restart this workflow.\" >&2; exit 1; fi; echo \"mobile env ok: EXPO_PUBLIC_API_KEY len=${#EXPO_PUBLIC_API_KEY} fingerprint=${EXPO_PUBLIC_API_KEY:0:8}…\"; EXPO_PUBLIC_DOMAIN=$REPLIT_DEV_DOMAIN EXPO_PUBLIC_API_BASE=https://Ashley-Sidecar.replit.app EXPO_PUBLIC_API_KEY=$EXPO_PUBLIC_API_KEY EXPO_PUBLIC_REPL_ID=$REPL_ID REACT_NATIVE_PACKAGER_HOSTNAME=$REPLIT_EXPO_DEV_DOMAIN EXPO_PACKAGER_PROXY_URL=https://$REPLIT_EXPO_DEV_DOMAIN EXPO_MANIFEST_PROXY_URL=https://$REPLIT_EXPO_DEV_DOMAIN EXPO_NO_MULTIPART=1 exec pnpm exec expo start --port $PORT -c'",
+    "dev": "bash -c 'if [ -z \"$EXPO_PUBLIC_API_KEY\" ]; then echo \"FATAL: EXPO_PUBLIC_API_KEY is empty. Set it in Replit Secrets and restart this workflow.\" >&2; exit 1; fi; echo \"mobile env ok: EXPO_PUBLIC_API_KEY len=${#EXPO_PUBLIC_API_KEY} fingerprint=${EXPO_PUBLIC_API_KEY:0:8}…\"; EXPO_PUBLIC_DOMAIN=$REPLIT_DEV_DOMAIN EXPO_PUBLIC_API_BASE=https://Ashley-Sidecar.replit.app EXPO_PUBLIC_API_KEY=$EXPO_PUBLIC_API_KEY EXPO_PUBLIC_REPL_ID=$REPL_ID REACT_NATIVE_PACKAGER_HOSTNAME=$REPLIT_EXPO_DEV_DOMAIN EXPO_PACKAGER_PROXY_URL=https://$REPLIT_EXPO_DEV_DOMAIN EXPO_MANIFEST_PROXY_URL=https://$REPLIT_EXPO_DEV_DOMAIN EXPO_NO_MULTIPART=1 exec pnpm exec expo start --port $PORT --go -c'",
     "build": "node scripts/build.js",
     "serve": "node server/serve.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
