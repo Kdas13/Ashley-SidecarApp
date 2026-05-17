@@ -48,6 +48,7 @@ import {
   type HistoryTurn as FollowUpHistoryTurn,
 } from "../lib/imageFollowUp";
 import { buildHairColourDirective, composeAppearance, extractVisualSpec, extractVisualSpecCompound, extractVisualSpecFromVibe, makeEmptySpec, scrubVibeForOverrides } from "../lib/visualSpec";
+import { classifyRouteIntent } from "../lib/routeIntentClassifier";
 import {
   encodeMemoryIdInDescription,
   extractMemoryIdFromVibe,
@@ -958,6 +959,27 @@ router.post("/chat", async (req, res): Promise<void> => {
     return;
   }
 
+  // ---- Step 1: Global intent classification (spec v3.0).
+  // Runs BEFORE any image-path code. No capability state is read here.
+  // imageRouteAllowed gates every downstream image path — when false, ALL
+  // image detection, pipeline, and fallback code is unconditionally skipped.
+  const routeIntent = classifyRouteIntent(userContent);
+  const imageRouteAllowed =
+    imageGenerationEnabled && routeIntent.actionDetected && !routeIntent.isQuestion;
+  req.log.info(
+    {
+      intentType: routeIntent.intentType,
+      actionDetected: routeIntent.actionDetected,
+      isQuestion: routeIntent.isQuestion,
+      imageGenerationEnabled,
+      imageRouteAllowed,
+      imageDetectorInvoked: false,
+      imagePipelineInvoked: imageRouteAllowed,
+      finalRoute: imageRouteAllowed ? "image" : "conversation",
+    },
+    "intent-classify",
+  );
+
   // APPROVE gate — processed before LLM and before message persistence.
   // Matches "APPROVE: <ticket_id>" (case-insensitive). Ashley is not involved.
   const approveMatch = userContent.match(/^APPROVE:\s*(\S+)/i);
@@ -1159,7 +1181,7 @@ router.post("/chat", async (req, res): Promise<void> => {
       imageUrl: m.role === "user" ? null : m.imageUrl ?? null,
     }));
     const resolution = resolveImageFollowUp(userContent, followUpHistory);
-    if (resolution && imageGenerationEnabled) {
+    if (resolution && imageRouteAllowed) {
       // HARD SERVER-SIDE GATE. Wren follow-up: TURN HINT alone wasn't enough —
       // the model still produced refusal prose / phantom success. Synthesise
       // the [image: MODE | description] marker server-side and short-circuit
@@ -1309,7 +1331,7 @@ router.post("/chat", async (req, res): Promise<void> => {
   // - No anchor match → fall through to the existing image-intent gate.
   try {
     const matchedAnchor = findVisualMemoryInText(userContent);
-    if (matchedAnchor && imageGenerationEnabled) {
+    if (matchedAnchor && imageRouteAllowed) {
       const missing = detectVisualMemoryMissingFields(matchedAnchor);
       if (missing.length > 0) {
         const askText = formatMissingFieldsAsk(matchedAnchor, missing);
@@ -1394,7 +1416,7 @@ router.post("/chat", async (req, res): Promise<void> => {
 
   try {
     const spec = extractVisualSpecCompound(userContent);
-    if (spec.imageIntent && imageGenerationEnabled) {
+    if (spec.imageIntent && imageRouteAllowed) {
       const synth = synthesizeImageActionReplyFromSpec(spec, userContent);
       if (synth) {
         req.log.info(
@@ -1442,44 +1464,31 @@ router.post("/chat", async (req, res): Promise<void> => {
     req.log.warn({ err }, "image-intent gate (spec, /chat): threw (non-fatal)");
   }
 
-  // ---- Pre-LLM image gate (explicit requests only).
-  // When imageGenerationEnabled is false the LLM already has the selfie
-  // directive sections stripped from its system prompt (buildSystemPrompt
-  // omits them), so ambiguous visual language ("Pic", "Red apple",
-  // "Not bad for a shelf stacker, right?") falls through to the LLM and
-  // gets a conversational reply.  This gate handles only EXPLICIT image
-  // generation requests — messages containing a clear creation/delivery
-  // verb paired with an image noun, or a direct selfie delivery request —
-  // where even a stripped prompt might not produce the right refusal tone.
-  if (!imageGenerationEnabled) {
+  // ---- Image-off gate — explicit image requests blocked (spec v3.0, §9 CASE A).
+  // Uses centralised routeIntent.actionDetected — no inline regex here.
+  // Zero-action rule: messages without an explicit image-creation verb have
+  // actionDetected = false and never reach this block. "Green car", "Red apple",
+  // "Pic", "Not bad for a shelf stacker, right?" all bypass this entirely.
+  if (!imageGenerationEnabled && routeIntent.actionDetected) {
+    const blockedText =
+      "Images are switched off right now, but I can describe it, talk it through, or help you write a prompt for later — just let me know.";
     try {
-      const isExplicitImageReq =
-        // Creation verb + image noun: "generate a selfie", "draw Ashley",
-        // "create a picture of you", "render this as an image", etc.
-        /\b(generate|create|make|draw|render|produce|paint|design)\s+(an?\s+)?(image|picture|photo|selfie|selfies|portrait|artwork|illustration|sketch|pic|visual)\b/i.test(userContent) ||
-        // "can you draw / create / generate ..."
-        /\bcan\s+(you\s+)?(draw|create|generate|make|render|paint)\b/i.test(userContent) ||
-        // Direct selfie delivery: "send me a selfie", "send a selfie"
-        /\bsend\s+(me\s+)?(a\s+|your\s+)?selfie\b/i.test(userContent) ||
-        // "send me a pic / photo / picture / image"
-        /\bsend\s+me\s+(a\s+)?(pic|photo|picture|image)\b/i.test(userContent);
-      if (isExplicitImageReq) {
-        const blockedText =
-          "Images are switched off right now, but I can describe it, talk it through, or help you write a prompt for later — just let me know.";
-        const [blocked] = await db
-          .insert(messagesTable)
-          .values({
-            id: newId(),
-            deviceId,
-            role: "ashley",
-            content: blockedText,
-            selfieVibe: null,
-          })
-          .returning();
-        req.log.info({ deviceId }, "image-gate (/chat): explicit image request blocked, plain-text response returned");
-        res.json({ userMessage: userRow, ashleyMessage: blocked! });
-        return;
-      }
+      const [blocked] = await db
+        .insert(messagesTable)
+        .values({
+          id: newId(),
+          deviceId,
+          role: "ashley",
+          content: blockedText,
+          selfieVibe: null,
+        })
+        .returning();
+      req.log.info(
+        { deviceId, intentType: routeIntent.intentType },
+        "image-gate (/chat): explicit image request blocked, plain-text response returned",
+      );
+      res.json({ userMessage: userRow, ashleyMessage: blocked! });
+      return;
     } catch (err) {
       req.log.warn({ err }, "image-gate pre-LLM check (/chat): threw (non-fatal), falling through to LLM");
     }
@@ -4415,6 +4424,11 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     }
   }
 
+  // ---- Route intent (spec v3.0). Computed once per new turn inside the
+  // !isContinue block below; null on continue/retry turns where no new user
+  // message is present. imageRouteAllowed gates every image path below.
+  let routeIntentStream: ReturnType<typeof classifyRouteIntent> | null = null;
+  let imageRouteAllowed = false;
   // ---- New-turn mode: persist the user row idempotently (mirrors /chat).
   let userRow: Message | null = null;
   if (!isContinue && userMessage) {
@@ -4424,6 +4438,23 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
       res.status(400).json({ error: "content is required" });
       return;
     }
+    // ---- Step 1: Intent classification (mirrors /chat).
+    routeIntentStream = classifyRouteIntent(userContent);
+    imageRouteAllowed =
+      imageGenerationEnabled && routeIntentStream.actionDetected && !routeIntentStream.isQuestion;
+    req.log.info(
+      {
+        intentType: routeIntentStream.intentType,
+        actionDetected: routeIntentStream.actionDetected,
+        isQuestion: routeIntentStream.isQuestion,
+        imageGenerationEnabled,
+        imageRouteAllowed,
+        imageDetectorInvoked: false,
+        imagePipelineInvoked: imageRouteAllowed,
+        finalRoute: imageRouteAllowed ? "image" : "conversation",
+      },
+      "intent-classify (stream)",
+    );
 
     // APPROVE gate (stream path) — same logic as /chat; returns JSON, never opens SSE.
     const streamApproveMatch = userContent.match(/^APPROVE:\s*(\S+)/i);
@@ -4614,7 +4645,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   // - Missing fields → set visualMemoryAsk; a separate handler below emits
   //   the clarifying question with selfieVibe=null (no selfie pipeline).
   let visualMemoryAsk: string | null = null;
-  if (!isContinue && userRow && imageGenerationEnabled) {
+  if (!isContinue && userRow && imageRouteAllowed) {
     try {
       const matchedAnchor = findVisualMemoryInText(userRow.content);
       if (matchedAnchor) {
@@ -4663,7 +4694,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
       req.log.warn({ err }, "visual-memory gate (/chat/stream): threw (non-fatal)");
     }
   }
-  if (!isContinue && userRow && !imageGateSynth && !visualMemoryAsk && imageGenerationEnabled) {
+  if (!isContinue && userRow && !imageGateSynth && !visualMemoryAsk && imageRouteAllowed) {
     try {
       const followUpHistory: FollowUpHistoryTurn[] = history.map((m) => ({
         role: m.role === "user" ? "user" : "ashley",
@@ -4957,7 +4988,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   //      despite imageGenerationEnabled being false, clear it now so the
   //      LLM handles the message with the IMAGES_DISABLED system prompt
   //      note injected above — never leak a selfie pipeline when OFF.
-  if (imageGateSynth && !imageGenerationEnabled) {
+  if (imageGateSynth && !imageRouteAllowed) {
     imageGateSynth = null;
   }
   if (imageGateSynth) {
@@ -5044,35 +5075,31 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     return;
   }
 
-  // ---- Pre-LLM image gate (stream) — explicit requests only.
-  // Mirror of the identical gate in /chat.  Ambiguous visual language
-  // falls through to the LLM (whose prompt already has selfie directives
-  // stripped); this gate only fires for unambiguous generation requests.
-  if (!imageGenerationEnabled && !isContinue && userRow) {
+  // ---- Image-off gate (stream) — explicit image requests blocked (spec v3.0, §9 CASE A).
+  // Uses centralised routeIntentStream.actionDetected — no inline regex here.
+  // Zero-action rule enforced: actionDetected is false for "Green car", "Red apple",
+  // "Pic", questions, fragments — those all fall through to the LLM untouched.
+  if (!imageGenerationEnabled && !isContinue && userRow && routeIntentStream?.actionDetected) {
+    const blockedText =
+      "Images are switched off right now, but I can describe it, talk it through, or help you write a prompt for later — just let me know.";
     try {
-      const isExplicitImageReq =
-        /\b(generate|create|make|draw|render|produce|paint|design)\s+(an?\s+)?(image|picture|photo|selfie|selfies|portrait|artwork|illustration|sketch|pic|visual)\b/i.test(userRow.content) ||
-        /\bcan\s+(you\s+)?(draw|create|generate|make|render|paint)\b/i.test(userRow.content) ||
-        /\bsend\s+(me\s+)?(a\s+|your\s+)?selfie\b/i.test(userRow.content) ||
-        /\bsend\s+me\s+(a\s+)?(pic|photo|picture|image)\b/i.test(userRow.content);
-      if (isExplicitImageReq) {
-        const blockedText =
-          "Images are switched off right now, but I can describe it, talk it through, or help you write a prompt for later — just let me know.";
-        await db
-          .update(messagesTable)
-          .set({ content: blockedText, status: "complete", selfieVibe: null })
-          .where(eq(messagesTable.id, streamId));
-        writeEvent("delta", { text: blockedText });
-        writeEvent("done", {
-          content: blockedText,
-          selfieVibe: null,
-          selfieVibeList: null,
-          visualPacketId: null,
-        });
-        req.log.info({ deviceId, streamId }, "image-gate (stream): explicit image request blocked, plain-text response returned");
-        if (!res.writableEnded) res.end();
-        return;
-      }
+      await db
+        .update(messagesTable)
+        .set({ content: blockedText, status: "complete", selfieVibe: null })
+        .where(eq(messagesTable.id, streamId));
+      writeEvent("delta", { text: blockedText });
+      writeEvent("done", {
+        content: blockedText,
+        selfieVibe: null,
+        selfieVibeList: null,
+        visualPacketId: null,
+      });
+      req.log.info(
+        { deviceId, streamId, intentType: routeIntentStream?.intentType },
+        "image-gate (stream): explicit image request blocked, plain-text response returned",
+      );
+      if (!res.writableEnded) res.end();
+      return;
     } catch (err) {
       req.log.warn({ err, streamId }, "image-gate pre-LLM check (stream): threw (non-fatal), falling through to LLM");
     }
