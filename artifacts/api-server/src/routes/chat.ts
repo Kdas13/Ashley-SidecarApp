@@ -562,15 +562,62 @@ async function findDuplicateTicket(rawSummary: string): Promise<string | null> {
  * Matches "send 4 photos", "four individual pictures", "FOUR separate selfies",
  * "3 images" etc. Returns the count (2–4) or null when none is found.
  */
-function detectRequestedImageCount(userText: string): number | null {
-  const WORD_NUM: Record<string, number> = { two: 2, three: 3, four: 4 };
-  const re =
-    /\b(four|three|two|\d)\s+(?:individual\s+)?(?:separate\s+)?(?:singular\s+)?(?:random\s+)?(?:different\s+)?(?:unique\s+)?(?:photo|image|picture|selfie)/i;
-  const m = userText.match(re);
-  if (!m) return null;
-  const word = m[1]!.toLowerCase();
-  const n = WORD_NUM[word] ?? parseInt(word, 10);
-  return Number.isFinite(n) && n >= 2 && n <= 4 ? n : null;
+function detectRequestedImageCount(
+  userText: string,
+): number | "ambiguous" | null {
+  const MAX_IMAGES = 4;
+  const WORD_TO_NUM: Record<string, number> = { two: 2, three: 3, four: 4 };
+  const t = userText.trim();
+
+  // ── Pattern 1: explicit count + image noun ─────────────────────────────
+  // "3 photos", "four separate selfies", "2 different images"
+  const explicitRe =
+    /\b(four|three|two|\d+)\s+(?:(?:separate|individual|different|distinct|unique|random)\s+)*(?:photo|image|picture|selfie|pic)s?\b/i;
+  const em = t.match(explicitRe);
+  if (em) {
+    const word = em[1]!.toLowerCase();
+    const n = WORD_TO_NUM[word] ?? parseInt(word, 10);
+    if (Number.isFinite(n) && n >= 2) return Math.min(n, MAX_IMAGES) as number;
+  }
+
+  // ── Pattern 2: numbered list items — "1. X  2. Y  3. Z" ──────────────
+  const numberedRe = /\b\d+[.)]\s*\S/g;
+  const numberedMatches = t.match(numberedRe);
+  if (numberedMatches && numberedMatches.length >= 2) {
+    return Math.min(numberedMatches.length, MAX_IMAGES) as number;
+  }
+
+  // ── Pattern 3: bullet / dash list items ────────────────────────────────
+  const bulletRe = /^[\-\*•]\s+\S/gm;
+  const bulletMatches = t.match(bulletRe);
+  if (bulletMatches && bulletMatches.length >= 2) {
+    return Math.min(bulletMatches.length, MAX_IMAGES) as number;
+  }
+
+  // ── Pattern 4: ambiguous quantity + image noun → ask for clarification ─
+  if (
+    /\b(?:multiple|several|a few|some|many|various|a bunch of|loads? of|lots? of)\b/i.test(t) &&
+    /\b(?:photo|image|picture|selfie|pic)s?\b/i.test(t)
+  ) {
+    return "ambiguous";
+  }
+
+  // ── Pattern 5: comma-enumerated subjects (implicit list) ───────────────
+  // "Show me a dog, a cat, and a horse" → 3
+  // Trigger: image noun OR show/give/send me; items identified by article
+  const hasImageTrigger = /\b(?:photo|image|picture|selfie|pic)s?\b/i.test(t);
+  const hasShowMeTrigger = /\b(?:show|give|send|get)\s+me\b/i.test(t);
+  if ((hasImageTrigger || hasShowMeTrigger) && t.includes(",")) {
+    const parts = t.split(/,\s*/);
+    const subjectParts = parts.filter((p) =>
+      /\b(?:a[n]?\s+\w|my\s+\w|your\s+\w|his\s+\w|her\s+\w)\b/i.test(p),
+    );
+    if (subjectParts.length >= 2) {
+      return Math.min(subjectParts.length, MAX_IMAGES) as number;
+    }
+  }
+
+  return null;
 }
 
 const SUPPLEMENT_FALLBACK_SCENES = [
@@ -579,6 +626,9 @@ const SUPPLEMENT_FALLBACK_SCENES = [
   "by a window, soft diffuse daylight, peaceful expression",
   "low golden evening light from the side, hair slightly wind-blown",
 ];
+
+const MULTI_IMAGE_CLARIFICATION_RESPONSE =
+  "how many separate images would you like? just give me a number and i'll get them ready for you!";
 
 /**
  * When the LLM emits fewer [image:] markers than the user requested, call a
@@ -1254,6 +1304,20 @@ router.post("/chat", async (req, res): Promise<void> => {
     claudeMessages.push({ role: "user", content: userContent });
   }
 
+  // 3b. Multi-image count — detect before the LLM call so we can inject a
+  //     hard directive into the final user turn and short-circuit cleanly for
+  //     the "ambiguous quantity" edge case without touching the LLM at all.
+  const _multiImgCount = detectRequestedImageCount(userContent);
+  if (typeof _multiImgCount === "number" && _multiImgCount > 1) {
+    const _lastMsg = claudeMessages[claudeMessages.length - 1];
+    if (_lastMsg?.role === "user") {
+      _lastMsg.content +=
+        `\n\n[Image directive: The user wants exactly ${_multiImgCount} separate images. ` +
+        `You MUST emit exactly ${_multiImgCount} [SELFIE_VIBE:...] markers in this reply, ` +
+        `one per image, each with a distinct scene or subject description.]`;
+    }
+  }
+
   // 4. Call the active chat model (Anthropic by default; Gemini when
   //    ASHLEY_TEXT_PROVIDER=gemini, for cost control).
   // Wren May 2026 terminal-render contract — log the LLM fallback so
@@ -1268,21 +1332,29 @@ router.post("/chat", async (req, res): Promise<void> => {
     "visual-intent: fallback",
   );
   let assistantText = "";
-  try {
-    const text = await generateChatText({
-      system: systemPrompt,
-      messages: claudeMessages,
-      maxTokens: 4096,
-    });
-    assistantText = text
-      ? text
-      : "*goes quiet for a moment, then smiles softly* sorry — i lost my words there. say that again?";
-  } catch (err) {
-    req.log.error({ err }, "Chat model call failed");
-    res
-      .status(502)
-      .json({ error: "Could not reach the language model right now." });
-    return;
+  if (_multiImgCount === "ambiguous") {
+    assistantText = MULTI_IMAGE_CLARIFICATION_RESPONSE;
+    req.log.info(
+      { deviceId, userTextPreview: userContent.slice(0, 200) },
+      "image-intent: ambiguous image count — returning clarification without LLM call",
+    );
+  } else {
+    try {
+      const text = await generateChatText({
+        system: systemPrompt,
+        messages: claudeMessages,
+        maxTokens: 4096,
+      });
+      assistantText = text
+        ? text
+        : "*goes quiet for a moment, then smiles softly* sorry — i lost my words there. say that again?";
+    } catch (err) {
+      req.log.error({ err }, "Chat model call failed");
+      res
+        .status(502)
+        .json({ error: "Could not reach the language model right now." });
+      return;
+    }
   }
 
   // 4b. Continuity guard — heuristic check + LLM rewrite if character
@@ -1398,9 +1470,10 @@ router.post("/chat", async (req, res): Promise<void> => {
   // If the user explicitly asked for N images (e.g. "send 4 photos") but the
   // model only emitted fewer [image:] markers, supplement the shortfall now
   // with a secondary LLM call so the fan-out always delivers the full count.
+  // _multiImgCount was already detected before the LLM call; reuse it here.
   {
-    const _reqCount = detectRequestedImageCount(userContent);
-    if (_reqCount && _reqCount > 1) {
+    if (typeof _multiImgCount === "number" && _multiImgCount > 1) {
+      const _reqCount = _multiImgCount;
       const _existing = selfieVibeList ?? (selfieVibe ? [selfieVibe] : []);
       if (_existing.length < _reqCount) {
         const _supplemented = await supplementVibesForMultiImage(_existing, _reqCount);
@@ -4341,6 +4414,22 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     });
   }
 
+  // Multi-image count — detect before the stream call (mirror of /chat).
+  // Injects a hard directive into the final user turn; ambiguous case is
+  // handled below by short-circuiting the stream call entirely.
+  const _multiImgCount = !isContinue && userRow
+    ? detectRequestedImageCount(userRow.content)
+    : null;
+  if (typeof _multiImgCount === "number" && _multiImgCount > 1) {
+    const _lastMsg = claudeMessages[claudeMessages.length - 1];
+    if (_lastMsg?.role === "user") {
+      _lastMsg.content +=
+        `\n\n[Image directive: The user wants exactly ${_multiImgCount} separate images. ` +
+        `You MUST emit exactly ${_multiImgCount} [SELFIE_VIBE:...] markers in this reply, ` +
+        `one per image, each with a distinct scene or subject description.]`;
+    }
+  }
+
   let continueInstruction: string | null = null;
   if (isContinue && interruptedRow) {
     const partial = (interruptedRow.content ?? "").trim();
@@ -4572,36 +4661,47 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
   // the clean "Issue logged." acknowledgement instead.
   let ticketBuffering = false;
 
-  try {
-    for await (const chunk of streamChatText({
-      system: finalSystemPrompt,
-      messages: claudeMessages,
-      maxTokens: 4096,
-      signal: ac.signal,
-    })) {
-      if (chunk.length === 0) continue;
-      accumulated += chunk;
-      // Only suppress deltas when the response is pure JSON (starts with `{`).
-      // If there is conversational preamble before the JSON, deltas are allowed
-      // to stream — the `done` event replaces the bubble content entirely, so
-      // the raw JSON/preamble is overwritten by the ack anyway.
-      if (!ticketBuffering && accumulated.trimStart()[0] === "{") {
-        ticketBuffering = true;
-      }
-      if (!ticketBuffering) {
-        writeEvent("delta", { text: chunk });
-      }
-    }
+  if (_multiImgCount === "ambiguous") {
+    // Short-circuit: return clarification without calling the LLM.
+    accumulated = MULTI_IMAGE_CLARIFICATION_RESPONSE;
+    writeEvent("delta", { text: MULTI_IMAGE_CLARIFICATION_RESPONSE });
     finishedNaturally = true;
-  } catch (err) {
-    // Abort surfaces as APIUserAbortError (or a generic AbortError on the
-    // signal). Either way, `ac.signal.aborted` will be true. Treat it as
-    // an interruption rather than a hard error.
-    if (ac.signal.aborted) {
-      userAborted = true;
-    } else {
-      upstreamErr = err;
-      req.log.error({ err }, "Chat model stream failed mid-flight");
+    req.log.info(
+      { deviceId, streamId, userTextPreview: userRow?.content.slice(0, 200) ?? null },
+      "image-intent: ambiguous image count — returning clarification without stream call",
+    );
+  } else {
+    try {
+      for await (const chunk of streamChatText({
+        system: finalSystemPrompt,
+        messages: claudeMessages,
+        maxTokens: 4096,
+        signal: ac.signal,
+      })) {
+        if (chunk.length === 0) continue;
+        accumulated += chunk;
+        // Only suppress deltas when the response is pure JSON (starts with `{`).
+        // If there is conversational preamble before the JSON, deltas are allowed
+        // to stream — the `done` event replaces the bubble content entirely, so
+        // the raw JSON/preamble is overwritten by the ack anyway.
+        if (!ticketBuffering && accumulated.trimStart()[0] === "{") {
+          ticketBuffering = true;
+        }
+        if (!ticketBuffering) {
+          writeEvent("delta", { text: chunk });
+        }
+      }
+      finishedNaturally = true;
+    } catch (err) {
+      // Abort surfaces as APIUserAbortError (or a generic AbortError on the
+      // signal). Either way, `ac.signal.aborted` will be true. Treat it as
+      // an interruption rather than a hard error.
+      if (ac.signal.aborted) {
+        userAborted = true;
+      } else {
+        upstreamErr = err;
+        req.log.error({ err }, "Chat model stream failed mid-flight");
+      }
     }
   }
 
@@ -4712,11 +4812,10 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     }
 
     // Multi-image deficit correction (streaming path, mirror of /chat).
+    // _multiImgCount was already detected before the stream call; reuse it here.
     {
-      const _reqCount = !isContinue && userRow
-        ? detectRequestedImageCount(userRow.content)
-        : null;
-      if (_reqCount && _reqCount > 1) {
+      if (typeof _multiImgCount === "number" && _multiImgCount > 1) {
+        const _reqCount = _multiImgCount;
         const _existing = selfieVibeList ?? (selfieVibe ? [selfieVibe] : []);
         if (_existing.length < _reqCount) {
           const _supplemented = await supplementVibesForMultiImage(_existing, _reqCount);
