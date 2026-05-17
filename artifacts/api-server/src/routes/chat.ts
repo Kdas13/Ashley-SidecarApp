@@ -631,6 +631,51 @@ const MULTI_IMAGE_CLARIFICATION_RESPONSE =
   "how many separate images would you like? just give me a number and i'll get them ready for you!";
 
 /**
+ * Extract the individual subjects from a multi-item user request so each one
+ * can drive its own independent image generation call.
+ *
+ * Returns an array of subject strings (e.g. ["Car", "Landscape", "Artwork",
+ * "Planet"]) or an empty array when no distinct items can be identified
+ * (e.g. "send me 4 selfies" — count only, no subject list).
+ */
+function extractImageSubjects(userText: string, count: number): string[] {
+  const t = userText.trim();
+  const cap = Math.min(count, 4);
+
+  // Numbered list: "1. Car 2. Landscape 3. Artwork 4. Planet"
+  // Each item runs until the next number+separator or end of string.
+  const numberedRe = /\b\d+[.)]\s*([^\d\n][^\n]*?)(?=\s*\b\d+[.)]|$)/g;
+  const numberedItems: string[] = [];
+  let nm: RegExpExecArray | null;
+  while ((nm = numberedRe.exec(t)) !== null) {
+    const item = nm[1]!.trim();
+    if (item) numberedItems.push(item);
+  }
+  if (numberedItems.length >= 2) return numberedItems.slice(0, cap);
+
+  // Bullet / dash list (each item on its own line)
+  const bulletRe = /^[\-\*•]\s+(.+)$/gm;
+  const bulletItems: string[] = [];
+  let bm: RegExpExecArray | null;
+  while ((bm = bulletRe.exec(t)) !== null) {
+    const item = bm[1]!.trim();
+    if (item) bulletItems.push(item);
+  }
+  if (bulletItems.length >= 2) return bulletItems.slice(0, cap);
+
+  // Comma-enumerated subjects (Pattern 5 mirror)
+  if (t.includes(",")) {
+    const rawParts = t.split(/,\s*/);
+    const subjects = rawParts
+      .map((p) => p.trim().replace(/^and\s+/i, "").trim())
+      .filter((p) => /\b(?:a[n]?\s+\w|my\s+\w|your\s+\w|his\s+\w|her\s+\w)\b/i.test(p));
+    if (subjects.length >= 2) return subjects.slice(0, cap);
+  }
+
+  return [];
+}
+
+/**
  * When the LLM emits fewer [image:] markers than the user requested, call a
  * short secondary LLM prompt to generate the missing scene descriptions, then
  * return a full list of `targetCount` encoded vibes.
@@ -641,33 +686,55 @@ const MULTI_IMAGE_CLARIFICATION_RESPONSE =
 async function supplementVibesForMultiImage(
   existingVibes: string[],
   targetCount: number,
+  subjects?: string[],
 ): Promise<string[]> {
-  const shortfall = targetCount - existingVibes.length;
-  if (shortfall <= 0) return existingVibes.slice(0, targetCount);
+  // When the user supplied explicit subjects (e.g. "1. Car 2. Landscape 3. Artwork
+  // 4. Planet"), we must generate one independent prompt per subject and discard
+  // any LLM-merged vibe entirely.  Each subject → one isolated generation call.
+  const hasSubjects = subjects && subjects.length >= targetCount;
 
-  const existingSummary = existingVibes
-    .map((v, i) => {
-      const dv = decodeStoredVibe(v);
-      return `${i + 1}. ${dv.vibe}`;
-    })
-    .join("; ");
+  const shortfall = hasSubjects ? targetCount : targetCount - existingVibes.length;
+  const base = hasSubjects ? [] : existingVibes;
+  if (!hasSubjects && shortfall <= 0) return existingVibes.slice(0, targetCount);
 
-  const prompt =
-    `Generate ${shortfall} short selfie scene description${shortfall > 1 ? "s" : ""} for a young woman with lavender hair and blue eyes. ` +
-    (existingSummary
-      ? `Existing scenes already planned (must NOT overlap): ${existingSummary}. Each description must have a completely different setting, pose, and lighting. `
-      : `Each description must have a unique setting, pose, and lighting. `) +
-    `Output ONLY the descriptions, one per line, no numbers, no brackets, no preamble, max 20 words each.`;
+  let prompt: string;
+  if (hasSubjects) {
+    prompt =
+      `Generate exactly ${targetCount} selfie scene descriptions for Ashley ` +
+      `(a young woman with lavender hair and blue eyes).\n` +
+      `Each scene must be inspired by EXACTLY ONE of the following subjects, in order:\n` +
+      subjects!
+        .slice(0, targetCount)
+        .map((s, i) => `${i + 1}. ${s}`)
+        .join("\n") +
+      `\n\nRules:\n` +
+      `- One description per subject, same order as listed above\n` +
+      `- Each description must capture that specific subject — do NOT blend subjects\n` +
+      `- Each description must have a completely different setting, pose, and lighting\n` +
+      `- Max 20 words per description\n` +
+      `- Output ONLY the descriptions, one per line, no numbers, no brackets, no preamble`;
+  } else {
+    const existingSummary = existingVibes
+      .map((v, i) => {
+        const dv = decodeStoredVibe(v);
+        return `${i + 1}. ${dv.vibe}`;
+      })
+      .join("; ");
+    prompt =
+      `Generate ${shortfall} short selfie scene description${shortfall > 1 ? "s" : ""} for a young woman with lavender hair and blue eyes. ` +
+      (existingSummary
+        ? `Existing scenes already planned (must NOT overlap): ${existingSummary}. Each description must have a completely different setting, pose, and lighting. `
+        : `Each description must have a unique setting, pose, and lighting. `) +
+      `Output ONLY the descriptions, one per line, no numbers, no brackets, no preamble, max 20 words each.`;
+  }
 
   try {
-    // Force Anthropic for this structured count-critical call.
-    // Gemini drops structured markers and cannot reliably return exactly N lines —
-    // this must not be routed through the cost-lever provider switch.
+    // Force Anthropic — Gemini cannot reliably return exactly N ordered lines.
     const result = await generateChatText({
       system:
         "You are an image scene planner. Output only the requested plain descriptions, one per line, nothing else.",
       messages: [{ role: "user", content: prompt }],
-      maxTokens: 300,
+      maxTokens: 400,
       forceProvider: "anthropic",
     });
     const lines = result
@@ -675,31 +742,28 @@ async function supplementVibesForMultiImage(
       .split("\n")
       .map((l) => l.replace(/^\d+[\.\)]\s*/, "").trim())
       .filter(Boolean)
-      .slice(0, shortfall);
+      .slice(0, hasSubjects ? targetCount : shortfall);
     const supplemented = lines.map((line) =>
       encodeStoredVibe("SELFIE_MODE", line),
     );
     logger.info(
-      { shortfall, generated: supplemented.length },
-      "image-intent: supplemented vibes for multi-image deficit",
+      { targetCount, shortfall, generated: supplemented.length, hasSubjects },
+      "image-intent: supplemented vibes for multi-image request",
     );
-    return [...existingVibes, ...supplemented].slice(0, targetCount);
+    return [...base, ...supplemented].slice(0, targetCount);
   } catch (err) {
     logger.warn(
       { err },
       "image-intent: supplement vibe generation failed — using fallback scenes",
     );
-    const base =
-      existingVibes[0] ??
-      encodeStoredVibe("SELFIE_MODE", "warm close-up portrait, soft indoor light");
-    const baseLabel = decodeStoredVibe(base).vibe.split(",")[0]!.trim();
-    const extras = Array.from({ length: shortfall }, (_, i) =>
-      encodeStoredVibe(
-        "SELFIE_MODE",
-        `${SUPPLEMENT_FALLBACK_SCENES[i % SUPPLEMENT_FALLBACK_SCENES.length]!}, ${baseLabel}`,
-      ),
-    );
-    return [...existingVibes, ...extras].slice(0, targetCount);
+    // Fallback: subject-keyed when available, otherwise generic template.
+    const fallbacks = Array.from({ length: shortfall }, (_, i) => {
+      const scene = hasSubjects && subjects![i]
+        ? `selfie inspired by: ${subjects![i]}, ${SUPPLEMENT_FALLBACK_SCENES[i % SUPPLEMENT_FALLBACK_SCENES.length]!}`
+        : SUPPLEMENT_FALLBACK_SCENES[i % SUPPLEMENT_FALLBACK_SCENES.length]!;
+      return encodeStoredVibe("SELFIE_MODE", scene);
+    });
+    return [...base, ...fallbacks].slice(0, targetCount);
   }
 }
 
@@ -1474,16 +1538,21 @@ router.post("/chat", async (req, res): Promise<void> => {
   {
     if (typeof _multiImgCount === "number" && _multiImgCount > 1) {
       const _reqCount = _multiImgCount;
-      const _existing = selfieVibeList ?? (selfieVibe ? [selfieVibe] : []);
+      const _subjects = extractImageSubjects(userContent, _reqCount);
+      // When subjects are present, discard any LLM-merged vibe and rebuild all
+      // N vibes from scratch — one independent prompt per subject.
+      const _existing = _subjects.length >= _reqCount
+        ? []
+        : selfieVibeList ?? (selfieVibe ? [selfieVibe] : []);
       if (_existing.length < _reqCount) {
-        const _supplemented = await supplementVibesForMultiImage(_existing, _reqCount);
+        const _supplemented = await supplementVibesForMultiImage(_existing, _reqCount, _subjects.length >= _reqCount ? _subjects : undefined);
         if (_supplemented.length > 0) {
           selfieVibeList = _supplemented;
           selfieVibe = _supplemented[0]!;
           if (!visualPacketId) visualPacketId = newId();
           req.log.info(
-            { requestedCount: _reqCount, actualCount: _supplemented.length, visualPacketId, hadZeroMarkers: _existing.length === 0 },
-            "image-intent: multi-image deficit corrected in /chat",
+            { requestedCount: _reqCount, actualCount: _supplemented.length, visualPacketId, subjects: _subjects, hadSubjects: _subjects.length >= _reqCount },
+            "image-intent: multi-image task split in /chat",
           );
         }
       }
@@ -4816,16 +4885,21 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     {
       if (typeof _multiImgCount === "number" && _multiImgCount > 1) {
         const _reqCount = _multiImgCount;
-        const _existing = selfieVibeList ?? (selfieVibe ? [selfieVibe] : []);
+        const _subjects = userRow ? extractImageSubjects(userRow.content, _reqCount) : [];
+        // When subjects are present, discard any LLM-merged vibe and rebuild all
+        // N vibes from scratch — one independent prompt per subject.
+        const _existing = _subjects.length >= _reqCount
+          ? []
+          : selfieVibeList ?? (selfieVibe ? [selfieVibe] : []);
         if (_existing.length < _reqCount) {
-          const _supplemented = await supplementVibesForMultiImage(_existing, _reqCount);
+          const _supplemented = await supplementVibesForMultiImage(_existing, _reqCount, _subjects.length >= _reqCount ? _subjects : undefined);
           if (_supplemented.length > 0) {
             selfieVibeList = _supplemented;
             selfieVibe = _supplemented[0]!;
             if (!visualPacketId) visualPacketId = newId();
             req.log.info(
-              { streamId, requestedCount: _reqCount, actualCount: _supplemented.length, visualPacketId, hadZeroMarkers: _existing.length === 0 },
-              "image-intent: multi-image deficit corrected in /chat/stream",
+              { streamId, requestedCount: _reqCount, actualCount: _supplemented.length, visualPacketId, subjects: _subjects, hadSubjects: _subjects.length >= _reqCount },
+              "image-intent: multi-image task split in /chat/stream",
             );
           }
         }
