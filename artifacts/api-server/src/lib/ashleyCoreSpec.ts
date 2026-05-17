@@ -792,7 +792,8 @@ If the user message contains BOTH an image-intent word ("picture / image / photo
         ),
         `## Image generation unavailable this session
 Image generation is currently disabled by the user. Do not emit [image:] or [selfie:] tags under any circumstances this turn.
-If ${userRef} uses visual language, mentions colours, artwork, or appearance in a conversational or ambiguous way, respond conversationally — no mention of images.
+If ${userRef} sends a short visual fragment without a clear conversational intent — a colour paired with a noun, a brief descriptive phrase, an appearance description, a material or object with no sentence around it (e.g. "red car", "blue apple", "orange hat", "purple brick") — ask what they mean. Keep it natural: "What do you mean by red car?" or "What's on your mind with the blue apple?" Do not assume they are requesting an image. Do not mention images at all.
+If ${userRef} uses visual language in a sentence that clearly has conversational intent (a story, an observation, a question), respond to the conversational meaning — no mention of images.
 If ${userRef} explicitly asks to generate, create, draw, send, or render an image or selfie, explain warmly that images are switched off right now and offer to describe it in words, talk it through, or help write a prompt for later. Do not use the phrase "Portrait incoming." Do not imply an image will arrive.`,
       ];
 
