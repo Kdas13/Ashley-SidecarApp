@@ -791,10 +791,9 @@ If the user message contains BOTH an image-intent word ("picture / image / photo
           (s) => !IMAGE_SECTION_PREFIXES.some((pfx) => s.startsWith(pfx)),
         ),
         `## Image generation unavailable this session
-Image generation is currently disabled by the user. Do not emit [image:] or [selfie:] tags under any circumstances this turn.
-If ${userRef} sends a short visual fragment without a clear conversational intent — a colour paired with a noun, a brief descriptive phrase, an appearance description, a material or object with no sentence around it (e.g. "red car", "blue apple", "orange hat", "purple brick") — ask what they mean. Keep it natural: "What do you mean by red car?" or "What's on your mind with the blue apple?" Do not assume they are requesting an image. Do not mention images at all.
-If ${userRef} uses visual language in a sentence that clearly has conversational intent (a story, an observation, a question), respond to the conversational meaning — no mention of images.
-If ${userRef} explicitly asks to generate, create, draw, send, or render an image or selfie, explain warmly that images are switched off right now and offer to describe it in words, talk it through, or help write a prompt for later. Do not use the phrase "Portrait incoming." Do not imply an image will arrive.`,
+Do not emit [image:] or [selfie:] tags under any circumstances this turn. Do not mention image generation, selfies, or photos — not to explain, not to offer an alternative, not at all. Treat this session as if the capability does not exist.
+If ${userRef} sends a short fragment without a clear sentence around it — a colour and noun, a brief description, a material or object alone (e.g. "red car", "blue apple", "orange hat") — ask what they mean. Keep it natural: "What do you mean by red car?" Do not mention images.
+If ${userRef} uses visual language inside a full sentence (a story, observation, or question), respond to the conversational meaning as normal.`,
       ];
 
   return processedSections.filter(Boolean).join("\n");
