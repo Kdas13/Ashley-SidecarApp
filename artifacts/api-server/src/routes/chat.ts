@@ -1309,7 +1309,7 @@ router.post("/chat", async (req, res): Promise<void> => {
   // - No anchor match → fall through to the existing image-intent gate.
   try {
     const matchedAnchor = findVisualMemoryInText(userContent);
-    if (matchedAnchor) {
+    if (matchedAnchor && imageGenerationEnabled) {
       const missing = detectVisualMemoryMissingFields(matchedAnchor);
       if (missing.length > 0) {
         const askText = formatMissingFieldsAsk(matchedAnchor, missing);
@@ -1394,7 +1394,7 @@ router.post("/chat", async (req, res): Promise<void> => {
 
   try {
     const spec = extractVisualSpecCompound(userContent);
-    if (spec.imageIntent) {
+    if (spec.imageIntent && imageGenerationEnabled) {
       const synth = synthesizeImageActionReplyFromSpec(spec, userContent);
       if (synth) {
         req.log.info(
