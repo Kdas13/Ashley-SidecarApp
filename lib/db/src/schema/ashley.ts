@@ -108,6 +108,12 @@ export const ashleyProfileTable = pgTable("ashley_profile", {
   // because that governs PUSHED messages while you're away; this one
   // governs greetings when you're already opening the app.
   greetOnAppOpen: boolean("greet_on_app_open").notNull().default(true),
+  // imageGenerationEnabled: when false, the API suppresses all selfie
+  // directives and the mobile hides photo-generation UI entirely.
+  // Persisted so the setting survives app restarts and server-side hydration.
+  imageGenerationEnabled: boolean("image_generation_enabled")
+    .notNull()
+    .default(true),
   // Daily medical check-in eligibility input. The medical check-in feature
   // itself is NOT built yet — the scheduler scaffolds the category but the
   // medical_checkin slot is gated OFF at runtime until that feature lands.
