@@ -676,6 +676,22 @@ function extractImageSubjects(userText: string, count: number): string[] {
 }
 
 /**
+ * Extracts explicit "no person / no Ashley / no characters" constraint text
+ * from the user's message so it can be embedded in the generation prompt and
+ * trigger Stage 3 validation.  Returns a compact constraint string or "".
+ */
+function extractNoPersonText(userText: string): string {
+  const re =
+    /\bno\s+(?:people|person|persons|humans?|characters?|ashley|girls?|women?|m[ae]n|faces?|figures?|identity|identities)\b[^.\n]*/gi;
+  const found: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(userText)) !== null) {
+    found.push(m[0]!.trim().replace(/[.!,;]+$/, ""));
+  }
+  return [...new Set(found)].join(". ");
+}
+
+/**
  * Returns true when the subject explicitly involves a person, character, or
  * Ashley herself — meaning the normal selfie pipeline should run.
  * Returns false for objects, environments, abstract concepts, etc. — those
@@ -697,6 +713,7 @@ async function supplementVibesForMultiImage(
   existingVibes: string[],
   targetCount: number,
   subjects?: string[],
+  constraints?: string,
 ): Promise<string[]> {
   const hasSubjects = subjects && subjects.length >= targetCount;
 
@@ -716,9 +733,12 @@ async function supplementVibesForMultiImage(
       } else {
         // Pure object/environment — no person injected, ever.
         const cleanSubject = subject.trim().replace(/^(a |an |the )/i, "");
+        // Stage 2: embed explicit user constraints in the vibe description so
+        // they surface in the generation prompt and flag Stage 3 validation.
+        const constraintSuffix = constraints ? `. User constraints: ${constraints}` : "";
         results[i] = encodeStoredVibe(
           "SELFIE_MODE",
-          `[OBJECT_ONLY] photorealistic photograph of ${cleanSubject}, no people, crisp studio lighting`,
+          `[OBJECT_ONLY] photorealistic photograph of ${cleanSubject}, no people, crisp studio lighting${constraintSuffix}`,
         );
       }
     }
@@ -1606,13 +1626,14 @@ router.post("/chat", async (req, res): Promise<void> => {
         ? []
         : selfieVibeList ?? (selfieVibe ? [selfieVibe] : []);
       if (_existing.length < _reqCount) {
-        const _supplemented = await supplementVibesForMultiImage(_existing, _reqCount, _subjects.length >= _reqCount ? _subjects : undefined);
+        const _constraints = extractNoPersonText(userContent);
+        const _supplemented = await supplementVibesForMultiImage(_existing, _reqCount, _subjects.length >= _reqCount ? _subjects : undefined, _constraints || undefined);
         if (_supplemented.length > 0) {
           selfieVibeList = _supplemented;
           selfieVibe = _supplemented[0]!;
           if (!visualPacketId) visualPacketId = newId();
           req.log.info(
-            { requestedCount: _reqCount, actualCount: _supplemented.length, visualPacketId, subjects: _subjects, hadSubjects: _subjects.length >= _reqCount },
+            { requestedCount: _reqCount, actualCount: _supplemented.length, visualPacketId, subjects: _subjects, hadSubjects: _subjects.length >= _reqCount, constraints: _constraints || null },
             "image-intent: multi-image task split in /chat",
           );
         }
@@ -2106,6 +2127,52 @@ function extractDefaultHairState(appearance: string): string {
 }
 // ─────────────────────────────────────────────────────────────────────────
 
+/**
+ * Stage 3 — Output Validation Layer.
+ *
+ * Calls Claude vision on the raw base-64 image and returns true when NO human
+ * figure, face, or character is detected (i.e. the image passes).
+ * Fails open on API errors to avoid blocking on service disruptions — the
+ * retry loop in the OBJECT_ONLY branch handles genuine failures separately.
+ */
+async function validateNoPersonInB64(b64: string, jobId?: string): Promise<boolean> {
+  try {
+    const reply = await anthropic.messages.create({
+      model: "claude-haiku-4-5",
+      max_tokens: 10,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: { type: "base64", media_type: "image/png", data: b64 },
+            },
+            {
+              type: "text",
+              text: "Does this image contain any human figure, person, face, body part, or character resembling a human? Answer only YES or NO.",
+            },
+          ],
+        },
+      ],
+    });
+    const block = reply.content[0];
+    const answer = (block?.type === "text" ? block.text : "").trim().toUpperCase();
+    const passes = answer.startsWith("NO");
+    logger.info(
+      { jobId: jobId ?? null, validationAnswer: answer, passes },
+      "image-gen: Stage 3 OBJECT_ONLY validation result",
+    );
+    return passes;
+  } catch (err) {
+    logger.warn(
+      { err, jobId: jobId ?? null },
+      "image-gen: Stage 3 validation error — failing open",
+    );
+    return true;
+  }
+}
+
 async function generateAshleySelfie(
   vibe: string,
   profile: AshleyProfile,
@@ -2168,29 +2235,70 @@ async function generateAshleySelfie(
       return objInflight;
     }
 
-    const objPromise = (async () => {
-      let objB64: string | null = null;
+    // Stage 3 — retry loop with post-generation vision validation.
+    // Each attempt strengthens the no-person directive until the image passes
+    // or we exhaust MAX_ATTEMPTS.  On total failure the job returns null so
+    // the mobile shows an error rather than a contaminated image.
+    const RETRY_STRENGTHENERS = [
+      "",
+      "\n\nABSOLUTE REQUIREMENT: Zero human presence. Any person, face, body part, or humanoid form is a critical failure. The image must contain only the named subject — nothing else.",
+      "\n\nCRITICAL NON-NEGOTIABLE OVERRIDE: No human. No person. No face. No body. No character. No Ashley. Only the described subject. Human presence of any kind constitutes failure.",
+    ];
+    const MAX_ATTEMPTS = RETRY_STRENGTHENERS.length;
+
+    const objPromise = (async (): Promise<string | null> => {
       try {
-        objB64 = await generateImageBase64(objectPrompt, "1024x1024", "medium");
-      } catch (err) {
-        logger.warn({ err }, "image-gen: OBJECT_ONLY provider error");
-        selfieInFlight.delete(objCacheKey);
-        return null;
-      }
-      if (!objB64 || objB64.length === 0) {
-        selfieInFlight.delete(objCacheKey);
-        return null;
-      }
-      const objId = randomUUID();
-      try {
-        const relUrl = await saveSelfie(objId, Buffer.from(objB64, "base64"));
-        selfieCache.set(objCacheKey, { selfieId: objId, createdAt: Date.now() });
-        persistSelfieCache();
-        const finalUrl = `${publicBaseUrl()}${relUrl}`;
-        logger.info({ mode, imageMode, selfieId: objId, relUrl, finalUrl }, "image-gen: OBJECT_ONLY done");
-        return finalUrl;
-      } catch (err) {
-        logger.warn({ err }, "image-gen: OBJECT_ONLY save failed");
+        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+          const attemptPrompt = objectPrompt + (RETRY_STRENGTHENERS[attempt] ?? "");
+
+          let b64: string | null = null;
+          try {
+            b64 = await generateImageBase64(attemptPrompt, "1024x1024", "medium");
+          } catch (err) {
+            logger.warn({ err, attempt }, "image-gen: OBJECT_ONLY provider error");
+            if (attempt === MAX_ATTEMPTS - 1) return null;
+            continue;
+          }
+          if (!b64 || b64.length === 0) {
+            logger.warn({ attempt }, "image-gen: OBJECT_ONLY empty artifact");
+            if (attempt === MAX_ATTEMPTS - 1) return null;
+            continue;
+          }
+
+          // Stage 3: validate — discard and retry if a person was detected.
+          const passes = await validateNoPersonInB64(b64, jobId);
+          if (!passes) {
+            logger.warn(
+              { attempt, objectDesc: objectDesc.slice(0, 80) },
+              "image-gen: OBJECT_ONLY Stage 3 FAIL — person detected, discarding and retrying",
+            );
+            if (attempt === MAX_ATTEMPTS - 1) {
+              logger.error(
+                { objectDesc: objectDesc.slice(0, 80) },
+                "image-gen: OBJECT_ONLY all attempts failed Stage 3 validation — returning null",
+              );
+              return null;
+            }
+            continue;
+          }
+
+          // Passed — save and return.
+          const objId = randomUUID();
+          try {
+            const relUrl = await saveSelfie(objId, Buffer.from(b64, "base64"));
+            selfieCache.set(objCacheKey, { selfieId: objId, createdAt: Date.now() });
+            persistSelfieCache();
+            const finalUrl = `${publicBaseUrl()}${relUrl}`;
+            logger.info(
+              { mode, imageMode, selfieId: objId, attempt, relUrl, finalUrl },
+              "image-gen: OBJECT_ONLY done — passed Stage 3 validation",
+            );
+            return finalUrl;
+          } catch (err) {
+            logger.warn({ err }, "image-gen: OBJECT_ONLY save failed");
+            return null;
+          }
+        }
         return null;
       } finally {
         selfieInFlight.delete(objCacheKey);
@@ -5029,13 +5137,14 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
           ? []
           : selfieVibeList ?? (selfieVibe ? [selfieVibe] : []);
         if (_existing.length < _reqCount) {
-          const _supplemented = await supplementVibesForMultiImage(_existing, _reqCount, _subjects.length >= _reqCount ? _subjects : undefined);
+          const _constraints = userRow ? extractNoPersonText(userRow.content) : "";
+          const _supplemented = await supplementVibesForMultiImage(_existing, _reqCount, _subjects.length >= _reqCount ? _subjects : undefined, _constraints || undefined);
           if (_supplemented.length > 0) {
             selfieVibeList = _supplemented;
             selfieVibe = _supplemented[0]!;
             if (!visualPacketId) visualPacketId = newId();
             req.log.info(
-              { streamId, requestedCount: _reqCount, actualCount: _supplemented.length, visualPacketId, subjects: _subjects, hadSubjects: _subjects.length >= _reqCount },
+              { streamId, requestedCount: _reqCount, actualCount: _supplemented.length, visualPacketId, subjects: _subjects, hadSubjects: _subjects.length >= _reqCount, constraints: _constraints || null },
               "image-intent: multi-image task split in /chat/stream",
             );
           }
