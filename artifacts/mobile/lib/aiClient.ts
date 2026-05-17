@@ -597,6 +597,7 @@ export type ProfileUpdate = Partial<{
   accentColor: string;
   proactiveCadence: "off" | "low" | "normal" | "high";
   greetOnAppOpen: boolean;
+  imageGenerationEnabled: boolean;
   markOnboarded: boolean;
 }>;
 
