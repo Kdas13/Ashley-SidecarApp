@@ -217,7 +217,7 @@ export default function ChatScreen(): React.JSX.Element {
   // suffix, the bundle is still stale (Expo Go hasn't fetched the
   // current Metro bundle no matter what reload/clear-cache he tries).
   // Increment the suffix on each diagnostic push (B3 → B4 → …).
-  const BUILD_MARKER = "B4";
+  const BUILD_MARKER = "B5";
   const subtitleLabel = relationshipMode
     ? `${relationshipMode} mode • ${BUILD_MARKER}`
     : `tap to set relationship mode • ${BUILD_MARKER}`;
