@@ -51,6 +51,7 @@ import type {
 } from "@/lib/storage";
 import colors from "@/constants/colors";
 import { SwipeToReply } from "@/components/SwipeToReply";
+import { useImageGate } from "@/lib/imageGate";
 
 const RELATIONSHIP_MODE_PRESETS = [
   "Friend",
@@ -201,6 +202,7 @@ export default function ChatScreen(): React.JSX.Element {
   const [imageCaption, setImageCaption] = useState("");
   const [imagePickerError, setImagePickerError] = useState<string | null>(null);
 
+  const imageGenEnabled = useImageGate();
   const profileQuery = useProfile();
   const updateProfile = useUpdateProfile();
   const relationshipMode = (profileQuery.data?.relationshipMode ?? "").trim();
@@ -904,6 +906,7 @@ export default function ChatScreen(): React.JSX.Element {
             retryPending={
               streamMutation.isPending && activeStream?.mode === "new"
             }
+            imageGenEnabled={imageGenEnabled}
           />
           {showRememberCard && prev ? (
             <RememberCard
@@ -1106,25 +1109,27 @@ export default function ChatScreen(): React.JSX.Element {
         ) : null}
 
         <View style={[styles.inputBar, { paddingBottom: insets.bottom + 8 }]}>
-          <Pressable
-            onPress={openImagePicker}
-            disabled={streamMutation.isPending || sendImageMutation.isPending}
-            style={({ pressed }) => [
-              styles.attachBtn,
-              (streamMutation.isPending || sendImageMutation.isPending) && {
-                opacity: 0.4,
-              },
-              pressed && { transform: [{ scale: 0.95 }] },
-            ]}
-            accessibilityLabel="Attach a photo"
-            hitSlop={6}
-          >
-            <Feather
-              name="paperclip"
-              size={20}
-              color={colors.light.mutedForeground}
-            />
-          </Pressable>
+          {imageGenEnabled && (
+            <Pressable
+              onPress={openImagePicker}
+              disabled={streamMutation.isPending || sendImageMutation.isPending}
+              style={({ pressed }) => [
+                styles.attachBtn,
+                (streamMutation.isPending || sendImageMutation.isPending) && {
+                  opacity: 0.4,
+                },
+                pressed && { transform: [{ scale: 0.95 }] },
+              ]}
+              accessibilityLabel="Attach a photo"
+              hitSlop={6}
+            >
+              <Feather
+                name="paperclip"
+                size={20}
+                color={colors.light.mutedForeground}
+              />
+            </Pressable>
+          )}
           <TextInput
             ref={inputRef}
             value={draft}
@@ -1628,6 +1633,7 @@ function MessageBubble({
   speakStatus,
   continuePending,
   retryPending,
+  imageGenEnabled = true,
 }: {
   message: Message;
   onSwipeReply: (m: Message) => void;
@@ -1637,6 +1643,12 @@ function MessageBubble({
   speakStatus?: SpeakStatus;
   continuePending?: boolean;
   retryPending?: boolean;
+  /**
+   * When false, suppress all pending-selfie UI and retry buttons.
+   * Existing resolved imageUrl photos are not affected (they already
+   * arrived and are part of the conversation history).
+   */
+  imageGenEnabled?: boolean;
 }): React.JSX.Element {
   const isUser = message.role === "user";
   const hasImage = !!message.imageUrl;
@@ -1667,8 +1679,10 @@ function MessageBubble({
   // While the background generation is still running (or after it failed),
   // imageUrl is null and selfieVibe is the prompt. We use this to drive
   // either a "taking a selfie…" pending state or a retry button.
+  // Gate: when image generation is disabled, treat any pending vibe as null
+  // so no "taking a selfie…" spinner or retry button appears.
   const pendingSelfieVibe =
-    !hasImage && message.selfieVibe ? message.selfieVibe : null;
+    imageGenEnabled && !hasImage && message.selfieVibe ? message.selfieVibe : null;
   const { retry } = useRetrySelfie();
   const autoInFlight = useSelfieInFlight(message.id);
   // Track retry state locally with React state so the spinner / error

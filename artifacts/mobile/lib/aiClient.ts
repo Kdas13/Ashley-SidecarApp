@@ -175,6 +175,7 @@ type WireProfile = {
   accentColor: string;
   proactiveCadence?: string | null;
   greetOnAppOpen?: boolean | null;
+  imageGenerationEnabled?: boolean | null;
   onboardedAt: string | null;
   updatedAt: string;
 };
@@ -260,6 +261,7 @@ function profileFromWire(p: WireProfile): AshleyProfile {
         : 0,
     proactiveCadence: normalizeProactiveCadence(p.proactiveCadence),
     greetOnAppOpen: p.greetOnAppOpen !== false,
+    imageGenerationEnabled: p.imageGenerationEnabled !== false,
     onboardedAt: p.onboardedAt,
     updatedAt: p.updatedAt,
   };
@@ -803,6 +805,13 @@ export type ChatRequest = {
   id: string;
   content: string;
   replyTo?: ReplyToRef | null;
+  /**
+   * Image generation gate flag. When false the server skips all selfie
+   * directives in the system prompt and forces selfieVibe=null in the
+   * response so the mobile never sees a vibe to trigger on. Omit to
+   * inherit the server default (enabled).
+   */
+  imageGenerationEnabled?: boolean;
 };
 
 export type ChatResponse = {
@@ -841,6 +850,11 @@ export async function sendChatMessage(
         (typeof Intl !== "undefined" &&
           Intl.DateTimeFormat().resolvedOptions().timeZone) ||
         "UTC",
+      // Image generation gate — when explicitly false the server skips
+      // selfie directives and forces selfieVibe=null in the response.
+      ...(typeof req.imageGenerationEnabled === "boolean"
+        ? { imageGenerationEnabled: req.imageGenerationEnabled }
+        : {}),
     }),
   });
   return {
@@ -904,6 +918,11 @@ export type StreamReplyArgs = {
   /** Forwarded to POST /chat/stream so the server can detect and reject
    *  in-flight duplicate requests (same requestId already being processed). */
   requestId?: string;
+  /**
+   * Image generation gate flag. When false the server skips selfie directives
+   * and forces selfieVibe=null so the mobile never sees a vibe to trigger on.
+   */
+  imageGenerationEnabled?: boolean;
 };
 
 export type StreamReplyOutcome =
@@ -936,6 +955,9 @@ export async function streamAshleyReply(
   };
   if (args.requestId) {
     body["requestId"] = args.requestId;
+  }
+  if (typeof args.imageGenerationEnabled === "boolean") {
+    body["imageGenerationEnabled"] = args.imageGenerationEnabled;
   }
   if (args.newTurn) {
     body["userMessage"] = {
@@ -1297,13 +1319,28 @@ export async function fetchSelfieForMessage(
   messageId: string,
   vibe: string,
   sortOrder?: number,
+  signal?: AbortSignal,
 ): Promise<{ imageUrl: string; imageUrls?: string[] }> {
+  if (signal?.aborted) throw new Error("Aborted");
   let jobId = await startSelfieJob(messageId, vibe, sortOrder);
+  if (signal?.aborted) throw new Error("Aborted");
   let restartsLeft = 2;
   const base = getApiBase();
 
   for (let attempt = 0; attempt < SELFIE_POLL_MAX_ATTEMPTS; attempt++) {
-    await new Promise((r) => setTimeout(r, SELFIE_POLL_INTERVAL_MS));
+    // Interruptible sleep — resolves after the poll interval OR immediately
+    // when the AbortController fires (gate turned OFF mid-flight).
+    await new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) { reject(new Error("Aborted")); return; }
+      const id = setTimeout(resolve, SELFIE_POLL_INTERVAL_MS);
+      signal?.addEventListener(
+        "abort",
+        () => { clearTimeout(id); reject(new Error("Aborted")); },
+        { once: true },
+      );
+    });
+
+    if (signal?.aborted) throw new Error("Aborted");
 
     let res: Response;
     try {
@@ -1317,11 +1354,15 @@ export async function fetchSelfieForMessage(
             // with conditional requests, so we always get a fresh body.
             "Cache-Control": "no-cache",
           }),
+          ...(signal ? { signal } : {}),
         },
       );
-    } catch {
+    } catch (err) {
+      if (signal?.aborted) throw err; // propagate abort, do not retry
       continue; // network blip — try next interval
     }
+
+    if (signal?.aborted) throw new Error("Aborted");
 
     if (res.status === 404) {
       // Server may have recycled and forgotten the in-memory job. Re-issue
@@ -1329,9 +1370,11 @@ export async function fetchSelfieForMessage(
       if (restartsLeft > 0) {
         restartsLeft -= 1;
         try {
+          if (signal?.aborted) throw new Error("Aborted");
           jobId = await startSelfieJob(messageId, vibe, sortOrder);
           continue;
-        } catch {
+        } catch (err) {
+          if (signal?.aborted) throw err;
           continue;
         }
       }

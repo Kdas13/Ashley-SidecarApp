@@ -249,6 +249,9 @@ export default function ProfileScreen(): React.JSX.Element {
     if (typeof draft.greetOnAppOpen === "boolean") {
       payload.greetOnAppOpen = draft.greetOnAppOpen;
     }
+    if (typeof draft.imageGenerationEnabled === "boolean") {
+      payload.imageGenerationEnabled = draft.imageGenerationEnabled;
+    }
     if (
       draft.proactiveCadence === "off" ||
       draft.proactiveCadence === "low" ||
@@ -281,6 +284,16 @@ export default function ProfileScreen(): React.JSX.Element {
     setDraft((prev) => ({ ...prev, greetOnAppOpen: next }));
     void update.mutateAsync({ greetOnAppOpen: next }).catch((err) => {
       console.warn("[profile] greetOnAppOpen save failed", err);
+    });
+  };
+
+  // Image generation hard gate — auto-save like greetOnAppOpen.
+  const imageGenEnabledOn = draft.imageGenerationEnabled !== false;
+  const toggleImageGenEnabled = () => {
+    const next = !imageGenEnabledOn;
+    setDraft((prev) => ({ ...prev, imageGenerationEnabled: next }));
+    void update.mutateAsync({ imageGenerationEnabled: next }).catch((err) => {
+      console.warn("[profile] imageGenerationEnabled save failed", err);
     });
   };
 
@@ -466,6 +479,35 @@ export default function ProfileScreen(): React.JSX.Element {
               {greetOnAppOpenOn
                 ? "On — she might say hi"
                 : "Off — she stays quiet on open"}
+            </Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.fieldGroup}>
+          <Text style={styles.label}>Image generation</Text>
+          <Text style={styles.hint}>
+            When OFF, Ashley will not send or generate any images for the
+            rest of your session. Existing photos already in the chat are
+            not affected. Default: ON.
+          </Text>
+          <Pressable onPress={toggleImageGenEnabled} style={styles.toggleRow}>
+            <View
+              style={[
+                styles.toggleTrack,
+                imageGenEnabledOn && styles.toggleTrackOn,
+              ]}
+            >
+              <View
+                style={[
+                  styles.toggleThumb,
+                  imageGenEnabledOn && styles.toggleThumbOn,
+                ]}
+              />
+            </View>
+            <Text style={styles.toggleLabel}>
+              {imageGenEnabledOn
+                ? "On — she can send photos"
+                : "Off — no images at all"}
             </Text>
           </Pressable>
         </View>

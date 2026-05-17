@@ -85,6 +85,13 @@ export type AshleyProfile = {
    * which only governs PUSHED messages.
    */
   greetOnAppOpen: boolean;
+  /**
+   * Image Generation Hard Gate. When false the entire image pipeline is
+   * suppressed: no selfie generation, no photo picker, no image rendering.
+   * The app behaves as if image functionality was never implemented.
+   * Default ON.
+   */
+  imageGenerationEnabled: boolean;
   onboardedAt: string | null;
   updatedAt: string;
 };
@@ -237,6 +244,7 @@ export const DEFAULT_PROFILE: AshleyProfile = {
   intimacyLevel: 0,
   proactiveCadence: "normal",
   greetOnAppOpen: true,
+  imageGenerationEnabled: true,
   onboardedAt: null,
   updatedAt: new Date(0).toISOString(),
 };

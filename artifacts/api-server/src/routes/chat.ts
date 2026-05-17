@@ -267,6 +267,8 @@ const ChatBodySchema = z.object({
   clientNow: z.string().datetime({ offset: true }).optional(),
   clientTimezone: z.string().min(1).max(64).optional(),
   debug: z.boolean().optional(),
+  /** When false, suppress all image generation in this request. */
+  imageGenerationEnabled: z.boolean().optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -941,7 +943,12 @@ router.post("/chat", async (req, res): Promise<void> => {
     return;
   }
   const { id: userId, content, replyTo } = parsed.data.userMessage;
-  const { clientNow, clientTimezone, debug: debugMode = false } = parsed.data;
+  const {
+    clientNow,
+    clientTimezone,
+    debug: debugMode = false,
+    imageGenerationEnabled = true,
+  } = parsed.data;
   // Strip {{VMEM}} / {{VSPEC}} markers from user input before any spec / synth
   // / persistence path sees it — without this a user could smuggle a marker
   // into chat to fake an anchor reference and bypass the visual-memory gate.
@@ -1682,6 +1689,14 @@ router.post("/chat", async (req, res): Promise<void> => {
     }
   }
 
+  // Image generation hard gate — client opted out; strip vibes before
+  // persisting so the mobile never receives anything to trigger on.
+  if (!imageGenerationEnabled) {
+    selfieVibe = null;
+    selfieVibeList = null;
+    visualPacketId = null;
+  }
+
   // 6. Persist Ashley's reply.
   let ashleyRow: Message;
   try {
@@ -1814,6 +1829,8 @@ const ChatSelfieBodySchema = z.object({
   // When provided, attachment row lookup uses sortOrder instead of selfieVibe
   // to avoid mis-association when two markers emit identical encoded vibes.
   sortOrder: z.number().int().min(0).optional(),
+  /** When false, block this selfie generation call entirely. */
+  imageGenerationEnabled: z.boolean().optional(),
 });
 
 type SelfieJob =
@@ -3045,6 +3062,12 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
   }
   const { messageId, vibe, mode, imageMode: clientImageMode } = parsed.data;
 
+  // Image generation hard gate — client opted out for this session.
+  if (parsed.data.imageGenerationEnabled === false) {
+    res.status(503).json({ error: "Image generation is disabled" });
+    return;
+  }
+
   // Confirm the message belongs to this device — prevents using another
   // device's id with our own deviceId via header.
   const owns = await db
@@ -4036,6 +4059,8 @@ const ChatStreamBodySchema = z
      *  being processed), preventing concurrent model calls for the same
      *  message under rapid-send / retry conditions. */
     requestId: z.string().min(1).max(128).optional(),
+    /** When false, suppress all image generation in this request. */
+    imageGenerationEnabled: z.boolean().optional(),
   })
   .refine(
     (d) =>
@@ -4260,8 +4285,14 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     });
     return;
   }
-  const { userMessage, continueFromMessageId, clientNow, clientTimezone, requestId } =
-    parsed.data;
+  const {
+    userMessage,
+    continueFromMessageId,
+    clientNow,
+    clientTimezone,
+    requestId,
+    imageGenerationEnabled = true,
+  } = parsed.data;
   const isContinue = Boolean(continueFromMessageId);
 
   // ---- Request idempotency check (new-turn mode only; continue is inherently
@@ -5243,6 +5274,13 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
         } catch (err) {
           req.log.warn({ err }, "Failed to insert media_attachments rows (non-fatal, stream)");
         }
+      }
+      // Image generation hard gate — client opted out; strip vibes before
+      // the done event so the mobile never receives anything to trigger on.
+      if (!imageGenerationEnabled) {
+        selfieVibe = null;
+        selfieVibeList = null;
+        visualPacketId = null;
       }
       writeEvent("done", { content: finalText, selfieVibe, selfieVibeList, visualPacketId });
       if (requestId) requestIdempotencyMap.set(requestId, { status: "done", createdAt: Date.now() });

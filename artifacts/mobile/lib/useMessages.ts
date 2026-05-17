@@ -24,6 +24,10 @@ import {
   type StreamReplyOutcome,
 } from "./aiClient";
 import type { ImageAnalysisMode, ImageCategory } from "./storage";
+import {
+  canUseImageGeneration,
+  registerSelfieAbortController,
+} from "./imageGate";
 
 const MESSAGES_KEY = ["messages"] as const;
 const SUMMARIES_KEY = ["summaries"] as const;
@@ -116,6 +120,7 @@ export function useSendMessage() {
           id: userId,
           content,
           ...(replyTo ? { replyTo } : {}),
+          imageGenerationEnabled: canUseImageGeneration(),
         });
       } catch (err) {
         // Leave the optimistic user bubble in place so retry works.
@@ -337,8 +342,8 @@ async function runStream(args: RunStreamArgs): Promise<StreamReplyOutcome> {
 
   const outcome = await streamAshleyReply(
     args.newTurn
-      ? { newTurn: args.newTurn, requestId: args.requestId }
-      : { continueFromMessageId: args.continueFromMessageId! },
+      ? { newTurn: args.newTurn, requestId: args.requestId, imageGenerationEnabled: canUseImageGeneration() }
+      : { continueFromMessageId: args.continueFromMessageId!, imageGenerationEnabled: canUseImageGeneration() },
     {
       onMeta: (meta: StreamReplyMeta) => {
         ashleyId = meta.ashleyMessage.id;
@@ -745,6 +750,7 @@ export function useRetryUnansweredReply() {
         id: tail.id,
         content: tail.content,
         ...(tail.replyTo ? { replyTo: tail.replyTo } : {}),
+        imageGenerationEnabled: canUseImageGeneration(),
       });
 
       const next = [...all.slice(0, -1), response.userMessage, response.ashleyMessage];
@@ -947,12 +953,20 @@ export async function fetchAndAttachSelfie(
   messageId: string,
   vibe: string,
 ): Promise<void> {
+  // Hard gate — if image generation is disabled, do nothing. Leave selfieVibe
+  // untouched so if the gate is re-enabled later the bubble can still retry.
+  if (!canUseImageGeneration()) return;
   if (inFlightSelfies.has(messageId)) return;
+
+  const ac = new AbortController();
+  const cleanupAbort = registerSelfieAbortController(ac);
   setInFlight(messageId, true);
   try {
     for (let attempt = 0; attempt < SELFIE_AUTO_RETRY_ATTEMPTS; attempt++) {
+      if (ac.signal.aborted) return;
       try {
-        const result = await fetchSelfieForMessage(messageId, vibe);
+        const result = await fetchSelfieForMessage(messageId, vibe, undefined, ac.signal);
+        if (ac.signal.aborted) return;
         if (result.imageUrls && result.imageUrls.length > 1) {
           // Server fan-out: all N images arrived in one response.
           await patchInCache(qc, messageId, {
@@ -968,7 +982,8 @@ export async function fetchAndAttachSelfie(
           });
         }
         return;
-      } catch {
+      } catch (err) {
+        if (ac.signal.aborted) return; // gate turned OFF mid-flight, stop silently
         if (attempt < SELFIE_AUTO_RETRY_ATTEMPTS - 1) {
           await new Promise((r) => setTimeout(r, SELFIE_AUTO_RETRY_DELAY_MS));
         }
@@ -976,6 +991,7 @@ export async function fetchAndAttachSelfie(
     }
     // Leave selfieVibe in place so the bubble surfaces a manual retry button.
   } finally {
+    cleanupAbort();
     setInFlight(messageId, false);
   }
 }
@@ -991,12 +1007,19 @@ export async function fetchAndAttachSelfieList(
   vibeList: string[],
 ): Promise<void> {
   if (vibeList.length === 0) return;
+  // Hard gate — if image generation is disabled, do nothing.
+  if (!canUseImageGeneration()) return;
   if (inFlightSelfies.has(messageId)) return;
+
+  const ac = new AbortController();
+  const cleanupAbort = registerSelfieAbortController(ac);
   setInFlight(messageId, true);
   try {
+    if (ac.signal.aborted) return;
     const settled = await Promise.allSettled(
-      vibeList.map((vibe, i) => fetchSelfieForMessage(messageId, vibe, i)),
+      vibeList.map((vibe, i) => fetchSelfieForMessage(messageId, vibe, i, ac.signal)),
     );
+    if (ac.signal.aborted) return;
     // Fast path: server fan-out already assembled the full imageUrls array
     // on the first completed job — use it directly.
     for (const r of settled) {
@@ -1030,6 +1053,7 @@ export async function fetchAndAttachSelfieList(
     }
     // If ALL failed, leave selfieVibeList in place so the retry button shows.
   } finally {
+    cleanupAbort();
     setInFlight(messageId, false);
   }
 }
