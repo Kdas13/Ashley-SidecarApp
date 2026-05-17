@@ -786,15 +786,9 @@ If the user message contains BOTH an image-intent word ("picture / image / photo
   ];
   const processedSections = imageEnabled
     ? sections
-    : [
-        ...sections.filter(
-          (s) => !IMAGE_SECTION_PREFIXES.some((pfx) => s.startsWith(pfx)),
-        ),
-        `## Image generation unavailable this session
-Do not emit [image:] or [selfie:] tags under any circumstances this turn. Do not mention image generation, selfies, or photos — not to explain, not to offer an alternative, not at all. Treat this session as if the capability does not exist.
-If ${userRef} sends a short fragment without a clear sentence around it — a colour and noun, a brief description, a material or object alone (e.g. "red car", "blue apple", "orange hat") — ask what they mean. Keep it natural: "What do you mean by red car?" Do not mention images.
-If ${userRef} uses visual language inside a full sentence (a story, observation, or question), respond to the conversational meaning as normal.`,
-      ];
+    : sections.filter(
+        (s) => !IMAGE_SECTION_PREFIXES.some((pfx) => s.startsWith(pfx)),
+      );
 
   return processedSections.filter(Boolean).join("\n");
 }
