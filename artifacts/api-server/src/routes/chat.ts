@@ -1442,6 +1442,48 @@ router.post("/chat", async (req, res): Promise<void> => {
     req.log.warn({ err }, "image-intent gate (spec, /chat): threw (non-fatal)");
   }
 
+  // ---- Pre-LLM image gate.
+  // All the synth/hard-gate paths above are already gated on
+  // imageGenerationEnabled, so image-intent messages fall through to here
+  // when the gate is OFF.  If we reach this point with an image request and
+  // the gate off, we return a plain-text blocked response WITHOUT calling
+  // the LLM.  We cannot rely on a system-prompt override: the Core Spec has
+  // deep selfie directives that the model follows in preference to appended
+  // [SYSTEM:] notes.
+  if (!imageGenerationEnabled) {
+    try {
+      const imageGateHistory: FollowUpHistoryTurn[] = history.map((m) => ({
+        role: m.role === "user" ? "user" : "ashley",
+        content: (m.content ?? "").toString(),
+        selfieVibe: m.role === "user" ? null : m.selfieVibe ?? null,
+        imageUrl: m.role === "user" ? null : m.imageUrl ?? null,
+      }));
+      const isImageReq =
+        /^\s*(pic|photo|selfie|selfies|portrait)\s*$/i.test(userContent) ||
+        /\b(send\s+(me\s+)?(a\s+)?(pic|photo|selfie|picture|image)|show\s+me\b|generate\s+(a\s+)?(pic|photo|selfie|picture|image|portrait)|can\s+i\s+see\s+(you|a\s+pic))\b/i.test(userContent) ||
+        resolveImageFollowUp(userContent, imageGateHistory) !== null;
+      if (isImageReq) {
+        const blockedText =
+          "Images are switched off right now — you can turn them back on in my profile settings.";
+        const [blocked] = await db
+          .insert(messagesTable)
+          .values({
+            id: newId(),
+            deviceId,
+            role: "ashley",
+            content: blockedText,
+            selfieVibe: null,
+          })
+          .returning();
+        req.log.info({ deviceId }, "image-gate (/chat): blocked image request, returned plain-text response");
+        res.json({ userMessage: userRow, ashleyMessage: blocked! });
+        return;
+      }
+    } catch (err) {
+      req.log.warn({ err }, "image-gate pre-LLM check (/chat): threw (non-fatal), falling through to LLM");
+    }
+  }
+
   const claudeMessages: Array<{ role: "user" | "assistant"; content: string }> =
     [];
   for (const m of history) {
@@ -4999,6 +5041,47 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
       if (!res.writableEnded) res.end();
     }
     return;
+  }
+
+  // ---- Pre-LLM image gate (stream).
+  // Mirror of the identical gate in the /chat handler above.  When the gate
+  // is OFF, the imageGateSynth synth paths were already skipped, so image
+  // requests fall through to the LLM.  Intercept them here before the model
+  // call: classify with the same resolver + regex used in /chat, persist the
+  // blocked response into the pre-inserted Ashley row, emit delta+done, done.
+  if (!imageGenerationEnabled && !isContinue && userRow) {
+    try {
+      const imageGateHistory: FollowUpHistoryTurn[] = history.map((m) => ({
+        role: m.role === "user" ? "user" : "ashley",
+        content: (m.content ?? "").toString(),
+        selfieVibe: m.role === "user" ? null : m.selfieVibe ?? null,
+        imageUrl: m.role === "user" ? null : m.imageUrl ?? null,
+      }));
+      const isImageReq =
+        /^\s*(pic|photo|selfie|selfies|portrait)\s*$/i.test(userRow.content) ||
+        /\b(send\s+(me\s+)?(a\s+)?(pic|photo|selfie|picture|image)|show\s+me\b|generate\s+(a\s+)?(pic|photo|selfie|picture|image|portrait)|can\s+i\s+see\s+(you|a\s+pic))\b/i.test(userRow.content) ||
+        resolveImageFollowUp(userRow.content, imageGateHistory) !== null;
+      if (isImageReq) {
+        const blockedText =
+          "Images are switched off right now — you can turn them back on in my profile settings.";
+        await db
+          .update(messagesTable)
+          .set({ content: blockedText, status: "complete", selfieVibe: null })
+          .where(eq(messagesTable.id, streamId));
+        writeEvent("delta", { text: blockedText });
+        writeEvent("done", {
+          content: blockedText,
+          selfieVibe: null,
+          selfieVibeList: null,
+          visualPacketId: null,
+        });
+        req.log.info({ deviceId, streamId }, "image-gate (stream): blocked image request, returned plain-text response");
+        if (!res.writableEnded) res.end();
+        return;
+      }
+    } catch (err) {
+      req.log.warn({ err, streamId }, "image-gate pre-LLM check (stream): threw (non-fatal), falling through to LLM");
+    }
   }
 
   // ---- Register abort controller.
