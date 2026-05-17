@@ -1132,7 +1132,7 @@ router.post("/chat", async (req, res): Promise<void> => {
     clientTimezone,
     previousMessageAt,
   );
-  let systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}${buildSystemEventsSection()}\n\n${buildOpenTicketsBlock(openTickets)}`;
+  let systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries, { imageGenerationEnabled })}${buildSystemEventsSection()}\n\n${buildOpenTicketsBlock(openTickets)}`;
 
   // Image generation hard gate — tell the LLM images are off so it
   // produces an explanation rather than selfie-directive prose.
@@ -1442,29 +1442,30 @@ router.post("/chat", async (req, res): Promise<void> => {
     req.log.warn({ err }, "image-intent gate (spec, /chat): threw (non-fatal)");
   }
 
-  // ---- Pre-LLM image gate.
-  // All the synth/hard-gate paths above are already gated on
-  // imageGenerationEnabled, so image-intent messages fall through to here
-  // when the gate is OFF.  If we reach this point with an image request and
-  // the gate off, we return a plain-text blocked response WITHOUT calling
-  // the LLM.  We cannot rely on a system-prompt override: the Core Spec has
-  // deep selfie directives that the model follows in preference to appended
-  // [SYSTEM:] notes.
+  // ---- Pre-LLM image gate (explicit requests only).
+  // When imageGenerationEnabled is false the LLM already has the selfie
+  // directive sections stripped from its system prompt (buildSystemPrompt
+  // omits them), so ambiguous visual language ("Pic", "Red apple",
+  // "Not bad for a shelf stacker, right?") falls through to the LLM and
+  // gets a conversational reply.  This gate handles only EXPLICIT image
+  // generation requests — messages containing a clear creation/delivery
+  // verb paired with an image noun, or a direct selfie delivery request —
+  // where even a stripped prompt might not produce the right refusal tone.
   if (!imageGenerationEnabled) {
     try {
-      const imageGateHistory: FollowUpHistoryTurn[] = history.map((m) => ({
-        role: m.role === "user" ? "user" : "ashley",
-        content: (m.content ?? "").toString(),
-        selfieVibe: m.role === "user" ? null : m.selfieVibe ?? null,
-        imageUrl: m.role === "user" ? null : m.imageUrl ?? null,
-      }));
-      const isImageReq =
-        /^\s*(pic|photo|selfie|selfies|portrait)\s*$/i.test(userContent) ||
-        /\b(send\s+(me\s+)?(a\s+)?(pic|photo|selfie|picture|image)|show\s+me\b|generate\s+(a\s+)?(pic|photo|selfie|picture|image|portrait)|can\s+i\s+see\s+(you|a\s+pic))\b/i.test(userContent) ||
-        resolveImageFollowUp(userContent, imageGateHistory) !== null;
-      if (isImageReq) {
+      const isExplicitImageReq =
+        // Creation verb + image noun: "generate a selfie", "draw Ashley",
+        // "create a picture of you", "render this as an image", etc.
+        /\b(generate|create|make|draw|render|produce|paint|design)\s+(an?\s+)?(image|picture|photo|selfie|selfies|portrait|artwork|illustration|sketch|pic|visual)\b/i.test(userContent) ||
+        // "can you draw / create / generate ..."
+        /\bcan\s+(you\s+)?(draw|create|generate|make|render|paint)\b/i.test(userContent) ||
+        // Direct selfie delivery: "send me a selfie", "send a selfie"
+        /\bsend\s+(me\s+)?(a\s+|your\s+)?selfie\b/i.test(userContent) ||
+        // "send me a pic / photo / picture / image"
+        /\bsend\s+me\s+(a\s+)?(pic|photo|picture|image)\b/i.test(userContent);
+      if (isExplicitImageReq) {
         const blockedText =
-          "Images are switched off right now — you can turn them back on in my profile settings.";
+          "Images are switched off right now, but I can describe it, talk it through, or help you write a prompt for later — just let me know.";
         const [blocked] = await db
           .insert(messagesTable)
           .values({
@@ -1475,7 +1476,7 @@ router.post("/chat", async (req, res): Promise<void> => {
             selfieVibe: null,
           })
           .returning();
-        req.log.info({ deviceId }, "image-gate (/chat): blocked image request, returned plain-text response");
+        req.log.info({ deviceId }, "image-gate (/chat): explicit image request blocked, plain-text response returned");
         res.json({ userMessage: userRow, ashleyMessage: blocked! });
         return;
       }
@@ -4552,7 +4553,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     clientTimezone,
     previousMessageAt,
   );
-  const baseSystemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries)}${buildSystemEventsSection()}\n\n${buildOpenTicketsBlock(openTickets)}`;
+  const baseSystemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries, { imageGenerationEnabled })}${buildSystemEventsSection()}\n\n${buildOpenTicketsBlock(openTickets)}`;
 
   // Web lookup (Stage 1+): if the user message matches the trigger
   // heuristic, run a Tavily search server-side and inject a
@@ -5043,27 +5044,20 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     return;
   }
 
-  // ---- Pre-LLM image gate (stream).
-  // Mirror of the identical gate in the /chat handler above.  When the gate
-  // is OFF, the imageGateSynth synth paths were already skipped, so image
-  // requests fall through to the LLM.  Intercept them here before the model
-  // call: classify with the same resolver + regex used in /chat, persist the
-  // blocked response into the pre-inserted Ashley row, emit delta+done, done.
+  // ---- Pre-LLM image gate (stream) — explicit requests only.
+  // Mirror of the identical gate in /chat.  Ambiguous visual language
+  // falls through to the LLM (whose prompt already has selfie directives
+  // stripped); this gate only fires for unambiguous generation requests.
   if (!imageGenerationEnabled && !isContinue && userRow) {
     try {
-      const imageGateHistory: FollowUpHistoryTurn[] = history.map((m) => ({
-        role: m.role === "user" ? "user" : "ashley",
-        content: (m.content ?? "").toString(),
-        selfieVibe: m.role === "user" ? null : m.selfieVibe ?? null,
-        imageUrl: m.role === "user" ? null : m.imageUrl ?? null,
-      }));
-      const isImageReq =
-        /^\s*(pic|photo|selfie|selfies|portrait)\s*$/i.test(userRow.content) ||
-        /\b(send\s+(me\s+)?(a\s+)?(pic|photo|selfie|picture|image)|show\s+me\b|generate\s+(a\s+)?(pic|photo|selfie|picture|image|portrait)|can\s+i\s+see\s+(you|a\s+pic))\b/i.test(userRow.content) ||
-        resolveImageFollowUp(userRow.content, imageGateHistory) !== null;
-      if (isImageReq) {
+      const isExplicitImageReq =
+        /\b(generate|create|make|draw|render|produce|paint|design)\s+(an?\s+)?(image|picture|photo|selfie|selfies|portrait|artwork|illustration|sketch|pic|visual)\b/i.test(userRow.content) ||
+        /\bcan\s+(you\s+)?(draw|create|generate|make|render|paint)\b/i.test(userRow.content) ||
+        /\bsend\s+(me\s+)?(a\s+|your\s+)?selfie\b/i.test(userRow.content) ||
+        /\bsend\s+me\s+(a\s+)?(pic|photo|picture|image)\b/i.test(userRow.content);
+      if (isExplicitImageReq) {
         const blockedText =
-          "Images are switched off right now — you can turn them back on in my profile settings.";
+          "Images are switched off right now, but I can describe it, talk it through, or help you write a prompt for later — just let me know.";
         await db
           .update(messagesTable)
           .set({ content: blockedText, status: "complete", selfieVibe: null })
@@ -5075,7 +5069,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
           selfieVibeList: null,
           visualPacketId: null,
         });
-        req.log.info({ deviceId, streamId }, "image-gate (stream): blocked image request, returned plain-text response");
+        req.log.info({ deviceId, streamId }, "image-gate (stream): explicit image request blocked, plain-text response returned");
         if (!res.writableEnded) res.end();
         return;
       }

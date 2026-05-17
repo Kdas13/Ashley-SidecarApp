@@ -390,7 +390,10 @@ export function buildSystemPrompt(
   profile: AshleyProfile,
   memories: Memory[],
   summaries: ConversationSummary[],
+  opts?: { imageGenerationEnabled?: boolean },
 ): string {
+  // Default true — only strip image sections when explicitly false.
+  const imageEnabled = opts?.imageGenerationEnabled !== false;
   const userRef = trim(profile.refersToUserAs) || "you";
   const themLabel =
     userRef === "him" || userRef === "her" || userRef === "them"
@@ -766,7 +769,34 @@ If the user message contains BOTH an image-intent word ("picture / image / photo
     voiceRegisterSection,
   ];
 
-  return sections.filter(Boolean).join("\n");
+  // When image generation is disabled, strip the five image-directive
+  // sections and replace them with a single capability note.  This
+  // removes [image: MODE | ...] and [selfie: ...] tag instructions from
+  // the LLM's context so it cannot generate "Portrait incoming." or any
+  // other image-delivery prose for ambiguous messages — the intent
+  // router in chat.ts handles explicit generation requests before the
+  // LLM runs; everything else falls through to a model that simply
+  // doesn't know it can send images this session.
+  const IMAGE_SECTION_PREFIXES = [
+    "## Sending images",
+    "## Capability truth rule",
+    "## Short follow-up image intent",
+    "## No phantom images",
+    "## Action-first for image requests",
+  ];
+  const processedSections = imageEnabled
+    ? sections
+    : [
+        ...sections.filter(
+          (s) => !IMAGE_SECTION_PREFIXES.some((pfx) => s.startsWith(pfx)),
+        ),
+        `## Image generation unavailable this session
+Image generation is currently disabled by the user. Do not emit [image:] or [selfie:] tags under any circumstances this turn.
+If ${userRef} uses visual language, mentions colours, artwork, or appearance in a conversational or ambiguous way, respond conversationally — no mention of images.
+If ${userRef} explicitly asks to generate, create, draw, send, or render an image or selfie, explain warmly that images are switched off right now and offer to describe it in words, talk it through, or help write a prompt for later. Do not use the phrase "Portrait incoming." Do not imply an image will arrive.`,
+      ];
+
+  return processedSections.filter(Boolean).join("\n");
 }
 
 // ---------------------------------------------------------------------------
