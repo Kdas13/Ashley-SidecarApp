@@ -140,6 +140,33 @@ export async function* streamChatText(
           );
           continue;
         }
+        // If Gemini is rate-limited and we have exhausted retries, fall back
+        // to Anthropic so the user gets a response rather than PROVIDER_ERROR.
+        if (isRateLimit(err) && !hasYielded) {
+          logger.warn(
+            { attempt },
+            "Gemini rate limit exhausted on streamChatText — falling back to Anthropic",
+          );
+          const stream = anthropic.messages.stream(
+            {
+              model: "claude-sonnet-4-6",
+              max_tokens: Math.min(opts.maxTokens, 8192),
+              system: opts.system,
+              messages: opts.messages,
+            },
+            { signal: opts.signal },
+          );
+          for await (const ev of stream) {
+            if (
+              ev.type === "content_block_delta" &&
+              ev.delta.type === "text_delta" &&
+              ev.delta.text
+            ) {
+              yield ev.delta.text;
+            }
+          }
+          return;
+        }
         throw err;
       }
     }

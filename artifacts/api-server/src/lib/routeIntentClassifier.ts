@@ -64,6 +64,14 @@ const SHOW_IMAGE_RE =
 const TAKE_PHOTO_RE =
   /\btake\s+(me\s+)?(a\s+)?(selfie|photo|picture|pic)\b/i;
 
+/**
+ * Count + image noun — covers natural requests like:
+ * "10 pictures please", "5 photos", "3 selfies", "a few pics",
+ * "some photos", "several portraits", "another picture"
+ */
+const COUNT_IMAGE_NOUN_RE =
+  /\b(\d+|a\s+few|some|several|few|many|more|another|a\s+couple(\s+of)?)\s+(pictures?|photos?|selfies?|pics?|snapshots?|portraits?|images?|sketches?|artworks?)\b/i;
+
 // ---------------------------------------------------------------------------
 // Question detection — absolute conversational override (spec v3.0, §10)
 // ---------------------------------------------------------------------------
@@ -101,7 +109,8 @@ export function classifyRouteIntent(text: string): RouteIntentResult {
     SELFIE_DELIVERY_RE.test(trimmed) ||
     SEND_IMAGE_RE.test(trimmed) ||
     SHOW_IMAGE_RE.test(trimmed) ||
-    TAKE_PHOTO_RE.test(trimmed);
+    TAKE_PHOTO_RE.test(trimmed) ||
+    COUNT_IMAGE_NOUN_RE.test(trimmed);
 
   // ---- Intent type: used for logging only; does not affect routing ---------
   let intentType: RouteIntentType;
