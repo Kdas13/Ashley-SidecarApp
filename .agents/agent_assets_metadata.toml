@@ -41,3 +41,9 @@ id = "cKy3_4Jvqh1AAYYcNC9zl"
 uri = "file://ashley-configuration-export.txt"
 type = "text"
 title = "Ashley Configuration Export — v1.0.3 B5 (2026-05-23)"
+
+[[outputs]]
+id = "E6rigGLI1JC65FBvO2JDD"
+uri = "file://ashley-orchestration-feasibility-review.md"
+type = "text"
+title = "Ashley Orchestration — Feasibility Review"
