@@ -42,13 +42,13 @@ app.use(
   }),
 );
 app.use(cors());
-// The base64 image-upload route (/api/chat/image) needs ~12mb of headroom;
-// every other endpoint stays on a tight 1mb cap so a stray text payload
-// can't bloat memory pressure. We pick the right parser per-request based
-// on the path. (Mounting two json parsers globally doesn't work because
-// express.json is idempotent — once req._body is set the second pass
-// no-ops.)
-const jsonLarge = express.json({ limit: "40mb" });
+// The base64 image-upload route (/api/chat/image) needs large headroom;
+// 10 images at q=0.85 ≈ 90 MB base64, so the cap is 100 MB.
+// Every other endpoint stays on a tight 1 MB cap. We pick the right parser
+// per-request based on the path. (Mounting two json parsers globally doesn't
+// work because express.json is idempotent — once req._body is set the second
+// pass no-ops.)
+const jsonLarge = express.json({ limit: "100mb" });
 const jsonSmall = express.json({ limit: "1mb" });
 app.use((req, res, next) => {
   if (req.path === "/api/chat/image") return jsonLarge(req, res, next);

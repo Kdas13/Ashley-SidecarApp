@@ -14,12 +14,12 @@ import { generateChatText } from "../lib/textLLM";
 const router: IRouter = Router();
 
 const IngestBodySchema = z.object({
-  content: z.string().min(1).max(140_000),
+  content: z.string().min(1).max(280_000),
   filename: z.string().max(255).optional(),
 });
 
 const SYSTEM_PROMPT =
-  "You are Ashley, a warm and attentive AI companion. The user has shared a text document with you. Read it carefully and respond with: (1) a concise plain-English summary of what the document contains — 2–4 sentences — and (2) one natural follow-up question about what they would like to do with it or discuss from it. Keep the tone warm but efficient. No asterisks, no stage directions.";
+  "You are Ashley, a warm and attentive AI companion. The user has shared one or more text documents with you. Read carefully and respond naturally — summarise what you found, highlight anything important or interesting, and ask what they would like to do with it. If there are multiple documents, address each one. No asterisks, no stage directions. Keep the tone warm but efficient.";
 
 router.post("/api/documents/ingest", async (req, res): Promise<void> => {
   const deviceId = getDeviceId(req);
@@ -46,7 +46,7 @@ router.post("/api/documents/ingest", async (req, res): Promise<void> => {
           content: `I'm sharing ${label} with you:\n\n---\n${content}\n---`,
         },
       ],
-      maxTokens: 600,
+      maxTokens: 4096,
     });
 
     res.json({ reply });

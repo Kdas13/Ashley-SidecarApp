@@ -13,6 +13,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -739,13 +740,11 @@ export default function ChatScreen(): React.JSX.Element {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsMultipleSelection: true,
-        selectionLimit: 4,
+        selectionLimit: 10,
         base64: true,
-        // Multi-image sends encode all photos as base64 in one JSON body.
-        // Lower quality keeps the total payload well under the 40 MB server
-        // limit (4 × ~6 MB base64 = ~24 MB at q=0.65; 4 × ~9 MB = ~36 MB
-        // at q=0.85 — too close to the ceiling with real camera images).
-        quality: 0.65,
+        // Each photo compresses to ~9 MB base64 at q=0.85.
+        // Server body parser cap is 100 MB, well above 10 × 9 MB.
+        quality: 0.85,
         exif: false,
       });
       if (result.canceled) return;
@@ -754,11 +753,12 @@ export default function ChatScreen(): React.JSX.Element {
         Alert.alert("Couldn't read image", "Try again with a different photo.");
         return;
       }
-      // Base64 size cap mirrors the server (~7 MB of base64 string).
-      if (primaryAsset.base64.length > 7 * 1024 * 1024) {
+      // Base64 size cap — at q=0.85 a photo runs ~9 MB. Cap at 15 MB to
+      // give headroom without risking a 413 on a single large-sensor image.
+      if (primaryAsset.base64.length > 15 * 1024 * 1024) {
         Alert.alert(
           "Photo too large",
-          "That image is over the 5 MB limit. Try a smaller one or take a new photo.",
+          "That image exceeds the size limit. Try a smaller one or take a new photo.",
         );
         return;
       }
@@ -810,30 +810,45 @@ export default function ChatScreen(): React.JSX.Element {
     setImagePickerError(null);
   }, []);
 
-  // Document picker — reads a .txt file (up to ~20,000 words / 140,000 chars),
-  // POSTs it to /api/documents/ingest, and inserts Ashley's summary reply
-  // directly into the chat. No draft pre-fill; no APK rebuild required beyond
-  // the expo-document-picker native module already compiled into the build.
+  // Document picker — reads up to 10 .txt files (combined cap ~40,000 words /
+  // 280,000 chars), POSTs to /api/documents/ingest, and inserts Ashley's reply
+  // directly into the chat.
   const openDocumentPicker = useCallback(async () => {
     if (docIngestMutation.isPending) return;
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: "text/plain",
         copyToCacheDirectory: true,
+        multiple: true,
       });
       if (result.canceled) return;
-      const asset = result.assets?.[0];
-      if (!asset) return;
-      const raw = await FileSystem.readAsStringAsync(asset.uri);
-      if (raw.length > 140_000) {
-        Alert.alert(
-          "Document too large",
-          "That file is over the 20,000-word limit. Try a shorter document.",
+      const assets = result.assets ?? [];
+      if (assets.length === 0) return;
+
+      const parts: string[] = [];
+      let totalLength = 0;
+      for (const asset of assets.slice(0, 10)) {
+        const raw = await FileSystem.readAsStringAsync(asset.uri);
+        totalLength += raw.length;
+        if (totalLength > 280_000) {
+          Alert.alert(
+            "Documents too large",
+            "The combined total is over the ~40,000-word limit. Try fewer or shorter files.",
+          );
+          return;
+        }
+        const name = asset.name ?? "document.txt";
+        parts.push(
+          assets.length > 1 ? `--- ${name} ---\n\n${raw.trim()}` : raw.trim(),
         );
-        return;
       }
-      const filename = asset.name ?? "document.txt";
-      await docIngestMutation.mutateAsync({ content: raw, filename });
+
+      const combined = parts.join("\n\n");
+      const filename =
+        assets.length === 1
+          ? (assets[0]?.name ?? "document.txt")
+          : `${assets.length} documents`;
+      await docIngestMutation.mutateAsync({ content: combined, filename });
     } catch (e) {
       Alert.alert(
         "Couldn't read file",
@@ -1725,6 +1740,23 @@ function MessageBubble({
   const [viewerOpen, setViewerOpen] = useState(false);
   /** When a gallery thumb is tapped, this holds the URL to show in the viewer. */
   const [galleryViewerUrl, setGalleryViewerUrl] = useState<string | null>(null);
+  /** Index of the currently visible slide in the gallery viewer. */
+  const [galleryViewerIndex, setGalleryViewerIndex] = useState(0);
+  const galleryScrollRef = useRef<ScrollView>(null);
+  const { width: screenWidth } = useWindowDimensions();
+  // When the gallery viewer opens, scroll to the tapped slide without animation.
+  useEffect(() => {
+    if (viewerOpen && hasGallery) {
+      const t = setTimeout(() => {
+        galleryScrollRef.current?.scrollTo({
+          x: galleryViewerIndex * screenWidth,
+          animated: false,
+        });
+      }, 50);
+      return () => clearTimeout(t);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewerOpen]);
   const [imageNaturalDims, setImageNaturalDims] = useState<{
     width: number;
     height: number;
@@ -2024,23 +2056,94 @@ function MessageBubble({
                 onPress={() => { setViewerOpen(false); setGalleryViewerUrl(null); }}
                 accessibilityLabel="Tap to close full-screen viewer"
               />
-              <Image
-                source={{ uri: galleryViewerUrl ?? message.imageUrl! }}
-                style={styles.viewerImage}
-                resizeMode="contain"
-                accessibilityLabel="Full-screen image — entire frame visible"
-                onLoad={(e) => {
-                  const src = e?.nativeEvent?.source;
-                  if (src) {
-                    console.log("[chat] full-screen viewer loaded image", {
-                      imageUrl: galleryViewerUrl ?? message.imageUrl,
-                      naturalWidth: src.width,
-                      naturalHeight: src.height,
-                      viewerResizeMode: "contain",
-                    });
-                  }
-                }}
-              />
+              {hasGallery ? (
+                // Swipeable paginated gallery — one slide per image.
+                <ScrollView
+                  ref={galleryScrollRef}
+                  horizontal
+                  pagingEnabled
+                  showsHorizontalScrollIndicator={false}
+                  style={{ flex: 1 }}
+                  onMomentumScrollEnd={(e) => {
+                    const idx = Math.round(
+                      e.nativeEvent.contentOffset.x / screenWidth,
+                    );
+                    const urls = message.imageUrls ?? [];
+                    const url = urls[idx];
+                    if (url !== undefined) {
+                      setGalleryViewerIndex(idx);
+                      setGalleryViewerUrl(url);
+                    }
+                  }}
+                >
+                  {(message.imageUrls ?? []).map((url, idx) => (
+                    <View
+                      key={url ? url + idx : `failed-${idx}`}
+                      style={{
+                        width: screenWidth,
+                        flex: 1,
+                        justifyContent: "center",
+                      }}
+                    >
+                      {url ? (
+                        <Image
+                          source={{ uri: url }}
+                          style={[styles.viewerImage, { width: screenWidth }]}
+                          resizeMode="contain"
+                          accessibilityLabel={`Photo ${idx + 1} of ${(message.imageUrls ?? []).length}`}
+                        />
+                      ) : (
+                        <View
+                          style={{
+                            flex: 1,
+                            alignItems: "center",
+                            justifyContent: "center",
+                          }}
+                        >
+                          <Feather
+                            name="image"
+                            size={40}
+                            color="rgba(255,255,255,0.3)"
+                          />
+                        </View>
+                      )}
+                    </View>
+                  ))}
+                </ScrollView>
+              ) : (
+                // Single-image viewer — unchanged path.
+                <Image
+                  source={{ uri: message.imageUrl! }}
+                  style={styles.viewerImage}
+                  resizeMode="contain"
+                  accessibilityLabel="Full-screen image — entire frame visible"
+                  onLoad={(e) => {
+                    const src = e?.nativeEvent?.source;
+                    if (src) {
+                      console.log("[chat] full-screen viewer loaded image", {
+                        imageUrl: message.imageUrl,
+                        naturalWidth: src.width,
+                        naturalHeight: src.height,
+                        viewerResizeMode: "contain",
+                      });
+                    }
+                  }}
+                />
+              )}
+              {/* Page-indicator dots for multi-image packets. */}
+              {hasGallery && (message.imageUrls ?? []).length > 1 ? (
+                <View style={styles.viewerDots} pointerEvents="none">
+                  {(message.imageUrls ?? []).map((_, idx) => (
+                    <View
+                      key={idx}
+                      style={[
+                        styles.viewerDot,
+                        galleryViewerIndex === idx && styles.viewerDotActive,
+                      ]}
+                    />
+                  ))}
+                </View>
+              ) : null}
               <View
                 style={[styles.viewerToolbar, { top: bubbleInsets.top + 8 }]}
                 pointerEvents="box-none"
@@ -2096,6 +2199,7 @@ function MessageBubble({
                 <Pressable
                   key={uri + idx}
                   onPress={() => {
+                    setGalleryViewerIndex(idx);
                     setGalleryViewerUrl(uri);
                     setViewerOpen(true);
                   }}
@@ -2648,6 +2752,28 @@ const styles = StyleSheet.create({
   viewerImage: {
     width: "100%",
     height: "100%",
+  },
+  viewerDots: {
+    position: "absolute",
+    bottom: 36,
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 6,
+  },
+  viewerDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "rgba(255,255,255,0.35)",
+  },
+  viewerDotActive: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#fff",
   },
   viewerToolbar: {
     position: "absolute",
