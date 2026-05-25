@@ -162,30 +162,135 @@ OpenRouter acts as a single API gateway to multiple providers. Its pricing model
 
 ---
 
-## Summary
+## Build Cost Estimates (What It Costs to Actually Build Each Phase)
 
-| Phase | One-time cost | Monthly running cost (cumulative) |
-|-------|--------------|----------------------------------|
-| Baseline (now) | — | ~£0.90 |
-| + Phase 1 | £0 | ~£0.95 |
-| + Phase 2 | £0 | ~£1.15 |
-| + Phase 3 (light use) | £0 | ~£3–5 |
-| + Phase 3 (moderate use) | £0 | ~£7–12 |
-| + Phase 3 (heavy use) | £0 | ~£20–40 |
-| + Phase 4 hardware | £550–2,000 (one-time) | ~£5–15 (electricity, replaces image API cost) |
+This is the section that was missing from the original analysis and is the more important number for planning. Running costs are what Ashley costs to operate once built. Build costs are what you pay to have the work done — Replit agent sessions, APK builds, and any one-off infrastructure setup.
 
-### The Key Takeaways
+### How the Estimate Is Anchored
 
-1. **Phases 1 and 2 are effectively free.** The cost delta is too small to matter for a single user. Build them.
+Ashley-Sidecar as it stands today — the full Express API (6,000+ line chat route alone), the streaming SSE architecture, the memory system, the proactive scheduler, the two-provider text adapter, the selfie pipeline, the mobile app, onboarding, the ticket system, the whole thing — cost you roughly £800 to build. That project ran for many months and involved a substantial number of agent sessions plus ongoing Replit subscription costs.
 
-2. **Phase 3 cost is driven entirely by pipeline run frequency.** If the self-improvement pipeline runs five times a month, it costs almost nothing. If it runs daily, it starts to add up. Ashley narrating handoffs is free — the cost is each call to a paid provider. Track usage once it's live.
+A reasonable breakdown of that £800:
 
-3. **The document's £20–100/month estimate is accurate for heavy use but too high for realistic personal use.** £7–12/month total is a more realistic ceiling for the Phase 3 system at the usage level a single person actually generates.
+| Component | Estimated share |
+|-----------|----------------|
+| Replit subscription (~£20–25/month × ~12 months) | ~£250 |
+| Agent session usage (above subscription) | ~£500 |
+| EAS APK builds, API testing during development | ~£50 |
 
-4. **Image generation is the biggest cost driver right now and stays the dominant cost through Phase 3.** If Kane generates selfies at or near the 5/day cap for any extended period, that alone reaches £10–12/month. Normal daily-chat usage (a handful of images per week) keeps it under £1/month.
-
-5. **Phase 4 is a capability purchase, not a cost optimisation** at Kane's current image generation volume. Justify it by the quality and creative freedom gains, not the economics.
+That puts the effective agent session rate at roughly **£8–15 per substantive session** (a session that does real design and implementation work, not just a quick fix). Some sessions cost less. Complex ones with many tool calls and long iteration loops cost more. This range is the anchor used for all estimates below.
 
 ---
 
-*All figures are estimates based on published API pricing at May 2026. Token consumption estimates are based on the actual system prompt sizes, memory loading patterns, and conversation lengths observable in the codebase. Actual costs will vary with usage.*
+### Phase 1 Build Cost
+
+**What needs building:** Long Output Mode (heuristic trigger in `chat.ts` + `ashleyCoreSpec.ts`), image rail loosening (one function in `contentPolicy.ts`), .txt file reading (new API route + mobile document picker integration + ingestion logic).
+
+| Work item | Sessions needed | Notes |
+|-----------|----------------|-------|
+| Long Output Mode | 1 | Prompt change + classifier heuristic. Straightforward. |
+| Image rail loosening | 0.5 | One function edit. Can be combined with another session. |
+| .txt file reading (API route + server ingestion) | 2–3 | New route, storage handling, summary prompt, error cases. |
+| .txt file reading (mobile side — picker + upload UI) | 1–2 | `expo-document-picker` already installed; UI and upload call. |
+| Testing and iteration | 1 | End-to-end test, edge cases, APK not needed if no native changes. |
+| **Total sessions** | **5–7** | |
+| **Estimated build cost** | **£40–105** | At £8–15/session |
+
+EAS APK build needed: **No** — Phase 1 changes are server-side and the document picker is already in the installed APK. No new build required.
+
+---
+
+### Phase 2 Build Cost
+
+**What needs building:** Project Dossier (new DB schema + API routes + mobile UI), Disregard Loop (memory schema extension + re-surfacing logic), one multi-AI handoff proof-of-concept (GPT-4o routing via extended `textLLM.ts` adapter, dossier-passing to the second provider).
+
+| Work item | Sessions needed | Notes |
+|-----------|----------------|-------|
+| Dossier DB schema + migration | 1 | New table(s), Drizzle migration. Small but needs careful design. |
+| Dossier API routes (CRUD + dossier-fetch) | 2–3 | Create, read, update, archive, attach images. |
+| Dossier mobile UI (create, view, manage projects) | 3–5 | This is the biggest unknown — mobile UI work is iterative. |
+| Disregard Loop (schema + re-surfacing trigger logic) | 2–3 | Additive to the memory schema. Re-surfacing logic is the real work. |
+| Multi-AI handoff PoC (GPT-4o integration + routing) | 3–4 | Extend `textLLM.ts`, add provider key, test dossier passing end-to-end. |
+| Testing, debugging, EAS APK build | 2–3 | APK needed because mobile UI is new. |
+| **Total sessions** | **13–19** | |
+| **Estimated build cost** | **£104–285** | At £8–15/session |
+
+EAS APK build needed: **Yes** — mobile UI work requires a new build. One or two EAS builds within the free tier (30/month).
+
+---
+
+### Phase 3 Build Cost
+
+**What needs building:** Google Maps integration + navigation voice layer, Android Auto detection or manual Family Mode trigger, Family Mode prompt system, full role-bounded pipeline (Architect/Coder/Breaker/Reviewer routing with provenance tagging), self-improvement proposal format and generation, multi-project dossier with cross-references and tag-based retrieval, mobile updates across all new features.
+
+This is a substantial project. The estimates below reflect that the navigation piece is the most uncertain — Android Auto audio routing is a native problem and might require more iteration than expected.
+
+| Work item | Sessions needed | Notes |
+|-----------|----------------|-------|
+| Google Maps API integration (server-side routing + optimisation) | 2–3 | API key setup, Directions API calls, waypoint ordering logic. |
+| Navigation voice layer (Ashley voices directions in her register) | 3–4 | Server-side text generation with Maps data injected. Straightforward in principle. |
+| Android Auto detection / voice command Family Mode trigger | 3–6 | High uncertainty. Android Auto is native territory. Voice command fallback is simpler. If Auto detection proves impossible without a native Expo plugin, this either gets scoped down or becomes its own mini-project. |
+| Family Mode prompt system (mode flag, content rails, prompt block) | 2–3 | Same infrastructure as Mature Mode. Well-understood pattern. |
+| Role-bounded pipeline (routing logic, role enforcement, handoff protocol) | 5–8 | The core of Phase 3. Getting provenance tagging right and failure routing right takes iteration. |
+| Self-improvement proposal format + generation | 3–5 | The structured Markdown output format, the pipeline run that produces it, the output-to-Kane packaging. |
+| Multi-project dossier with cross-references + tag retrieval | 4–6 | The tag-resolution pattern is new logic. Cross-project linking needs careful data model design. |
+| Mobile UI updates (navigation UI, dossier browser, pipeline status) | 4–7 | Mobile UI work is always the most unpredictable in terms of iteration count. |
+| Testing, debugging, EAS APK builds | 3–5 | Multiple builds likely — navigation and mobile UI both need device testing. |
+| **Total sessions** | **29–47** | |
+| **Estimated build cost** | **£232–705** | At £8–15/session |
+
+EAS APK builds needed: **Yes, probably 2–3** — navigation requires device testing (not just Expo Go), and multiple mobile UI additions will need builds to test properly. All within EAS free tier.
+
+**The Android Auto uncertainty is the most important caveat in Phase 3.** If that piece proves unworkable without a custom native Expo plugin (which is its own project), Phase 3 either scopes down (manual voice command trigger instead of auto-detect) or the Auto integration becomes Phase 3.5 with its own estimate. The rest of Phase 3 is not blocked by this.
+
+---
+
+### Phase 4 Build Cost
+
+**What needs building:** Software integration for local image generation (Stable Diffusion / Flux server running on Kane's hardware, Ashley routing safe requests to OpenAI and artistic requests to local). Hardware installation is Kane's own time.
+
+| Work item | Sessions needed | Notes |
+|-----------|----------------|-------|
+| Local image server setup (ComfyUI / Automatic1111 / Flux API wrapper) | 2–3 | Configuration and getting the local API running is hardware-side work. The agent handles the API wrapper. |
+| Ashley server-side routing (local vs OpenAI decision logic) | 2–3 | Extend the image generation pathway in `chat.ts` with a new provider switch, similar to the text LLM provider switch. |
+| Mobile changes (if any — routing is server-side so likely minimal) | 0–1 | Probably none visible to mobile. |
+| Testing (end-to-end, both routes) | 1–2 | |
+| **Total sessions** | **5–9** | |
+| **Estimated build cost** | **£40–135** | At £8–15/session |
+| **Hardware (separate)** | **£550–2,000** | See hardware table above. |
+
+---
+
+## Full Cost Picture — Running + Build Combined
+
+| Phase | Build cost (one-time) | Monthly running cost (cumulative) |
+|-------|----------------------|----------------------------------|
+| Baseline (now, already spent) | ~£800 | ~£0.90 |
+| Phase 1 | £40–105 | ~£0.95 |
+| Phase 2 | £104–285 | ~£1.15 |
+| Phase 3 | £232–705 | ~£3–40 (depends on pipeline use) |
+| Phase 4 | £40–135 + £550–2,000 hardware | ~£5–15 (electricity replaces image API) |
+
+**Phases 1–3 combined build cost: £376–1,095**
+
+The wide range in Phase 3 reflects the Android Auto uncertainty. If that piece is scoped down to a manual trigger (which is the safe fallback), Phase 3 sits closer to £232–400. If Android Auto integration turns out to require a full custom Expo plugin, add another £80–150 to that.
+
+---
+
+### The Key Takeaways (Updated)
+
+1. **The running cost analysis was accurate but incomplete.** The monthly figures are real and low. The build cost is where the money goes, same as it has been for the base Ashley system.
+
+2. **Phase 1 is genuinely cheap to build** — £40–105 — and adds zero meaningful running cost. It delivers Long Output Mode, image rail flexibility, and document reading. If any single phase is worth doing first with minimal commitment, it's this one.
+
+3. **Phase 2 costs £104–285 to build** and adds almost nothing to running costs. The dossier UI on mobile is the uncertainty — mobile UI work tends to run longer than expected because it requires iteration to feel right.
+
+4. **Phase 3 is a meaningful investment: £232–705 to build**, with the Android Auto piece being the main wildcard. The navigation and pipeline capabilities are the most useful features in the design; the build cost reflects that. Running costs stay low unless the pipeline fires frequently.
+
+5. **Phase 4 is a hardware purchase with a small software cost on top.** The software integration (£40–135) is the easy part. The GPU (£550–2,000) is the real decision.
+
+6. **Total to get through Phases 1–3: £376–1,095**, roughly similar to what was spent building the base Ashley system. You would be buying a system that can orchestrate other AIs, manage art project dossiers, read documents, navigate with Ashley's voice, and generate its own improvement proposals. Phase 4 on top adds local image generation.
+
+---
+
+*All build cost figures are estimates based on the stated £800 spend on the base Ashley system as an anchor, translated to a per-session rate of £8–15 for substantive agent sessions. Actual costs will vary with session length, complexity, and how many iterations any given feature requires before it's right.*
