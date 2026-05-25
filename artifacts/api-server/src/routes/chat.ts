@@ -827,65 +827,24 @@ async function supplementVibesForMultiImage(
   }
 
   // ── Generic shortfall path (no explicit subjects) ────────────────────────
+  // Use pre-defined fallback scenes + mode cycle directly — no LLM call.
+  // The LLM already received image instructions and the image directive;
+  // if it still returned 0 markers, a second LLM call won't help and
+  // adds 60+ seconds of latency. The fallback scenes are varied and good.
   const shortfall = targetCount - existingVibes.length;
   if (shortfall <= 0) return existingVibes.slice(0, targetCount);
 
-  const existingSummary = existingVibes
-    .map((v, i) => {
-      const dv = decodeStoredVibe(v);
-      return `${i + 1}. ${dv.vibe}`;
-    })
-    .join("; ");
-
-  const prompt =
-    `Generate ${shortfall} short selfie scene description${shortfall > 1 ? "s" : ""} for a young woman with lavender hair and blue eyes. ` +
-    (existingSummary
-      ? `Existing scenes already planned (must NOT overlap): ${existingSummary}. Each description must have a completely different setting, pose, and lighting. `
-      : `Each description must have a unique setting, pose, and lighting. `) +
-    `Output ONLY the descriptions, one per line, no numbers, no brackets, no preamble, max 20 words each.`;
-
-  try {
-    const result = await generateChatText({
-      system:
-        "You are an image scene planner. Output only the requested plain descriptions, one per line, nothing else.",
-      messages: [{ role: "user", content: prompt }],
-      maxTokens: 400,
-      forceProvider: "anthropic",
-    });
-    const lines = result
-      .trim()
-      .split("\n")
-      .map((l) => l.replace(/^\d+[\.\)]\s*/, "").trim())
-      .filter(Boolean)
-      .slice(0, shortfall);
-    const supplemented = lines.map((line, i) =>
-      encodeStoredVibe(
-        SUPPLEMENT_MODE_CYCLE[(existingVibes.length + i) % SUPPLEMENT_MODE_CYCLE.length]!,
-        line,
-      ),
-    );
-    logger.info(
-      { shortfall, generated: supplemented.length },
-      "image-intent: supplemented vibes for multi-image deficit",
-    );
-    return [...existingVibes, ...supplemented].slice(0, targetCount);
-  } catch (err) {
-    logger.warn(
-      { err },
-      "image-intent: supplement vibe generation failed — using fallback scenes",
-    );
-    const base =
-      existingVibes[0] ??
-      encodeStoredVibe("PORTRAIT_MODE", "warm close-up portrait, soft indoor light");
-    const baseLabel = decodeStoredVibe(base).vibe.split(",")[0]!.trim();
-    const extras = Array.from({ length: shortfall }, (_, i) =>
-      encodeStoredVibe(
-        SUPPLEMENT_MODE_CYCLE[(existingVibes.length + i) % SUPPLEMENT_MODE_CYCLE.length]!,
-        `${SUPPLEMENT_FALLBACK_SCENES[(existingVibes.length + i) % SUPPLEMENT_FALLBACK_SCENES.length]!}, ${baseLabel}`,
-      ),
-    );
-    return [...existingVibes, ...extras].slice(0, targetCount);
-  }
+  const extras = Array.from({ length: shortfall }, (_, i) =>
+    encodeStoredVibe(
+      SUPPLEMENT_MODE_CYCLE[(existingVibes.length + i) % SUPPLEMENT_MODE_CYCLE.length]!,
+      SUPPLEMENT_FALLBACK_SCENES[(existingVibes.length + i) % SUPPLEMENT_FALLBACK_SCENES.length]!,
+    ),
+  );
+  logger.info(
+    { shortfall, generated: extras.length },
+    "image-intent: supplemented vibes for multi-image deficit",
+  );
+  return [...existingVibes, ...extras].slice(0, targetCount);
 }
 
 /**
@@ -1589,8 +1548,9 @@ router.post("/chat", async (req, res): Promise<void> => {
     if (_lastMsg?.role === "user") {
       _lastMsg.content +=
         `\n\n[Image directive: The user wants exactly ${_multiImgCount} separate images. ` +
-        `You MUST emit exactly ${_multiImgCount} [SELFIE_VIBE:...] markers in this reply, ` +
-        `one per image, each with a distinct scene or subject description.]`;
+        `You MUST emit exactly ${_multiImgCount} [image: MODE | description] tags in this reply — ` +
+        `one per line, each with a distinct MODE and scene description. ` +
+        `Use the [image: MODE | description] format exactly as shown in your instructions above.]`;
     }
   }
 
@@ -4966,8 +4926,9 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     if (_lastMsg?.role === "user") {
       _lastMsg.content +=
         `\n\n[Image directive: The user wants exactly ${_multiImgCount} separate images. ` +
-        `You MUST emit exactly ${_multiImgCount} [SELFIE_VIBE:...] markers in this reply, ` +
-        `one per image, each with a distinct scene or subject description.]`;
+        `You MUST emit exactly ${_multiImgCount} [image: MODE | description] tags in this reply — ` +
+        `one per line, each with a distinct MODE and scene description. ` +
+        `Use the [image: MODE | description] format exactly as shown in your instructions above.]`;
     }
   }
 
