@@ -35,3 +35,9 @@ id = "nOCRU0cdFRx9v1sEEg0HF"
 uri = "file://exports/ashley_v1.3_pre_mobile_snapshot.md"
 type = "text"
 title = "ashley_v1.3_pre_mobile — 2026-05-12T21:05:00Z"
+
+[[outputs]]
+id = "cKy3_4Jvqh1AAYYcNC9zl"
+uri = "file://ashley-configuration-export.txt"
+type = "text"
+title = "Ashley Configuration Export — v1.0.3 B5 (2026-05-23)"
