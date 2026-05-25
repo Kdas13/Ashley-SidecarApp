@@ -73,6 +73,7 @@ import {
   localSelfieDir,
 } from "../lib/storage";
 import { maybeRunWebLookup } from "../lib/webSearch";
+import { isDeliverableRequest, buildDeliverableModeBlock } from "../lib/deliverableMode";
 import { guardContinuity, guardContinuityDetailed } from "../lib/continuityGuard";
 import {
   buildImagePromptAddendum,
@@ -1155,6 +1156,13 @@ router.post("/chat", async (req, res): Promise<void> => {
     previousMessageAt,
   );
   let systemPrompt = `${timeContext}\n\n${buildSystemPrompt(profile, memories, summaries, { imageGenerationEnabled })}${buildSystemEventsSection()}\n\n${buildOpenTicketsBlock(openTickets)}`;
+
+  // Deliverable mode: detect structured-output requests (plans, specs, lists,
+  // guides) and inject the mode block so Ashley produces clean, copy-pasteable
+  // content with no embodied reactions inside the document body.
+  if (userContent && isDeliverableRequest(userContent)) {
+    systemPrompt = `${systemPrompt}\n\n${buildDeliverableModeBlock()}`;
+  }
 
   // 3b. Short follow-up image intent resolver. If the latest user message is
   //     "as a picture" / "show me" / "make it an image" etc., look back at
@@ -4603,6 +4611,14 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
       );
       systemPrompt = `${baseSystemPrompt}\n\n${lookup.block}`;
     }
+  }
+
+  // Deliverable mode: detect structured-output requests (plans, specs, lists,
+  // guides) and inject the mode block so Ashley produces clean, copy-pasteable
+  // content with no embodied reactions inside the document body.
+  if (!isContinue && userRow && isDeliverableRequest(userRow.content)) {
+    systemPrompt = `${systemPrompt}\n\n${buildDeliverableModeBlock()}`;
+    req.log.info({ deviceId }, "deliverable mode injected into stream prompt");
   }
 
   // Short follow-up image intent resolver (mirror of /chat). Only meaningful

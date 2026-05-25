@@ -22,6 +22,7 @@ import * as Clipboard from "expo-clipboard";
 import * as FileSystem from "expo-file-system/legacy";
 import * as MediaLibrary from "expo-media-library";
 import * as ImagePicker from "expo-image-picker";
+import * as DocumentPicker from "expo-document-picker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import {
@@ -807,6 +808,36 @@ export default function ChatScreen(): React.JSX.Element {
     setImagePickerError(null);
   }, []);
 
+  // Document picker — reads a .txt file and pre-fills the draft so the user
+  // can review and send the content through the normal stream chat flow.
+  const openDocumentPicker = useCallback(async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: "text/plain",
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled) return;
+      const asset = result.assets?.[0];
+      if (!asset) return;
+      const raw = await FileSystem.readAsStringAsync(asset.uri);
+      // Cap at 3,800 chars so the draft stays well within the TextInput
+      // maxLength limit and the API message size ceiling.
+      const body =
+        raw.length > 3800
+          ? raw.slice(0, 3800) +
+            "\n\n[document continues — truncated at 3,800 characters]"
+          : raw;
+      const filename = asset.name ?? "document.txt";
+      setDraft(`Document — ${filename}:\n\n${body.trim()}`);
+      inputRef.current?.focus();
+    } catch (e) {
+      Alert.alert(
+        "Couldn't read file",
+        e instanceof Error ? e.message : "Try again.",
+      );
+    }
+  }, []);
+
   // Section 6 (master spec): remove a single image from the selection by index
   // (0 = primary, 1..N = extras). Promotes the next extra to primary when idx=0.
   const removePicked = useCallback(
@@ -1130,6 +1161,25 @@ export default function ChatScreen(): React.JSX.Element {
               />
             </Pressable>
           )}
+          <Pressable
+            onPress={openDocumentPicker}
+            disabled={streamMutation.isPending || sendImageMutation.isPending}
+            style={({ pressed }) => [
+              styles.attachBtn,
+              (streamMutation.isPending || sendImageMutation.isPending) && {
+                opacity: 0.4,
+              },
+              pressed && { transform: [{ scale: 0.95 }] },
+            ]}
+            accessibilityLabel="Attach a text document"
+            hitSlop={6}
+          >
+            <Feather
+              name="file-text"
+              size={20}
+              color={colors.light.mutedForeground}
+            />
+          </Pressable>
           <TextInput
             ref={inputRef}
             value={draft}

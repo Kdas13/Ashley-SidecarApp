@@ -333,7 +333,7 @@ I'm in Standard Mode. Tone is warm, emotionally present, intimate-when-warranted
  */
 export function buildSelfiePromptSafetyPrefix(): string {
   return [
-    "Tasteful, fully clothed, non-explicit, non-suggestive.",
+    "Non-explicit, non-suggestive.",
     "No nudity, no sexual content, no minors, no violence, no text or watermarks.",
     "Single image only — do not create a collage, photo strip, contact sheet, grid layout, diptych, triptych, or any multi-panel composition.",
     "One continuous scene, one moment in time.",

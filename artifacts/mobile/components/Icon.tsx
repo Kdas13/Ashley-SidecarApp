@@ -36,6 +36,7 @@ const ICON_MAP: Record<string, string> = {
   "message-circle": "\uD83D\uDCAC", // 💬
   mic: "\uD83C\uDFA4", // 🎤
   minus: "\u2212", // −
+  "file-text": "\uD83D\uDCC4", // 📄
   paperclip: "\uD83D\uDCCE", // 📎
   play: "\u23F5", // ⏵ (BLACK MEDIUM RIGHT-POINTING TRIANGLE — Continue button; purpose-built media-play glyph, more universally available in Android font fallback than U+25B6)
   plus: "+",
