@@ -26,6 +26,7 @@ import * as DocumentPicker from "expo-document-picker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import {
+  useDocumentIngest,
   useMessages,
   useStreamMessage,
   useContinueMessage,
@@ -186,6 +187,7 @@ export default function ChatScreen(): React.JSX.Element {
   const activeStream = useActiveStream();
   const presence = usePresenceLoop();
   const sendImageMutation = useSendImage();
+  const docIngestMutation = useDocumentIngest();
   const markImageRemembered = useMarkImageRemembered();
   const clearMutation = useClearMessages();
   const retryUnanswered = useRetryUnansweredReply();
@@ -808,9 +810,12 @@ export default function ChatScreen(): React.JSX.Element {
     setImagePickerError(null);
   }, []);
 
-  // Document picker — reads a .txt file and pre-fills the draft so the user
-  // can review and send the content through the normal stream chat flow.
+  // Document picker — reads a .txt file (up to ~20,000 words / 140,000 chars),
+  // POSTs it to /api/documents/ingest, and inserts Ashley's summary reply
+  // directly into the chat. No draft pre-fill; no APK rebuild required beyond
+  // the expo-document-picker native module already compiled into the build.
   const openDocumentPicker = useCallback(async () => {
+    if (docIngestMutation.isPending) return;
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: "text/plain",
@@ -820,23 +825,22 @@ export default function ChatScreen(): React.JSX.Element {
       const asset = result.assets?.[0];
       if (!asset) return;
       const raw = await FileSystem.readAsStringAsync(asset.uri);
-      // Cap at 3,800 chars so the draft stays well within the TextInput
-      // maxLength limit and the API message size ceiling.
-      const body =
-        raw.length > 3800
-          ? raw.slice(0, 3800) +
-            "\n\n[document continues — truncated at 3,800 characters]"
-          : raw;
+      if (raw.length > 140_000) {
+        Alert.alert(
+          "Document too large",
+          "That file is over the 20,000-word limit. Try a shorter document.",
+        );
+        return;
+      }
       const filename = asset.name ?? "document.txt";
-      setDraft(`Document — ${filename}:\n\n${body.trim()}`);
-      inputRef.current?.focus();
+      await docIngestMutation.mutateAsync({ content: raw, filename });
     } catch (e) {
       Alert.alert(
         "Couldn't read file",
         e instanceof Error ? e.message : "Try again.",
       );
     }
-  }, []);
+  }, [docIngestMutation]);
 
   // Section 6 (master spec): remove a single image from the selection by index
   // (0 = primary, 1..N = extras). Promotes the next extra to primary when idx=0.
@@ -1163,12 +1167,16 @@ export default function ChatScreen(): React.JSX.Element {
           )}
           <Pressable
             onPress={openDocumentPicker}
-            disabled={streamMutation.isPending || sendImageMutation.isPending}
+            disabled={
+              streamMutation.isPending ||
+              sendImageMutation.isPending ||
+              docIngestMutation.isPending
+            }
             style={({ pressed }) => [
               styles.attachBtn,
-              (streamMutation.isPending || sendImageMutation.isPending) && {
-                opacity: 0.4,
-              },
+              (streamMutation.isPending ||
+                sendImageMutation.isPending ||
+                docIngestMutation.isPending) && { opacity: 0.4 },
               pressed && { transform: [{ scale: 0.95 }] },
             ]}
             accessibilityLabel="Attach a text document"

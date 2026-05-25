@@ -14,7 +14,7 @@ import { generateChatText } from "../lib/textLLM";
 const router: IRouter = Router();
 
 const IngestBodySchema = z.object({
-  content: z.string().min(1).max(100_000),
+  content: z.string().min(1).max(140_000),
   filename: z.string().max(255).optional(),
 });
 

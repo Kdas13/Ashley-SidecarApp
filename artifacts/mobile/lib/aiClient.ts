@@ -1559,3 +1559,20 @@ export async function synthesizeSpeechToFile(
   });
   return { uri };
 }
+
+// ---------------------------------------------------------------------------
+// Document ingestion — POST /api/documents/ingest
+// ---------------------------------------------------------------------------
+
+export async function sendDocumentIngest({
+  content,
+  filename,
+}: {
+  content: string;
+  filename: string;
+}): Promise<{ reply: string }> {
+  return fetchJSON<{ reply: string }>("/api/documents/ingest", {
+    method: "POST",
+    body: JSON.stringify({ content, filename }),
+  });
+}

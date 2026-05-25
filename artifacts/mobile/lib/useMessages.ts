@@ -18,6 +18,7 @@ import {
   markImageRemembered,
   sendChatImage,
   sendChatMessage,
+  sendDocumentIngest,
   streamAshleyReply,
   type RememberDecision,
   type StreamReplyMeta,
@@ -1089,3 +1090,35 @@ export function useRetrySelfie(): {
 }
 
 export const messagesQueryKey = MESSAGES_KEY;
+
+// ---------------------------------------------------------------------------
+// Document ingest — calls POST /api/documents/ingest, then splices the
+// user "sent document" stub and Ashley's summary reply into the messages list.
+// ---------------------------------------------------------------------------
+
+export function useDocumentIngest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (args: { content: string; filename: string }) =>
+      sendDocumentIngest(args),
+    onSuccess: async (data, { filename }) => {
+      const now = new Date().toISOString();
+      const userMsg: Message = {
+        id: newId(),
+        role: "user",
+        content: `\uD83D\uDCC4 ${filename}`,
+        createdAt: now,
+      };
+      const ashleyMsg: Message = {
+        id: newId(),
+        role: "ashley",
+        content: data.reply,
+        createdAt: now,
+      };
+      const previous = qc.getQueryData<Message[]>(MESSAGES_KEY) ?? [];
+      const next = [...previous, userMsg, ashleyMsg];
+      qc.setQueryData(MESSAGES_KEY, next);
+      await withStorageLock(STORAGE_KEYS.messages, () => saveMessages(next));
+    },
+  });
+}
