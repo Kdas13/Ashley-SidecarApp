@@ -74,7 +74,7 @@ export async function generateChatText(opts: GenerateOpts): Promise<string> {
       }
       const reply = await anthropic.messages.create({
         model: ANTHROPIC_CHAT_MODEL,
-        max_tokens: opts.maxTokens,
+        max_tokens: Math.min(opts.maxTokens, 8192),
         system: opts.system,
         messages: opts.messages,
       });
@@ -151,7 +151,7 @@ export async function* streamChatText(
   const stream = anthropic.messages.stream(
     {
       model: ANTHROPIC_CHAT_MODEL,
-      max_tokens: opts.maxTokens,
+      max_tokens: Math.min(opts.maxTokens, 8192),
       system: opts.system,
       messages: opts.messages,
     },

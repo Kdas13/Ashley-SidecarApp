@@ -888,6 +888,34 @@ async function supplementVibesForMultiImage(
   }
 }
 
+/**
+ * Returns true when a multi-image marker array should have its modes
+ * redistributed using SUPPLEMENT_MODE_CYCLE.
+ *
+ * Fires when ALL markers share the same mode AND the user did not explicitly
+ * request that specific framing type. Examples:
+ *  - "10 selfies" → all SELFIE_MODE → keep (user asked for selfies)
+ *  - "10 photos in different clothes" → all PORTRAIT_MODE (LLM default) → redistribute
+ *  - "10 different photos" → all PORTRAIT_MODE → redistribute
+ */
+function shouldRedistributeModes(
+  markers: { mode: ImageMode }[],
+  userText: string,
+): boolean {
+  if (markers.length < 2) return false;
+  const modes = markers.map((m) => m.mode);
+  if (!modes.every((m) => m === modes[0])) return false; // Already varied — leave as-is
+  const dominantMode = modes[0]!;
+  // Preserve intentional same-mode requests.
+  if (dominantMode === "SELFIE_MODE" && /\bselfie\b/i.test(userText)) return false;
+  if (dominantMode === "FULL_BODY_MODE" && /\bfull[\s-]?body\b|head\s+to\s+toe\b/i.test(userText)) return false;
+  if (dominantMode === "OUTFIT_MODE" && /\boutfit\b|\bwardrobe\b|\bfit[\s-]?check\b/i.test(userText)) return false;
+  if (dominantMode === "SCENE_MODE" && /\bcinematic\b|\bscene\b/i.test(userText)) return false;
+  if (dominantMode === "POSE_REFERENCE_MODE" && /\bpose[\s-]?reference\b|\bcharacter[\s-]?sheet\b/i.test(userText)) return false;
+  // All markers the same mode without an explicit user request → redistribute.
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // POST /chat — the one chat endpoint
 // ---------------------------------------------------------------------------
@@ -1591,7 +1619,7 @@ router.post("/chat", async (req, res): Promise<void> => {
       const text = await generateChatText({
         system: systemPrompt,
         messages: claudeMessages,
-        maxTokens: 4096,
+        maxTokens: 16000,
       });
       assistantText = text
         ? text
@@ -1663,14 +1691,25 @@ router.post("/chat", async (req, res): Promise<void> => {
 
     if (markers.length > 1) {
       // Multi-image path.
-      selfieVibeList = markers.map((m) => encodeStoredVibe(m.mode, m.vibe));
+      // If the LLM defaulted every marker to the same mode (e.g. all
+      // PORTRAIT_MODE on a generic "10 different photos" request), override
+      // with SUPPLEMENT_MODE_CYCLE so the packet has framing variety.
+      const _redistribute = shouldRedistributeModes(markers, userContent);
+      const effectiveMarkers = _redistribute
+        ? markers.map((m, i) => ({
+            ...m,
+            mode: SUPPLEMENT_MODE_CYCLE[i % SUPPLEMENT_MODE_CYCLE.length]!,
+          }))
+        : markers;
+      selfieVibeList = effectiveMarkers.map((m) => encodeStoredVibe(m.mode, m.vibe));
       selfieVibe = selfieVibeList[0]!;
       visualPacketId = newId();
       req.log.info(
         {
-          imageCount: markers.length,
+          imageCount: effectiveMarkers.length,
           visualPacketId,
-          modes: markers.map((m) => m.mode),
+          modes: effectiveMarkers.map((m) => m.mode),
+          modesRedistributed: _redistribute,
         },
         "image-intent: multi-image markers detected in /chat reply",
       );
@@ -5215,7 +5254,7 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
       for await (const chunk of streamChatText({
         system: finalSystemPrompt,
         messages: claudeMessages,
-        maxTokens: 4096,
+        maxTokens: 16000,
         signal: ac.signal,
       })) {
         if (chunk.length === 0) continue;
@@ -5303,15 +5342,28 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
 
       if (markers.length > 1) {
         // Multi-image stream path.
-        selfieVibeList = markers.map((m) => encodeStoredVibe(m.mode, m.vibe));
+        // If the LLM defaulted every marker to the same mode on a generic
+        // request, override with SUPPLEMENT_MODE_CYCLE for framing variety.
+        const _redistribute = shouldRedistributeModes(
+          markers,
+          userRow?.content ?? "",
+        );
+        const effectiveMarkers = _redistribute
+          ? markers.map((m, i) => ({
+              ...m,
+              mode: SUPPLEMENT_MODE_CYCLE[i % SUPPLEMENT_MODE_CYCLE.length]!,
+            }))
+          : markers;
+        selfieVibeList = effectiveMarkers.map((m) => encodeStoredVibe(m.mode, m.vibe));
         selfieVibe = selfieVibeList[0]!;
         visualPacketId = newId();
         req.log.info(
           {
             streamId,
-            imageCount: markers.length,
+            imageCount: effectiveMarkers.length,
             visualPacketId,
-            modes: markers.map((m) => m.mode),
+            modes: effectiveMarkers.map((m) => m.mode),
+            modesRedistributed: _redistribute,
           },
           "image-intent: multi-image markers detected in /chat/stream reply",
         );
