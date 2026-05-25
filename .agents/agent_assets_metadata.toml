@@ -47,3 +47,9 @@ id = "E6rigGLI1JC65FBvO2JDD"
 uri = "file://ashley-orchestration-feasibility-review.md"
 type = "text"
 title = "Ashley Orchestration — Feasibility Review"
+
+[[outputs]]
+id = "Ua90Nh_Um0Unqf7wh48eO"
+uri = "file://ashley-orchestration-cost-analysis.md"
+type = "text"
+title = "Ashley Orchestration — Real Cash Cost Analysis"
