@@ -537,7 +537,7 @@ export function parseImageMarker(text: string): ParsedMarker | null {
  *   no pipe is present fall back to running the intent classifier on the full
  *   inner content so a missing pipe never silently drops a marker.
  *
- * Cap: callers MUST discard markers beyond index 3 (maximum 4 images per
+ * Cap: callers MUST discard markers beyond index 9 (maximum 10 images per
  * packet). The function itself returns all matches so the caller can log the
  * excess rather than silently dropping them here.
  */

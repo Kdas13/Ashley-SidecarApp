@@ -250,7 +250,7 @@ const SUMMARY_CHUNK_SIZE = 20;
 // a summary BEFORE they fall off the verbatim history slice.
 const SUMMARY_TRIGGER = HISTORY_WINDOW;
 
-const MAX_CONTENT_LEN = 4000;
+const MAX_CONTENT_LEN = 120_000;
 const MAX_REPLY_PREVIEW_LEN = 280;
 const MAX_VIBE_LEN = 4000;
 
@@ -564,7 +564,7 @@ async function findDuplicateTicket(rawSummary: string): Promise<string | null> {
 /**
  * Parse an explicit image-count request from the user's message.
  * Matches "send 4 photos", "four individual pictures", "FOUR separate selfies",
- * "3 images" etc. Returns the count (2–4) or null when none is found.
+ * "3 images" etc. Returns the count (2–10) or null when none is found.
  */
 function detectRequestedImageCount(
   userText: string,
@@ -632,6 +632,30 @@ const SUPPLEMENT_FALLBACK_SCENES = [
   "café table, warm amber lighting, glancing down, relaxed",
   "by a window, soft diffuse daylight, peaceful expression",
   "low golden evening light from the side, hair slightly wind-blown",
+  "city street at dusk, bokeh lights behind, casual relaxed stance",
+  "cosy indoor sofa, candlelight glow, unguarded quiet moment",
+  "rooftop terrace, city skyline, breezy, confident upright posture",
+  "sunlit kitchen, morning light, holding a mug, soft natural expression",
+  "forest path, dappled afternoon light through leaves, mid-stride",
+  "rainy window, moody blue ambient light, thoughtful and still",
+];
+
+/**
+ * Mode cycle used when encoding supplemented vibes so multi-image sets
+ * span the full range of framings rather than all landing on SELFIE_MODE.
+ * Ten entries so a 10-image request gets one of each without repeating.
+ */
+const SUPPLEMENT_MODE_CYCLE: ImageMode[] = [
+  "PORTRAIT_MODE",
+  "FULL_BODY_MODE",
+  "SCENE_MODE",
+  "SELFIE_MODE",
+  "OUTFIT_MODE",
+  "PORTRAIT_MODE",
+  "POSE_REFERENCE_MODE",
+  "FULL_BODY_MODE",
+  "SCENE_MODE",
+  "SELFIE_MODE",
 ];
 
 const MULTI_IMAGE_CLARIFICATION_RESPONSE =
@@ -779,11 +803,17 @@ async function supplementVibesForMultiImage(
           .filter(Boolean);
         personQueue.forEach(({ subject, idx }, qi) => {
           const line = lines[qi] ?? `selfie moment, ${subject}`;
-          results[idx] = encodeStoredVibe("SELFIE_MODE", line);
+          results[idx] = encodeStoredVibe(
+            SUPPLEMENT_MODE_CYCLE[idx % SUPPLEMENT_MODE_CYCLE.length]!,
+            line,
+          );
         });
       } catch {
         personQueue.forEach(({ subject, idx }) => {
-          results[idx] = encodeStoredVibe("SELFIE_MODE", `selfie, ${subject}, warm portrait lighting`);
+          results[idx] = encodeStoredVibe(
+            SUPPLEMENT_MODE_CYCLE[idx % SUPPLEMENT_MODE_CYCLE.length]!,
+            `${subject}, warm portrait lighting`,
+          );
         });
       }
     }
@@ -828,8 +858,11 @@ async function supplementVibesForMultiImage(
       .map((l) => l.replace(/^\d+[\.\)]\s*/, "").trim())
       .filter(Boolean)
       .slice(0, shortfall);
-    const supplemented = lines.map((line) =>
-      encodeStoredVibe("SELFIE_MODE", line),
+    const supplemented = lines.map((line, i) =>
+      encodeStoredVibe(
+        SUPPLEMENT_MODE_CYCLE[(existingVibes.length + i) % SUPPLEMENT_MODE_CYCLE.length]!,
+        line,
+      ),
     );
     logger.info(
       { shortfall, generated: supplemented.length },
@@ -843,12 +876,12 @@ async function supplementVibesForMultiImage(
     );
     const base =
       existingVibes[0] ??
-      encodeStoredVibe("SELFIE_MODE", "warm close-up portrait, soft indoor light");
+      encodeStoredVibe("PORTRAIT_MODE", "warm close-up portrait, soft indoor light");
     const baseLabel = decodeStoredVibe(base).vibe.split(",")[0]!.trim();
     const extras = Array.from({ length: shortfall }, (_, i) =>
       encodeStoredVibe(
-        "SELFIE_MODE",
-        `${SUPPLEMENT_FALLBACK_SCENES[i % SUPPLEMENT_FALLBACK_SCENES.length]!}, ${baseLabel}`,
+        SUPPLEMENT_MODE_CYCLE[(existingVibes.length + i) % SUPPLEMENT_MODE_CYCLE.length]!,
+        `${SUPPLEMENT_FALLBACK_SCENES[(existingVibes.length + i) % SUPPLEMENT_FALLBACK_SCENES.length]!}, ${baseLabel}`,
       ),
     );
     return [...existingVibes, ...extras].slice(0, targetCount);
@@ -1612,7 +1645,7 @@ router.post("/chat", async (req, res): Promise<void> => {
   //    selfieVibe (single) is always set to the FIRST vibe for backwards
   //    compat with the /chat/selfie endpoint and legacy mobile clients.
   //    selfieVibeList (JSON array) and visualPacketId are set on multi-image
-  //    replies (2–4 markers) so the mobile can fire N parallel selfie jobs.
+  //    replies (2–10 markers) so the mobile can fire N parallel selfie jobs.
   let selfieVibe: string | null = null;
   let selfieVibeList: string[] | null = null;
   let visualPacketId: string | null = null;
@@ -3284,16 +3317,16 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
       // over free-form vibe text. Descriptor word stays FIRST in the base vibe
       // so generateAshleySelfie's descriptor-override detection is unaffected.
       const POSE_VARIANCE_SLOTS = [
-        { pose: "slight left turn",               expression: "soft warm smile",        framing: "close head-and-shoulders crop",     scene: "eye-level, natural daylight, soft shadows" },
-        { pose: "facing camera directly",          expression: "neutral, relaxed",       framing: "mid-distance crop",                 scene: "slight high angle, soft diffused window light" },
-        { pose: "slight right three-quarter turn", expression: "subtle smirk",           framing: "close crop, shallow depth of field",scene: "slight low angle, warm side light" },
-        { pose: "facing slightly right",           expression: "open, relaxed",          framing: "mid-distance loose crop",           scene: "eye-level, soft window light from the left" },
-        { pose: "chin slightly down, gaze up",     expression: "thoughtful, quiet",      framing: "tight portrait crop",               scene: "cool ambient window light, slight haze" },
-        { pose: "shoulders angled left, face forward", expression: "calm confidence",   framing: "mid-distance, environmental",       scene: "warm golden afternoon sidelight" },
-        { pose: "slight forward lean",             expression: "amused, half-smile",     framing: "close crop, eye level",             scene: "soft indoor lamp light, warm tones" },
-        { pose: "head tilted right",               expression: "gentle curiosity",       framing: "close head-and-shoulders, off-centre", scene: "natural diffuse overcast light" },
-        { pose: "three-quarter left, looking away",expression: "pensive, soft",          framing: "mid-distance loose crop",           scene: "evening blue-hour ambient light" },
-        { pose: "upright, relaxed",                expression: "direct, open gaze",      framing: "mid-distance centred crop",         scene: "studio-style soft box, neutral background" },
+        { outfit: "chunky cream knit jumper, dark slim jeans, white trainers",           pose: "slight left turn",                  expression: "soft warm smile",        framing: "close head-and-shoulders crop",          scene: "eye-level, natural daylight, soft shadows" },
+        { outfit: "floral midi dress, light sage cardigan, tan sandals",                 pose: "facing camera directly",            expression: "neutral, relaxed",       framing: "mid-distance full-body crop",             scene: "bright diffused window light, airy interior" },
+        { outfit: "oversized charcoal hoodie, black leggings, white socks",              pose: "slight right three-quarter turn",   expression: "subtle smirk",           framing: "close crop, shallow depth of field",     scene: "warm side light, living room setting" },
+        { outfit: "fitted navy blazer, crisp white shirt, dark tailored trousers",       pose: "facing slightly right",             expression: "open, relaxed",          framing: "mid-distance loose full-body crop",       scene: "eye-level, soft window light from the left" },
+        { outfit: "soft dusty-rose slip dress, thin gold necklace, bare feet",           pose: "chin slightly down, gaze up",       expression: "thoughtful, quiet",      framing: "tight portrait crop",                    scene: "cool ambient bedroom light, morning haze" },
+        { outfit: "vintage band tee, high-waisted denim shorts, white canvas shoes",     pose: "shoulders angled left, face forward", expression: "calm confidence",     framing: "mid-distance environmental full-body",    scene: "warm golden afternoon sidelight, outdoors" },
+        { outfit: "camel wool coat, black ribbed turtleneck, straight-leg jeans, boots", pose: "slight forward lean",               expression: "amused, half-smile",     framing: "close crop, eye level",                  scene: "soft indoor lamp light, warm tones" },
+        { outfit: "striped long-sleeve top, high-waisted mum jeans, white trainers",     pose: "head tilted right",                 expression: "gentle curiosity",       framing: "close head-and-shoulders, off-centre",   scene: "natural diffuse overcast daylight" },
+        { outfit: "emerald silk blouse, tailored dark trousers, simple stud earrings",   pose: "three-quarter left, looking slightly away", expression: "calm, composed",   framing: "mid-distance full-body loose crop",      scene: "soft evening indoor light, warm neutrals" },
+        { outfit: "rust-coloured chunky knit, brown corduroy jeans, ankle boots",        pose: "upright, relaxed",                  expression: "direct, open gaze",      framing: "mid-distance centred full-body crop",     scene: "studio-style soft box, neutral background" },
       ] as const;
 
       const allJobIds: string[] = [];
@@ -3311,7 +3344,7 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
         const attBaseVibe = (attDecoded.vibe || rawVibe.trim()).trim();
         // Section 3: structured Pose/Expression/Framing/Scene block, unique per slot.
         const slot = POSE_VARIANCE_SLOTS[att.sortOrder % POSE_VARIANCE_SLOTS.length]!;
-        const poseBlock = `\n\nPose: ${slot.pose}\nExpression: ${slot.expression}\nFraming: ${slot.framing}\nScene: ${slot.scene}`;
+        const poseBlock = `\n\nOutfit: ${slot.outfit}\nPose: ${slot.pose}\nExpression: ${slot.expression}\nFraming: ${slot.framing}\nScene: ${slot.scene}`;
         const attForwardedVibe = `${attBaseVibe}${poseBlock}`;
         const attImageMode: ImageMode = clientImageMode ?? attDecoded.mode;
         const descriptorWord = attBaseVibe.split(/\s+/)[0]?.toLowerCase() ?? "";
@@ -6011,7 +6044,7 @@ router.post("/chat/image", async (req, res): Promise<void> => {
   // Include all uploaded URLs on the user message so the mobile can render
   // the full gallery immediately without waiting for the next /state hydration.
   // Single-image sends keep the standard shape; imageUrls is only set for
-  // 2–4 image uploads so the gallery condition (imageUrls.length > 1) skips
+  // 2–10 image uploads so the gallery condition (imageUrls.length > 1) skips
   // single-image messages.
   const userMessageOut =
     allImageUrls.length > 1

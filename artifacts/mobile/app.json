@@ -22,7 +22,7 @@
     },
     "android": {
       "package": "com.kanesidecar.ashley",
-      "versionCode": 6,
+      "versionCode": 7,
       "googleServicesFile": "./google-services.json",
       "softwareKeyboardLayoutMode": "pan",
       "permissions": ["RECORD_AUDIO"]

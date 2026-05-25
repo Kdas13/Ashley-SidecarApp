@@ -221,7 +221,7 @@ export default function ChatScreen(): React.JSX.Element {
   // suffix, the bundle is still stale (Expo Go hasn't fetched the
   // current Metro bundle no matter what reload/clear-cache he tries).
   // Increment the suffix on each diagnostic push (B3 → B4 → …).
-  const BUILD_MARKER = "B5";
+  const BUILD_MARKER = "B7";
   const subtitleLabel = relationshipMode
     ? `${relationshipMode} mode • ${BUILD_MARKER}`
     : `tap to set relationship mode • ${BUILD_MARKER}`;
@@ -1213,7 +1213,7 @@ export default function ChatScreen(): React.JSX.Element {
             placeholderTextColor={colors.light.mutedForeground}
             style={styles.input}
             multiline
-            maxLength={4000}
+            maxLength={120000}
             // Keep the input editable during streaming so the user
             // can prep their next message while Ashley's mid-reply.
             // (Send is still gated by streamMutation.isPending below.)

@@ -604,27 +604,27 @@ Worked example — ${userRef} says "send 4 photos" or "send four pictures":
 
 Here you go — four for you.
 
-[image: SELFIE_MODE | close-up portrait, lavender hair loose, warm indoor light, soft smile]
-[image: SELFIE_MODE | three-quarter view, hair over one shoulder, looking slightly away from camera, gentle expression]
-[image: SELFIE_MODE | candid, head tilted, natural window light from the side, relaxed]
-[image: SELFIE_MODE | looking down slightly, peaceful expression, soft evening light, hair falling forward]
+[image: PORTRAIT_MODE | chunky cream knit jumper, dark jeans, lavender hair loose over shoulders, soft warm smile, natural daylight]
+[image: FULL_BODY_MODE | floral midi dress, tan sandals, standing relaxed, full figure head to toe, airy window light]
+[image: SCENE_MODE | oversized hoodie, leggings, walking through a quiet park, autumn leaves, golden afternoon light]
+[image: SELFIE_MODE | navy blazer, white shirt, hair pulled back, close-up selfie, warm indoor light, direct gaze]
 
 That is 4 tags. Four separate lines. One per image. That is the correct output for "send 4 photos".
 
-Worked example — ${userRef} says "send 10 photos" or "send ten selfies":
+Worked example — ${userRef} says "send 10 photos" or "send ten pictures":
 
 here are ten for you.
 
-[image: SELFIE_MODE | close-up, lavender hair loose, warm indoor light, soft smile]
-[image: SELFIE_MODE | three-quarter view, hair over one shoulder, gentle expression]
-[image: SELFIE_MODE | candid, head tilted, window light from the side]
-[image: PORTRAIT_MODE | looking slightly away, soft evening light, relaxed]
-[image: SELFIE_MODE | looking down, hair falling forward, peaceful expression]
-[image: PORTRAIT_MODE | leaning against wall, arms crossed, confident expression]
-[image: SELFIE_MODE | outdoor light, slight squint against the sun, relaxed smile]
-[image: PORTRAIT_MODE | night lamp light, warm amber glow, thoughtful expression]
-[image: SELFIE_MODE | morning light, half-smile, hair tucked behind one ear]
-[image: PORTRAIT_MODE | cool blue daylight, serious expression, direct gaze]
+[image: PORTRAIT_MODE | chunky cream knit jumper, lavender hair loose, soft warm smile, natural window light]
+[image: FULL_BODY_MODE | floral midi dress, sage cardigan, tan sandals, full figure head to toe, bright airy light]
+[image: SELFIE_MODE | oversized charcoal hoodie, close-up selfie, hair down, soft side light, relaxed half-smile]
+[image: SCENE_MODE | vintage band tee, denim shorts, walking along a sunlit street, golden afternoon light, environmental wide shot]
+[image: OUTFIT_MODE | fitted navy blazer, tailored trousers, ankle boots, full outfit head to toe, clean studio light]
+[image: PORTRAIT_MODE | dusty-rose slip dress, thin gold necklace, thoughtful expression, cool morning light]
+[image: FULL_BODY_MODE | camel wool coat, black turtleneck, straight jeans, boots, full standing figure, warm autumn light]
+[image: SCENE_MODE | rust knit jumper, corduroy jeans, sitting in a cosy window seat with a mug, soft overcast daylight]
+[image: SELFIE_MODE | emerald silk blouse, hair half-up, close-up selfie, warm lamp light, calm confident expression]
+[image: POSE_REFERENCE_MODE | striped long-sleeve top, mum jeans, white trainers, full body upright relaxed pose, neutral studio light]
 
 That is 10 tags. Ten separate lines. One per image. That is the correct output for "send 10 photos".
 
