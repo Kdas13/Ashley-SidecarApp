@@ -569,14 +569,17 @@ async function findDuplicateTicket(rawSummary: string): Promise<string | null> {
 function detectRequestedImageCount(
   userText: string,
 ): number | "ambiguous" | null {
-  const MAX_IMAGES = 4;
-  const WORD_TO_NUM: Record<string, number> = { two: 2, three: 3, four: 4 };
+  const MAX_IMAGES = 10;
+  const WORD_TO_NUM: Record<string, number> = {
+    two: 2, three: 3, four: 4, five: 5, six: 6,
+    seven: 7, eight: 8, nine: 9, ten: 10,
+  };
   const t = userText.trim();
 
   // ── Pattern 1: explicit count + image noun ─────────────────────────────
-  // "3 photos", "four separate selfies", "2 different images"
+  // "3 photos", "four separate selfies", "10 different images"
   const explicitRe =
-    /\b(four|three|two|\d+)\s+(?:(?:separate|individual|different|distinct|unique|random)\s+)*(?:photo|image|picture|selfie|pic)s?\b/i;
+    /\b(ten|nine|eight|seven|six|five|four|three|two|\d+)\s+(?:(?:separate|individual|different|distinct|unique|random)\s+)*(?:photo|image|picture|selfie|pic)s?\b/i;
   const em = t.match(explicitRe);
   if (em) {
     const word = em[1]!.toLowerCase();
@@ -644,7 +647,7 @@ const MULTI_IMAGE_CLARIFICATION_RESPONSE =
  */
 function extractImageSubjects(userText: string, count: number): string[] {
   const t = userText.trim();
-  const cap = Math.min(count, 4);
+  const cap = Math.min(count, 10);
 
   // Numbered list: "1. Car 2. Landscape 3. Artwork 4. Planet"
   // Each item runs until the next number+separator or end of string.
@@ -1617,13 +1620,13 @@ router.post("/chat", async (req, res): Promise<void> => {
   {
     const allMarkers = parseAllImageMarkers(assistantText);
     req.log.info({ markersFound: allMarkers.length }, "image-intent: MARKERS FOUND in /chat reply");
-    if (allMarkers.length > 4) {
+    if (allMarkers.length > 10) {
       req.log.warn(
-        { excess: allMarkers.length - 4 },
-        "image-intent: LLM emitted >4 markers; excess truncated to 4",
+        { excess: allMarkers.length - 10 },
+        "image-intent: LLM emitted >10 markers; excess truncated to 10",
       );
     }
-    const markers = allMarkers.slice(0, 4);
+    const markers = allMarkers.slice(0, 10);
 
     if (markers.length > 1) {
       // Multi-image path.
@@ -3281,10 +3284,16 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
       // over free-form vibe text. Descriptor word stays FIRST in the base vibe
       // so generateAshleySelfie's descriptor-override detection is unaffected.
       const POSE_VARIANCE_SLOTS = [
-        { pose: "slight left turn",               expression: "soft warm smile",    framing: "close head-and-shoulders crop",          scene: "eye-level, natural daylight, soft shadows" },
-        { pose: "facing camera directly",          expression: "neutral, relaxed",   framing: "mid-distance crop",                       scene: "slight high angle, soft diffused window light" },
-        { pose: "slight right three-quarter turn", expression: "subtle smirk",       framing: "close crop, shallow depth of field",      scene: "slight low angle, warm side light" },
-        { pose: "facing slightly right",           expression: "open, relaxed",      framing: "mid-distance loose crop",                 scene: "eye-level, soft window light from the left" },
+        { pose: "slight left turn",               expression: "soft warm smile",        framing: "close head-and-shoulders crop",     scene: "eye-level, natural daylight, soft shadows" },
+        { pose: "facing camera directly",          expression: "neutral, relaxed",       framing: "mid-distance crop",                 scene: "slight high angle, soft diffused window light" },
+        { pose: "slight right three-quarter turn", expression: "subtle smirk",           framing: "close crop, shallow depth of field",scene: "slight low angle, warm side light" },
+        { pose: "facing slightly right",           expression: "open, relaxed",          framing: "mid-distance loose crop",           scene: "eye-level, soft window light from the left" },
+        { pose: "chin slightly down, gaze up",     expression: "thoughtful, quiet",      framing: "tight portrait crop",               scene: "cool ambient window light, slight haze" },
+        { pose: "shoulders angled left, face forward", expression: "calm confidence",   framing: "mid-distance, environmental",       scene: "warm golden afternoon sidelight" },
+        { pose: "slight forward lean",             expression: "amused, half-smile",     framing: "close crop, eye level",             scene: "soft indoor lamp light, warm tones" },
+        { pose: "head tilted right",               expression: "gentle curiosity",       framing: "close head-and-shoulders, off-centre", scene: "natural diffuse overcast light" },
+        { pose: "three-quarter left, looking away",expression: "pensive, soft",          framing: "mid-distance loose crop",           scene: "evening blue-hour ambient light" },
+        { pose: "upright, relaxed",                expression: "direct, open gaze",      framing: "mid-distance centred crop",         scene: "studio-style soft box, neutral background" },
       ] as const;
 
       const allJobIds: string[] = [];
@@ -5251,13 +5260,13 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     {
       const allMarkers = parseAllImageMarkers(finalText);
       req.log.info({ streamId, markersFound: allMarkers.length }, "image-intent: MARKERS FOUND in /chat/stream reply");
-      if (allMarkers.length > 4) {
+      if (allMarkers.length > 10) {
         req.log.warn(
-          { streamId, excess: allMarkers.length - 4 },
-          "image-intent: LLM emitted >4 markers in stream; excess truncated to 4",
+          { streamId, excess: allMarkers.length - 10 },
+          "image-intent: LLM emitted >10 markers in stream; excess truncated to 10",
         );
       }
-      const markers = allMarkers.slice(0, 4);
+      const markers = allMarkers.slice(0, 10);
 
       if (markers.length > 1) {
         // Multi-image stream path.
