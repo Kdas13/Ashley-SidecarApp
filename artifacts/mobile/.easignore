@@ -1,0 +1,12 @@
+# Exclude large dev/build artefacts from the EAS archive
+node_modules
+.expo
+dist
+__tests__
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+android
+ios
+.git
