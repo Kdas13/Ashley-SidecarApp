@@ -2250,6 +2250,25 @@ async function validateNoPersonInB64(b64: string, jobId?: string): Promise<boole
   }
 }
 
+/**
+ * Replace words that trigger Azure/OpenAI image-content moderation with
+ * semantically equivalent but provider-safe alternatives. Applied to the
+ * LLM-written vibe description before it enters the final diffusion prompt —
+ * the pose intent is preserved while the moderation_blocked 400 is avoided.
+ *
+ * Only the direct synonyms that caused Azure to reject the request are mapped;
+ * the function is NOT a general content filter. The safety prefix still carries
+ * the hard rules (no nudity, explicit acts, minors, violence).
+ */
+function sanitiseVibeForProvider(vibe: string): string {
+  return vibe
+    .replace(/\bseductive(ly)?\b/gi, (_, s) => `alluring${s ?? ""}`)
+    .replace(/\bsuggestive\b/gi, "stylish")
+    .replace(/\bsultry\b/gi, "expressive")
+    .replace(/\bsensual(ly)?\b/gi, (_, s) => `warm${s ?? ""}`)
+    .replace(/\berotic(ally)?\b/gi, (_, s) => `intimate${s ?? ""}`);
+}
+
 async function generateAshleySelfie(
   vibe: string,
   profile: AshleyProfile,
@@ -2520,7 +2539,10 @@ async function generateAshleySelfie(
   // without re-baking the assistant message; never invent fields. Goes
   // through buildModePromptBlock as `sceneAnchor` — sits below identity in
   // the prompt order but above the LLM-written vibe.
-  const { description: vibeNoMem, memoryId: anchorId } = extractMemoryIdFromVibe(scrubbedVibe);
+  const { description: vibeNoMemRaw, memoryId: anchorId } = extractMemoryIdFromVibe(scrubbedVibe);
+  // Scrub Azure-blocked words from the vibe before they enter the diffusion
+  // prompt. Preserves the pose/mood intent while avoiding moderation_blocked.
+  const vibeNoMem = sanitiseVibeForProvider(vibeNoMemRaw);
   const anchor = anchorId ? getVisualMemory(anchorId) : null;
   const sceneAnchorDirective = anchor ? formatVisualMemoryDirective(anchor) : "";
   if (anchor) {

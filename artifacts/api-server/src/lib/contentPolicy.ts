@@ -333,8 +333,10 @@ I'm in Standard Mode. Tone is warm, emotionally present, intimate-when-warranted
  */
 export function buildSelfiePromptSafetyPrefix(): string {
   return [
-    "Non-explicit, non-suggestive.",
-    "No nudity, no sexual content, no minors, no violence, no text or watermarks.",
+    // Hard rules only — no style gate. Alluring posing and confident
+    // expression are allowed; the prohibited categories are explicit.
+    "No nudity. No explicit sexual acts. No minors. No violence. No text or watermarks.",
+    "Subject is fully clothed throughout.",
     "Single image only — do not create a collage, photo strip, contact sheet, grid layout, diptych, triptych, or any multi-panel composition.",
     "One continuous scene, one moment in time.",
   ].join(" ");
