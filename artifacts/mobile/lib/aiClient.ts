@@ -1431,7 +1431,7 @@ export type SendChatImageRequest = {
   caption: string;
   replyTo?: ReplyToRef | null;
   /**
-   * Additional images beyond the first (max 3 extras, giving 4 total).
+   * Additional images beyond the first (max 9 extras, giving 10 total).
    * When present the request uses `images[]` instead of `image`, routing
    * through the server's multi-image receive path.
    * `uri` is the local file:// URI — carried for the optimistic gallery

@@ -789,7 +789,7 @@ export type SendImageArgs = {
   mode: ImageAnalysisMode;
   caption: string;
   replyTo?: ReplyToRef | null;
-  /** Additional images beyond the first (max 3 extras). Forwarded to sendChatImage as `images[]`.
+  /** Additional images beyond the first (max 9 extras, giving 10 total). Forwarded to sendChatImage as `images[]`.
    *  `uri` is the local file:// URI — used for the optimistic gallery preview, not sent to the server. */
   extraImages?: { base64: string; mimeType: string; uri?: string }[];
   /** Section 8 receive log: how many images the user selected. Forwarded as mobileSelectedCount. */

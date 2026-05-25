@@ -48,7 +48,7 @@ app.use(cors());
 // per-request based on the path. (Mounting two json parsers globally doesn't
 // work because express.json is idempotent — once req._body is set the second
 // pass no-ops.)
-const jsonLarge = express.json({ limit: "100mb" });
+const jsonLarge = express.json({ limit: "200mb" });
 const jsonSmall = express.json({ limit: "1mb" });
 app.use((req, res, next) => {
   if (req.path === "/api/chat/image") return jsonLarge(req, res, next);

@@ -5582,9 +5582,10 @@ const IMAGE_MODE_VALUES = [
   "compare",
 ] as const;
 
-// Approximate cap: 5 MB raw → ~6.7 MB base64. We accept up to 7 MB of
-// base64 string length so a clean 5 MB photo from the picker fits.
-const MAX_IMAGE_BASE64_LEN = 7 * 1024 * 1024;
+// At quality 0.85 a typical phone photo produces ~9 MB base64.
+// We cap at 15 MB to match the mobile client-side guard and give headroom
+// for large-sensor images without risking silent rejection.
+const MAX_IMAGE_BASE64_LEN = 15 * 1024 * 1024;
 
 const ChatImageBodySchema = z.object({
   userMessage: z.object({
@@ -5594,7 +5595,7 @@ const ChatImageBodySchema = z.object({
   }),
   /**
    * Single-image path — kept for backwards compat with older mobile clients.
-   * New multi-image path uses `images` array (max 4). Exactly one of `image`
+   * New multi-image path uses `images` array (max 10). Exactly one of `image`
    * or `images` must be present; the route handler rejects requests with both
    * or neither.
    */
@@ -5604,7 +5605,7 @@ const ChatImageBodySchema = z.object({
       mimeType: z.string().min(3).max(64),
     })
     .optional(),
-  /** Multi-image path: up to 4 images, each with its own base64 + mimeType. */
+  /** Multi-image path: up to 10 images, each with its own base64 + mimeType. */
   images: z
     .array(
       z.object({
@@ -5613,14 +5614,14 @@ const ChatImageBodySchema = z.object({
       }),
     )
     .min(1)
-    .max(4)
+    .max(10)
     .optional(),
   category: z.enum(IMAGE_CATEGORY_VALUES),
   mode: z.enum(IMAGE_MODE_VALUES),
   clientNow: z.string().datetime({ offset: true }).optional(),
   clientTimezone: z.string().min(1).max(64).optional(),
   /** Section 8 (master spec): mobile-reported selection count for receive-pipeline log. */
-  mobileSelectedCount: z.number().int().min(1).max(4).optional(),
+  mobileSelectedCount: z.number().int().min(1).max(10).optional(),
 });
 
 router.post("/chat/image", async (req, res): Promise<void> => {
@@ -5645,7 +5646,7 @@ router.post("/chat/image", async (req, res): Promise<void> => {
     return;
   }
 
-  // Normalise: allImages is always a 1–4 item array.
+  // Normalise: allImages is always a 1–10 item array.
   const allImages = image ? [image] : images!;
 
   // Section 8 (master spec) — RECEIVE PIPELINE log: inbound counts.
