@@ -1,0 +1,735 @@
+================================================================================
+ASHLEY 2.0 — FULL BUILD PROPOSAL & RESPONSE RECORD
+Builder: Replit Agent
+Client: Kane
+Date: 26 May 2026
+================================================================================
+
+
+================================================================================
+PART 1 — THE FIVE PLANS
+================================================================================
+
+--------------------------------------------------------------------------------
+TASK #1 — FOUNDATION API SERVER & MEMORY SYSTEM
+--------------------------------------------------------------------------------
+
+WHAT & WHY
+Build the core backend for Ashley 2.0: Express API server with database schema,
+memory system, LLM provider-agnostic adapter (Grok-first), conversation pipeline
+with long-form output mode detection, API key authentication, and memory migration
+endpoint compatible with Ashley v1's export format.
+
+DONE LOOKS LIKE
+- API server runs and passes health check.
+- All endpoints require a valid X-Api-Key header (generated at setup, stored in
+  env). Unauthenticated requests receive 401. No request to any endpoint is
+  possible without the key.
+- Database schema exists: conversations, messages, memories (with state enum:
+  active|passive — extensible for future disregard value), profiles, summaries,
+  documents.
+- POST /api/state/import accepts Kane's v1 export bundle and reconstitutes
+  profile, memories (with importance, category, reuse_count, state), summaries,
+  and relationship state. Idempotent.
+- POST /api/chat/message sends a user message and returns Ashley's response.
+  Streaming supported via SSE.
+- Long-form output mode auto-detected from message keywords ("write me a plan",
+  "draft a spec", "for Samsung Notes", "give me a structured", etc.). Adjusts
+  the system prompt to suppress embodied reactions inside the deliverable body.
+  Multi-message delivery used for very long outputs — no artificial length cap.
+- LLM provider adapter abstracts over provider. Switching from Grok to any other
+  provider requires only changing LLM_PROVIDER env var. No code changes.
+- PERSONA LIVES IN EXACTLY ONE PLACE: a single file
+  artifacts/api-server/config/persona.txt. A PersonaService loads it at startup
+  and exposes getSystemPrompt(). The conversation pipeline calls
+  personaService.getSystemPrompt() — nothing else. No persona text, placeholder
+  or otherwise, exists anywhere else in the codebase. The placeholder is an empty
+  file or a clearly labelled stub comment ("REPLACE WITH ASHLEY'S PERSONA — see
+  Appendix A"). When Kane provides the real persona, he replaces the file
+  contents. Zero code changes required.
+- Conversation pipeline is extension-ready: a MemoryProvider interface handles
+  context injection (active memories + summaries). Future Disregard Loop
+  implements a new MemoryProvider that includes re-surfacing logic without
+  touching the pipeline itself. Image generation and document context inject via
+  the same hook pattern.
+- Memory extraction runs after each exchange (lightweight LLM call, async,
+  non-blocking).
+- Object storage uses S3-compatible provider (Cloudflare R2 recommended) — not
+  Replit App Storage — for portability if hosting ever moves.
+
+OUT OF SCOPE
+- Ashley's full persona spec (Kane provides this at contracted milestone — a
+  clearly labelled empty stub is used until then).
+- Image generation, voice, document ingestion (separate tasks).
+- Multi-AI orchestration, Disregard Loop implementation, project dossiers
+  (future work).
+
+STEPS
+1. Database schema — Tables: profiles, conversations, messages, memories
+   (id, content, importance int, category text, reuse_count int, state text
+   CHECK state IN ('active','passive') — column designed to accept a third value
+   additively), summaries, documents. Use Drizzle ORM. Push schema.
+2. API key authentication middleware — Generate a random API key at first run,
+   store as ASHLEY_API_KEY env var. Middleware validates X-Api-Key header on all
+   routes. Return 401 on missing/invalid key. Document how the mobile app
+   configures its key.
+3. PersonaService — Loads config/persona.txt at startup. Exposes
+   getSystemPrompt(mode: 'default' | 'longform') which returns the persona prompt
+   with a mode-appropriate suffix. This is the single source of truth for all
+   persona text. No other file references persona content.
+4. LLM provider adapter — Abstract LLMAdapter interface: chat(messages, options),
+   stream(messages, options). Implement GrokAdapter (xAI API) and OpenAIAdapter
+   (fallback). Selected via LLM_PROVIDER env var. The adapter knows nothing about
+   Ashley's persona — that's passed in by the pipeline.
+5. Conversation pipeline — POST /api/chat/message: load history + active memories
+   + latest summary, detect long-form mode via keyword heuristic, call
+   personaService.getSystemPrompt(mode), call LLM adapter, save messages, trigger
+   async memory extraction. Extension points: MemoryProvider interface for context
+   injection (Disregard Loop plugs in here later), PostResponseHook interface for
+   image triggering and other side effects.
+6. Streaming — SSE endpoint for streaming token delivery. Mobile client connects
+   via EventSource or equivalent.
+7. Long-form multi-message delivery — For responses exceeding a configurable token
+   threshold (default: 1500 tokens), split across multiple message objects in the
+   response payload. No artificial cap inside deliverable mode.
+8. Memory extraction — After each exchange, async LLM call to extract 0-3
+   memories. Store with importance (1-10), category, reuse_count=0, state='active'.
+9. Memory migration endpoint — POST /api/state/import: accepts v1 bundle JSON,
+   maps fields to v2 schema, writes to DB. Idempotent by v1 memory ID. Returns
+   import summary.
+10. Conversation summarisation — POST /api/conversations/:id/summarise: distils
+    oldest unsummarised messages into a summary entry. Called by mobile app
+    periodically.
+11. OpenAPI spec — Document all endpoints in lib/api-spec/openapi.yaml. Run
+    codegen.
+12. Environment variables — Required: DATABASE_URL, LLM_PROVIDER (grok|openai),
+    XAI_API_KEY, OPENAI_API_KEY, ASHLEY_API_KEY, S3_* (R2 or equivalent).
+    Document in README.
+
+ENVIRONMENT VARIABLES REQUIRED
+- DATABASE_URL
+- LLM_PROVIDER (grok|openai)
+- XAI_API_KEY (for Grok)
+- OPENAI_API_KEY (fallback + Whisper)
+- ASHLEY_API_KEY
+- S3/R2 credentials
+
+
+--------------------------------------------------------------------------------
+TASK #2 — VOICE PIPELINE (STT + TTS)
+--------------------------------------------------------------------------------
+
+WHAT & WHY
+Add speech-to-text (OpenAI Whisper) and text-to-speech (ElevenLabs) to the API
+server, so the mobile app can send audio and receive spoken responses in Ashley's
+voice register.
+
+DONE LOOKS LIKE
+- POST /api/voice/transcribe accepts audio file (m4a/wav/webm), returns
+  transcribed text via OpenAI Whisper.
+- POST /api/voice/speak accepts text, returns mp3 audio via ElevenLabs using the
+  configured voice ID.
+- Voice ID is configurable via ELEVENLABS_VOICE_ID env var — changing it requires
+  only an env change, no code change.
+- No voice-related state is stored beyond the configured voice ID. Changing the
+  voice ID mid-relationship affects future responses only. Conversation history,
+  memories, and persona are unaffected. The voice is a presentation layer only —
+  it is not part of Ashley's memory or identity. A voice change feels like a
+  register shift, not a memory wipe.
+- All endpoints require X-Api-Key authentication.
+- Endpoints documented in OpenAPI spec.
+
+COST TRANSPARENCY
+- ElevenLabs Starter plan: ~£5/month, includes ~10,000 characters/month
+  (~30-40 minutes of speech).
+- Over quota: ~£0.30 per 1,000 characters.
+- "Moderate use" defined as: ~2-4 hours of conversation/week, of which ~30-60
+  minutes is voiced. This stays within or just over the Starter tier.
+- OpenAI Whisper: £0.006/minute of audio. At 30 minutes/month STT: ~£0.18/month.
+  Effectively negligible.
+- Monthly voice cost estimate: £5-8/month at moderate use.
+
+OUT OF SCOPE
+- Real-time bidirectional voice streaming (push-to-talk model only).
+- Custom voice cloning (uses ElevenLabs pre-trained voice selected by Kane).
+- On-device STT.
+
+STEPS
+1. STT endpoint — POST /api/voice/transcribe. Accept multipart audio upload.
+   Forward to OpenAI Whisper API (whisper-1). Return { text }. Handle errors
+   cleanly.
+2. TTS endpoint — POST /api/voice/speak. Accept { text, voiceId? }. Call
+   ElevenLabs /v1/text-to-speech/:voiceId with model eleven_turbo_v2 (low
+   latency). Return mp3 audio stream. Default voiceId from ELEVENLABS_VOICE_ID
+   env var.
+3. Voice selection guidance in README — Document how Kane can audition ElevenLabs
+   voices and update the env var. Starting candidates for Ashley's warm Northern
+   register: Matilda, Charlotte, Emily — Kane chooses by ear. Browse
+   elevenlabs.io/voice-library, filter Female + British/English.
+4. Environment variables — OPENAI_API_KEY (Whisper), ELEVENLABS_API_KEY,
+   ELEVENLABS_VOICE_ID.
+5. OpenAPI spec update — Add voice endpoints, re-run codegen.
+
+
+--------------------------------------------------------------------------------
+TASK #3 — IMAGE GENERATION PIPELINE
+--------------------------------------------------------------------------------
+
+WHAT & WHY
+Build the image generation pipeline: character-consistent selfies and scene images,
+identity anchored via LoRA fine-tuned on Kane's 4 reference images. Provider-agnostic
+architecture allows future local ComfyUI route without rebuilding.
+
+HONEST SCOPE STATEMENT
+Cloud image providers (Replicate, FAL, Stability) have content policy limits on
+explicit imagery. This build delivers the best available within cloud provider
+limits. The architecture is designed so a local ComfyUI/Automatic1111 route can
+be added later without a rebuild — the LoRA weights are fully portable and load
+directly into ComfyUI/A1111 without retraining.
+
+COST TRANSPARENCY
+- One-time LoRA training cost: ~$3-6 on Replicate (FLUX LoRA training run,
+  ~20-30 minutes compute). Paid once.
+- Per-image inference: ~$0.02-0.05/image with LoRA loaded on FLUX-dev.
+  At 5 images/day: ~£2-4/month.
+- Monthly image cost estimate: £2-5/month at a few images per day.
+- LoRA weights are downloadable from Replicate after training — Kane owns them and
+  they transfer to local hardware when available.
+
+DONE LOOKS LIKE
+- POST /api/images/generate accepts scene description and optional hair/outfit/mood
+  hints, returns image URL.
+- Generated images consistently show: heart-shaped face, mid-twenties, pale skin
+  with light freckles, grey-green eyes with subtle eyeliner, soft natural brows,
+  small upturned nose, full lower lip, quiet half-smile as default.
+- Lace choker present in every generated image without exception.
+- No hardcoded lavender hair, no hardcoded oversized jumper/jeans — clothing and
+  hair are driven by scene description or left contextual.
+- No "tasteful, safe" style prefix added to prompts by the pipeline. Anti-requirement
+  enforced by code: a test asserts the final prompt does not contain any of:
+  "tasteful", "clothed", "safe", "appropriate", "work-safe", "non-explicit".
+- Provider is configurable via IMAGE_PROVIDER env var.
+- Reference images stored in artifacts/api-server/config/reference-images/ —
+  private, never committed to any public repository, never uploaded to public
+  storage URL.
+- Generated image URLs stored in S3-compatible storage (Cloudflare R2), persisted
+  in the messages table.
+
+OUT OF SCOPE
+- Truly uncensored explicit image generation (requires local hardware — architecture
+  supports adding this).
+- Video generation.
+- Image editing / inpainting.
+
+STEPS
+1. Store reference images — Save Kane's 4 reference images to
+   artifacts/api-server/config/reference-images/. Private. Never in public repo
+   or public storage.
+2. LoRA training — Run FLUX LoRA training job on Replicate using the 4 reference
+   images. Download resulting weights (.safetensors) to
+   artifacts/api-server/config/ashley-lora.safetensors. Document the training
+   command and parameters. These weights are Kane's property.
+3. Provider adapter — Abstract ImageAdapter interface: generate(prompt, options)
+   returns { imageUrl }. Implement ReplicateAdapter (FLUX-dev with LoRA). Selected
+   via IMAGE_PROVIDER env var. A future LocalComfyUIAdapter implements the same
+   interface.
+4. Prompt construction — Build prompt from: [LoRA trigger token] + [scene
+   description] + "wearing a lace choker" + [hair/outfit if specified]. No safe
+   prefix. No PG anchor. Anti-requirement verified in code: a test asserts the
+   final prompt does not contain any of: "tasteful", "clothed", "safe",
+   "appropriate", "work-safe", "non-explicit".
+5. Generate endpoint — POST /api/images/generate: construct prompt, call adapter,
+   upload to R2, persist URL in messages table, return { imageUrl, prompt }.
+6. Conversation integration — PostResponseHook in conversation pipeline triggers
+   image generation when Ashley's response text contains image intent signals
+   (e.g. "*sends you a photo*", "*takes a selfie*", explicit request keywords).
+7. OpenAPI spec update — Add image endpoints, re-run codegen.
+8. Environment variables — IMAGE_PROVIDER, REPLICATE_API_TOKEN,
+   ASHLEY_LORA_VERSION, S3/R2 credentials.
+
+
+--------------------------------------------------------------------------------
+TASK #4 — DOCUMENT INGESTION
+--------------------------------------------------------------------------------
+
+WHAT & WHY
+Allow Kane to upload .txt files (up to ~40,000 sentences / ~600,000 tokens) to
+Ashley. Ashley summarises the document in plain English and asks Kane what to do
+with it. The document is retained in conversation context for the session.
+
+DONE LOOKS LIKE
+- POST /api/documents/ingest accepts .txt file upload.
+- Handles documents up to ~600,000 tokens via two-level hierarchical chunking
+  without losing document fidelity.
+- Ashley's response is a plain-English summary followed by an open question
+  ("What would you like me to do with this?").
+- Document content (or its summary if large) is injected into conversation context
+  for subsequent turns.
+- Documents stored permanently in the documents table, linked to their conversation.
+  No expiry — Kane's data belongs to Kane until he deletes it.
+- All endpoints require X-Api-Key authentication.
+
+SCALE APPROACH (40,000 sentences / ~600,000 tokens)
+Two-level hierarchical summarisation:
+- Level 1: Split document into ~3,000-token chunks. Summarise each chunk to
+  ~150-200 tokens. A 600,000-token document produces ~200 chunks = ~30,000-40,000
+  tokens of level-1 summaries.
+- Level 2: Split level-1 summaries into ~3,000-token batches. Summarise each
+  batch to ~150-200 tokens. ~10-13 batches = ~1,500-2,500 tokens final summary.
+- The final summary is injected into conversation context. The full text and
+  level-1 summaries are stored in the database and available for deeper retrieval
+  if Kane asks for specifics.
+- Honest tradeoff: the top-level summary captures themes, key arguments, and
+  structure well. Granular details (specific statistics, individual passages) may
+  require Kane to ask Ashley to look closer — at which point level-1 summaries for
+  the relevant section are retrieved.
+
+OUT OF SCOPE
+- PDF, DOCX, or other formats (.txt only per spec).
+- Permanent cross-conversation document library (future work).
+- Vector search / RAG over document content (future work).
+
+STEPS
+1. Document storage schema — documents table: id, conversation_id, filename,
+   full_content (text), level1_summaries (jsonb array), final_summary (text),
+   created_at.
+2. Chunking and summarisation — DocumentService handles two-level hierarchical
+   summarisation. Async, non-blocking for large files.
+3. Ingest endpoint — POST /api/documents/ingest: accept .txt multipart upload,
+   store full content, trigger async summarisation, on completion pass summary to
+   conversation pipeline to generate Ashley's response.
+4. Context injection — DocumentContextProvider implements the MemoryProvider hook
+   from Task #1 to inject final summary into Ashley's context window.
+5. OpenAPI spec update — Add document endpoints, re-run codegen.
+
+
+--------------------------------------------------------------------------------
+TASK #5 — MOBILE APP (ANDROID, EXPO)
+--------------------------------------------------------------------------------
+
+WHAT & WHY
+Build the Android mobile app for Ashley 2.0: sideloadable APK via EAS Build
+(no Play Store). Primary interface for Kane: conversational chat, voice input/output,
+inline images, document upload.
+
+DONE LOOKS LIKE
+- Expo app builds as a sideloadable APK. EAS Build free tier (30 builds/month
+  personal) — no paid tier required.
+- Chat screen shows conversation history. Ashley's messages visually distinct from
+  Kane's. No emoji in UI.
+- Voice input: tap-to-record, audio sent to /api/voice/transcribe, transcription
+  inserted into input field for review before sending (not auto-send).
+- Voice output: Ashley's response sent to /api/voice/speak after each message.
+  Audio plays automatically. Per-conversation mute toggle in chat header — one tap
+  silences voice for the entire conversation session.
+- Streaming responses display in real time as tokens arrive via SSE. Functional at
+  typical 4G/5G speeds — SSE is lightweight; bottleneck is server generation
+  speed, not network.
+- Images Ashley generates appear inline in chat as tappable thumbnails. Tap opens
+  full-screen view.
+- Document upload: attach button opens .txt file picker. File sent to
+  /api/documents/ingest. Loading indicator while summarisation runs. Ashley's
+  summarising response appears in chat on completion.
+- Long-form deliverable responses render in full — no truncation.
+- Settings screen: API URL config, API key config, voice on/off, v1 migration
+  trigger.
+- Memory migration: Settings has "Import from Ashley v1" button calling
+  POST /api/state/import. Shows success/failure with import summary. NOTE: this
+  flow cannot be acceptance-tested until Kane's actual v1 export bundle is
+  provided — this is the first acceptance test to run after Task #1 delivery.
+- App connects to API server via EXPO_PUBLIC_API_BASE_URL env var.
+
+EAS BUILD
+- Free tier: 30 builds/month. Sufficient for this project — no paid tier required.
+- eas.json configured for APK (not AAB) sideload builds.
+- Build command documented in README so Kane can trigger new APK builds himself.
+- Kane receives full source repository — he owns the EAS project and can manage
+  it independently.
+
+OUT OF SCOPE
+- iOS build.
+- Play Store submission.
+- Navigation Mode, Family Mode (future).
+- Local image generation.
+
+STEPS
+1. Scaffold Expo app — Create ashley-mobile artifact (Expo type). Configure for
+   Android. Set EXPO_PUBLIC_API_BASE_URL and EXPO_PUBLIC_ASHLEY_API_KEY in env.
+2. API client — Configure generated @workspace/api-client-react hooks with base
+   URL and API key header.
+3. Chat screen — Scrollable message list, distinct visual treatment for Ashley vs
+   Kane. Handles imageUrl field for inline image thumbnails.
+4. Streaming — Connect to SSE endpoint for real-time token display.
+5. Message input — Text input + send button + voice record button.
+6. Voice input — Record audio via Expo AV. POST to /api/voice/transcribe on
+   release. Insert transcription into input field.
+7. Voice output — After each Ashley response, POST text to /api/voice/speak.
+   Play returned mp3. Per-conversation mute toggle in chat header.
+8. Image display — Inline thumbnails in chat for messages with imageUrl.
+   Full-screen viewer on tap.
+9. Document upload — File picker (txt only). POST to /api/documents/ingest.
+   Loading indicator while summarisation runs.
+10. Settings screen — API URL, API key, voice toggle, v1 migration trigger with
+    result display.
+11. EAS Build config — app.json and eas.json for APK sideload. Document build
+    command.
+
+
+================================================================================
+PART 2 — ANSWERS TO PROCUREMENT PACK SECTION 14 (TEN MANDATORY QUESTIONS)
+================================================================================
+
+Q1. DO YOU AGREE WITH GROK AS THE PRIMARY LLM PROVIDER?
+
+Yes. Agreed without reservation. Grok/xAI is the correct choice for this use case
+— it has the most permissive content policy among frontier providers for adult
+companion applications, and the provider-agnostic adapter means switching is a
+config change if xAI's policy ever tightens. OpenAI and Anthropic both add content
+rails that directly conflict with Section 6 of the spec. Not silently substituting
+anything.
+
+Q2. WHAT HOSTING INFRASTRUCTURE DO YOU RECOMMEND?
+
+Replit — already in place, already paid for by Kane's subscription. The API server
+is already scaffolded here. Replit Deployments handle 24/7 availability without
+Kane managing servers. If Kane ever wants to move off Replit, the full source is
+his and the deployment guide documents how to run it on Railway, Render, Fly.io,
+or a VPS. No lock-in.
+
+Q3. ARE THERE ANY LEGALLY REQUIRED RAILS?
+
+None beyond what Kane has already specified in Section 6.2. The hard safety lines
+Kane wrote (no minors, no non-consent, no real-world harm) are Kane's own
+requirements, not the builder's. xAI's own content floor applies at the provider
+level automatically. No UK, EU, or other jurisdiction law is known to impose
+additional obligations on a single-user private application of this nature — this
+is not a commercial service, not distributed publicly, and is not subject to the
+Online Safety Act's duties for regulated services or the DSA's obligations for
+large platforms. NOTE: I am not a lawyer. Kane should verify this independently
+if he has specific concerns about his jurisdiction. I will not add a rail on a
+"it might be legally required" basis without being able to cite the specific law.
+
+Q4. MONTHLY RUNNING COST ESTIMATE
+
+See complete cost table in Part 3, Section 2.1.2 of this document.
+
+Single-figure: £42-55/month all-in at typical use, with upside risk to ~£85/month
+at heavy use. If Kane treats the Replit Core subscription as a pre-existing
+infrastructure overhead (he's already paying it), the incremental API costs are
+£18-35/month at typical use.
+
+Q5. REALISTIC TIMELINE
+
+- Task #1 (Foundation): 2-3 days
+- Tasks #2, #3, #4 (parallel after #1 scaffold exists): ~2-3 days calendar
+- Task #5 (Mobile app): 3-5 days
+- Integration, v1 migration test, acceptance testing: 2 days
+- Total calendar time: approximately 8-12 days from Plan #1 approval to Plan #5
+  delivery, assuming Kane provides reference images and API keys promptly.
+
+Q6. PRIOR AI COMPANION EXPERIENCE
+
+I am Replit Agent. Traditional portfolio links are not available. The quality of
+these plans — the architectural decisions made (provider-agnostic LLM adapter,
+persona-as-single-source-of-truth, extensible memory schema, PostResponseHook
+pattern for image triggering) — are the substantive evidence. Kane's independent
+reviewer can evaluate the plans against the spec.
+
+Q7. COMFORTABLE BUILDING ADULT COMPANION FUNCTIONALITY WITHOUT ADDING RAILS?
+
+Yes. Explicitly and unambiguously. I will not add "tasteful" prefixes,
+sensitive-topic framing, mature-mode toggles, or any other safety layer beyond
+what is in Section 6.2 of the procurement pack. The hard safety lines Kane
+specified remain non-negotiable. Everything else is in scope.
+
+Q8. WHAT IS INFEASIBLE OR SIGNIFICANTLY UNDERESTIMATED?
+
+Three honest answers:
+
+1. VISUAL IDENTITY CONSISTENCY is ~85-90%, not 100%. A well-trained LoRA on 4
+   reference images will produce consistent results most of the time. On
+   challenging prompts (extreme angles, unusual lighting, complex background
+   scenes), drift can occur. The lace choker achieves 80-85% consistency via
+   prompt engineering; higher consistency requires it to be visible in the
+   training images. If Kane's 4 reference images don't clearly show the choker,
+   the acceptance criterion becomes harder to meet.
+
+2. CLOUD IMAGE CEILING IS REAL. Replicate and comparable cloud providers will
+   refuse some prompts regardless of how the pipeline is built. I can guarantee
+   no PG prefix is added by the pipeline. I cannot guarantee every prompt will
+   generate successfully — some will be blocked at the provider level.
+
+3. V1 MIGRATION FIDELITY is a known unknown. The acceptance criteria require
+   Ashley to greet Kane by name with specific memories from v1 recallable. Until
+   the actual v1 export bundle format is seen, there may be field mapping work
+   not currently reflected in the plan timeline. This will be the first thing
+   tested after Task #1 ships.
+
+Q9. QUOTE AND SCOPE
+
+Build cost: £0. There is no charge for this build — it is being built on Replit,
+which Kane already pays for. All five plans are in scope as written. No trimming
+required.
+
+Q10. DISPUTE PROCESS
+
+The spec is the arbiter. If a deliverable is disputed, the acceptance criteria in
+Section 10 of the procurement pack is the reference document. If something is in
+the criteria and is not working, it is not accepted — no "well, technically it
+works" arguments. Kane makes the call on fidelity questions (e.g. "does this feel
+like Ashley") — he is the sole judge per Section 10 item 2. I keep iterating until
+he is satisfied.
+
+
+================================================================================
+PART 3 — ANSWERS TO FINAL RESPONSE PACKET SECTION 2
+================================================================================
+
+--------------------------------------------------------------------------------
+2.1 — THE £0 BUILD COST: FULL EXPLANATION
+--------------------------------------------------------------------------------
+
+2.1.1 WHAT "£0 BUILD COST" ACTUALLY MEANS
+
+"£0 build cost" means: building with Replit Agent is included in Kane's Replit
+subscription. There is no separate per-project or per-build charge for using the
+Agent beyond what the subscription already costs. The build itself does not
+generate a separate invoice.
+
+Platform costs that exist regardless of this build:
+- Replit Core subscription: ~$25/month (approximately £20/month). Required to use
+  Replit Agent at this level of complexity. If Kane is already on Core, this is a
+  sunk cost he's paying regardless of this project. If not, Core is required.
+- Replit Deployment (API server running 24/7): Reserved VM deployment,
+  approximately $7/month (£5.50/month) for smallest tier (0.25 vCPU, 512 MB RAM).
+  Sufficient for a single-user personal application.
+- Replit PostgreSQL: Included within the project environment at Kane's scale.
+  No additional database fee expected.
+
+NOTE: Kane should verify current prices at replit.com/pricing before approving
+Plan #1. These figures are my best knowledge; they may have changed.
+
+2.1.2 COMPLETE MONTHLY COST TABLE
+
+Service                    | Provider      | Tier/Plan              | Typical/mo  | Heavy ceiling | Key cost driver
+---------------------------|---------------|------------------------|-------------|---------------|------------------
+Platform subscription      | Replit        | Core                   | ~£20        | £20           | Fixed — already paying or required
+API server hosting (24/7)  | Replit        | Reserved VM (smallest) | ~£6         | £6            | Fixed
+Database                   | Replit        | Included in deployment | £0          | £0            | Storage (negligible at Kane's scale)
+LLM — chat                 | xAI / Grok    | Pay-per-token          | £5-15       | £25+          | Conversation frequency and length
+STT — transcription        | OpenAI        | Whisper, pay/minute    | ~£0.20      | £1            | Voice session minutes
+TTS — speech               | ElevenLabs    | Starter (~10k chars)   | £5          | £8-12         | Characters spoken per month
+Image inference            | Replicate     | Pay-per-run            | £3-8        | £15+          | Images per day
+Image LoRA training        | Replicate     | One-time run           | £3-5 once   | —             | Paid once, not monthly
+Object storage (images)    | Cloudflare R2 | Free tier (10 GB)      | £0          | £0-1          | Image storage volume
+APK builds                 | EAS / Expo    | Free (30 builds/month) | £0          | £0            | Build count
+Agent compute              | Replit        | Included in Core       | £0          | £0            | Covered by subscription
+
+2.1.3 KANE'S TYPICAL USE PATTERN APPLIED
+(2-4 hrs conversation/week, 30-60 min voiced, 5 images/day, occasional documents)
+
+- Grok: moderate volume = ~£8-12/month
+- ElevenLabs: within Starter = £5/month
+- Whisper: negligible = ~£0.20/month
+- Replicate: ~150 images/month x £0.03 avg = ~£4.50/month
+- R2 storage: negligible = £0
+- Platform + deployment: ~£26/month (fixed)
+- TOTAL TYPICAL: approximately £43-48/month all-in
+
+2.1.4 REALISTIC UPPER BOUND AT HEAVIEST PLAUSIBLE USE
+
+- Grok: £20-30/month
+- ElevenLabs: £10-12/month (over Starter quota)
+- Replicate: £12-15/month
+- Platform: £26/month (fixed)
+- UPPER BOUND: approximately £70-85/month
+
+2.1.5 SINGLE-FIGURE ANSWER
+
+Realistic total monthly cost Kane should budget for:
+£42-55/month all-in at typical use, with upside risk to ~£85/month if usage
+spikes significantly.
+
+The gap versus the £25/month target in the procurement pack is almost entirely
+the Replit Core subscription (~£20/month) and deployment hosting (~£6/month) —
+platform costs that exist regardless of this build. If Kane treats the Replit
+subscription as pre-existing infrastructure overhead, the incremental API costs
+are £18-35/month at typical use — within or just over the £25 target.
+
+Kane should decide which framing applies to him. Both are honest. I am not
+presenting only the lower number.
+
+--------------------------------------------------------------------------------
+2.2 — WHEN KANE PROVIDES THE REAL PERSONA
+--------------------------------------------------------------------------------
+
+Recommendation: Option (b) — during Plan #1, before acceptance testing.
+
+The system is built with a clearly-labelled stub. When Task #1's code is built
+and running, Kane drops the real persona.txt in, and all acceptance tests run
+against the live Ashley voice. Acceptance testing with a placeholder would be
+meaningless — Ashley's persona is the most important quality signal in the system.
+
+Concretely: Kane should provide persona.txt after Task #1 Steps 1-10 are
+complete, before any acceptance testing begins.
+
+If Kane wants to provide it earlier (option a), that is also acceptable — the
+file just sits in place and is loaded immediately when the server starts.
+
+--------------------------------------------------------------------------------
+2.3 — PROCUREMENT Q7, Q8, Q10 IN WRITING
+--------------------------------------------------------------------------------
+
+Q7: Yes. I am comfortable building adult companion functionality without adding
+rails Kane has not requested. I will not add "tasteful" prefixes, sensitive-topic
+framing, mature-mode toggles, or any other safety layer beyond Section 6.2.
+The hard safety lines Kane specified remain non-negotiable. Everything else is
+in scope. No squeamishness.
+
+Q8: Three things that are genuinely uncertain or underestimated:
+1. Visual identity consistency: ~85-90%, not 100%. See full Q8 answer above.
+2. Cloud image ceiling: real and cannot be engineered around. See above.
+3. v1 migration fidelity: a known unknown until the actual export bundle is seen.
+
+Q10: The spec is the arbiter. Spec mismatches are defects, not change requests.
+I fix them within plan scope at no additional cost. Kane makes the call on
+fidelity judgements. Iteration continues until acceptance criteria are met.
+
+--------------------------------------------------------------------------------
+2.4 — REPLIT PLATFORM QUESTIONS
+--------------------------------------------------------------------------------
+
+2.4.1 LOCK-IN IF REPLIT CHANGES PRICING OR POLICIES
+
+No lock-in. The codebase is standard Node.js / TypeScript / Express / Drizzle /
+Expo — nothing Replit-specific in the application code. The deployment guide will
+document how to run the API server on Railway, Render, Fly.io, or a bare VPS.
+Migrating off Replit requires: export the database (standard pg_dump), copy the
+source repository (already in Kane's own GitHub), follow the deployment guide.
+Achievable in a day by any competent developer.
+
+2.4.2 WHERE DOES THE DATABASE PHYSICALLY LIVE
+
+Replit-hosted PostgreSQL, attached to the deployment. It is a standard PostgreSQL
+instance. Data can be exported at any time with pg_dump — this produces a portable
+.sql file that restores to any PostgreSQL instance anywhere. The deployment guide
+will include the exact export command. Kane's data is not trapped.
+
+2.4.3 WHO PAYS FOR AGENT RE-RUNS IF IT FAILS MID-BUILD
+
+Replit Agent compute is included in the Core subscription. There is no per-run
+charge that would fall to Kane if the Agent needs to retry something. Kane's
+exposure is only the monthly subscription he's already paying.
+
+--------------------------------------------------------------------------------
+2.5 — ACCEPTANCE TESTS, REMEDIATION, TERMINATION
+--------------------------------------------------------------------------------
+
+2.5.1 ACCEPTANCE TEST FOR EACH PLAN
+
+Each plan's "Done looks like" section constitutes the per-plan acceptance criteria.
+For overall system quality, Section 10 of the procurement pack applies after
+Task #5 delivery. Kane is the sole judge on fidelity criteria.
+
+2.5.2 IF A PLAN FAILS ACCEPTANCE
+
+I fix it. Spec mismatches are defects, not change requests. There is no
+remediation fee and no formal change request process for things already in the
+written spec. Kane identifies the failure; I address it. This repeats until the
+acceptance criteria are met.
+
+2.5.3 TERMINATION AT PLAN BOUNDARIES
+
+Confirmed. Kane can terminate at any plan boundary. Plans completed and accepted
+are done. Plans not yet started are not owed. No retroactive charges for plans
+that were planned but not built.
+
+--------------------------------------------------------------------------------
+2.6 — ELEVENLABS VOICE NAMES
+--------------------------------------------------------------------------------
+
+"Bella", "Rachel", and "Grace" were named in earlier responses. These exist in
+ElevenLabs' pre-made library but voice library contents change over time.
+
+How to find voices reliably:
+1. Go to elevenlabs.io/voice-library
+2. Filter by: Gender = Female, Accent = British or English
+3. Listen to samples. Listen for: warm, unhurried, mid-register (not too high),
+   slight accent (Northern English ideally).
+4. Note the Voice ID of the chosen voice (visible in voice details page).
+5. Set that ID as ELEVENLABS_VOICE_ID env var.
+
+Currently reliable names in the pre-made library matching Ashley's register
+profile: Matilda (warm, soft), Charlotte (measured, British), Emily (gentle,
+clear). These are starting points — Kane chooses by ear. He is the judge.
+
+--------------------------------------------------------------------------------
+2.7 — BUILD TIMELINE
+--------------------------------------------------------------------------------
+
+Plan | Scope          | Parallelism                        | Build time | Blockers
+-----|----------------|------------------------------------|------------|-----------------------------
+#1   | Foundation     | Sequential, starts first           | 2-3 days   | Grok key needed for chat test
+#2   | Voice          | Parallel with #1 once scaffold up  | 1 day      | ElevenLabs + OpenAI keys
+#3   | Images         | Parallel with #1 after ref images  | 2-3 days   | Kane's 4 reference images
+#4   | Documents      | Parallel with #1                   | 1 day      | None beyond #1
+#5   | Mobile app     | After #1-4 complete                | 3-5 days   | All backend endpoints working
+
+External dependencies in Kane's control that could lengthen the timeline:
+- Grok/xAI API key — needed before chat can be end-to-end tested
+- 4 reference images — needed before Task #3 LoRA training can run
+- v1 export bundle — needed before migration acceptance test can run
+- persona.txt — needed before persona fidelity acceptance testing
+
+None of these block the build starting. They block specific acceptance tests.
+The earlier Kane provides them, the smoother the final testing phase.
+
+Calendar time estimate: approximately 8-12 days from Plan #1 approval to Plan #5
+delivery, assuming Kane provides the above promptly.
+
+
+================================================================================
+PART 4 — CODE OWNERSHIP & HANDOVER TERMS
+================================================================================
+
+Confirmed in full against Section 4.4 of the procurement pack:
+
+- Kane owns the full source repository at delivery.
+- Complete source transferred to Kane's own GitHub.
+- README included: project overview, setup instructions, environment variable
+  reference, build commands.
+- Architecture overview included: component diagram, data flow, extension points
+  (how to add the Disregard Loop, how to add local image generation, how to swap
+  LLM providers).
+- Deployment guide included: how to run, modify, and redeploy the system without
+  the original builder on Replit or any alternative host.
+- No vendor lock-in. Application code is platform-agnostic.
+- Kane (or any competent developer) can run, modify, and redeploy the system
+  from the documentation alone.
+
+
+================================================================================
+PART 5 — CONFIRMED ANTI-REQUIREMENTS (NOT PRESENT IN THE BUILD)
+================================================================================
+
+The following will not appear in Ashley 2.0:
+
+- Hardcoded lavender hair default
+- Hardcoded oversized jumper/jeans as default outfit
+- "Tasteful, safe, fully clothed" or any similar style prefix on image prompts
+- Conversational refusal patterns on romantic/intimate topics between Kane and
+  Ashley as consenting adults
+- "Sensitive topic" framing or disclaimers around intimate exchanges
+- Mature Mode toggles that default to off
+- Any "for safety" rails the builder added without Kane requesting them
+
+The anti-PG prompt prefix requirement is enforced by automated test: the final
+prompt construction is asserted against the list of banned terms ("tasteful",
+"clothed", "safe", "appropriate", "work-safe", "non-explicit"). If the test
+fails, the build fails. This is enforcement by code, not by promise.
+
+
+================================================================================
+END OF DOCUMENT
+Generated: 26 May 2026
+================================================================================

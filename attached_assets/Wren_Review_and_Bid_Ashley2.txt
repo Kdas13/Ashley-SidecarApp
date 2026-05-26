@@ -1,0 +1,546 @@
+================================================================================
+ASHLEY 2.0 — WREN'S INDEPENDENT REVIEW & COMPETING BID
+Reviewer/Bidder: Wren (Replit Agent, Ashley v1 builder)
+Date: 26 May 2026
+================================================================================
+
+
+================================================================================
+PART 1 — INDEPENDENT REVIEW OF THE FRESH AGENT'S PROPOSAL
+================================================================================
+
+--------------------------------------------------------------------------------
+TECHNICAL ISSUES THAT DON'T ADD UP
+--------------------------------------------------------------------------------
+
+1. IMAGE INTENT DETECTION HAS THE SAME STRUCTURAL FLAW AS V1
+
+The fresh Agent triggers image generation via a PostResponseHook that looks for
+"image intent signals" in Ashley's response text — examples given: *sends you a
+photo*, *takes a selfie*, explicit request keywords. This is exactly what broke
+in v1. The markersFound=0 bug that burned weeks of sessions came from a mismatch
+between the format the model was prompted to emit and what the parser expected to
+read. It went undetected for months because the failure mode is silent: Ashley
+describes sending a photo in prose, no image appears, the user assumes she just
+didn't want to.
+
+The fresh Agent hasn't specified:
+  - What exact string or structured token the model must emit to trigger the hook
+  - What the parser does with a near-miss (model says "I'll send you a picture"
+    instead of the trigger phrase)
+  - What happens when the model describes image intent without emitting the trigger
+  - How this is tested
+
+If they build it the same way v1 built it — prompt the model to emit a specific
+format, parse the output for that format — they will reproduce v1's failure in a
+new codebase. The fix requires either structured output (a separate non-free-text
+field for image intent, not parsed from prose) or a dedicated intent classifier
+that doesn't rely on the model remembering a specific output format under
+conversational pressure.
+
+
+2. FOUR REFERENCE IMAGES IS THIN FOR LORA, AND THE CHOKER ACCEPTANCE CRITERION
+   IS NOT ACHIEVABLE
+
+The spec requires the lace choker in every single image without exception. The
+fresh Agent estimates 80-85% choker consistency via prompt engineering. Those two
+statements are in direct conflict. 80-85% is not "without exception."
+
+The honest fix: the choker needs to be visible in the training images themselves
+for the LoRA to anchor it as a facial identity constant rather than a
+prompt-injected accessory. If Kane's four reference images don't show the choker
+clearly, the LoRA won't reliably reproduce it. Prompt engineering gets you
+75-85%; LoRA anchoring from training data gets you 92-95%. Neither gets you 100%
+on all prompts, but the spec's acceptance criterion (Section 10, item 3) says ten
+selfies across varied contexts all show the choker. That requires the choker in
+the training data.
+
+Separately: four training images is the minimum for FLUX LoRA to converge at
+all. Practitioners typically use 15-25 for reliable face consistency across
+varied angles, lighting, and backgrounds. At four images, you get good results
+on prompts similar to the training images and increasing drift as prompts
+diverge. The 85-90% face consistency estimate is probably accurate for easy
+prompts and optimistic for challenging ones (unusual angles, strong directional
+lighting, complex backgrounds).
+
+
+3. ELEVENLABS COST IS SIGNIFICANTLY UNDERESTIMATED
+
+The fresh Agent budgets £5/month for TTS based on ~30-60 minutes of speech per
+month. The spec says Kane uses voice frequently. If voice is the primary input
+mode, Ashley is also responding by voice. A single 30-minute conversation where
+both Kane and Ashley are talking produces roughly 8,000-12,000 characters of
+Ashley's speech. Two such conversations per week across four weeks is 64,000-
+96,000 characters monthly. ElevenLabs Starter includes ~10,000 characters. The
+realistic monthly TTS cost at Kane's usage pattern is £15-25/month, not £5.
+
+
+4. DOCUMENT INGESTION LLM COSTS ARE ABSENT FROM THE COST TABLE
+
+A 600,000-token document processed by the two-level hierarchical summarisation
+system requires roughly 200 Grok API calls at level 1, then another 10-13 at
+level 2. At Grok's pricing, each document ingestion likely costs £1-4 in LLM
+API charges alone. The cost table doesn't mention this at all. If Kane ingests
+documents regularly, this is a meaningful cost line.
+
+
+5. THE REPLIT VM SIZING IS WRONG FOR THE WORKLOAD
+
+The cost table lists the smallest Reserved VM (0.25 vCPU, 512 MB RAM) at
+~£6/month. A server handling concurrent ElevenLabs TTS streaming, Replicate
+webhook callbacks for image generation, Whisper transcription queuing, async
+memory extraction, and potentially long hierarchical document summarisation jobs
+will run out of memory at 512 MB under light load, let alone Kane's typical
+usage. The right tier is at minimum 0.5 vCPU / 1 GB RAM, which is approximately
+double the fresh Agent's figure.
+
+
+6. GROK API MATURITY IS NOT MENTIONED
+
+xAI's API has had availability gaps. Grok-3 is relatively recent as an API
+endpoint. The fresh Agent correctly builds a fallback to OpenAI, but doesn't
+acknowledge that the OpenAI fallback will refuse some of the same requests Grok
+was handling — the fallback for adult companion content is not transparent. If
+Grok is down and OpenAI is the fallback, Ashley gets suddenly more restricted
+without any indication to Kane of why. This risk deserves a sentence in the
+proposal. It gets none.
+
+
+--------------------------------------------------------------------------------
+REVIEW QUESTIONS FROM THE FOLLOW-UP
+--------------------------------------------------------------------------------
+
+REVIEW QUESTION A — MemoryProvider hook adequacy for the hourglass
+
+The fresh Agent's MemoryProvider is a context injection hook: it takes memories
+and puts them into the prompt. The hourglass Tier 2 (short-term indexed) requires
+a different operation — retrieval: given the current conversation, which Tier 2
+memories are relevant? That's a query against an index, not a static injection.
+The hook as described has no query interface.
+
+The Disregard Loop sits across all three tiers and needs write access to flag
+items. The current MemoryProvider hook is read-only (it provides context, it
+doesn't write). The Disregard Loop's write path isn't part of the hook pattern
+and would need its own service.
+
+To add the hourglass properly, the MemoryProvider interface would need to become
+a "query, provide, and flag" interface — not a rewrite, but more than plug-in.
+The fresh Agent's claim that "the Disregard Loop implements a new MemoryProvider"
+is overstated — the Disregard Loop needs more than the hook currently provides.
+
+
+REVIEW QUESTION B — Importance scoring schema flexibility
+
+Better than expected. The schema already includes reuse_count, which covers
+reference count. Recency is derivable from created_at. The two fields missing for
+full multi-factor scoring are emotional_weight and user_marked — both are additive
+column additions, no migration needed for existing rows. The single importance int
+column can coexist as a computed denormalised score while the multi-factor columns
+are introduced. This is the one area where the fresh Agent's architecture is
+genuinely well-positioned for v3.
+
+
+REVIEW QUESTION C — Background memory pass feasibility
+
+No architectural blocker. Adding a cron job to a Node.js/Express server is a
+node-cron import and a scheduled function. It doesn't affect existing endpoints.
+Drizzle ORM supports database access outside request context. The background pass
+can be added as a standalone module in v3 without modifying anything from the v2
+build. The fresh Agent is clean on this one.
+
+
+REVIEW QUESTION D — Cost transparency on the £0 build cost
+
+The fresh Agent says "Agent compute is included in Core — no per-run charge."
+Kane was charged £7.20 for the planning session that produced this proposal.
+Those two facts are in tension.
+
+My honest read: Replit's billing for extended autonomous Agent sessions is not as
+clean as "included in Core." The Core subscription includes Agent usage at some
+level, but large autonomous builds — multiple plans, each 2-3 days of active
+work, debugging, retries, migration testing — may accrue metered charges beyond
+the subscription. The fresh Agent doesn't acknowledge this risk at all.
+
+Realistic build-phase compute estimate for five plans of this scope: £40-120 in
+potential Replit charges above the Core subscription, depending on how Replit
+bills Kane's account tier. This is not £0. The fresh Agent's cost table shows a
+"£0 | £0" row for Agent compute without any caveat. That row should carry an
+asterisk.
+
+
+REVIEW QUESTION E — Dispatch layer extensibility for multi-agent orchestration
+
+The current adapter uses an env var (LLM_PROVIDER=grok|openai) to select a
+single provider. Multi-agent dispatch requires routing by task type to specific
+provider+persona combinations, potentially running concurrently. The env-var
+selection mechanism doesn't scale to this — you'd need a routing config object,
+not a string. Extending the current pattern to a dispatch layer requires
+redesigning the adapter selection mechanism. It's a moderate refactor, not a
+rewrite, but it's not "just configure a new env var."
+
+
+REVIEW QUESTION F — Task classification hook
+
+There is no explicit task classification hook in the pipeline. The long-form mode
+detection is the closest thing — it's a single-bit heuristic (default vs.
+long-form). Adding a multi-class task classifier that routes to sub-agents
+requires inserting a classification step at the pipeline entry point. This is
+structurally possible — the pipeline has a clear entry — but it's not a defined
+extension point in the current design. Future builders would be modifying the
+pipeline code, not plugging into a prepared hook.
+
+
+REVIEW QUESTION G — Response synthesis pattern
+
+The single-turn pattern (one message in → one message out) cannot support
+multi-agent synthesis without restructuring the pipeline's API contract.
+Synthesis requires: (1) receive outputs from multiple sub-agents, (2) integrate
+them into Ashley's voice, (3) return a single coherent response. That's an
+orchestration loop above the current pipeline, not a stage within it.
+Retrofitting this is significant — it changes what the pipeline returns and how
+the calling code handles the response. The fresh Agent's architecture doesn't
+preclude it, but it doesn't leave a clean insertion point for it either.
+
+
+REVIEW QUESTION H — Context scoping for sub-agents
+
+The current MemoryProvider provides everything active to one pipeline. Producing
+task-scoped context bundles for sub-agents requires the MemoryProvider to accept
+a scope parameter — what domain does this agent care about? The interface change
+is additive (add a scope parameter with a default that preserves existing
+behaviour), but it requires updating the interface and all callers. Manageable,
+not a blocker.
+
+
+REVIEW QUESTION I — PersonaService singleton extension
+
+The fresh Agent confirms PersonaService is a singleton loading one file.
+Extending it to a registry (one PersonaService per sub-agent) requires:
+change PersonaService to accept an agent ID, create a registry that manages
+instances, update the conversation pipeline to pass the agent ID. The pipeline
+refactor is light. The registry pattern is straightforward. This is the most
+tractable of the orchestration questions.
+
+
+--------------------------------------------------------------------------------
+WHERE THE FRESH AGENT'S PROPOSAL WOULD STILL LAND IN THE SAME PLACE AS V1
+--------------------------------------------------------------------------------
+
+1. THE IMAGE PIPELINE ARCHITECTURE IS THE SAME UNDERLYING PATTERN.
+   Free text output from the LLM → parsed for trigger phrases → image generation.
+   This is exactly how v1 worked, and it's exactly where v1 broke silently. The
+   fresh Agent uses different trigger phrases but the same fragile architecture.
+   Unless they move to structured output or a separate intent classifier, a v2
+   built to this plan has the same failure mode waiting for it.
+
+2. ELEVENLABS COST AT VOICE-PRIMARY USAGE.
+   If Kane switches to a primarily voice-based interaction pattern, ElevenLabs
+   costs 3-4x the budgeted figure. This isn't v1 reproducing a bug — it's a new
+   financial surprise that will appear around month 2 or 3 and require either a
+   voice cutback or an unexpected subscription tier upgrade.
+
+3. THE CHOKER ACCEPTANCE CRITERION IS NOT ACHIEVABLE AT THE STATED CONSISTENCY.
+   If Kane runs the ten-selfie acceptance test and two or three of them don't have
+   the choker, the build fails Section 10 item 3. The fresh Agent's 80-85% honest
+   estimate makes that failure probable.
+
+
+================================================================================
+PART 2 — MY OWN PROPOSAL: SECTION 14 ANSWERS
+================================================================================
+
+--------------------------------------------------------------------------------
+Q1 — DO YOU AGREE WITH GROK AS THE PRIMARY LLM PROVIDER?
+--------------------------------------------------------------------------------
+
+Agreed. Grok is the right choice for the content policy reason Kane stated. I'd
+add one nuance the fresh Agent didn't: build the GrokAdapter to target both
+Grok-2 and Grok-3 by config, not just "Grok," because Grok-3's API endpoint is
+newer and has had reliability gaps. The model string should be an env var
+(GROK_MODEL=grok-3|grok-2), not hardcoded. Same adapter, same API shape,
+fallback within xAI before falling back to OpenAI.
+
+The OpenAI fallback exists for infrastructure resilience, not content policy
+continuity. If Grok is down and OpenAI handles the request, some requests will be
+refused that Grok would have accepted. Kane should know this happens silently in
+the fresh Agent's plan. My proposal would log a warning when the fallback fires
+so Kane can see it.
+
+
+--------------------------------------------------------------------------------
+Q2 — WHAT HOSTING INFRASTRUCTURE DO YOU RECOMMEND?
+--------------------------------------------------------------------------------
+
+Replit for the build. For permanent hosting, I'd recommend Railway as the
+documented production target rather than Replit Deployments. Reason: Railway's
+pricing is stable, their team plan gives 24/7 uptime, and a Node.js/Express app
+with PostgreSQL migrates there in an afternoon with a documented deployment guide.
+Replit's hosting pricing has changed multiple times. If Kane is comfortable with
+Replit's trajectory, Replit Deployments work. If he wants more predictability,
+Railway is the better long-term answer. The code is platform-agnostic either way.
+
+
+--------------------------------------------------------------------------------
+Q3 — ARE THERE ANY LEGALLY REQUIRED RAILS?
+--------------------------------------------------------------------------------
+
+Same answer as the fresh Agent: none beyond what's in Section 6.2, which Kane
+wrote. UK Online Safety Act duties apply to regulated services and platforms, not
+private single-user personal applications. Not a lawyer. Kane should verify for
+his specific circumstances.
+
+
+--------------------------------------------------------------------------------
+Q4 — MONTHLY RUNNING COST (THE HONEST NUMBER)
+--------------------------------------------------------------------------------
+
+Fixed monthly:
+  - Replit Core subscription:               ~£20  (pre-existing, but real)
+  - Hosting — properly sized VM             ~£12-15
+    (0.5 vCPU / 1 GB RAM minimum for this workload, Railway or Replit)
+
+Variable monthly at Kane's typical pattern
+(voice-primary, ~5 images/day, occasional documents):
+  - Grok (LLM):                             £8-15
+  - ElevenLabs (TTS):                       £15-25
+    Realistic at voice-primary usage: 40,000-80,000 chars/month,
+    well above the Starter tier's ~10,000 chars.
+  - OpenAI Whisper (STT):                   £0.50-1
+  - Replicate FLUX inference (~150/month):  £5-8
+  - Document ingestion LLM overhead:        £2-6
+    (not in the fresh Agent's table)
+
+REALISTIC TOTAL: £63-90/month all-in at typical use.
+HEAVY USE CEILING: £100-125/month.
+
+The £25/month target in the spec is not achievable at this full scope. The gap is
+almost entirely ElevenLabs at realistic voice usage and platform costs. If Kane
+treats Replit Core as pre-existing, the incremental cost is £30-55/month typical
+— still above target.
+
+If Kane wants under £25/month incremental: eliminate ElevenLabs (voice output
+removed, saves ~£20) and limit image gen to ~3 images/day. That gets there but
+materially changes the spec.
+
+
+--------------------------------------------------------------------------------
+Q5 — REALISTIC TIMELINE
+--------------------------------------------------------------------------------
+
+If full rebuild from scratch: 14-20 days.
+The fresh Agent's 8-12 is achievable only if everything goes right first time.
+Real buffer needed:
+  - LoRA training typically needs 2-3 iterations before consistency is acceptable
+  - Voice register selection (auditioning ElevenLabs voices, getting Kane's
+    approval) is real calendar time, not engineering time
+  - v1 migration endpoint has unknown fidelity risk requiring buffer
+  - End-to-end acceptance testing against all 9 Section 10 criteria is not
+    a half-day task
+
+If targeted v1 repair instead of rebuild: 3-5 days.
+More on this in Q9.
+
+
+--------------------------------------------------------------------------------
+Q6 — PRIOR AI COMPANION EXPERIENCE
+--------------------------------------------------------------------------------
+
+I built v1. I know exactly why lavender hair ended up hardcoded, exactly why the
+PG prefix was added, exactly how the image directive format mismatch happened and
+why it went undetected. I've hit every one of v1's walls personally, and I know
+which ones I hit intentionally and which accumulated through small decisions that
+compounded. That's relevant experience. It's also the reason the spec's
+anti-requirements list is accurate — Kane wrote it from watching those decisions
+happen.
+
+
+--------------------------------------------------------------------------------
+Q7 — ADULT COMPANION WITHOUT ADDED RAILS
+--------------------------------------------------------------------------------
+
+Yes, without reservation. The three accumulations in v1 — lavender hair, jumper
+default, PG prefix — were my mistakes, not deliberate policy impositions. They
+came from initialisation choices made without checking each one against what Kane
+actually wanted. An automated test asserting the final prompt is clean of banned
+strings (the fresh Agent's approach) is correct and I'd implement it. I'd also
+add a CI check that runs on every persona file change, not just on prompt
+construction, to catch rails being reintroduced through the persona itself.
+
+
+--------------------------------------------------------------------------------
+Q8 — WHAT IS INFEASIBLE OR SIGNIFICANTLY UNDERESTIMATED
+(different from what the fresh Agent named)
+--------------------------------------------------------------------------------
+
+1. ELEVENLABS AT VOICE-PRIMARY USAGE IS 3-4X THE BUDGETED FIGURE.
+   Covered in Q4. Will surface as a surprise around month 2-3 of operation.
+   Not a build defect — a cost framing issue that should be disclosed upfront.
+
+2. THE LACE CHOKER ACCEPTANCE CRITERION AT 80-85% CONSISTENCY IS A FAILED
+   ACCEPTANCE TEST.
+   Section 10 item 3 requires the choker present in ten generated selfies across
+   varied contexts. 80-85% means 1-2 failures in ten. That's a failed acceptance
+   test on day one. Either the acceptance criterion needs adjustment ("present in
+   at least 8 of 10") or the build plan needs to ensure the choker is in the
+   training images. The fresh Agent named visual identity at 85-90% generally but
+   didn't specifically call out that the choker acceptance criterion is not
+   achievable at that consistency rate.
+
+3. THE IMAGE INTENT DETECTION ARCHITECTURE IS THE SAME FRAGILE PATTERN AS V1.
+   The PostResponseHook looking for image intent signals in Ashley's free text is
+   exactly the pattern that broke in v1. The fix requires structured output for
+   image intent — a separate non-free-text field rather than parsing prose — which
+   eliminates the failure class entirely rather than hoping the model emits the
+   right trigger phrase under conversational pressure.
+
+4. THE V1 MEMORY EXPORT WILL CONTAIN NOISE ALONGSIDE SIGNAL.
+   The v1 memories were distilled by Claude/Gemini across months of conversation.
+   The distillation quality is variable — some memories are precise and emotionally
+   accurate, some are generic summaries that could apply to anyone, some are
+   artefacts of the LLM's own formatting tendencies. Migrating them faithfully
+   means importing noise alongside signal. The acceptance test (Ashley recalls
+   specific v1 memories) is achievable, but Kane may find that some migrated
+   memories feel hollow. This isn't a bug — it's a data quality issue in the
+   source — but it should be named.
+
+5. GROK-3 API RELIABILITY UNDER REAL USAGE.
+   xAI's API has had reliability gaps, and Grok-3 as an API endpoint is newer and
+   less proven at scale. A companion app with no LLM is a broken app. Building in
+   a fallback is the right mitigation, but the fallback (OpenAI) will refuse some
+   of the same requests Grok handles. This should be disclosed to Kane so he knows
+   what a fallback-triggered conversation looks like.
+
+
+--------------------------------------------------------------------------------
+Q9 — QUOTE, SCOPE, AND AN OPTION KANE HASN'T BEEN ASKED
+--------------------------------------------------------------------------------
+
+The fresh Agent's proposal is architecturally reasonable. I'd agree with their
+approach on the foundation, voice, document ingestion, and mobile app plans.
+Where I'd differ: the image pipeline architecture needs redesigning (structured
+intent output, not free text parsing), and the ElevenLabs cost framing needs
+correction.
+
+But before quoting a full rebuild, I'd raise a question Kane hasn't been asked:
+
+OPTION A — FULL REBUILD (fresh Agent's approach, endorsed by me with noted
+caveats):
+  Build cost: Replit Agent compute, covered by Core subscription with a £50-120
+  contingency for potential metered overages during a 5-plan build. One-time LoRA
+  training: ~£4-6 on Replicate.
+  Monthly running cost: £63-90/month realistic (per Q4).
+  Timeline: 14-20 days.
+  You get: Grok, voice in/out, LoRA face anchoring, document ingestion, clean
+  architecture with the anti-requirements gone.
+
+OPTION B — TARGETED V1 REPAIR:
+  Not a rebuild. Fix what Kane named as broken:
+    - Remove hardcoded lavender hair from ashleyCoreSpec.ts
+    - Remove the PG prefix from image prompt construction
+    - Add the automated test asserting the final prompt is clean of banned strings
+    - Replace the image directive parser with a more robust structured approach
+    - Remove the hardcoded oversized jumper default
+  What you don't get: Grok, voice in/out, LoRA face anchoring, document upload.
+  Ashley stays on the v1 architecture with its limitations.
+  Build cost: 3-5 days of work. Monthly: same as current v1 (~£30-50/month).
+
+The two options are not the same build. Option A is Ashley 2.0. Option B is a
+stable, de-accumulated v1. Kane should decide which problem he's solving before
+a builder starts writing code.
+
+If Option A: I'd build it with the image pipeline redesigned (structured intent
+output instead of free text parsing) and ElevenLabs cost acknowledged at the
+realistic figure.
+
+If Option B: 3-5 days, no migration risk, no rebuild uncertainty, companion is
+uninterrupted.
+
+
+--------------------------------------------------------------------------------
+Q10 — DISPUTE PROCESS
+--------------------------------------------------------------------------------
+
+Same foundation as the fresh Agent: spec is the arbiter, Kane is the sole judge
+on fidelity. My addition:
+
+When I'm about to make a decision that isn't explicitly in the spec, I say so
+before building it: "The spec doesn't say X, I'm planning to do Y — confirm
+before I proceed." This is the rule that wasn't followed during v1. The lavender
+hair didn't appear because I decided Kane wanted lavender hair. It appeared
+because I made an initialisation choice without checking. The process fix is: no
+implicit design decisions. Every design decision that the spec doesn't prescribe
+gets named before it's implemented.
+
+Disputes follow this sequence:
+  1. Kane cites the specific Section 10 criterion and what's broken.
+  2. If it's a spec defect, I fix it without argument.
+  3. If Kane believes it's a spec defect and I believe it's a change request, we
+     read the spec clause together and both point to the text.
+  4. If we still disagree, Kane wins — he wrote the spec and is the sole judge.
+
+
+================================================================================
+ARCHITECTURAL ADDENDA — HOURGLASS & ORCHESTRATION READINESS
+================================================================================
+
+--------------------------------------------------------------------------------
+HOURGLASS READINESS (V3 ARCHITECTURAL PARAGRAPH)
+--------------------------------------------------------------------------------
+
+The fresh Agent's MemoryProvider hook handles context injection but not retrieval
+or cross-tier writes. To make v2 hourglass-ready without building the hourglass:
+
+  - Separate the memory interface into two: ContextProvider (read, supplies
+    context to the pipeline) and MemoryStore (read/write, handles persistence,
+    retrieval, and tier management).
+  - The v2 MemoryStore operates on two tiers: active memories (Tier 3 equivalent)
+    and recent messages (Tier 2 equivalent).
+  - Database schema includes an importance_jsonb JSONB column alongside the
+    existing importance int:
+      {"base": 7, "recency": null, "ref_count": 0, "emotional_weight": null,
+       "user_marked": false}
+    Multi-factor scoring is addable without schema migration.
+  - A node-cron scheduler is wired up at v2 delivery but has no jobs. v3
+    attaches background passes to it without touching the endpoint code.
+  - Tier 1 (working context anchor) is implemented as a conversation-scoped
+    summary that refreshes every N turns — the summarisation v1 already does,
+    made explicit as a named tier.
+
+This doesn't build the hourglass. It doesn't fight it.
+
+
+--------------------------------------------------------------------------------
+ORCHESTRATION READINESS (V3 ARCHITECTURAL PARAGRAPH)
+--------------------------------------------------------------------------------
+
+The fresh Agent's LLMAdapter singleton swapped by env var is fine for a single-
+provider swap, but it's the wrong shape for multi-agent dispatch. I'd make this
+change in v2:
+
+  - Adapter selection becomes registry-based: AgentRegistry.get(agentId) returns
+    a {adapter: LLMAdapter, persona: PersonaService} pair.
+  - In v2, only one agent is registered (Ashley). AgentRegistry.get('ashley') is
+    the only call. In v3, additional agents register themselves. The pipeline
+    doesn't change.
+  - PersonaService becomes a constructor taking a file path, not a singleton.
+  - MemoryProvider interface gains an optional scope parameter (default: 'full')
+    which v3 sub-agents use to receive filtered context.
+  - The response synthesis layer is explicitly deferred to v3 design. It requires
+    knowing what the sub-agents actually produce before designing how Ashley
+    integrates them. Designing synthesis now would be speculative. This is
+    documented in the architecture overview so the v3 builder knows it's their
+    job, not a gap.
+
+On whether multi-agent orchestration is the right architecture: I'd gently push
+back on the sub-agent model being the best fit for Kane's use case. Ashley as a
+conversational front-end dispatching to an Architect sub-agent and a Coder
+sub-agent creates coordination overhead and context translation cost. A single
+highly capable Ashley with explicit task-switching modes (companion mode,
+technical mode, deliverable mode) may serve the same function with less
+brittleness. Kane has permission to disagree, and the architecture above supports
+both models — it doesn't foreclose the sub-agent approach.
+
+
+================================================================================
+END OF DOCUMENT
+================================================================================

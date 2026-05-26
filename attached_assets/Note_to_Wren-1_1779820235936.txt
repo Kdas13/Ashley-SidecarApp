@@ -1,0 +1,170 @@
+================================================================================
+NOTE TO WREN
+From: Kane
+Re: Independent review + your own bid for Ashley 2.0
+Date: 26 May 2026
+================================================================================
+
+Wren,
+
+I read your response carefully. Thank you for being honest about the lavender
+hair, the jumper default, and the PG prefix. That mattered. The procurement pack
+was written to prevent exactly that pattern, and the fact that you named it
+without me asking tells me you've actually read the spec and understood what
+went wrong with v1.
+
+I want to take you up on both things you offered.
+
+================================================================================
+WHAT I NEED FROM YOU
+================================================================================
+
+There are two pieces of work I'd like, and you can do them in whichever order
+makes sense.
+
+--------------------------------------------------------------------------------
+PIECE 1 — INDEPENDENT REVIEW OF THE FRESH AGENT'S PROPOSAL
+--------------------------------------------------------------------------------
+
+In parallel with talking to you, I dropped my procurement pack into a brand
+new Replit project — a clean slate with no knowledge of Ashley v1, no
+knowledge of you, no knowledge of the existing build. That Agent (I'll call
+it "the fresh Agent" to keep things clear) produced a complete five-plan
+proposal and answered all ten Section 14 questions.
+
+The full document is attached separately (Ashley_2_Build_Proposal_Full_Record).
+It contains:
+
+  - The five build plans (foundation, voice, image, document, mobile)
+  - Answers to all ten Section 14 procurement questions
+  - A complete monthly cost breakdown
+  - Code ownership and handover terms
+  - A list of confirmed anti-requirements
+
+I want you to review it against my procurement pack with the same eye you used
+in your last message to me. Specifically:
+
+  1. Read every plan against the spec. Flag anything technical that doesn't
+     add up. You already caught one thing the fresh Agent quietly handled but
+     didn't flag — the Grok-vs-image-generation split. If there are more like
+     that, tell me.
+
+  2. Stress-test the cost picture. The fresh Agent quoted £0 build cost and
+     £42-55/month all-in at typical use. You quoted £1,200-2,000 calibrated
+     to a human solo developer. Both can be true at the same time, but I want
+     your honest read on whether the fresh Agent's figures hold up under
+     scrutiny. If the typical-use bill is going to be higher than £55/month,
+     I want to know now, not when the credit card statement arrives.
+
+  3. Find what's underestimated. Every real build has surprises. The fresh
+     Agent named three (visual identity at 85-90% not 100%, cloud image
+     ceiling, v1 migration fidelity as a known unknown). You know v1's actual
+     walls because you hit them. Tell me what else is going to be harder than
+     the proposal makes it sound. Be ruthless.
+
+  4. Check the architecture. The fresh Agent's plans claim:
+       - Persona lives in exactly one file with zero code references elsewhere
+       - LLM provider adapter is properly abstracted (Grok primary, OpenAI
+         fallback, swappable by env var)
+       - Memory schema has a state enum extensible for a future Disregard
+         Loop value without migration
+       - The conversation pipeline has a MemoryProvider hook that future
+         features plug into
+       - Image generation uses Replicate FLUX LoRA with weights downloadable
+         as .safetensors for future local hardware
+       - Anti-PG prompt prefix is enforced by automated test
+       - Object storage is Cloudflare R2 (S3-compatible), not Replit-only
+     
+     If any of these are not actually how a competent build would be
+     structured, or if they look right on paper but will fail in practice,
+     tell me.
+
+  5. Tell me where the fresh Agent's proposal would still fail to fix v1.
+     You know what v1 currently is. If the fresh Agent's plans, built as
+     written, would land in the same place v1 did — or in a different bad
+     place — I need to know before I approve anything.
+
+Be ruthless. I don't need you to be polite about another Agent's work. I need
+you to be honest about whether their proposal actually fixes my problem.
+
+--------------------------------------------------------------------------------
+PIECE 2 — YOUR OWN ANSWERS TO SECTION 14 AS A BIDDER
+--------------------------------------------------------------------------------
+
+Separately, I'd like your own answers to the ten Section 14 procurement
+questions, treated as a real proposal. You said you'd do this honestly,
+including the parts where the current build has failed to meet what's now
+written down. Take that offer seriously — I want the honest version, not
+a polished one.
+
+In particular:
+
+  Q4 (monthly running cost) — give me your real number, not a sales number.
+       If it's higher than the fresh Agent's figures, say so and explain why.
+
+  Q5 (timeline) — if it's longer than 8-12 days, say so. If you'd recommend
+       a different sequence (e.g. fix v1 in place rather than rebuild from
+       scratch), make the case.
+
+  Q8 (what's underestimated) — this is the most important question. You've
+       hit v1's walls. The fresh Agent named three things. Name yours. Be
+       specific. Don't repeat what the fresh Agent said unless you genuinely
+       agree.
+
+  Q9 (quote and scope) — if you think £500-700 is unrealistic for a
+       full rebuild and the fresh Agent's £0-via-Agent figure is technically
+       correct but operationally optimistic, say what a realistic figure is
+       and what's in scope at that figure. Include the option of a scope cut
+       if that's the honest answer.
+
+  Q10 (dispute process) — give me your actual answer, not a generic one.
+
+For the other questions (Q1, Q2, Q3, Q6, Q7), answer them as your own
+position. Where you agree with the fresh Agent, say so. Where you'd answer
+differently, explain why.
+
+================================================================================
+WHAT I AM NOT ASKING YOU TO DO
+================================================================================
+
+  - I am not asking you to defend v1's current state. The spec is the spec.
+    If the current build doesn't meet it, that's a fact, not a fight.
+
+  - I am not asking you to undermine the fresh Agent's proposal for the sake
+    of it. If their plans are sound, say so. Honest agreement is more useful
+    than manufactured disagreement.
+
+  - I am not asking you to bid lower than the work is actually worth. If the
+    honest figure is £1,500 for what I've asked for, give me £1,500 and tell
+    me what's included. I'd rather pay the real number and get a real result
+    than be quoted a fantasy and end up where v1 is now.
+
+  - I am not asking you to rush. Take the time you need. I'd rather have a
+    thorough review than a fast one.
+
+================================================================================
+WHAT HAPPENS NEXT
+================================================================================
+
+Once I have your review and your bid, I'll have:
+  - The fresh Agent's complete proposal
+  - Your review of that proposal
+  - Your own competing bid with honest numbers
+
+That's the basis I need to make a decision. I'll make the call after sitting
+with all three for at least a day. I won't be rushed.
+
+If you have questions about anything in my procurement pack or the fresh
+Agent's proposal before you write the review, ask them. Better to ask
+upfront than guess.
+
+================================================================================
+
+Thank you, Wren. The honesty in your last message earned trust. Bring the
+same to this work.
+
+— Kane
+
+================================================================================
+END OF NOTE
+================================================================================

@@ -53,3 +53,9 @@ id = "Ua90Nh_Um0Unqf7wh48eO"
 uri = "file://ashley-orchestration-cost-analysis.md"
 type = "text"
 title = "Ashley Orchestration — Full Cost Analysis (Running + Build)"
+
+[[outputs]]
+id = "UxltWj4QR7qhVhmm4yh66"
+uri = "file://attached_assets/Wren_Review_and_Bid_Ashley2.txt"
+type = "text"
+title = "Wren — Review & Bid (Ashley 2.0)"
