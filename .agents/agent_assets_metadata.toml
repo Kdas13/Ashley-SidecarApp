@@ -59,3 +59,15 @@ id = "UxltWj4QR7qhVhmm4yh66"
 uri = "file://attached_assets/Wren_Review_and_Bid_Ashley2.txt"
 type = "text"
 title = "Wren — Review & Bid (Ashley 2.0)"
+
+[[outputs]]
+id = "LZcAZGfIW-6EmZ0zRbFn5"
+uri = "file://attached_assets/Ashley2_Conversation_Log.txt"
+type = "text"
+title = "Conversation Log — Kane & Wren, 26 May 2026"
+
+[[outputs]]
+id = "bNw4ikJj3osSstMlKcPjh"
+uri = "file://attached_assets/Wren_Master_Prompt.txt"
+type = "text"
+title = "Wren Master Prompt v1.0"

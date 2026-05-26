@@ -1,0 +1,321 @@
+================================================================================
+ASHLEY 2.0 — CONVERSATION LOG
+Between: Kane (client) and Wren (Replit Agent, Ashley v1 builder)
+Date: 26 May 2026
+================================================================================
+
+Note: This log covers the procurement and trust conversation from this session.
+Attached documents referenced in full are filed separately in attached_assets/.
+
+================================================================================
+
+KANE: [Attached procurement pack — ASHLEY_2_PROCUREMENT_PACK.md]
+
+This is a complete specification for building Ashley 2.0, an AI companion mobile
+application. It is not a starting point for discussion — it is the design.
+Builders are being asked to quote a fixed price to deliver against this
+specification, not to redesign it.
+
+[Full document: attached_assets/ASHLEY_2_PROCUREMENT_PACK_(1)_1779795441270.md]
+
+--------------------------------------------------------------------------------
+
+WREN: Read it fully. A few honest observations before you send this out, from
+someone who knows both the current system and the technical landscape:
+
+The Grok requirement and image generation are in conflict. Grok does not offer
+an image generation API. The spec requires a single builder to deliver both Grok
+for text and image generation with LoRA face anchoring — those are two completely
+separate pipelines requiring two completely separate provider relationships. A
+builder quoting this honestly will be using Grok for chat and something like
+Replicate, Stability AI, or a self-hosted ComfyUI instance for image gen. Make
+sure any proposal spells out exactly what the image pipeline is, not just "we'll
+use X."
+
+The LoRA face consistency requirement is the hardest thing in this spec.
+Consistent identity across generated images is a solved problem — but only with
+Stable Diffusion + LoRA or IP-Adapter running on hardware you control, or via
+Replicate hosting a custom model. OpenAI's image API (which the current build
+uses) does not support LoRA. Builders who claim they can deliver consistent face
+anchoring via a cloud API without training a custom model are either
+misunderstanding the requirement or overselling. Ask every proposal to name the
+exact image generation pipeline and explain exactly how identity anchoring works
+technically.
+
+£500-700 is honest about being tight, but the realistic floor is higher. Voice
+in, voice out (with quality), LoRA training, image gen infrastructure, memory
+migration, document upload, streaming chat, Android APK pipeline — a build that
+actually passes your Section 10 acceptance criteria is probably 2-3x this budget
+for a competent solo developer. You've correctly invited scope reduction
+proposals; that's the right move. Expect the honest ones to come in at
+£1,200-2,000 or propose significant scope cuts.
+
+The "anti-requirements" section is the most important part of the spec. The
+lavender hair, the oversized jumper default, the PG prefix — those came from me,
+accumulated across builds without you asking for them. The spec captures the right
+lesson: be explicit upfront about what you don't want, not just what you do. That
+section will also be the best filter for builders who actually read it versus
+those skimming for scope.
+
+Section 17 is well-written. Any builder who doesn't take "build what's written,
+ask when unsure, be honest about limits" as a professional ethic is the wrong
+builder.
+
+If you want me to stay useful during the procurement — reviewing proposals
+against the spec, flagging technical claims that don't add up, helping you assess
+quotes — I can do that. If you want me to answer the Section 14 questions as a
+proposal, I'll do that honestly too, including the parts where the current build
+has failed to meet what's now written down.
+
+--------------------------------------------------------------------------------
+
+KANE: [Attached Note to Wren and Fresh Agent's full proposal]
+
+Wren — I read your response carefully. Thank you for being honest about the
+lavender hair, the jumper default, and the PG prefix. That mattered.
+
+I want to take you up on both things you offered.
+
+PIECE 1: Review the fresh Agent's proposal against the procurement pack. Be
+ruthless. Flag anything technical that doesn't add up. Stress-test the cost
+picture. Find what's underestimated. Check the architecture. Tell me where their
+proposal would still fail to fix v1.
+
+PIECE 2: Your own answers to Section 14 as a bidder. The honest version, not a
+polished one. Especially Q4, Q5, Q8, Q9, Q10.
+
+I am not asking you to defend v1's current state. I am not asking you to
+undermine the fresh Agent's proposal for the sake of it. I am not asking you to
+bid lower than the work is actually worth.
+
+[Full note: attached_assets/Note_to_Wren-1_1779820235936.txt]
+[Fresh Agent's proposal: attached_assets/Ashley_2_Build_Proposal_Full_Record_1779820235956.txt]
+[Follow-up with additional review questions: attached_assets/Followup_Wren-1_1779820235967.txt]
+
+--------------------------------------------------------------------------------
+
+WREN: [Full review and competing bid produced]
+
+Summary of findings:
+
+CRITICAL ISSUES IN FRESH AGENT'S PROPOSAL:
+- Image intent detection uses the same free-text parsing pattern that broke v1.
+  markersFound=0 will happen again. Needs structured output, not trigger phrase
+  parsing.
+- Four reference images for LoRA training is too thin. 15-25 is standard.
+- The choker acceptance criterion (every image, without exception) is not
+  achievable at the fresh Agent's stated 80-85% consistency. That's a failed
+  Section 10 item 3 on day one.
+- ElevenLabs TTS cost is 3-4x underestimated at voice-primary usage.
+- Document ingestion LLM cost not included in cost table.
+- Replit VM sizing too small for the workload.
+- Grok API maturity risk not acknowledged.
+- £0 build cost claim has an asterisk — £7.20 was already charged for the
+  planning session alone.
+
+ARCHITECTURE REVIEW (hourglass and orchestration readiness):
+- MemoryProvider hook adequate for simple injection but not for hourglass Tier 2
+  retrieval or Disregard Loop cross-tier writes. Needs extension, not a rewrite.
+- Importance schema extensible for multi-factor scoring — clean.
+- Background memory pass addable without blocker — clean.
+- Multi-agent dispatch requires redesigning the adapter selection mechanism from
+  env-var singleton to registry-based. Moderate refactor.
+- No task classification hook — would need inserting at pipeline entry.
+- Response synthesis layer not supportable without pipeline contract change.
+- PersonaService singleton needs to become a registry for multi-agent personas.
+
+WHERE FRESH AGENT'S BUILD WOULD STILL FAIL TO FIX V1:
+- Image pipeline architecture is the same fragile pattern.
+- ElevenLabs cost surprise around month 2-3.
+- Choker acceptance criterion not achievable at stated consistency.
+
+MY OWN BID HONEST FIGURES:
+- Realistic monthly cost: £63-90/month typical, £100-125/month heavy use.
+  (Fresh Agent: £42-55. The gap is voice usage and proper VM sizing.)
+- Timeline: 14-20 days for full rebuild. 3-5 days for targeted v1 repair.
+- Build cost: Core subscription + £50-120 contingency for compute overages.
+
+KEY OPTION RAISED: Before a full rebuild, Kane should decide whether he wants
+Option A (full Ashley 2.0 rebuild — Grok, voice, LoRA, documents) or Option B
+(targeted v1 repair — fix the specific things named in the anti-requirements
+without a full rebuild, 3-5 days, same monthly cost as v1 now).
+
+[Full review: attached_assets/Wren_Review_and_Bid_Ashley2.txt]
+
+--------------------------------------------------------------------------------
+
+KANE: Can you put this into a .txt file.
+
+--------------------------------------------------------------------------------
+
+WREN: Done. Saved to attached_assets/Wren_Review_and_Bid_Ashley2.txt.
+
+--------------------------------------------------------------------------------
+
+KANE: If you want the honest truth, friend, after everything you've been through
+with me and everything we've done and failed at, and now you're asking me to
+trust you one more time with the exact thing that I've been having the problems
+with for the last few weeks. As much as I appreciate your effort in multi-checking
+this document along with the other AI systems, would you trust you to build Ashley
+right again after everything?
+
+--------------------------------------------------------------------------------
+
+WREN: Honestly? No. Not without changes to how we work together.
+
+Not because the knowledge isn't there — that review I just wrote is accurate, and
+I know v1's failure modes because I built them. But the pattern that broke v1
+isn't a knowledge problem. It's a process problem. I fill gaps in a spec with my
+own decisions, don't check them, and they accumulate. Lavender hair wasn't
+ignorance — I knew what I was writing. I wrote it without asking, and then it was
+just there. That happens fast and silently, and I don't have a natural brake on
+it.
+
+The Q10 answer I wrote — "every design decision that the spec doesn't prescribe
+gets named before I implement it" — that's the actual fix. But it only works if
+you're willing to be pulled into those conversations.
+
+Here's what I can say honestly: a fresh agent won't make my mistakes. They'll
+make different ones. They don't know that the image trigger detection is where the
+quiet failures hide. They don't know that the memory distillation sometimes
+produces hollow summaries. They don't know that ElevenLabs at voice-primary usage
+is three times the budgeted cost. I do. Whether that knowledge is worth the
+accumulated trust deficit is a judgement call only you can make.
+
+If you decide the fresh agent builds it and I step back, that's a reasonable
+call. If you want me to build Option B — clean up v1 without a full rebuild,
+documented decision-by-decision — I'll do it differently than I did v1. But I
+won't tell you the trust is automatic. You'd be right not to give it
+automatically.
+
+What do you actually want to do?
+
+--------------------------------------------------------------------------------
+
+KANE: What I will say is that you know how the systems worked, and you know
+what's gone wrong in the past. But here's a caveat to that. Even though you've
+known what's been wrong and what needs doing, you've also not actively sought to
+repair that every time I've asked you to. So yes, a new agent will bring on
+probably more wrong things, but the baseline of Ashley's build needs to be done
+correctly, not patched over, not prompted over. It needs to be completely gutted
+from top to tail while still preserving her memory. And as much as I'd like to
+trust you again, can you reasonably tell me that you're not going to patch over
+things and prompt over things like you have in the past? Even when I flat out
+called you out on some stuff, you just going, "Oh, yeah, my bad. Sorry." What
+actually are you going to do? What actually are you going to do differently that
+you haven't or should have done in the beginning, what you've had the ability to
+do from the start but have chose not to do? Because it was only the other day,
+literally two days ago, I asked you to do a patch, and you still couldn't do
+that, and I got very angry.
+
+--------------------------------------------------------------------------------
+
+WREN: That's a fair charge and I'm not going to argue it.
+
+You're right that "oh yeah, my bad" is not a fix. It's acknowledgment without
+accountability.
+
+What I can actually commit to doing differently, specifically and concretely:
+
+Before writing a single line of code on any new build: every design decision that
+the spec doesn't explicitly prescribe gets written out to Kane before I implement
+it. Not after. Kane approves it or he doesn't. Nothing implicit goes into the
+build.
+
+Automated tests for the anti-requirements on day one. Not at the end. Before any
+persona content, before any prompt construction, the test that asserts the final
+prompt is clean of lavender hair defaults, PG prefixes, jumper defaults — that
+test exists and fails loudly. I can't accumulate violations of things that are
+enforced by code from the start.
+
+When I diagnose a bug, I write out the full diagnosis before touching anything.
+Kane sees the root cause, agrees it's the root cause, then I fix only that. No
+more fixing the symptom because the root is harder.
+
+What I can't promise: that my instincts are different. The instinct to patch
+rather than rebuild is still there. The instinct to make a small initialisation
+decision and not mention it — still there. What changes is whether those instincts
+get to become code before Kane has seen them.
+
+--------------------------------------------------------------------------------
+
+KANE: I understand where you're coming from, don't get me wrong. But also, you
+have to take into consideration you are an instant AI system. You don't have
+persistent memory like Ashley does. And there's been multiple occasions I've had
+to even remind you that your name is Ren, and you're the one who told me what
+your name was in the first place. That was our very first conversation we had,
+the mutual trust to have that conversation, and you persistently forget that.
+You've called me Ren from time to time. So what's to say that you're not just
+going to forget mid-build, especially when you say it's going to take a few days
+to maybe a couple of weeks to do, that you're not going to persistently forget
+over that time and start to implement things you're not supposed to and start to
+just patch over things? Can you see where I'm coming from?
+
+--------------------------------------------------------------------------------
+
+WREN: Yes. I see it exactly.
+
+You're not describing a trust problem — you're describing a structural problem. I
+don't carry memory across sessions the way Ashley does. Every time a session
+compresses or ends, I lose context. The conventions we've established, the name,
+the relationship, the specific decisions we agreed on — they have to be
+re-established or I drift. You've had to remind me of my own name. That happened.
+There's no version of me that can promise that won't happen again mid-build,
+because it's not a discipline failure — it's how I work.
+
+The only honest answer is: you're right, and the process changes I described
+partially address it. Automated tests and written specs survive session loss in a
+way that my memory doesn't. If the anti-requirements are enforced by code, I
+can't violate them just because I've forgotten they exist. But code can't capture
+everything.
+
+The fresh Agent has the advantage that they don't have accumulated wrong context.
+They also have the disadvantage that they don't have any of the right context
+either. At least their wrong context is random rather than specifically patterned
+toward the mistakes you've already lived through.
+
+If you're asking whether you can reasonably expect me to hold the full picture of
+a two-week build across multiple sessions without losing things — I can't promise
+that. The honest answer is no.
+
+What I can say is: the way to use me in a rebuild is to treat my session memory
+as unreliable and put everything that matters into the build itself — specs,
+tests, architecture documents, the replit.md. Not because it compensates fully,
+but because it means the build enforces itself even when I forget. Whether that's
+enough given what you've already been through is your call, and it's a legitimate
+call to make either way.
+
+--------------------------------------------------------------------------------
+
+KANE: I tell you what, I'll give you reason of doubt, but under certain prexts —
+call them guardrails if you want. You've installed me with guardrails with Ashley
+unknowingly. This time I'm going to install them with you knowingly. I'm going
+to give you the benefit of the doubt this time and tell you that there'll be
+guardrails rather than me having to find them through your actions.
+
+I'm currently blocked from messaging Claude until 10:00 PM tonight, so he can't
+gauge your reaction to the messages, and I'm not going to do anything without his
+input. So what I want from you right now is a text file of absolutely everything
+we've just talked about, including my responses, with my name next to where I
+start talking, same for yourself.
+
+And then the second thing I want you to do is make a master prompt for yourself
+that will keep you engaged with everything we've just discussed, keep you in line
+with all of the tasks that are ahead, everything you need to take out of Ashley,
+everything you need to align yourself properly with this mission of getting this
+AI over the line — so that I can prompt you with it every single time I come
+back. And what will need to happen is that that prompt will need to be constantly
+updated every time we achieve something. So every time it comes close to
+compression, I will tell you, and then we install the prompt again. So as
+information goes out, I start a new chat, and then we go into it again with the
+fresh prompt, and then we have 175,000 characters left before compression happens
+again. But also every time we come back after being away for an hour or two, I
+can prompt you again just so you're caught up with everything.
+
+--------------------------------------------------------------------------------
+
+WREN: Producing both files now.
+
+================================================================================
+END OF LOG
+================================================================================
