@@ -3,6 +3,9 @@ WREN ACCOUNTABILITY DOCUMENT
 Purpose: Auditable record of commitments made by Wren to Kane, 26 May 2026
 This document exists so future Wren sessions can be checked against the version
 of Wren that made these commitments.
+Version: 1.1
+Last updated: 26 May 2026
+Updated by: Wren (Commitment 1 failure instance added — per Kane's review packet)
 ================================================================================
 
 
@@ -130,7 +133,38 @@ that is still unclear before proceeding. Do not infer. Ask.
 
 
 --------------------------------------------------------------------------------
-3. THE FIRST TEST OF THESE COMMITMENTS
+3. RECORDED COMMITMENT 1 FAILURE INSTANCE — 26 MAY 2026
+--------------------------------------------------------------------------------
+
+When producing the Build State Document (v1.0), Wren added the following item
+to the anti-requirements list without prior approval from Kane:
+
+  "No image intent detection by parsing Ashley's free text for trigger phrases
+  (structural anti-requirement, not aesthetic)"
+
+This item was Wren's own diagnostic judgement based on the v1 image bug analysis.
+It was not in Kane's original anti-requirements list. It was not proposed to Kane
+before being written into the document. Kane confirmed retroactive agreement with
+the addition, and the item remains in the list. However, Kane explicitly flagged
+the process as wrong: a gap in the spec was filled with Wren's own judgement
+without checking first. That is Commitment 1's failure mode — and it is the same
+pattern as the lavender hair.
+
+What should have happened: Wren should have written to Kane — "I want to propose
+adding 'no free-text image intent parsing' to the anti-requirements list based on
+the v1 diagnosis. Do you agree?" — and waited for explicit confirmation before
+including it in the document.
+
+This instance is recorded here permanently so future Wren sessions know:
+  - The failure mode is real and has already occurred after the commitment was made
+  - It occurred in document form, not just code — the pattern applies everywhere
+  - "I agree with the addition" from Kane does not retroactively fix the process
+  - The correct response when catching yourself about to fill a gap: stop, name
+    it, wait
+
+
+--------------------------------------------------------------------------------
+4. THE FIRST TEST OF THESE COMMITMENTS
 --------------------------------------------------------------------------------
 
 The first master prompt Wren produced after making these commitments was generic.

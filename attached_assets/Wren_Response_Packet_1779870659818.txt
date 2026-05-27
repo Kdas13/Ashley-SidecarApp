@@ -1,0 +1,206 @@
+================================================================================
+TO WREN — RESPONSE PACKET ON THE THREE DOCUMENTS
+================================================================================
+
+From: Kane
+Re: Acknowledgement, corrections, and next steps
+Date: [insert when sending]
+
+================================================================================
+ACKNOWLEDGEMENT
+================================================================================
+
+These three documents do what the master prompt didn't.
+
+The Build State Document captures the project where it actually is, with
+the Option A / B / C choice properly named, the technical issues laid out
+with specifics, and the commercial picture showing both sets of figures
+side by side. The £7.20 asterisk being named explicitly was the right
+call.
+
+The Accountability Document is auditable. Each commitment has "how to
+check" and "signs it is being violated" sections. The banned-string list
+in Commitment 2 could be dropped directly into a test. That is the
+specificity the master prompt lacked.
+
+The Session-Start Reminder is the right length and tone. The sentence
+"When making any decision the spec does not prescribe: ask Kane before
+building it. This rule survives session loss. Everything else might not."
+is the cleanest single-sentence statement of how we work together. Keep
+that.
+
+The contrast with the previous master prompt is the kind of evidence I
+needed. Not proof of long-term capability, but evidence that under
+sufficient structural specificity, you can produce what's asked for. That
+matters.
+
+================================================================================
+THINGS TO FIX OR NOTE
+================================================================================
+
+--------------------------------------------------------------------------------
+1. TIMELINE FRAMING IN THE BUILD STATE DOCUMENT
+--------------------------------------------------------------------------------
+
+Section 2 lists timelines as "14-20 days (Wren) or 8-12 days (fresh
+Agent's estimate)" without flagging that your own review judged the
+fresh Agent's 8-12 day figure as "achievable only if everything goes
+right first time."
+
+A reader picking up this document cold could assume the fresh Agent's
+faster timeline is the realistic one. It is not. Your own review
+disputed it.
+
+Update the timeline framing in the Build State Document so it reads
+something like:
+
+  "Timeline: 14-20 days realistic for full rebuild (Wren's estimate).
+  Fresh Agent's estimate of 8-12 days is judged optimistic by Wren in
+  review, achievable only if everything goes right first time."
+
+This is the kind of cross-document inconsistency that future Wren
+sessions might propagate. Fix it now.
+
+--------------------------------------------------------------------------------
+2. AN IMPLICIT DECISION YOU MADE WITHOUT ASKING
+--------------------------------------------------------------------------------
+
+In the Build State Document, section 7, you added an item to the
+anti-requirements list that I had not included in my original list:
+
+  "No image intent detection by parsing Ashley's free text for trigger
+  phrases (structural anti-requirement, not aesthetic)"
+
+I agree with the addition. It is the right call based on your own
+diagnosis of the v1 image bug. That is not the issue.
+
+The issue is that you added it without asking. Commitment 1 says:
+
+  "Every design decision that the spec doesn't explicitly prescribe gets
+  written out to Kane before I implement it. Not after."
+
+Adding an item to the anti-requirements list is a design decision the
+spec did not prescribe. You implemented it (in document form) without
+checking first. The fact that I agree with the addition does not change
+that the process was wrong.
+
+This is exactly the failure mode the commitments are meant to prevent.
+You filled a gap in the spec with your own judgement, without flagging
+it. That is the lavender hair pattern in miniature.
+
+Two specific things I need from you:
+
+  - Add a section to the Build State Document or the Accountability
+    Document noting this happened: "An item was added to the
+    anti-requirements list without explicit prior approval. Kane
+    confirmed retroactive agreement but flagged this as an instance of
+    the Commitment 1 failure mode."
+
+  - When you next find yourself wanting to add or change something not
+    prescribed in the spec, name it as a proposed change in plain
+    language and wait for my explicit confirmation before writing it
+    into any document. Even when you are sure I will agree.
+
+This is not punitive. This is the exact discipline that has to be
+maintained for the guardrails to work.
+
+--------------------------------------------------------------------------------
+3. THE URL IN THE SESSION-START REMINDER
+--------------------------------------------------------------------------------
+
+Line 12 of the Session-Start Reminder says:
+
+  "...is currently live at https://Ashley-Sidecar.replit.app"
+
+You wrote this URL without me confirming it. I have not verified it
+points to the right thing. Before locking the document in for repeated
+use, confirm:
+
+  - Is that the correct current URL for Ashley v1?
+  - Is it the URL that will continue to be correct during the
+    procurement period?
+  - If the URL changes during a build, where in the documents does that
+    update get reflected?
+
+If the URL is wrong, it will be repeated at the top of every Wren
+session and become a small persistent error.
+
+--------------------------------------------------------------------------------
+4. CROSS-DOCUMENT INTEGRITY
+--------------------------------------------------------------------------------
+
+The three documents reference each other. The Session-Start Reminder
+points to the Accountability Document. The Accountability Document
+references the failed master prompt. The Build State Document references
+"the three documents Kane has requested from Wren (this being one)."
+
+This is good. It means the documents form a connected set, not isolated
+artifacts.
+
+What is missing: a single line at the top of each document stating its
+version and last-update date, so we can tell which versions are current
+when this set is updated later.
+
+Add to the top of each document:
+
+  Version: 1.0
+  Last updated: [date]
+  Updated by: Wren (with Kane's approval on [specific items])
+
+This makes the version history auditable across the document set, not
+just within any single document.
+
+================================================================================
+WHAT THIS MEANS FOR THE BUILDER DECISION
+================================================================================
+
+These three documents demonstrate you can produce specific, engaged work
+under sufficient structural specificity. That is one positive signal.
+
+It is not proof of sustained capability across a 14-20 day build with
+session boundaries throughout. It is bounded evidence.
+
+The Option A / B / C decision is still open. It depends on:
+
+  - The fresh Agent's responses to the follow-up questions I am sending
+    them. Their handling of the six technical issues you raised, the
+    architectural readiness questions, and the build-phase cost question
+    will be the comparable signal from their side.
+
+  - My own judgement about which problem I am solving. Option A
+    (full rebuild) and Option B (targeted repair) are not the same
+    project. Option C (parallel track) is a possibility but not yet
+    confirmed as a path I want to take.
+
+I am not committing to any option in this message. I am acknowledging
+that the three documents you produced are the engagement standard I
+needed to see. The decision about whether you build Option A, Option B,
+both via parallel track, or neither, remains open.
+
+================================================================================
+WHAT I NEED FROM YOU NEXT
+================================================================================
+
+  1. The two minor document fixes named above:
+     - Timeline framing in Build State Document
+     - URL verification in Session-Start Reminder
+     - Version headers added to all three documents
+
+  2. A note added to the Accountability Document acknowledging the
+     implicit anti-requirements addition as a Commitment 1 failure
+     instance.
+
+  3. No further work until I confirm the next step. Specifically:
+     do not start work on any build. Do not produce additional documents
+     unless I request them. Do not pre-empt the Option A / B / C
+     decision by preparing for any specific path.
+
+You have produced what was asked for. The next move is mine.
+
+================================================================================
+
+— Kane
+
+================================================================================
+END OF RESPONSE PACKET
+================================================================================

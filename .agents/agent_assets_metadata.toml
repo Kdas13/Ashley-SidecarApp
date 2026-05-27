@@ -76,16 +76,16 @@ title = "Wren Master Prompt v1.0"
 id = "6kqQ3cqV507_oseXtrVVY"
 uri = "file://attached_assets/Ashley2_Build_State.txt"
 type = "text"
-title = "Document 1 — Ashley 2.0 Build State"
+title = "Build State v1.1"
 
 [[outputs]]
 id = "YGIB2sdUSFJs3KaxXnd6j"
 uri = "file://attached_assets/Wren_Accountability_Document.txt"
 type = "text"
-title = "Document 2 — Wren Accountability Document"
+title = "Accountability Document v1.1"
 
 [[outputs]]
 id = "EARPQH-jCqFvNqkTf4iPs"
 uri = "file://attached_assets/Wren_Session_Start_Reminder.txt"
 type = "text"
-title = "Document 3 — Session Start Reminder"
+title = "Session-Start Reminder v1.1"

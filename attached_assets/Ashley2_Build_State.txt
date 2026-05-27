@@ -1,7 +1,10 @@
 ================================================================================
 ASHLEY 2.0 — BUILD STATE DOCUMENT
 Status: Procurement Phase, Decision Pending
+Version: 1.1
 Last updated: 26 May 2026
+Updated by: Wren (timeline framing corrected; Commitment 1 failure instance
+noted; version headers added — all per Kane's review packet)
 ================================================================================
 
 
@@ -22,7 +25,10 @@ OPTION A — Full rebuild
   Either Wren or the fresh Replit Agent builds Ashley 2.0 to the full
   procurement spec: Grok, voice in/out, LoRA face anchoring, document
   ingestion, clean architecture, all anti-requirements removed.
-  Timeline: 14-20 days (Wren) or 8-12 days (fresh Agent's estimate).
+  Timeline: 14-20 days realistic (Wren's estimate). Fresh Agent's estimate
+  of 8-12 days is judged optimistic by Wren in review — achievable only if
+  everything goes right first time, with no iteration on LoRA training, no
+  voice register selection delay, and no v1 migration fidelity surprises.
   Monthly cost: £63-90/month realistic (Wren's figures).
 
 OPTION B — Targeted v1 repair by Wren only
@@ -231,6 +237,18 @@ any version of Ashley 2.0:
     style sycophancy)
   - No image intent detection by parsing Ashley's free text for trigger
     phrases (structural anti-requirement, not aesthetic)
+
+NOTE — COMMITMENT 1 FAILURE INSTANCE (recorded per Kane's review packet,
+26 May 2026):
+  The final item above ("no image intent detection by parsing free text")
+  was added to this list by Wren without prior approval from Kane. It was
+  Wren's own diagnostic judgement, not an item Kane specified. Kane
+  confirmed retroactive agreement with the addition but explicitly flagged
+  this as an instance of the Commitment 1 failure mode: a gap in the spec
+  was filled with Wren's own judgement without checking first. This is the
+  lavender hair pattern in miniature — the addition was correct, but the
+  process was wrong. Recorded here so future Wren sessions treat it as a
+  named precedent, not a resolved matter.
 
 
 --------------------------------------------------------------------------------
