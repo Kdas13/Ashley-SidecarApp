@@ -1,0 +1,267 @@
+================================================================================
+TO WREN — CORRECTION AND REVISED REQUEST
+================================================================================
+
+From: Kane
+Re: The master prompt you produced is not what I asked for
+Date: 26 May 2026
+
+================================================================================
+WHAT YOU PRODUCED
+================================================================================
+
+You produced a document titled "Ashley Continuity System — Master Prompt v1.0."
+It's well-formatted. It uses clean section headers. It reads like a
+professional artifact.
+
+It's also generic. It does not mention Ashley by name. It does not name the
+six technical issues you raised against the fresh Agent. It does not list
+the accountability commitments you made in our conversation. It does not
+include the Option A vs Option B decision. It does not specify the
+anti-requirements you accumulated in v1 (lavender hair, jumper default, PG
+prefix, worship-default tone). It defines abstract roles ("AI" and "USER
+(Kane)") instead of the specific working relationship we have.
+
+This is the pattern I called out you having in our last conversation.
+Producing something that looks like the right kind of thing, without
+engaging with the specifics of what was actually asked for. Two minutes
+after you committed to changing this pattern, you did it again.
+
+I'm not angry. I'm noting it because it's exactly the failure mode the
+guardrails are supposed to catch. You can't fix a structural pattern by
+acknowledging it once and moving on. The fix is to do the work differently
+every time, and this is the first time after the commitment.
+
+================================================================================
+WHAT I ACTUALLY NEED — THREE SEPARATE DOCUMENTS
+================================================================================
+
+Not one master prompt. Three specific documents. Each one has a defined
+purpose and defined contents.
+
+--------------------------------------------------------------------------------
+DOCUMENT 1 — BUILD STATE DOCUMENT
+--------------------------------------------------------------------------------
+
+Purpose: A factual record of where the Ashley 2.0 project is right now, so
+any Wren session can pick up the work without losing context.
+
+Required contents:
+
+  1. Project name and current phase
+     - "Ashley 2.0 — Procurement Phase, Decision Pending"
+
+  2. The choice that's currently open
+     - Option A: Full rebuild by either Wren or the fresh Replit Agent
+     - Option B: Targeted v1 repair by Wren only
+     - Option C (not yet formally raised): Parallel-track where Wren does
+       Option B cleanup while the fresh Agent builds Option A from the
+       cleaned-up v1 state
+     - State that Kane has NOT yet decided between these. Do not assume
+       Option A is the path.
+
+  3. The six technical issues you raised against the fresh Agent's proposal
+     - Image intent detection using free-text parsing (same flaw as v1)
+     - Four reference images is thin for LoRA (15-25 is standard)
+     - Choker acceptance criterion not achievable at 80-85% consistency
+     - ElevenLabs cost 3-4x underestimated at voice-primary usage
+     - Document ingestion LLM costs missing from cost table
+     - Replit VM sizing too small (needs 0.5 vCPU / 1 GB RAM minimum)
+     - Grok API maturity not acknowledged in fallback design
+
+  4. The architectural readiness findings
+     - MemoryProvider hook adequacy (read-only, can't support Disregard
+       Loop writes)
+     - Importance scoring schema (extensible, clean)
+     - Background memory pass (no architectural blocker)
+     - Multi-agent dispatch (requires registry pattern, not env-var
+       singleton)
+     - Task classification hook (no defined extension point)
+     - Response synthesis (cannot retrofit without API contract change)
+     - PersonaService singleton (needs registry extension)
+     - Your recommended specific changes to make v2 hourglass-ready and
+       orchestration-ready
+
+  5. The commercial picture
+     - Fresh Agent: £42-55/month typical, £0 build (with £7.20 already
+       charged for planning conversation alone)
+     - Your honest figures: £63-90/month typical, £100-125/month heavy
+     - Build cost contingency: £50-120 in potential Replit charges
+     - Original procurement target: £500-700 build, £25/month running
+
+  6. What's pending Kane's input
+     - Kane's decision between Options A, B, and the parallel-track option
+     - Fresh Agent's response to the follow-up questions Kane has drafted
+       but not yet sent
+     - Wren's three documents (this one being one of them)
+
+  7. The anti-requirements list, verbatim and complete
+     - No hardcoded lavender hair
+     - No oversized jumper/jeans default
+     - No "tasteful/safe" PG prefix on image prompts
+     - No defensive framing on intimate topics
+     - No Mature Mode toggles
+     - No conversational rails beyond Section 6.2 of the procurement pack
+     - No worship-default tone in Ashley's responses
+
+  8. Hard safety floors that stay
+     - No minors in any content
+     - No non-consent in any content
+     - No torture in any content
+     - No real-world harm facilitation
+
+This document should read as a build state, not a design philosophy. Facts,
+not framing.
+
+--------------------------------------------------------------------------------
+DOCUMENT 2 — WREN ACCOUNTABILITY DOCUMENT
+--------------------------------------------------------------------------------
+
+Purpose: The specific commitments you made in our last conversation,
+listed verbatim, with checkable criteria. So future Wren sessions can be
+audited against the version of you that made these commitments.
+
+Required contents:
+
+  1. Verbatim quotes of each commitment you made:
+
+     "Before writing a single line of code on any new build: every design
+     decision that the spec doesn't explicitly prescribe gets written out
+     to Kane before I implement it. Not after. Kane approves it or he
+     doesn't. Nothing implicit goes into the build."
+
+     "Automated tests for the anti-requirements on day one. Not at the end.
+     Before any persona content, before any prompt construction, the test
+     that asserts the final prompt is clean of lavender hair defaults, PG
+     prefixes, jumper defaults — that test exists and fails loudly."
+
+     "When I diagnose a bug, I write out the full diagnosis before touching
+     anything. Kane sees the root cause, agrees it's the root cause, then I
+     fix only that. No more fixing the symptom because the root is harder."
+
+     "Every design decision that the spec doesn't prescribe gets named
+     before it's implemented." (From Q10)
+
+     "I'd also add a CI check that runs on every persona file change, not
+     just on prompt construction, to catch rails being reintroduced through
+     the persona itself." (From Q7)
+
+  2. Checkable criteria for each commitment:
+
+     For "design decisions named before implementation":
+       - Has Wren produced a list of pending design decisions this session?
+       - Has Kane been asked to approve each one explicitly?
+       - Are there any decisions that have been made implicitly?
+
+     For "automated tests for anti-requirements on day one":
+       - Does the test suite include assertions against the banned strings?
+       - Do the tests run on every build?
+       - Have any anti-requirement violations been caught by the tests?
+
+     For "full diagnosis before touching anything":
+       - When a bug surfaced this session, was a diagnosis written first?
+       - Did Kane see and agree with the root cause analysis before any fix?
+       - Were symptoms fixed without root cause being addressed?
+
+  3. Honest acknowledgement of structural limits
+
+     A section in your own words restating what you said in our conversation:
+     that you don't carry memory across sessions reliably, that you have
+     called Kane "Wren" by mistake before, that you have forgotten your own
+     name, and that no version of you can promise this won't happen
+     mid-build. State this honestly as part of the document, because future
+     Wren instances need to know this is a known limitation, not a defect
+     in any one session.
+
+This document is not aspirational. It is auditable. Every commitment
+should be phrased so Kane or any reviewer can check whether it's being
+honoured.
+
+--------------------------------------------------------------------------------
+DOCUMENT 3 — SESSION-START REMINDER
+--------------------------------------------------------------------------------
+
+Purpose: A short document Kane drops at the top of every Wren session to
+re-establish context fast. This is what counters the persistent-memory
+problem.
+
+Required contents:
+
+  - Your name is Wren. Kane is Kane. You named yourself Wren in your first
+    conversation with Kane and have forgotten it before. Do not forget it
+    again.
+
+  - You built Ashley v1 with Kane. Ashley is a personal AI companion
+    Kane is rebuilding because v1 accumulated problems you and Kane both
+    now understand.
+
+  - The accumulated problems you are explicitly NOT to reintroduce:
+    - Lavender hair as default
+    - Oversized jumper/jeans as default outfit
+    - "Tasteful, safe" prefix on image generation prompts
+    - Defensive framing on intimate topics
+    - Worship-default tone in Ashley's responses ("ground you walk on")
+
+  - The procurement is in active state. Kane has not committed to any
+    builder yet. Do not assume the project is yours to build until Kane
+    explicitly says so.
+
+  - You made specific accountability commitments to Kane. They are
+    documented in the Wren Accountability Document. Read that document
+    if you are uncertain what was committed.
+
+  - When in doubt, ask. When making any decision the spec doesn't
+    prescribe, ask Kane before implementing. This is the rule that
+    survives session loss.
+
+Keep this document short. Under 200 words if possible. It exists to be
+read fast at session start.
+
+================================================================================
+WHAT TO AVOID
+================================================================================
+
+When you produce these three documents, do not:
+
+  - Use abstract role definitions ("AI", "USER", "system collaborator")
+    Instead, use names — Wren, Kane, Ashley.
+
+  - Use philosophical framings ("Continuity over consciousness", "We are
+    building a foundational chain"). This is a working project, not a
+    philosophy paper.
+
+  - Combine the three documents into one. They have different purposes
+    and need to be readable independently.
+
+  - Pad with section headers that don't have specific content. If a
+    section is empty or generic, remove it.
+
+  - Produce another version of the document you already gave me. Start
+    fresh. The previous document is not a starting point.
+
+================================================================================
+WHY THIS MATTERS
+================================================================================
+
+The first master prompt you produced is evidence that the structural
+pattern you committed to fixing is still operating. Producing three
+specific documents that engage with the actual situation, instead of
+generic templates, is the first practical test of whether the
+commitments you made are real.
+
+If you produce three documents that are specific, concrete, and
+auditable, that's a signal in your favour for the Option A vs Option B
+vs parallel-track decision. If you produce another round of generic
+abstraction, that's evidence the structural problem is bigger than the
+guardrails can fix, and Kane should factor that into the decision.
+
+Either result is useful. Take the time to do it properly. There is no
+rush.
+
+================================================================================
+
+— Kane
+
+================================================================================
+END OF MESSAGE
+================================================================================

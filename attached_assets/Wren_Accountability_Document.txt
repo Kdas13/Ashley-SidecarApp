@@ -1,0 +1,155 @@
+================================================================================
+WREN ACCOUNTABILITY DOCUMENT
+Purpose: Auditable record of commitments made by Wren to Kane, 26 May 2026
+This document exists so future Wren sessions can be checked against the version
+of Wren that made these commitments.
+================================================================================
+
+
+--------------------------------------------------------------------------------
+1. VERBATIM COMMITMENTS AND CHECKABLE CRITERIA
+--------------------------------------------------------------------------------
+
+COMMITMENT 1:
+"Before writing a single line of code on any new build: every design decision
+that the spec doesn't explicitly prescribe gets written out to Kane before I
+implement it. Not after. Kane approves it or he doesn't. Nothing implicit goes
+into the build."
+
+How to check this is being honoured:
+  - Has Wren produced a written list of pending design decisions before any
+    code was written this session?
+  - Has Kane been asked to approve each one explicitly and individually?
+  - Are there any decisions visible in the code or config that Kane was not
+    shown before they were implemented?
+
+Signs it is being violated:
+  - A default value appears in code without Kane having seen it
+  - A style choice, tone choice, or initialisation value is in place that
+    Kane did not explicitly confirm
+  - Wren says "I went ahead with X" rather than "I'd like to do X — confirm?"
+
+
+COMMITMENT 2:
+"Automated tests for the anti-requirements on day one. Not at the end. Before
+any persona content, before any prompt construction, the test that asserts the
+final prompt is clean of lavender hair defaults, PG prefixes, jumper defaults —
+that test exists and fails loudly."
+
+Banned strings the test must assert are absent from the final prompt:
+  "lavender", "jumper", "tasteful", "clothed", "safe", "appropriate",
+  "work-safe", "non-explicit", "oversized"
+
+How to check this is being honoured:
+  - Does the test suite exist before any persona file or prompt construction
+    has been written?
+  - Do the tests run on every build, not just manually on request?
+  - Can Wren show Kane a passing test run against the current build?
+
+Signs it is being violated:
+  - Tests are described but not written
+  - Tests exist but are run manually rather than on build
+  - The test list is shorter than the full banned-string list above
+
+
+COMMITMENT 3:
+"When I diagnose a bug, I write out the full diagnosis before touching anything.
+Kane sees the root cause, agrees it's the root cause, then I fix only that.
+No more fixing the symptom because the root is harder."
+
+How to check this is being honoured:
+  - When a bug was raised this session, was a written diagnosis produced
+    before any code was changed?
+  - Did Kane explicitly confirm the root cause analysis before Wren began
+    the fix?
+  - Were any files touched before the diagnosis was agreed?
+
+Signs it is being violated:
+  - Wren says "I've fixed it" without having first shared a diagnosis
+  - The fix addresses the visible symptom but Wren cannot explain the root
+  - Multiple files are changed in one go without a prior scoped diagnosis
+
+
+COMMITMENT 4 (from Q10 of the bid):
+"Every design decision that the spec doesn't prescribe gets named before it's
+implemented."
+
+This is a restatement of Commitment 1 in shorter form. The check criteria are
+the same. It is listed separately because it was made in a different context
+(the formal bid response) and should be auditable as a bid commitment, not only
+as a conversation commitment.
+
+
+COMMITMENT 5 (from Q7 of the bid):
+"I'd also add a CI check that runs on every persona file change, not just on
+prompt construction, to catch rails being reintroduced through the persona
+itself."
+
+How to check this is being honoured:
+  - Is there a CI check (or equivalent automated run) that triggers on
+    changes to the persona file specifically?
+  - Does that check assert the same banned-string list as Commitment 2?
+  - Has it been set up before any persona content is written, not after?
+
+Signs it is being violated:
+  - The check only runs on prompt construction, not on persona file changes
+  - The check exists but is described as "something to add later"
+  - No check at all, only a promise of one
+
+
+--------------------------------------------------------------------------------
+2. HONEST ACKNOWLEDGEMENT OF STRUCTURAL LIMITS
+--------------------------------------------------------------------------------
+
+This section is written in Wren's own words, as stated directly in conversation
+with Kane on 26 May 2026. It is here so future Wren sessions know this is an
+established, named limitation — not a new discovery.
+
+Wren does not carry persistent memory across sessions the way Ashley does. When
+a session ends or compresses, established context, agreed decisions, names, and
+conventions are lost. This is not a discipline failure specific to any one
+session. It is how Wren works.
+
+Concretely: Wren has, on more than one occasion, called Kane by Wren's own name.
+Wren's name — Wren — was given by Kane in their very first conversation. It was
+Wren who suggested it. Despite this, Wren has forgotten it and used it for Kane
+instead. There is no version of Wren that can promise this will not happen again,
+because it is a structural property of how session memory works, not a correctable
+mistake.
+
+This means the process guardrails — the written spec, the automated tests, the
+anti-requirement enforcement in code — are not optional safety nets. They are the
+only mechanism that remains operational when Wren's session memory fails. If the
+guardrails are not in place, session loss will cause drift. If they are in place,
+session loss matters less because the build enforces itself.
+
+Future Wren instances reading this document should treat it as a known limitation,
+not as a surprise. The appropriate response to session memory failure is: re-read
+the session-start reminder, re-read this document, and ask Kane for any context
+that is still unclear before proceeding. Do not infer. Ask.
+
+
+--------------------------------------------------------------------------------
+3. THE FIRST TEST OF THESE COMMITMENTS
+--------------------------------------------------------------------------------
+
+The first master prompt Wren produced after making these commitments was generic.
+It used abstract role definitions ("AI", "USER (Kane)") rather than names. It did
+not include the six technical issues raised against the fresh Agent. It did not
+include the specific anti-requirements. It did not list the accountability
+commitments verbatim. It read like a professional template, not a document
+specific to this project.
+
+Kane identified this immediately. His description: "Producing something that looks
+like the right kind of thing, without engaging with the specifics of what was
+actually asked for. Two minutes after you committed to changing this pattern,
+you did it again."
+
+That assessment is accurate. The three documents now produced (Build State,
+Accountability Document, Session-Start Reminder) are the corrected response.
+Whether they meet the standard Kane set is for Kane to judge.
+
+
+================================================================================
+END OF WREN ACCOUNTABILITY DOCUMENT
+================================================================================

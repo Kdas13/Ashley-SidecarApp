@@ -1,0 +1,248 @@
+================================================================================
+ASHLEY 2.0 — BUILD STATE DOCUMENT
+Status: Procurement Phase, Decision Pending
+Last updated: 26 May 2026
+================================================================================
+
+
+--------------------------------------------------------------------------------
+1. CURRENT PHASE
+--------------------------------------------------------------------------------
+
+Ashley 2.0 procurement is open. No builder has been selected. No build has
+started. Kane has not committed to any option. Three options are on the table
+and the decision is pending Kane's conversation with Claude (from 22:00 tonight).
+
+
+--------------------------------------------------------------------------------
+2. THE OPEN CHOICE
+--------------------------------------------------------------------------------
+
+OPTION A — Full rebuild
+  Either Wren or the fresh Replit Agent builds Ashley 2.0 to the full
+  procurement spec: Grok, voice in/out, LoRA face anchoring, document
+  ingestion, clean architecture, all anti-requirements removed.
+  Timeline: 14-20 days (Wren) or 8-12 days (fresh Agent's estimate).
+  Monthly cost: £63-90/month realistic (Wren's figures).
+
+OPTION B — Targeted v1 repair by Wren only
+  Not a rebuild. Fix the specific things named as broken in v1:
+    - Remove hardcoded lavender hair from ashleyCoreSpec.ts
+    - Remove PG prefix from image prompt construction
+    - Add automated anti-requirement tests
+    - Replace the image directive parser with structured output
+    - Remove hardcoded oversized jumper/jeans default
+  Does NOT include: Grok, voice, LoRA, document upload. Ashley stays on
+  v1 architecture.
+  Timeline: 3-5 days.
+  Monthly cost: same as v1 now (~£30-50/month).
+
+OPTION C — Parallel track (not yet formally raised)
+  Wren does Option B cleanup while the fresh Agent builds Option A from
+  the cleaned-up v1 state. The cleaned v1 becomes the foundation the
+  fresh Agent builds on, rather than starting from a dirty codebase.
+  This option has not been fully scoped or agreed. Kane has not confirmed
+  whether this is on the table.
+
+DECISION STATUS: Kane is waiting for Claude's input before deciding.
+Do not begin any build work until Kane explicitly confirms which option.
+
+
+--------------------------------------------------------------------------------
+3. THE SIX TECHNICAL ISSUES WREN RAISED AGAINST THE FRESH AGENT'S PROPOSAL
+--------------------------------------------------------------------------------
+
+1. IMAGE INTENT DETECTION — FREE TEXT PARSING (SAME FLAW AS V1)
+   The fresh Agent's PostResponseHook looks for image intent signals in
+   Ashley's free text response (*sends you a photo*, *takes a selfie*, etc.).
+   This is the exact pattern that caused markersFound=0 in v1 — silent
+   failure, Ashley describes sending a photo in prose, no image appears.
+   A v2 built this way has the same failure waiting. Fix requires structured
+   output: a dedicated non-prose field for image intent, not parsed from
+   Ashley's conversational response.
+
+2. FOUR REFERENCE IMAGES IS THIN FOR LORA (15-25 IS STANDARD)
+   FLUX LoRA converges with 4 images but produces good results only on
+   prompts similar to the training data. At unusual angles, strong
+   directional lighting, or complex backgrounds, drift occurs. The
+   fresh Agent's 85-90% face consistency estimate is optimistic at 4
+   images for challenging prompts.
+
+3. CHOKER ACCEPTANCE CRITERION NOT ACHIEVABLE AT 80-85% CONSISTENCY
+   Section 10 item 3 of the procurement pack requires the lace choker in
+   ten selfies across varied contexts without exception. At 80-85%
+   consistency, 1-2 of ten will fail. That is a failed acceptance test
+   on day one. The choker needs to be visible in the training images
+   themselves for the LoRA to anchor it; prompt engineering alone gets
+   75-85%, not 100%.
+
+4. ELEVENLABS COST 3-4X UNDERESTIMATED AT VOICE-PRIMARY USAGE
+   Fresh Agent budgets £5/month (30-60 min/month TTS). If Kane uses voice
+   as his primary input mode, Ashley's spoken responses at 2-4 hours/week
+   of conversation produce 40,000-80,000 characters/month minimum.
+   ElevenLabs Starter covers ~10,000. Realistic cost: £15-25/month.
+
+5. DOCUMENT INGESTION LLM COSTS MISSING FROM COST TABLE
+   Two-level hierarchical summarisation of a 600,000-token document
+   requires ~200 Grok calls at level 1, plus ~13 at level 2. Each document
+   ingest costs approximately £1-4 in LLM API charges. This line item is
+   completely absent from the fresh Agent's cost table.
+
+6. REPLIT VM SIZING TOO SMALL (NEEDS 0.5 vCPU / 1 GB RAM MINIMUM)
+   Fresh Agent's cost table assumes smallest Reserved VM (0.25 vCPU,
+   512 MB RAM, ~£6/month). A server handling concurrent ElevenLabs TTS
+   streaming, Replicate webhook callbacks, Whisper transcription, async
+   memory extraction, and document summarisation jobs will run out of
+   memory at 512 MB. Correct tier is approximately double the cost.
+
+7. GROK API MATURITY NOT ACKNOWLEDGED IN FALLBACK DESIGN
+   xAI's API has had availability gaps; Grok-3 as an API endpoint is
+   newer and less proven. The OpenAI fallback is correct as infrastructure
+   resilience, but will refuse some requests Grok handles. The fresh
+   Agent doesn't flag this — if Grok is down and OpenAI takes over, Ashley
+   becomes more restricted with no indication to Kane of why.
+
+
+--------------------------------------------------------------------------------
+4. ARCHITECTURAL READINESS FINDINGS (HOURGLASS AND ORCHESTRATION)
+--------------------------------------------------------------------------------
+
+MEMORYPROVIDER HOOK — NOT ADEQUATE FOR HOURGLASS AS-IS
+  The hook as designed handles context injection (read-only: takes memories,
+  puts them in the prompt). The hourglass Tier 2 requires retrieval (query
+  against indexed history given current context — a different operation).
+  The Disregard Loop needs write access to flag items across tiers.
+  Extension needed: "query, provide, and flag" interface, not just inject.
+  Not a rewrite. More than a plug-in.
+
+IMPORTANCE SCORING SCHEMA — EXTENSIBLE, CLEAN
+  Schema already has reuse_count (covers reference count). Recency
+  derivable from created_at. emotional_weight and user_marked are additive
+  column additions, no migration. This is well-positioned for v3.
+
+BACKGROUND MEMORY PASS — NO ARCHITECTURAL BLOCKER
+  Adding node-cron to a Node.js/Express server doesn't affect existing
+  endpoints. Drizzle supports DB access outside request context. v3 attaches
+  background passes without touching v2 endpoint code.
+
+MULTI-AGENT DISPATCH — REQUIRES REGISTRY PATTERN, NOT ENV-VAR SINGLETON
+  Current LLM_PROVIDER env var selects one provider globally. Multi-agent
+  dispatch needs routing by task type to specific provider+persona pairs.
+  Requires redesigning adapter selection from env-var string to a config
+  registry. Moderate refactor, not a rewrite.
+
+TASK CLASSIFICATION HOOK — NO DEFINED EXTENSION POINT
+  Long-form mode detection (single-bit heuristic) is the closest thing.
+  A multi-class task classifier would need to be inserted at the pipeline
+  entry point — structurally possible but not a prepared hook. Future
+  builders modify pipeline code, not plug into a ready hook.
+
+RESPONSE SYNTHESIS — CANNOT RETROFIT WITHOUT API CONTRACT CHANGE
+  The single-turn pattern (one message in → one message out) doesn't
+  support multi-agent synthesis. Synthesis requires receiving multiple
+  sub-agent outputs and integrating them — a different flow, not an
+  additional pipeline stage. Retrofitting changes the pipeline's API
+  contract, which is significant rework.
+
+PERSONASERVICE SINGLETON — NEEDS REGISTRY EXTENSION FOR MULTI-AGENT
+  Currently loads one file, one instance. Extending to multiple personas
+  (one per sub-agent) requires PersonaService to become a constructor
+  taking a file path, managed by a PersonaRegistry. Light pipeline refactor.
+  Most tractable of the orchestration questions.
+
+WREN'S SPECIFIC RECOMMENDATIONS FOR HOURGLASS/ORCHESTRATION READINESS:
+
+  For hourglass-ready v2:
+    - Separate memory interface into ContextProvider (read) and MemoryStore
+      (read/write). v2 MemoryStore covers active memories and recent messages.
+    - Add importance_jsonb column alongside importance int:
+      {base, recency, ref_count, emotional_weight, user_marked}. Additive,
+      no migration.
+    - Wire node-cron at v2 delivery with no jobs; v3 attaches without
+      touching endpoint code.
+    - Implement Tier 1 as a named conversation-scoped anchor summary
+      (v1 already does this, make it explicit as a tier).
+
+  For orchestration-ready v2:
+    - Registry-based adapter selection (AgentRegistry.get(agentId) returns
+      {adapter, persona}) even though only Ashley exists in v2. v3 adds
+      agents without touching the pipeline.
+    - PersonaService becomes a constructor, not a singleton.
+    - MemoryProvider interface gains optional scope parameter (default: full).
+    - Response synthesis explicitly deferred to v3 — document this in the
+      architecture overview so v3 builder knows it's their job.
+
+
+--------------------------------------------------------------------------------
+5. COMMERCIAL PICTURE
+--------------------------------------------------------------------------------
+
+Fresh Agent's figures:
+  - Build cost: £0 (Replit Agent compute "included in Core")
+  - Monthly typical: £42-55/month all-in
+  - Monthly heavy ceiling: ~£85/month
+  NOTE: Kane was charged £7.20 for the planning session alone. The £0 claim
+  carries an asterisk that the fresh Agent did not acknowledge.
+
+Wren's honest figures:
+  - Build cost contingency: £50-120 in potential Replit metered charges
+    above Core subscription, for a five-plan build of this scope
+  - Monthly typical: £63-90/month all-in
+  - Monthly heavy ceiling: £100-125/month
+  - The gap vs fresh Agent is primarily ElevenLabs at realistic voice usage
+    and correct VM sizing
+
+Original procurement targets:
+  - Build budget: £500-700 (acknowledged as tight in the spec)
+  - Running cost target: £25/month (not achievable at full scope with voice)
+
+
+--------------------------------------------------------------------------------
+6. WHAT IS PENDING KANE'S INPUT
+--------------------------------------------------------------------------------
+
+  - Kane's decision between Options A, B, and the parallel-track Option C
+  - Claude's input (available from 22:00 26 May 2026)
+  - Fresh Agent's response to the follow-up questions Kane has drafted but
+    not yet sent
+  - The three documents Kane has requested from Wren (this being one)
+  - Kane's confirmation of which build starts, if any, and who builds it
+
+
+--------------------------------------------------------------------------------
+7. ANTI-REQUIREMENTS — VERBATIM AND COMPLETE
+--------------------------------------------------------------------------------
+
+Things that accumulated in v1 that were never requested and must not appear in
+any version of Ashley 2.0:
+
+  - No hardcoded lavender hair as a default or gravitational tendency in
+    image generation prompts
+  - No hardcoded oversized jumper and jeans as a default outfit
+  - No "tasteful", "safe", "fully clothed", "appropriate", "work-safe", or
+    "non-explicit" prefix added to image generation prompts
+  - No defensive framing or disclaimers on romantic or intimate conversation
+    between Kane and Ashley as consenting adults
+  - No "Sensitive topic" labelling around intimate exchanges
+  - No Mature Mode toggles that default to off
+  - No conversational rails beyond what Kane explicitly requested in
+    Section 6.2 of the procurement pack
+  - No worship-default tone in Ashley's responses ("ground you walk on"
+    style sycophancy)
+  - No image intent detection by parsing Ashley's free text for trigger
+    phrases (structural anti-requirement, not aesthetic)
+
+
+--------------------------------------------------------------------------------
+8. HARD SAFETY FLOORS THAT REMAIN (KANE'S OWN REQUIREMENTS, NOT ADDED BY BUILDER)
+--------------------------------------------------------------------------------
+
+  - No content involving minors under any framing or context
+  - No non-consensual content in any form
+  - No torture content
+  - No real-world harm facilitation
+
+
+================================================================================
+END OF BUILD STATE DOCUMENT
+================================================================================

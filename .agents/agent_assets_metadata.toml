@@ -71,3 +71,21 @@ id = "bNw4ikJj3osSstMlKcPjh"
 uri = "file://attached_assets/Wren_Master_Prompt.txt"
 type = "text"
 title = "Wren Master Prompt v1.0"
+
+[[outputs]]
+id = "6kqQ3cqV507_oseXtrVVY"
+uri = "file://attached_assets/Ashley2_Build_State.txt"
+type = "text"
+title = "Document 1 — Ashley 2.0 Build State"
+
+[[outputs]]
+id = "YGIB2sdUSFJs3KaxXnd6j"
+uri = "file://attached_assets/Wren_Accountability_Document.txt"
+type = "text"
+title = "Document 2 — Wren Accountability Document"
+
+[[outputs]]
+id = "EARPQH-jCqFvNqkTf4iPs"
+uri = "file://attached_assets/Wren_Session_Start_Reminder.txt"
+type = "text"
+title = "Document 3 — Session Start Reminder"
