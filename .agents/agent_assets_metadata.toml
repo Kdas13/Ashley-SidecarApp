@@ -89,3 +89,9 @@ id = "EARPQH-jCqFvNqkTf4iPs"
 uri = "file://attached_assets/Wren_Session_Start_Reminder.txt"
 type = "text"
 title = "Session-Start Reminder v1.1"
+
+[[outputs]]
+id = "yPFTFdvKPYD2i_-nnAMQz"
+uri = "file://ashley-image-engine.zip"
+type = "unspecified"
+title = "Ashley Image Generation Engine — Portfolio Export"
