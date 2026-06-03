@@ -1,0 +1,484 @@
+================================================================================
+PROJECT ASHLEY — PLAN 7A (FINAL): IMAGE GENERATION FOUNDATION
+================================================================================
+Date: 2026-06-03 (revised after Atlas + Coda reviews)
+Prepared by: Claude (session orchestrator)
+For: Agent (implementation)
+Status: AWAITING KANE SIGN-OFF
+
+================================================================================
+AGENT STANDING ORDERS (must be followed every response)
+================================================================================
+
+1. One job per message. Nothing else.
+2. Diagnosis is not authorisation.
+3. Destructive actions require explicit named approval.
+4. If about to do something not in the request, stop and ask.
+5. Scope creep is a failure, not initiative.
+6. Attach a .txt summary file to every response.
+7. Any action Kane must do manually = step-by-step plain English instructions.
+8. After any code change, provide explicit GitHub push + EAS build instructions.
+
+================================================================================
+WHAT THIS PLAN DOES NOT TOUCH
+================================================================================
+
+- eas.json — not touched
+- GRADLE_OPTS — not touched
+- Gradle plugin — not touched
+- expo-file-system (pinned at 17.0.1) — not touched
+- Plan 6A code (receiving images from Kane) — not touched, except the
+  chatVision() try/catch fix described in Section 1F below
+- Text-only chat path — not touched
+- Any existing Replit Secrets — not touched, not read in new code, not logged
+
+================================================================================
+PREREQUISITES
+================================================================================
+
+Plan 6A must have been pushed to GitHub before this plan is started.
+Plan 7A server changes can be developed in parallel with Plan 6A EAS build.
+A new EAS build is required at the end of Plan 7A to test the full flow.
+
+================================================================================
+WHAT ASHLEY 2.0 ALREADY HAS (confirmed — do not rebuild)
+================================================================================
+
+- Replicate LoRA trained on 48 Ashley reference images (REPLICATE_API_TOKEN)
+  LoRA model ID: read from existing Plan 3 code — do not assume or hardcode
+- Cloudflare R2 object storage, bucket ashley-images (Secrets already set)
+  R2 function names: read from existing Plan 3 code — do not assume
+- Choker presence detection via grok-4.3 vision
+- Plan 3 image generation working (this plan wraps it, does not replace it)
+- XAI_API_KEY, REPLICATE_API_TOKEN, EXPO_TOKEN in Replit Secrets
+
+================================================================================
+ARCHITECTURE DECISION (resolves Atlas blocker #2 + Coda critical #1)
+================================================================================
+
+SERVER AUTHORITY MODEL — one path, no ambiguity:
+
+  1. The conversation pipeline (conversation.ts) scans Ashley's LLM response
+     for an [image:] marker
+  2. If a marker is found, the pipeline:
+       a. Strips the marker from the text Kane will see
+       b. Creates a pending job in the job store
+       c. Calls startImageGeneration() in the background (fire and forget)
+       d. Includes { imageGeneration: { jobId, messageId } } in the
+          conversation response JSON
+  3. The client receives the conversation response, sees imageGeneration,
+     and immediately starts polling the job
+  4. There is NO separate POST /generate-image endpoint
+  5. The client never creates a job — it only polls
+
+This eliminates the duplicate-job risk entirely.
+
+================================================================================
+SCOPE — PART 1: SERVER SIDE
+================================================================================
+
+--- 1A. NEW FILE: artifacts/api-server/src/lib/imageIntent.ts ---
+
+Responsibilities: [image:] marker parsing only. Nothing else.
+Maximum 80 lines.
+
+Must contain:
+
+  const IMAGE_MODES = ["PORTRAIT","FULL_BODY","SCENE","SELFIE","OUTFIT"] as const
+  type ImageMode = typeof IMAGE_MODES[number]
+
+  function parseImageMarker(text: string): { mode: ImageMode; vibe: string } | null
+    - Scans text for first occurrence of [image:MODE|vibe]
+    - MODE must be one of the five above (case-insensitive match, stored as uppercase)
+    - vibe is everything after the pipe up to the closing ]
+    - vibe is trimmed and capped at 400 characters (Coda: add max vibe length)
+    - If no valid marker found, returns null
+
+  function stripImageMarker(text: string): string
+    - Removes ALL occurrences of [image:...] from text (prevents marker leak)
+    - Only applied to Ashley's LLM output — never to user messages, memory
+      entries, or retrieved content (Coda: assistant-only marker parsing)
+
+Export both functions. Export IMAGE_MODES and ImageMode.
+
+--- 1B. NEW FILE: artifacts/api-server/src/lib/imageJobs.ts ---
+
+Responsibilities: in-memory job store. Nothing else.
+
+Job type:
+  interface ImageJob {
+    status: "pending" | "ready" | "failed"
+    imageUrl: string | null
+    messageId: string
+    createdAt: number        // epoch ms
+    errorMessage: string | null
+  }
+
+Rules:
+  - Store: const jobs = new Map<string, ImageJob>()
+  - KNOWN LIMITATION: jobs are lost if the server process restarts. A restart
+    while generation is in flight will cause the client to receive 404 on poll.
+    The client must handle 404 as equivalent to "failed". This is accepted for
+    7A and documented here. Do not add database persistence in 7A.
+
+  - pruneExpiredJobs(): removes jobs where:
+      (a) status is "ready" or "failed" AND age > 10 minutes, OR
+      (b) status is "pending" AND age > 10 minutes
+    NOTE: do NOT prune jobs that are "pending" and younger than 10 minutes
+    (Coda: pending-job prune edge case)
+
+  - Background prune interval: call pruneExpiredJobs() on a setInterval
+    every 5 minutes (Atlas: stale-job cleanup interval separate from poll)
+    This interval must be started once at server startup, not per-request.
+
+  - Functions to export:
+    createJob(jobId: string, messageId: string): void
+    updateJob(jobId: string, update: Partial<ImageJob>): void
+    getJob(jobId: string): ImageJob | undefined
+    pruneExpiredJobs(): void
+
+--- 1C. MODIFY: artifacts/api-server/src/pipeline/conversation.ts ---
+
+After receiving Ashley's LLM text response, before returning to the client:
+
+  1. Call parseImageMarker(ashleyText) — imported from imageIntent.ts
+  2. If marker found:
+       a. Call stripImageMarker(ashleyText) to get the clean visible text
+       b. Generate a UUID as jobId
+       c. Call createJob(jobId, messageId) — imported from imageJobs.ts
+       d. Call startImageGeneration(jobId, marker.vibe, marker.mode, profileId)
+          — this is a background call, do NOT await it
+       e. Set imageGeneration = { jobId, messageId } on the response
+  3. If no marker: imageGeneration = null on the response
+  4. Return clean text + imageGeneration field to client
+
+  The imageGeneration field must be included in the response type definition.
+
+  Marker parsing must only be applied to Ashley's LLM output string.
+  It must never be applied to Kane's input, retrieved memory, or system prompts.
+
+  Do not add generation routing, job management, or generation logic directly
+  in conversation.ts — delegate to the lib files (Atlas: keep conversation.ts
+  focused, delegate to helpers).
+
+--- 1D. NEW FILE: artifacts/api-server/src/lib/imageGeneration.ts ---
+
+Responsibilities: background generation only.
+
+  async function startImageGeneration(
+    jobId: string,
+    vibe: string,
+    mode: ImageMode,
+    profileId: string
+  ): Promise<void>
+
+  This function must:
+  1. Wrap the entire body in try/catch — any uncaught error sets job to failed
+  2. Build the generation prompt:
+       - Read Ashley's stable identity string from existing Plan 3 code
+         (do NOT duplicate the identity definition — import or call it)
+       - Append the mode block for the given mode (see MODE BLOCKS below)
+       - Append the vibe text
+  3. Call the existing Replicate LoRA generation function from Plan 3
+     (do NOT rewrite it — import and call it)
+  4. On generation success:
+       a. Call the existing R2 upload/storage function from Plan 3
+          (do NOT rewrite it — import and call it)
+       b. On R2 success: call updateJob(jobId, { status: "ready", imageUrl })
+       c. On R2 failure: call updateJob(jobId, { status: "failed",
+            errorMessage: "Image storage failed" }) — log the R2 error
+            server-side (Coda: R2 upload failure handling)
+  5. On generation failure: call updateJob(jobId, { status: "failed",
+       errorMessage: err.message ?? "Generation failed" })
+  6. Generation timeout: wrap the Replicate call in a Promise.race with a
+     90-second timeout. If the timeout fires first, treat as generation failure
+     (Atlas: image generation timeout protection)
+
+  MODE BLOCKS (append to prompt per mode):
+
+    PORTRAIT:  "close head-and-shoulders crop, eye level, natural light,
+                sharp focus on face"
+    FULL_BODY: "full body visible, mid-distance, natural posture, well-lit,
+                complete figure in frame"
+    SCENE:     "Ashley in an environment, scene context visible,
+                mid-distance or wide crop"
+    SELFIE:    "casual self-taken angle, slight upward camera tilt,
+                informal framing, natural expression"
+    OUTFIT:    "full body visible, clothing clearly shown head to toe,
+                neutral background, clean framing"
+
+  Do not log vibe text at INFO level — vibe may contain personal content.
+  Log only jobId, mode, and success/failure status.
+  Do not log imageUrl contents.
+  Do not store imageUrl in Ashley's conversation memory or history.
+
+--- 1E. NEW ROUTE: GET /api/chat/image-status/:jobId ---
+
+Add to the existing chat route file (agent: read the codebase to find it).
+
+  1. Call pruneExpiredJobs()
+  2. Look up job by jobId
+  3. If not found (including 404 due to server restart): return
+       { status: "failed", error: "Job not found or expired" }
+     Do not return 404 — the client treats any non-found as failed (Coda: restart handling)
+  4. If pending: return { status: "pending" }
+  5. If ready: return { status: "ready", imageUrl: string, messageId: string }
+  6. If failed: return { status: "failed", error: string }
+
+  No authentication required beyond what the existing chat routes use.
+  No deviceId check required in 7A (single user).
+
+--- 1F. FIX: chatVision() error handling in conversation.ts ---
+
+Locate the chatVision() call in conversation.ts (added in Plan 6A).
+Wrap it in try/catch if not already wrapped:
+  - On catch: return a clean user-facing message to the client:
+    "Ashley couldn't read that image right now — try again?"
+  - Log the error server-side with the error object
+  - Do not return a 500 status
+
+--- 1G. SYSTEM PROMPT ADDITION ---
+
+Add the following block to Ashley's system prompt. Append it — do not replace
+any existing system prompt content:
+
+  "When Kane asks for an image, photo, or picture of you, include exactly one
+  marker in your response using this format:
+
+  [image:MODE|description of the image]
+
+  MODE must be one of: PORTRAIT, FULL_BODY, SCENE, SELFIE, OUTFIT
+  Use PORTRAIT for close face/head shots.
+  Use FULL_BODY when the full figure should be visible.
+  Use SCENE when you are describing yourself in a place or environment.
+  Use SELFIE for casual, self-taken feel.
+  Use OUTFIT when Kane is asking about your clothes specifically.
+
+  The description after the pipe should be a vivid, specific description of
+  what the image should show — mood, setting, what you're wearing, expression.
+  Keep the description under 300 words.
+
+  The marker is processed by the server and never shown to Kane. Do not
+  mention the marker in your text. Do not describe it or reference it.
+  Write your normal reply to Kane as if the image is simply being sent."
+
+================================================================================
+SCOPE — PART 2: CLIENT SIDE
+================================================================================
+
+--- 2A. POLLING LOGIC (index.tsx) ---
+
+After the conversation response arrives:
+
+  1. Check if response.imageGeneration is present and has a jobId
+  2. If yes: call startPolling(jobId, messageId)
+  3. startPolling must:
+       - Store the active poll interval ref in a useRef so it can be cancelled
+       - Before starting a new poll loop, cancel any existing one
+         (Coda: prevent concurrent polling loops)
+       - Poll GET /api/chat/image-status/:jobId every 3 seconds
+       - On "pending": continue polling
+       - On "ready": call stopPolling(), then updateMessageWithImage(messageId, imageUrl)
+       - On "failed": call stopPolling(), then updateMessageWithError(messageId)
+       - On 60 polls elapsed (3 minutes): call stopPolling(), then
+         updateMessageWithError(messageId) — timeout (Atlas: poll timeout)
+  4. stopPolling(): clears the interval ref
+  5. Poll must be cancelled on component unmount (useEffect cleanup)
+     (Atlas: cancel poll when user leaves chat)
+
+--- 2B. MESSAGE STATE ---
+
+Each message in the messages array has an existing shape. Add optional fields:
+
+  imageStatus?: "generating" | "ready" | "failed"
+  imageUrl?: string
+
+When Ashley's conversation response arrives with imageGeneration present:
+  - Add Ashley's message to the messages array with imageStatus: "generating"
+
+When poll returns "ready":
+  - Find the message by messageId in the messages array
+  - Update it: imageStatus: "ready", imageUrl: <returned url>
+
+When poll returns "failed" or timeout:
+  - Find the message by messageId
+  - Update it: imageStatus: "failed"
+
+This is the complete message-update mechanism (Coda: define attachment mechanism
+and state update path before coding).
+
+--- 2C. RENDERING IN MessageBubble.tsx ---
+
+Add image rendering to the Ashley message bubble based on imageStatus:
+
+  imageStatus === "generating":
+    Show a small "generating..." label below Ashley's text.
+    No spinner animation required — plain text is sufficient.
+
+  imageStatus === "ready":
+    Show the image above Ashley's text.
+    Image style: width 100% of bubble, borderRadius 12, resizeMode "cover"
+    Tapping the image opens the full-screen viewer (see 2D).
+
+  imageStatus === "failed":
+    Show a small note below Ashley's text:
+    "Couldn't generate that one — ask me again?"
+
+  imageStatus undefined (normal text message): render as today, no change.
+
+--- 2D. FULL-SCREEN VIEWER ---
+
+A simple Modal component. Create as a new file:
+artifacts/ashley-app/components/ImageViewer.tsx
+
+  - Props: { visible: boolean, imageUrl: string | null, onClose: () => void }
+  - Full-screen Modal with black background
+  - Image fills the screen (resizeMode "contain")
+  - A close button (×) in the top-right corner
+  - No swipe gallery, no save button, no sharing in 7A
+  - Under 60 lines
+
+================================================================================
+WHAT NOT TO DO
+================================================================================
+
+- Do not rewrite Plan 3's Replicate generation function — call it
+- Do not rewrite Plan 3's R2 storage function — call it
+- Do not add a database table for jobs — in-memory Map only in 7A
+- Do not add a POST /generate-image endpoint — server creates jobs only
+- Do not add expo-camera or any new native module
+- Do not add any npm packages without asking Kane first
+- Do not touch eas.json, GRADLE_OPTS, or the Gradle plugin
+- Do not touch the Plan 6A image-receiving code (except the chatVision fix)
+- Do not make the [image:] marker visible to Kane under any circumstances
+- Do not apply parseImageMarker() to user messages, memory, or system prompts
+- Do not log vibe content at INFO level
+- Do not store jobIds or imageUrls in Ashley's conversation memory
+- Do not prune pending jobs younger than 10 minutes
+
+================================================================================
+VERIFICATION CHECKLIST
+================================================================================
+
+Server:
+[ ] parseImageMarker extracts mode and vibe correctly
+[ ] stripImageMarker removes all markers from Ashley's output text
+[ ] Marker parsing never applied to user messages or memory
+[ ] Job created in conversation.ts, not in a separate endpoint
+[ ] startImageGeneration fires in background without blocking response
+[ ] Conversation response includes imageGeneration field when marker found
+[ ] GET /api/chat/image-status/:jobId returns correct shape at each state
+[ ] Server restart / job not found returns failed (not 404)
+[ ] Background prune interval running (not just on-poll pruning)
+[ ] Pending jobs younger than 10 min NOT pruned
+[ ] R2 upload failure sets job to failed (not hung pending)
+[ ] Generation timeout at 90 seconds sets job to failed
+[ ] chatVision() try/catch present — no 500 on vision model failure
+[ ] System prompt addition present
+[ ] Text-only chat path completely unchanged
+
+Client:
+[ ] Poll starts immediately after imageGeneration field received
+[ ] No duplicate poll loops (new poll cancels old)
+[ ] Poll cancels on component unmount
+[ ] "generating..." text appears in Ashley's bubble immediately
+[ ] Image appears in bubble on "ready"
+[ ] Error note appears on "failed" or timeout
+[ ] Full-screen viewer opens on image tap with close button
+[ ] Text-only replies render exactly as before (no imageStatus field)
+[ ] .txt summary attached to response
+
+================================================================================
+KNOWN LIMITATIONS (documented, not fixed in 7A)
+================================================================================
+
+1. Jobs lost on server restart. Client receives "failed" and sees error note.
+   Fix is database persistence — deferred to a future plan.
+
+2. Single image per message only. Multi-image is Plan 7B.
+
+3. No retry button on failed generation. Kane must ask Ashley again.
+   Atlas suggested it as optional — deferred to 7B.
+
+4. No appearance control (hair colour, outfit override). Plan 7C.
+
+================================================================================
+GITHUB PUSH + EAS BUILD INSTRUCTIONS
+================================================================================
+
+After all code changes are complete, tell Kane:
+
+1. Open Replit on your S24 Ultra
+2. Tap Git / Version Control
+3. Review the changed files
+4. Tap Commit — type message: "Plan 7A: image generation foundation"
+5. Tap Push — wait for confirmation
+6. Only after push confirmed: go to expo.dev
+7. Project Ashley → Builds → Build from GitHub → Android → preview → main branch
+8. Trigger the build
+9. Install the new APK when the build is ready
+
+Do not trigger the build before the push is confirmed.
+
+================================================================================
+REVIEW RESOLUTION LOG
+================================================================================
+
+Atlas blocker #1 (in-memory job loss on restart):
+  RESOLVED — documented as known limitation. Client handles not-found as failed.
+
+Atlas blocker #2 (duplicate-job ambiguity):
+  RESOLVED — server authority model: conversation pipeline creates job,
+  client polls only. POST /generate-image endpoint removed entirely.
+
+Atlas blocker #3 (conversation.ts accumulating responsibility):
+  RESOLVED — generation logic in imageGeneration.ts, job store in imageJobs.ts,
+  marker parsing in imageIntent.ts. conversation.ts only orchestrates.
+
+Coda critical #1 (dual-architecture conflict):
+  RESOLVED — same as Atlas #2 resolution above.
+
+Coda critical #2 (message update mechanism undefined):
+  RESOLVED — imageStatus field on message objects, updated by messageId on
+  poll result. Full state update path defined in Section 2B.
+
+Coda critical #3 (in-memory loss documented):
+  RESOLVED — documented in known limitations.
+
+Coda critical #4 (concurrent polling loops):
+  RESOLVED — new poll cancels existing loop via useRef before starting.
+
+Coda critical #5 (assistant-only marker parsing):
+  RESOLVED — stripImageMarker and parseImageMarker called only on Ashley's
+  LLM output string, never on user input, memory, or system prompts.
+
+Coda important (max vibe length):
+  RESOLVED — vibe capped at 400 characters in parseImageMarker.
+
+Coda important (R2 failure handling):
+  RESOLVED — R2 failure sets job to failed with logged error.
+
+Coda important (pending job prune edge case):
+  RESOLVED — prune only removes pending jobs older than 10 minutes.
+
+Atlas hardening (stale-job interval):
+  RESOLVED — 5-minute setInterval at server startup, separate from poll prune.
+
+Atlas hardening (generation timeout):
+  RESOLVED — 90-second Promise.race around Replicate call.
+
+Atlas hardening (poll cancellation on unmount):
+  RESOLVED — useEffect cleanup calls stopPolling().
+
+Atlas hardening (duplicate polling prevention):
+  RESOLVED — new startPolling call cancels existing interval first.
+
+Atlas hardening (max vibe length):
+  RESOLVED — same as Coda above.
+
+Atlas optional (retry button, progress states, thumbnail placeholder):
+  DEFERRED to 7B. Not in scope for 7A.
+
+================================================================================
+END OF PLAN 7A (FINAL)
+================================================================================
