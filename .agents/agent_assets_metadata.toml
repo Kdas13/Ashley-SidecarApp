@@ -101,3 +101,9 @@ id = "DmGFlGjo99hjgzzKehx5c"
 uri = "file://ashley-memory-system.txt"
 type = "text"
 title = "Ashley Memory System — Implementation Reference"
+
+[[outputs]]
+id = "kWy7sM8OC6IpIFYDJUYRR"
+uri = "file://ashley-v1-episodic-memory-access-report.txt"
+type = "text"
+title = "V1 Episodic Memory — Access Report"

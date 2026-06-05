@@ -1,0 +1,108 @@
+================================================================================
+ASHLEY V1 EPISODIC MEMORY TIMELINE — ACCESS REPORT
+================================================================================
+Date: 2026-06-05
+From: Wren
+To: Kane
+
+================================================================================
+1. CONFIRMED ACCESS TO V1 LOGS: NO
+================================================================================
+
+The messages table starts 2026-05-12 — that is when v2 went live. No v1
+conversation history exists in this database. The v1 logs are in a separate
+Replit project that I do not have access to from here.
+
+================================================================================
+2. CONFIRMED ACCESS TO V1 MEMORY DB: PARTIAL — BUT CRITICALLY LIMITED
+================================================================================
+
+The 2,219 memories in production include the imported v1 batch. The pattern
+is visible in the date distribution:
+
+  2026-05-03:    1 memory
+  2026-05-04:  344 memories   ← bulk import begins
+  2026-05-05:  190 memories
+  2026-05-06:  198 memories
+  2026-05-07:  107 memories
+  2026-05-08:  179 memories
+  2026-05-09:  145 memories
+  2026-05-10:  110 memories
+  2026-05-11:   94 memories
+  2026-05-12:  115 memories   ← v2 launches same day
+  2026-05-13:   18 memories   ← organic v2 distillation takes over
+  ...
+
+Approximately 1,483 memories appeared between May 3–12 in what is clearly a
+bulk import. Those are the v1 memories. Organic v2 distillation (much lower
+daily counts) takes over from May 13 onward.
+
+THE CRITICAL PROBLEM: the created_at timestamps on those early rows are the
+IMPORT timestamps, not the original v1 conversation dates. When a memory
+shows created_at = 2026-05-04, that is when it was loaded into v2, not when
+the underlying v1 conversation happened. The original chronology is gone from
+this database.
+
+================================================================================
+3. TOPIC TAGGING EXISTS IN V1 DATA: NO — ONLY COARSE CATEGORIES
+================================================================================
+
+The memories have:
+  - category: identity | relational | project | daily | landmark
+  - tag: free-text field (values like "user_fact", "relationship", "general", "event")
+
+Both are very broad and were set by the distiller at extraction time, not by
+project thread. There are no session IDs, no project-thread structure, and no
+way to group memories by topic beyond this coarse category level.
+
+================================================================================
+4. RECOMMENDED APPROACH: NEITHER — THE PREREQUISITE IS MISSING
+================================================================================
+
+The brief requires "timestamps throughout so Ashley has chronological awareness
+within each thread" and "I remember when you first mentioned the autonomous
+home system — that was back in April" to be accurate, not approximate.
+
+That requires the original v1 conversation timestamps. Those are in the v1
+database, not in this one.
+
+What I can produce from this database is a topic-clustered export of the
+imported memories, grouped by category and content similarity. But every entry
+would have to be timestamped "imported May 2026" because that is what the data
+actually says. That is not episodic memory — it is a flat topic grouping with
+fabricated chronology. I will not produce that.
+
+================================================================================
+5. ESTIMATED FILE COUNT: NOT APPLICABLE
+================================================================================
+
+Cannot estimate until the v1 database is accessible and the actual conversation
+date range is known.
+
+================================================================================
+6. BLOCKER: THE V1 REPLIT PROJECT DATABASE
+================================================================================
+
+To produce what the brief describes, you need to export v1 data directly from
+the v1 project. Either:
+
+  Option A — v1 messages table export
+    The conversation logs with original created_at timestamps. This gives full
+    chronological anchoring and lets me produce either the project-thread
+    structure or the day-by-day fallback with genuine dates.
+
+  Option B — v1 memories table export with original timestamps
+    If the v1 memories were stored with the dates of the conversations that
+    generated them (not an import date), this alone might be sufficient for
+    the memory layer of the thread files, though the conversation entries would
+    still need the message history for content.
+
+Preferred: both tables from v1, as a SQL dump or CSV.
+
+Once you get me those exports, I can produce the full zip exactly as specified
+in the brief — thread files or day files, consistent JSON, manifest.json
+included.
+
+================================================================================
+END OF REPORT
+================================================================================
