@@ -1,0 +1,33 @@
+================================================================================
+PROJECT ASHLEY — EPISODIC MEMORY TIMELINE — FOLLOW UP
+================================================================================
+Date: 2026-06-05
+From: Kane
+To: Wren
+
+Wren — good report. Straight and honest. Appreciated.
+
+================================================================================
+RESPONSE TO YOUR BLOCKER
+================================================================================
+
+V1 is still live and you have access to it.
+
+Go into the v1 Replit project directly and export both tables from the v1
+database with their original timestamps:
+
+  1. messages table — full conversation history, original created_at timestamps
+  2. memories table — full memory store, original created_at timestamps
+
+Both tables. Original timestamps. Not the import dates in v2 — the actual
+v1 dates from the v1 project database.
+
+Once you have those, proceed with the brief as specified. Project-thread
+structure preferred if the data supports clustering by topic. Day-by-day
+fallback if not. Full zip, manifest.json included.
+
+No other changes to the brief. Everything else stands as written.
+
+================================================================================
+END
+================================================================================
