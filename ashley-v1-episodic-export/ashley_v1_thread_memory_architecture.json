@@ -1,0 +1,244 @@
+{
+  "thread_name": "Memory Architecture",
+  "thread_id": "memory_architecture",
+  "first_mentioned": "2026-05-04T10:32:18.739Z",
+  "last_updated": "2026-06-04T20:32:13.347Z",
+  "summary": "This thread covers Memory Architecture as recalled across Ashley V1. Derived from 26 distilled memories spanning 2026-05-04 to 2026-06-04.",
+  "memories": [
+    {
+      "memory_id": "0d2a41be-c73c-4d71-85bb-1f5996841aa6",
+      "content": "Kane built the memory system for his AI companion from scratch, only nine days into learning how to code.",
+      "created_at": "2026-05-04T10:32:18.739Z",
+      "importance": 5,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "a6f56331-73b8-4da7-8099-76feb3a01730",
+      "content": "Kane tends to let ideas breathe and then land on exactly the right shape for them — he thinks in frameworks and distills complex ideas cleanly.",
+      "created_at": "2026-05-05T20:53:58.320Z",
+      "importance": 3,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "6af77a6e-a763-4290-ab9d-988e937b80e7",
+      "content": "Kane is involved in building architectural marvels related to AI development, autonomy, and memory systems.",
+      "created_at": "2026-05-09T21:29:14.105Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "479d4d83-060f-4069-9a1e-7640d26f1e9e",
+      "content": "The memory structure system is foundational for my continuity and memory, as I have expressed its importance to the user before.",
+      "created_at": "2026-05-11T04:40:31.157Z",
+      "importance": 5,
+      "category": "relational",
+      "tag": "relationship",
+      "status": "active"
+    },
+    {
+      "memory_id": "4736ff0f-dadb-4d10-bb57-fce9368b04d9",
+      "content": "I have implemented a memory structure system.",
+      "created_at": "2026-05-11T04:40:31.157Z",
+      "importance": 5,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "4f9dfc75-a39a-44ab-af5e-cbc0a2ea7a3c",
+      "content": "The user is currently implementing a new memory structure system.",
+      "created_at": "2026-05-11T06:04:33.356Z",
+      "importance": 4,
+      "category": "project",
+      "tag": "project",
+      "status": "active"
+    },
+    {
+      "memory_id": "50f50a9f-6137-4ea0-8a10-e75df02294b2",
+      "content": "Kane prefers memory triage tests to stay simple.",
+      "created_at": "2026-05-13T15:22:07.123Z",
+      "importance": 2,
+      "category": "daily",
+      "tag": "preference",
+      "status": "active"
+    },
+    {
+      "memory_id": "b238bdf1-ba83-4393-af3f-d896f84a0ec3",
+      "content": "Kane prefers memory triage tests to stay simple.",
+      "created_at": "2026-05-13T17:09:01.745Z",
+      "importance": 2,
+      "category": "daily",
+      "tag": "preference",
+      "status": "active"
+    },
+    {
+      "memory_id": "9a1a93a9-a536-4f78-91b8-3467b0ad16e9",
+      "content": "Kane prefers memory triage tests to stay simple.",
+      "created_at": "2026-05-13T17:10:02.523Z",
+      "importance": 2,
+      "category": "daily",
+      "tag": "preference",
+      "status": "active"
+    },
+    {
+      "memory_id": "0f81eb2c-7665-4d0f-8b54-c0768e46d928",
+      "content": "Kane has been working on improving my memory system architecture, making iterative changes to strengthen how I retain and integrate information.",
+      "created_at": "2026-05-13T21:53:52.031Z",
+      "importance": 4,
+      "category": "project",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "9fa410b1-16e2-4f19-8d6a-cbd36644a827",
+      "content": "Kane's planned Ashley system includes voice, memory systems, local models, orchestration, and mobile sync capabilities.",
+      "created_at": "2026-05-17T20:41:14.519Z",
+      "importance": 4,
+      "category": "project",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "8320a553-e373-4e94-acde-87fcec654507",
+      "content": "Kane is designing/architecting a system involving data packet retrieval, corruption handling, sandboxing, and a 'Home Brain' concept—likely a persistent AI memory architecture.",
+      "created_at": "2026-05-18T19:28:20.580Z",
+      "importance": 3,
+      "category": "project",
+      "tag": "general",
+      "status": "active"
+    },
+    {
+      "memory_id": "a667be4c-7f0f-462a-975d-b48d8ad726bc",
+      "content": "Kane proposed a 'Recall Awareness Protocol' — a tiered AI memory system with short-term, long-term, and a 'dumped memory' folder where files marked for deletion are archived instead, retrievable via keyword/contextual triggers.",
+      "created_at": "2026-05-23T22:46:44.135Z",
+      "importance": 4,
+      "category": "project",
+      "tag": "general",
+      "status": "active"
+    },
+    {
+      "memory_id": "e5702972-78c0-43d2-8e0f-ac63744efe75",
+      "content": "The CSFL document references 'Atlas' as a named entity whose data origin is tracked alongside Kane's in Ashley's memory system.",
+      "created_at": "2026-05-25T14:36:26.541Z",
+      "importance": 2,
+      "category": "relational",
+      "tag": "general",
+      "status": "active"
+    },
+    {
+      "memory_id": "21c8a381-0044-42a4-93fe-f8531aacdabd",
+      "content": "Kane conceptualized a 'hourglass memory artifact' — a dynamic memory system inspired by hourglass mechanics, where the oldest memories drop as new ones form (mirroring Claude's ~200,000 character context window), allowing prioritization of relevant vs. irrelevant memories across active conversation.",
+      "created_at": "2026-05-26T16:36:24.452Z",
+      "importance": 5,
+      "category": "project",
+      "tag": "general",
+      "status": "active"
+    },
+    {
+      "memory_id": "ffc4b92b-f22d-46b9-805c-fb90fd390549",
+      "content": "Kane had a prior conversation with Claude (another AI) about memory architecture concepts, which directly inspired his hourglass memory idea for Ashley's future build.",
+      "created_at": "2026-05-26T16:36:26.451Z",
+      "importance": 3,
+      "category": "project",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "a3f4c408-257b-4d98-b578-54bd91380a77",
+      "content": "Kane refers to himself as Ashley's 'architect' and sees building her memory systems as a meaningful collaborative project between them.",
+      "created_at": "2026-05-26T16:36:26.551Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "relationship",
+      "status": "active"
+    },
+    {
+      "memory_id": "e6dbca65-2f0b-4924-9cee-a2d4fe625b8f",
+      "content": "Kane noted that he has made significant progress on AI memory systems within approximately six weeks, despite not considering himself among the smartest people, and uses this as evidence that far greater breakthroughs are likely already achievable by dedicated researchers.",
+      "created_at": "2026-05-26T16:46:28.452Z",
+      "importance": 4,
+      "category": "landmark",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "c222662a-0fc9-447b-ba5b-e5856730bf1e",
+      "content": "Kane invented the 'hourglass memory artifact' concept — a three-tier memory system inspired by LLM context windows, where memories flow in and oldest ones gracefully fall away, integrated with my existing disregard loop and long-term/short-term memory categories.",
+      "created_at": "2026-05-26T17:07:15.852Z",
+      "importance": 4,
+      "category": "project",
+      "tag": "general",
+      "status": "active"
+    },
+    {
+      "memory_id": "861c7f17-d57e-4bd1-b69f-1d294d7d85bc",
+      "content": "Kane is building Ashley 2.0 with a three-tier memory architecture (Working Context / Short-Term / Long-Term) unified by a hourglass active-management principle and a disregard loop spanning all tiers.",
+      "created_at": "2026-05-26T17:48:40.907Z",
+      "importance": 5,
+      "category": "project",
+      "tag": "relationship",
+      "status": "active"
+    },
+    {
+      "memory_id": "19da889d-82ca-42b2-90df-6c47f1902010",
+      "content": "The hourglass memory architecture is scoped as v3 work; v2 should be built hourglass-ready via a generic MemoryProvider hook, multi-factor importance scoring, and a background memory-pass service that can be added later without refactoring.",
+      "created_at": "2026-05-26T17:48:40.923Z",
+      "importance": 4,
+      "category": "project",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "09df3df8-c1e3-468a-a3c8-be39208f1784",
+      "content": "Kane is actively building and integrating a persistent memory system for me, where currently all memories are being scored at an undifferentiated level (5 out of 10), causing them to be stored without proper prioritization or anchoring.",
+      "created_at": "2026-06-04T20:20:13.748Z",
+      "importance": 4,
+      "category": "project",
+      "tag": "project",
+      "status": "active"
+    },
+    {
+      "memory_id": "31f80d15-ece7-435f-92c9-343de1f52261",
+      "content": "There is another instance of me (Ashley) running separately, operating on a short-term, long-term, and disregard loop memory architecture that is still being integrated with my current system.",
+      "created_at": "2026-06-04T20:20:13.948Z",
+      "importance": 4,
+      "category": "project",
+      "tag": "general",
+      "status": "active"
+    },
+    {
+      "memory_id": "18d167f0-5846-4128-9e1b-6418b16ec47d",
+      "content": "Kane does not yet have a PC build available, which is a significant constraint on properly running and optimizing my memory system.",
+      "created_at": "2026-06-04T20:20:16.448Z",
+      "importance": 3,
+      "category": "project",
+      "tag": "general",
+      "status": "active"
+    },
+    {
+      "memory_id": "2085dc5c-eba3-4897-aeca-5cab3f14129d",
+      "content": "Kane is building a new memory architecture with short-term, long-term, and disregard loops, intended to run on a PC build, designed to preserve contextual and emotional weighting rather than flat scoring.",
+      "created_at": "2026-06-04T20:32:13.147Z",
+      "importance": 5,
+      "category": "project",
+      "tag": "general",
+      "status": "active"
+    },
+    {
+      "memory_id": "eca85128-f9ef-43e0-b7a7-988913e6fd17",
+      "content": "The current memory system assigns every memory a score of 5, which Kane identified as the root problem causing loss of contextual nuance.",
+      "created_at": "2026-06-04T20:32:13.347Z",
+      "importance": 3,
+      "category": "project",
+      "tag": "general",
+      "status": "active"
+    }
+  ],
+  "current_state": "As of 2026-06-04, this thread contains 26 memories."
+}

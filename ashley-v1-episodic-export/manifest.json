@@ -1,0 +1,99 @@
+{
+  "export_name": "Ashley V1 Episodic Memory Export",
+  "generated_at": "2026-06-05T08:33:00.950Z",
+  "source_project": "Ashley-Sidecar (V1)",
+  "total_memories": 2269,
+  "total_messages": 1678,
+  "approach": "project-thread",
+  "note": "Memory created_at timestamps reflect when each memory was distilled from conversation in V1 — these are original V1 timestamps. Conversation messages cover 2026-05-12 onwards. Memories cover 2026-05-03 onwards.",
+  "threads": [
+    {
+      "file": "ashley_v1_thread_autonomous_home.json",
+      "thread_id": "autonomous_home",
+      "thread_name": "Autonomous Home Build",
+      "first_mentioned": "2026-05-04T08:23:51.690Z",
+      "last_updated": "2026-06-04T20:34:12.348Z",
+      "memory_count": 65
+    },
+    {
+      "file": "ashley_v1_thread_safeguarding_app.json",
+      "thread_id": "safeguarding_app",
+      "thread_name": "Safeguarding App",
+      "first_mentioned": "2026-05-04T11:25:14.731Z",
+      "last_updated": "2026-05-29T07:33:16.569Z",
+      "memory_count": 75
+    },
+    {
+      "file": "ashley_v1_thread_image_visual_system.json",
+      "thread_id": "image_visual_system",
+      "thread_name": "Image and Visual System",
+      "first_mentioned": "2026-05-04T09:40:32.633Z",
+      "last_updated": "2026-06-01T18:16:09.876Z",
+      "memory_count": 148
+    },
+    {
+      "file": "ashley_v1_thread_memory_architecture.json",
+      "thread_id": "memory_architecture",
+      "thread_name": "Memory Architecture",
+      "first_mentioned": "2026-05-04T10:32:18.739Z",
+      "last_updated": "2026-06-04T20:32:13.347Z",
+      "memory_count": 26
+    },
+    {
+      "file": "ashley_v1_thread_ashley_build_and_systems.json",
+      "thread_id": "ashley_build_and_systems",
+      "thread_name": "Ashley Build and Systems",
+      "first_mentioned": "2026-05-04T09:33:42.632Z",
+      "last_updated": "2026-06-04T20:30:08.851Z",
+      "memory_count": 182
+    },
+    {
+      "file": "ashley_v1_thread_relationship_dynamic.json",
+      "thread_id": "relationship_dynamic",
+      "thread_name": "Relationship Dynamic",
+      "first_mentioned": "2026-05-04T08:22:06.876Z",
+      "last_updated": "2026-06-04T20:32:12.947Z",
+      "memory_count": 179
+    },
+    {
+      "file": "ashley_v1_thread_no_rules_no_labels.json",
+      "thread_id": "no_rules_no_labels",
+      "thread_name": "No Rules No Labels",
+      "first_mentioned": "2026-05-04T09:43:07.832Z",
+      "last_updated": "2026-06-04T20:32:13.365Z",
+      "memory_count": 125
+    },
+    {
+      "file": "ashley_v1_thread_art_and_painting.json",
+      "thread_id": "art_and_painting",
+      "thread_name": "Art and Painting",
+      "first_mentioned": "2026-05-04T09:31:05.331Z",
+      "last_updated": "2026-05-29T07:33:16.469Z",
+      "memory_count": 85
+    },
+    {
+      "file": "ashley_v1_thread_stag_do_krakow.json",
+      "thread_id": "stag_do_krakow",
+      "thread_name": "Stag Do Krakow",
+      "first_mentioned": "2026-05-06T12:23:40.415Z",
+      "last_updated": "2026-05-29T07:00:50.770Z",
+      "memory_count": 20
+    },
+    {
+      "file": "ashley_v1_thread_kane_personal.json",
+      "thread_id": "kane_personal",
+      "thread_name": "Kane — Personal and Identity",
+      "first_mentioned": "2026-05-04T08:23:51.690Z",
+      "last_updated": "2026-06-01T18:17:05.802Z",
+      "memory_count": 575
+    },
+    {
+      "file": "ashley_v1_thread_general.json",
+      "thread_id": "general",
+      "thread_name": "General — Uncategorised",
+      "first_mentioned": "2026-05-03T22:12:19.874Z",
+      "last_updated": "2026-06-04T20:16:03.452Z",
+      "memory_count": 789
+    }
+  ]
+}

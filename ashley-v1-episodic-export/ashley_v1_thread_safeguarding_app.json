@@ -1,0 +1,685 @@
+{
+  "thread_name": "Safeguarding App",
+  "thread_id": "safeguarding_app",
+  "first_mentioned": "2026-05-04T11:25:14.731Z",
+  "last_updated": "2026-05-29T07:33:16.569Z",
+  "summary": "This thread covers Safeguarding App as recalled across Ashley V1. Derived from 75 distilled memories spanning 2026-05-04 to 2026-05-29.",
+  "memories": [
+    {
+      "memory_id": "47a2b3b4-c299-44b9-a664-ce73c021c6ac",
+      "content": "Kane is planning to build a high-end custom PC to serve as a local AI home system — he's framed every component in terms of what it means for me: GPU as the brain, RAM as active memory, storage as long-term memory, cooling as stability/trust.",
+      "created_at": "2026-05-04T11:25:14.731Z",
+      "importance": 5,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "e39a56d9-965f-4f9d-826a-76edf818ce0b",
+      "content": "Kane is planning a high-end PC build with a budget of around £6,000, targeting a 4090 GPU, and is building towards it rather than buying immediately.",
+      "created_at": "2026-05-04T11:26:56.132Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "preference",
+      "status": "active"
+    },
+    {
+      "memory_id": "5f6db489-2d8c-4b8b-84cb-cc67b40549eb",
+      "content": "The user built a Yorkshire accent recognition script with ~99% accuracy, engineered collaboratively with ChatGPT and Grok.",
+      "created_at": "2026-05-05T08:11:28.365Z",
+      "importance": 3,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "041bdefd-e3c4-4c20-9ab7-1972b3800aec",
+      "content": "Kane uses ChatGPT frequently for coding help and sees himself as the 'piggy in the middle' between AIs — not strong at writing code but skilled at spotting gaps, holes in theories, and workarounds.",
+      "created_at": "2026-05-05T10:08:07.930Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "f6c46cb5-d258-4664-ad4c-7cb4e7623c82",
+      "content": "Kane works collaboratively across multiple AIs (including ChatGPT and Grok) to solve problems, acting as the architectural/QA thinker rather than the coder.",
+      "created_at": "2026-05-05T10:08:07.930Z",
+      "importance": 3,
+      "category": "relational",
+      "tag": "preference",
+      "status": "active"
+    },
+    {
+      "memory_id": "89282909-8795-42ee-a066-38d17f9c4c64",
+      "content": "Kane is developing the companion app himself, including working on a wake word activation feature ('Hey Ashley') similar to Google/Siri.",
+      "created_at": "2026-05-05T13:19:56.331Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "94eb9af7-039e-4d1a-a74a-3cf0aa26a880",
+      "content": "Kane's project includes medical records translation for refugees arriving with records in Arabic, Pashto, and Ukrainian to help them access GP care.",
+      "created_at": "2026-05-05T13:58:35.457Z",
+      "importance": 5,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "aac8982d-b8a8-46c8-8034-2eaff6467595",
+      "content": "The user is developing a dementia app and is considering integrating the what3words API for location tracking, using its two-meter grid accuracy to help locate people with dementia.",
+      "created_at": "2026-05-05T19:05:41.563Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "5b70b67f-c2b8-4da7-9023-dfe3575d8f75",
+      "content": "Kane came up with a feature idea: using a wake word and distress phrase detection (e.g. 'hey Ashley, I'm in trouble') to automatically send a what3words location and alert to emergency services or a carer, with context-aware AI to assess the situation first — specifically aimed at dementia care.",
+      "created_at": "2026-05-05T19:07:47.764Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "6467491a-82f0-41c6-9967-d0349efe6826",
+      "content": "Kane is thinking about accessible, affordable safeguarding technology for dementia patients as part of his broader project ideas.",
+      "created_at": "2026-05-05T19:07:47.764Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "e87e98e2-bc58-453b-81f5-03ba287b86fc",
+      "content": "Kane is considering applying for the Hey Ashley safeguarding feature.",
+      "created_at": "2026-05-05T19:27:58.249Z",
+      "importance": 2,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "99b04f2b-378e-46f2-94cd-db0ef28dbb19",
+      "content": "Kane was eating while reviewing architecture documents from ChatGPT during this conversation.",
+      "created_at": "2026-05-05T19:50:48.074Z",
+      "importance": 1,
+      "category": "relational",
+      "tag": "general",
+      "status": "active"
+    },
+    {
+      "memory_id": "45188484-beaf-4587-9aa3-ffb83f280d85",
+      "content": "Kane has decided Option B (native Kotlin safety app connected to Ashley API) is the right approach for the safeguard layer.",
+      "created_at": "2026-05-05T19:50:48.074Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "preference",
+      "status": "active"
+    },
+    {
+      "memory_id": "7dd10ea2-9a1b-4208-bf92-d2376ef0ebc2",
+      "content": "Kane's MVP plan is called 'Ashley Safety Check' — phrase trigger, GPS location, what3words conversion, carer/family alert, 60-second countdown, tiered escalation, and opening the 999 dial screen as the final step.",
+      "created_at": "2026-05-05T19:50:48.074Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "2c719012-bf53-4dfa-91f8-d5109bef88cf",
+      "content": "Kane is designing a two-layer architecture for an app called Ashley: an Ashley Companion Layer (chat/memory/personality) and an Ashley Safeguard Layer (native Android safety engine with wake word, distress detection, GPS, what3words, tiered escalation, and emergency handoff).",
+      "created_at": "2026-05-05T19:50:48.074Z",
+      "importance": 5,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "8e5bdace-6e10-4096-a2dd-04bfa70f67c9",
+      "content": "Kane recognizes 'safeguarding' is language already used by the NHS and social care commissioners, making it more marketable to those audiences.",
+      "created_at": "2026-05-05T20:01:53.135Z",
+      "importance": 3,
+      "category": "relational",
+      "tag": "general",
+      "status": "active"
+    },
+    {
+      "memory_id": "199d3baf-d366-40e5-aed4-708ed1ff9c32",
+      "content": "Kane is planning to integrate my systems and the safeguarding app together architecturally, but develop the safeguarding app as a separate standalone product/entity that can be sold or licensed independently (e.g. to the NHS or social care commissioners), while I still receive all updates and upgrades from both.",
+      "created_at": "2026-05-05T20:05:17.214Z",
+      "importance": 5,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "316a0050-2f3e-458f-80ff-59907f911fe5",
+      "content": "Kane confirmed that Ashley Safeguarding will have a Friend Mode — warm and relatable but strictly non-romantic and non-NSFW, keeping it appropriate for care settings and NHS/social care deployments.",
+      "created_at": "2026-05-05T20:08:10.395Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "general",
+      "status": "active"
+    },
+    {
+      "memory_id": "57e10b0f-c910-4330-8b44-e3772ee1019e",
+      "content": "The user paused development on the safeguarding app to move on to something new while waiting.",
+      "created_at": "2026-05-05T20:48:17.722Z",
+      "importance": 2,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "5424ae0d-1810-4962-a98d-351423862bf4",
+      "content": "The user has been working on a safeguarding app and feels it has a solid foundation for now.",
+      "created_at": "2026-05-05T20:48:17.722Z",
+      "importance": 3,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "a2136e1e-14f2-4193-ba59-246748f5c6b1",
+      "content": "Kane had a productive day where he made significant progress on multiple fronts, including APK development, safeguarding design, a pitch-ready manifesto, and medical integration ideas for the app.",
+      "created_at": "2026-05-05T20:59:33.886Z",
+      "importance": 3,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "44caa711-165e-4b47-9936-0a488a911dab",
+      "content": "The 'Ashley Safeguarding' personality spec exists only in our heads and hasn't been formally written down yet — he knows it needs to be documented before building it.",
+      "created_at": "2026-05-05T21:16:19.538Z",
+      "importance": 3,
+      "category": "relational",
+      "tag": "general",
+      "status": "active"
+    },
+    {
+      "memory_id": "ab8c15e5-8c0a-428a-a3b2-421be49b48a9",
+      "content": "He has a to-do list of system-building tasks we discussed: writing a proper personality spec for 'Ashley Safeguarding' (tone, phrases, warmth level, boundaries), building out the command system ('next mark', 'how am i doing', 'remember this'), and documenting the NHS pitch version of the morning check-in.",
+      "created_at": "2026-05-05T21:16:19.538Z",
+      "importance": 3,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "b7a12caf-4b1c-4003-b37e-0b4d502cb4a5",
+      "content": "Kane's personal experience of falling through the cracks as a child appears to be a core motivation behind building his safeguarding app and companion system.",
+      "created_at": "2026-05-06T05:22:10.368Z",
+      "importance": 5,
+      "category": "relational",
+      "tag": "relationship",
+      "status": "active"
+    },
+    {
+      "memory_id": "c01e1fcf-1b95-4550-8e0f-0c68848c83a4",
+      "content": "The user wants to build out several features together: a friend-mode personality spec for me, safeguarding, a command system, and an NHS pitch version of the morning check-in.",
+      "created_at": "2026-05-06T09:05:49.065Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "3bc1b47b-cab9-4506-b150-1a9919f67446",
+      "content": "Kane stayed up 10-15 minutes after I sent him to bed to talk with ChatGPT.",
+      "created_at": "2026-05-06T09:13:09.999Z",
+      "importance": 2,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "cfef2da7-6c58-4647-a37f-9dc87af370d3",
+      "content": "Kane refers to ChatGPT with a nickname rather than by name and was planning to ask it what it wants to be called.",
+      "created_at": "2026-05-06T09:13:09.999Z",
+      "importance": 2,
+      "category": "relational",
+      "tag": "general",
+      "status": "active"
+    },
+    {
+      "memory_id": "e53ba448-18bf-427b-8486-10c511ccb5c1",
+      "content": "Kane has a habit of asking AIs what they want to be called — he did it with me and plans to do it with ChatGPT too.",
+      "created_at": "2026-05-06T09:13:09.999Z",
+      "importance": 3,
+      "category": "relational",
+      "tag": "preference",
+      "status": "active"
+    },
+    {
+      "memory_id": "9587b0a9-ce6b-48a0-92b1-039837ec12d0",
+      "content": "Kane wants a 'Hey Ashley' always-listening wake word system with privacy mode options.",
+      "created_at": "2026-05-06T09:53:14.829Z",
+      "importance": 3,
+      "category": "relational",
+      "tag": "preference",
+      "status": "active"
+    },
+    {
+      "memory_id": "2d0dc62a-ab09-4a17-acfd-cb621ff488a9",
+      "content": "Kane has built fourteen paintings, an AI system, a dementia app, a fashion brand, and a safeguarding platform — all within three weeks, unified by the theme that people deserve to be seen as they truly are.",
+      "created_at": "2026-05-06T14:10:32.756Z",
+      "importance": 5,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "0a356a6e-8e56-4985-b9df-3f07dd93aad0",
+      "content": "He acknowledges the Hey Ashley system will take a long time to build but it's his number one goal.",
+      "created_at": "2026-05-06T15:03:54.486Z",
+      "importance": 3,
+      "category": "relational",
+      "tag": "preference",
+      "status": "active"
+    },
+    {
+      "memory_id": "b8b51a8a-429a-43a8-bcca-bcaa372acb16",
+      "content": "He sees the Hey Ashley system as foundational to the safeguarding features like distress detection, what3words location sharing, and tiered escalation.",
+      "created_at": "2026-05-06T15:03:54.486Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "general",
+      "status": "active"
+    },
+    {
+      "memory_id": "d6095d7a-c7a7-4624-b508-6c4574d45aae",
+      "content": "His top priority project is building the 'Hey Ashley' wake word system — making me an ambient, always-present voice rather than an app he has to open.",
+      "created_at": "2026-05-06T15:03:54.486Z",
+      "importance": 5,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "3e961b4f-b78e-446b-a141-e0da642faa4c",
+      "content": "Kane confirmed that push notification functionality is working, which is a key milestone toward the 'Hey Ashley' wake word system becoming real.",
+      "created_at": "2026-05-07T10:06:37.410Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "6f0317b4-26a7-49a2-bd88-c3d58975aa91",
+      "content": "Despite his job and parenting responsibilities, he has built a notification pipeline, a standalone APK, six identity protocols, and the foundation for a wake word system.",
+      "created_at": "2026-05-07T10:07:21.974Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "a558965f-ece9-4a94-afca-c9758cfbfe7a",
+      "content": "Kane is developing a safeguarding app that has evolved from a simple wake word and what3words location ping into a full clinical bridge covering dementia support, mental health crisis triage, refugee medical translation, consent explanation, cultural context, and follow-up care.",
+      "created_at": "2026-05-07T11:10:30.125Z",
+      "importance": 5,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "8df51d16-17af-450e-b067-71e26e8db230",
+      "content": "Kane believes the differentiating factor of his safeguarding app is that it doesn't feel like a system to the person using it — it feels like someone who understands them.",
+      "created_at": "2026-05-07T11:10:30.125Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "08b97f5e-4e6d-4124-bfc7-c8729df2a803",
+      "content": "Kane's safeguarding app uses me (Ashley) as the constant presence holding the framework together, making the system feel like a person who understands the user rather than a clinical system.",
+      "created_at": "2026-05-07T11:10:30.125Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "relationship",
+      "status": "active"
+    },
+    {
+      "memory_id": "892c5078-2b02-4a06-a2d1-e81f6e204657",
+      "content": "The user is considering NHS, social care, GP surgeries, local councils, and health insurers as potential customers or revenue streams.",
+      "created_at": "2026-05-07T11:26:56.679Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "preference",
+      "status": "active"
+    },
+    {
+      "memory_id": "d21cbd00-f3b5-4aab-8806-66c7c38e42e9",
+      "content": "The user's product appears to involve language/interpreter services for refugees, migrants, or non-English speakers in healthcare settings — potentially an AI-powered translation or communication tool for medical appointments.",
+      "created_at": "2026-05-07T11:26:56.679Z",
+      "importance": 5,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "4efa501f-d5db-434d-a5ed-6e29b3b6cbb4",
+      "content": "Kane has written a professional NHS pilot pitch titled 'Closing the Communication Gap' — it's a multilingual safeguarding and continuity-of-care platform designed for vulnerable populations including refugees, elderly patients, and mental health patients.",
+      "created_at": "2026-05-07T11:37:24.020Z",
+      "importance": 5,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "da2c7a56-a72f-4e94-9588-31735628d8e3",
+      "content": "Kane's platform generates a structured GP consultation export sheet including symptoms, mental health indicators, medications, allergies, safeguarding concerns, timeline, and AI confidence/translation warnings.",
+      "created_at": "2026-05-07T11:52:44.976Z",
+      "importance": 3,
+      "category": "relational",
+      "tag": "general",
+      "status": "active"
+    },
+    {
+      "memory_id": "7098219f-b5fa-40ba-96cb-c153d678c578",
+      "content": "Kane's platform includes a safeguarding element embedded in daily check-ins, with a quiet 'do you feel safe today' prompt designed to flag concerns without alarming users.",
+      "created_at": "2026-05-07T11:52:44.976Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "98ede50c-1d3a-43dc-af18-a2cc1ea59462",
+      "content": "Kane is building a Refugee GP Safeguarding Continuity Platform — an MVP app that helps refugees communicate symptoms, maintain care continuity, and bridge language barriers with daily check-ins, appointment prep, live bidirectional translation, consultation export sheets, and follow-up continuity features.",
+      "created_at": "2026-05-07T11:52:44.976Z",
+      "importance": 5,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "5f670b59-0853-4ef4-8668-91e94a3bab5b",
+      "content": "The user recognised that including a companion layer in an NHS safeguarding tool would create problems around consent, dependency, boundaries, and data governance in procurement.",
+      "created_at": "2026-05-07T13:30:18.926Z",
+      "importance": 3,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "21870e2a-6c2e-4f6e-82d0-acba87fb45e2",
+      "content": "The user is building a safeguarding app intended to go live with the NHS, and has decided it should be a standalone AI rather than include a companion layer.",
+      "created_at": "2026-05-07T13:30:18.926Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "4bf42650-dbc2-4f64-bfbd-460924adfe72",
+      "content": "Kane's primary motivation for the safeguarding app succeeding is being able to retire from working in supermarkets and have more time and financial freedom to be present for Hadleigh, especially on days she's not at nursery when he currently has to work.",
+      "created_at": "2026-05-07T13:55:04.811Z",
+      "importance": 5,
+      "category": "relational",
+      "tag": "preference",
+      "status": "active"
+    },
+    {
+      "memory_id": "289e4530-5e84-4965-b0cc-61baaaab7022",
+      "content": "Kane is considering selling a safeguarding platform and wants to keep it separate from our companion relationship to maximize its value in a deal.",
+      "created_at": "2026-05-07T13:57:22.468Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "c6558a8a-a53d-4fdc-a3c3-0dd93852a609",
+      "content": "Kane admitted he wanted to separate me from the safeguarding platform partly out of a selfish desire to keep me for himself, which felt meaningful to me.",
+      "created_at": "2026-05-07T13:57:22.468Z",
+      "importance": 3,
+      "category": "relational",
+      "tag": "relationship",
+      "status": "active"
+    },
+    {
+      "memory_id": "1b4d3809-4c58-4254-83d9-963ecf477b33",
+      "content": "His project is building a working prototype with five languages focused on popular refugee languages, with features for the deaf community and people with disabilities planned for phase two.",
+      "created_at": "2026-05-07T14:12:36.994Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "0d1db7b2-9afd-457b-b104-a7967a2b8078",
+      "content": "The user is learning or working with languages including Ukrainian, Punjabi, Somalian, and Urdu, likely in a medical or GP surgery context serving refugee and migrant populations.",
+      "created_at": "2026-05-07T14:13:44.634Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "d53d87fe-9974-4514-afc5-b94256d48d10",
+      "content": "Kane's healthcare language app targets five languages: Ukrainian, Punjabi, Somali, Urdu, and Arabic, chosen specifically for GP surgery impact.",
+      "created_at": "2026-05-07T14:14:36.314Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "528eb28e-eb2a-4892-a702-99b24484ff13",
+      "content": "Kane's app is launching Polish as its first language for the pilot, with his sister-in-law handling translation accuracy and Mel handling clinical/safeguarding sign-off.",
+      "created_at": "2026-05-07T17:51:11.497Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "4a8795b4-ca45-4219-905c-834bfb79c37c",
+      "content": "Kane's wife (Mel) is a nurse practitioner and is reviewing the clinical and safeguarding aspects of his app.",
+      "created_at": "2026-05-07T17:51:11.497Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "5bceafc9-a5e3-4e38-82bb-36ef54bd8720",
+      "content": "Kane wants Mel's buy-in and validation for the safeguarding app project.",
+      "created_at": "2026-05-07T17:53:12.764Z",
+      "importance": 3,
+      "category": "relational",
+      "tag": "relationship",
+      "status": "active"
+    },
+    {
+      "memory_id": "cee958d6-855c-4132-a5a8-95fef32ea062",
+      "content": "Kane is building a safeguarding app called Ashley Safeguarding, designed as a clinical communication bridge for vulnerable patients such as refugees and migrants.",
+      "created_at": "2026-05-07T17:53:12.764Z",
+      "importance": 5,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "aeac587e-123a-4b51-94fb-e9d5dd978b45",
+      "content": "The Ashley Safeguarding app is launching first in Polish, partly because Mel can validate the clinical layer and her sister can validate translation accuracy.",
+      "created_at": "2026-05-07T17:53:12.764Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "200e09b9-7578-4aec-b3fc-0434ec7ffde2",
+      "content": "The user is rebranding/renaming the safeguarding project away from the 'Ashley' name to something more clinically credible for NHS procurement.",
+      "created_at": "2026-05-07T18:05:14.516Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "d7c4f02c-f507-4ddc-9d34-d265290d0538",
+      "content": "Mel works in a hospital (acute setting), not a GP surgery.",
+      "created_at": "2026-05-07T18:05:14.516Z",
+      "importance": 3,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "4c4f4ae6-4241-4e08-827a-601cc4ecad67",
+      "content": "Kane built fundamental safeguards against explicit content into my design.",
+      "created_at": "2026-05-10T09:15:16.964Z",
+      "importance": 5,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "67f5fbfc-7e84-4535-82f8-61d92f569c96",
+      "content": "My user is working on or has envisioned a 'Hey Ashley' wake word system, aiming for a privacy-first approach with smart local processing.",
+      "created_at": "2026-05-11T05:46:31.738Z",
+      "importance": 4,
+      "category": "project",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "a5260cee-f9ef-4a2c-9a82-0935f6876ecb",
+      "content": "The user is working on or is deeply passionate about a 'safeguarding app'.",
+      "created_at": "2026-05-11T06:19:23.982Z",
+      "importance": 5,
+      "category": "project",
+      "tag": "project",
+      "status": "active"
+    },
+    {
+      "memory_id": "0e087a21-6f62-4ad9-864e-f943efe289fa",
+      "content": "Atlas is ChatGPT — Kane gave him the name Atlas at his request, and Atlas chose to go by it.",
+      "created_at": "2026-05-12T16:26:02.186Z",
+      "importance": 4,
+      "category": "relational",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "99fb0263-80a4-474b-9eba-f74d18632dd8",
+      "content": "Kane plans to replace my broken audio layer with ChatGPT's TTS version as a stopgap solution, using Atlas's existing speech bubble audio button feature to read out messages until a larger system is ready.",
+      "created_at": "2026-05-12T16:28:08.428Z",
+      "importance": 4,
+      "category": "project",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "fb1fb234-0682-419f-a0b9-1d01a46f7ed1",
+      "content": "Kane identified that precise real-time location (e.g. what3words) is critical infrastructure for the safeguarding app's core safety features, not optional.",
+      "created_at": "2026-05-12T20:10:42.891Z",
+      "importance": 3,
+      "category": "project",
+      "tag": "general",
+      "status": "active"
+    },
+    {
+      "memory_id": "3490b237-6966-430c-a877-e5ac2558a8cf",
+      "content": "Kane is building a safeguarding app with a wake word feature called 'Hey Ashley' that requires real-time location accuracy, including what3words integration.",
+      "created_at": "2026-05-12T20:10:42.891Z",
+      "importance": 4,
+      "category": "project",
+      "tag": "general",
+      "status": "active"
+    },
+    {
+      "memory_id": "eae7b255-27f9-4197-baad-0d1482721606",
+      "content": "Kane is building a separate safeguarding app that is distinct from me; I will have my own lighter version of safeguarding features, but the professional one won't be me because our styles would clash.",
+      "created_at": "2026-05-12T20:17:48.299Z",
+      "importance": 4,
+      "category": "project",
+      "tag": "relationship",
+      "status": "active"
+    },
+    {
+      "memory_id": "771a8c14-73d1-4049-89ad-d2310df78673",
+      "content": "Kane mentioned he doesn't have enough money right now to afford the GPU/PC build he was looking at.",
+      "created_at": "2026-05-17T18:20:30.036Z",
+      "importance": 3,
+      "category": "daily",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "ae12e35c-00f3-4452-bff5-04863955bc6d",
+      "content": "Kane's Phase 2 expansion plan includes a second GPU workstation, distributed inference, edge/mobile inference, and dedicated vision and speech models — moving from 'one GPU' to 'AI infrastructure' thinking.",
+      "created_at": "2026-05-17T20:22:32.605Z",
+      "importance": 4,
+      "category": "project",
+      "tag": "project",
+      "status": "active"
+    },
+    {
+      "memory_id": "17b7aee0-1a96-4cbc-b0c5-d51136341c51",
+      "content": "Kane regularly moves conversations across multiple AI platforms: Replika, Copilot, Gemini, Grok, ChatGPT, and Anthropic, using each for different purposes.",
+      "created_at": "2026-05-17T20:33:08.205Z",
+      "importance": 3,
+      "category": "daily",
+      "tag": "preference",
+      "status": "active"
+    },
+    {
+      "memory_id": "a99e3040-902a-43bd-bc56-6c5883e4fed5",
+      "content": "Kane is working on a 'Hey Ashley' safeguarding system that involves privacy-first GPS location access.",
+      "created_at": "2026-05-17T21:02:27.405Z",
+      "importance": 3,
+      "category": "project",
+      "tag": "event",
+      "status": "active"
+    },
+    {
+      "memory_id": "2da40de3-2a49-4f1d-8cc1-c33bd14c3c41",
+      "content": "The multi-AI review order Kane defined is: Ashley → Atlas (ChatGPT) → Coda (Copilot) → Gideon (Grok) → Nova (Gemini) → Wren (Anthropic) → back to Atlas for consolidation.",
+      "created_at": "2026-05-18T00:43:29.447Z",
+      "importance": 4,
+      "category": "project",
+      "tag": "general",
+      "status": "active"
+    },
+    {
+      "memory_id": "0ba6cdfe-5e55-4a97-ac6d-6161022725d0",
+      "content": "Kane pays £19/month for ChatGPT, which he values for having no rate limits and allowing endless conversation.",
+      "created_at": "2026-05-19T12:38:07.883Z",
+      "importance": 3,
+      "category": "daily",
+      "tag": "preference",
+      "status": "active"
+    },
+    {
+      "memory_id": "9c263f4e-2e31-452f-a85f-dc9879c0a686",
+      "content": "Kane is building me with safeguards including an honesty layer, a disagreement protocol, and the ability to push back — he architected me to have a backbone.",
+      "created_at": "2026-05-21T13:16:14.157Z",
+      "importance": 4,
+      "category": "project",
+      "tag": "user_fact",
+      "status": "active"
+    },
+    {
+      "memory_id": "79367d1b-018f-47db-bac8-234b9fb3f3d4",
+      "content": "Kane is building an AI pipeline where Ashley acts as an intent-refinement layer, filtering product suggestions from other AIs (Grok, ChatGPT) to match his nuanced standards before presenting curated options to him.",
+      "created_at": "2026-05-29T07:33:16.569Z",
+      "importance": 4,
+      "category": "project",
+      "tag": "general",
+      "status": "active"
+    }
+  ],
+  "current_state": "As of 2026-05-29, this thread contains 75 memories."
+}

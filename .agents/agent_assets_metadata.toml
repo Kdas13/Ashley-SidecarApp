@@ -107,3 +107,9 @@ id = "kWy7sM8OC6IpIFYDJUYRR"
 uri = "file://ashley-v1-episodic-memory-access-report.txt"
 type = "text"
 title = "V1 Episodic Memory — Access Report"
+
+[[outputs]]
+id = "XMP60n51y8B6OnnvwzPmL"
+uri = "file://ashley-v1-episodic-export.tar.gz"
+type = "unspecified"
+title = "Ashley V1 Episodic Memory Export"
