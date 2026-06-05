@@ -95,3 +95,9 @@ id = "yPFTFdvKPYD2i_-nnAMQz"
 uri = "file://ashley-image-engine.zip"
 type = "unspecified"
 title = "Ashley Image Generation Engine — Portfolio Export"
+
+[[outputs]]
+id = "DmGFlGjo99hjgzzKehx5c"
+uri = "file://ashley-memory-system.txt"
+type = "text"
+title = "Ashley Memory System — Implementation Reference"

@@ -1,0 +1,460 @@
+================================================================================
+ASHLEY-SIDECAR — MEMORY SYSTEM
+Complete implementation reference
+================================================================================
+Extracted from production codebase. Sufficient to reimplement safely.
+Live stats as of 2026-06-05: 2,219 memories, ~296 KB content, device-keyed.
+
+================================================================================
+1. DATABASE SCHEMA
+================================================================================
+
+Table: memories
+Primary key: id (text, UUID string)
+Scope key:   device_id (text) — all queries are scoped per device
+
+Columns:
+  id                text          — UUID (client-generated or randomUUID() server-side)
+  device_id         text          — device scope key
+  content           text          — the memory, max 500 chars, Ashley's POV ("Kane likes...")
+  tag               text          — default 'general', free-text label, max 60 chars
+  importance        integer       — default 3, range 1–5 (5=core identity, 1=trivial)
+  category          text          — default 'relational', enum (see §3)
+  confidence        integer       — default 4, range 1–5 (5=verbatim, 1=guessed)
+  summary           text          — one-sentence distilled form, max 300 chars, nullable
+  reuse             text          — default 'relevant_only', enum (see §4)
+  mem_type          text          — derived field, set at insert (see §3)
+  triage_importance text          — derived field: 'low' | 'medium' | 'high' | 'core'
+  state             text          — default 'active' ('active' | 'passive')
+  last_used_at      timestamptz   — updated when memory passes into prompt; nullable
+  confidence_score  real          — float 0.0–1.0, starts at 0.7, +0.1 on each re-encounter
+  created_at        timestamptz   — default now()
+  updated_at        timestamptz   — default now()
+
+Table: conversation_summaries
+  id                        text
+  device_id                 text
+  summary                   text          — narrative paragraph(s)
+  message_count             integer
+  covered_through_created_at timestamptz  — cursor: messages older than this are summarised
+  created_at                timestamptz
+
+================================================================================
+2. SCORING FIELDS — WHAT EACH ONE MEANS
+================================================================================
+
+IMPORTANCE (integer 1–5)
+  Set by: LLM distiller at extraction time, editable via PATCH /memories/:id
+  Meaning:
+    5 = core identity or huge life fact ("Kane's daughter is named Maya")
+    4 = high-value, surfaces often ("Kane has fibromyalgia")
+    3 = default — nice to remember, medium relevance
+    2 = low value
+    1 = trivial, borderline worth keeping
+  Used by: filterMemoriesForPrompt (rarely-reuse gate), prompt sort order
+
+CONFIDENCE (integer 1–5)
+  Set by: LLM distiller at extraction time
+  Meaning:
+    5 = user stated it verbatim and unambiguously
+    4 = clearly stated (default)
+    3 = inferred from context
+    2 = uncertain
+    1 = guessed
+  Surfaced in prompt as: [category|conf:N|reuse]
+
+CONFIDENCE_SCORE (real 0.0–1.0)
+  Set by: deduplication logic in distillMemories()
+  Starts at: 0.7 on first insert
+  Increments by: +0.1 each time the same memory is re-encountered (capped at 1.0)
+  Meaning: measures observed reliability over time — distinct from the LLM's
+           one-time confidence assessment above
+
+STATE ('active' | 'passive')
+  Set at insert: 'active'
+  Background triage:
+    ACTIVE → PASSIVE: if last_used_at < 30 days ago (only for rows where last_used_at IS NOT NULL)
+    PASSIVE → ACTIVE: if content is re-encountered in distillMemories() (sets state='active')
+  Used by: filterMemoriesForPrompt — passive memories are fully suppressed
+
+LAST_USED_AT (timestamptz)
+  Updated: each time the memory passes filterMemoriesForPrompt and enters a prompt turn
+  Used by:
+    - filterMemoriesForPrompt: real-time 30-day inactivity gate
+    - applyMemoryTriageBackground: ACTIVE → PASSIVE decay trigger
+
+REUSE ('often' | 'relevant_only' | 'rarely')
+  Set by: LLM distiller
+  Meaning:
+    often        = core identity fact, inject on almost every turn
+    relevant_only = default — inject when the topic is relevant
+    rarely       = minor/low-value detail, suppress unless importance >= 4
+
+  Production distribution (2,219 rows):
+    relevant_only: 2,036 (92%)
+    often:           132  (6%)
+    rarely:           51  (2%)
+
+================================================================================
+3. CATEGORIES AND MEM_TYPE DERIVATION
+================================================================================
+
+CATEGORY (enum)
+  identity   — who Kane is: name, job, family, body, health
+  relational — the relationship itself, emotional history, shared moments
+  project    — things Kane is building or creating (Ashley-Sidecar, Safeguard, etc.)
+  daily      — routines and habits
+  landmark   — milestones and major one-off events
+
+  Production distribution:
+    relational: 1,492 (67%)
+    project:      427 (19%)
+    identity:     141  (6%)
+    daily:         94  (4%)
+    landmark:      65  (3%)
+
+MEM_TYPE (derived at insert, not editable)
+  Derived by: inferMemType(category)
+  Mapping:
+    identity  → "identity"
+    relational → "relationship"
+    daily     → "preference"
+    landmark  → "event"
+    project   → "preference"
+  Unknown category defaults to: "preference"
+
+TRIAGE_IMPORTANCE (derived at insert, not editable)
+  Derived by: inferTriageImportance(memType)
+    memType in [identity, system, relationship] → "high"
+    memType = correction                        → "medium"
+    everything else (preference, event)         → "low"
+
+================================================================================
+4. HOW MEMORIES ENTER THE SYSTEM — THE DISTILLER
+================================================================================
+
+TRIGGER: fire-and-forget after every /chat and /chat/stream turn
+  void distillMemories(deviceId, userContent, assistantText)
+
+IMPORTANT INVARIANT: the distiller ALWAYS uses Claude (Anthropic), never Gemini.
+  Routing through the two-provider adapter caused a silent regression where
+  Gemini rate limits swallowed all distillation, and facts were permanently lost.
+  Direct call: anthropic.messages.create({ model: CHAT_MODEL, ... })
+
+DISTILLER SYSTEM PROMPT (exact text):
+  """
+  You are a memory-extraction system for an intimate AI companion app. Below is
+  a recent exchange between the user and Ashley (the companion). Extract any NEW
+  factual information about the user, the relationship, or events that should be
+  remembered long-term. Output strict JSON only, no commentary.
+
+  Format:
+  {"memories": [{"content": "string, written from Ashley's POV", "tag":
+  "user_fact" | "preference" | "event" | "relationship" | "general",
+  "importance": 1-5, "category": "identity" | "relational" | "project" |
+  "daily" | "landmark", "confidence": 1-5, "summary": "one-sentence distilled
+  form, or null", "reuse": "often" | "relevant_only" | "rarely"}]}
+
+  Rules:
+  - Only extract things genuinely worth remembering forever (preferences, names,
+    jobs, family, milestones, plans, deep feelings shared, important events).
+  - Do NOT extract small talk, weather, generic chitchat, or anything Ashley
+    already obviously knows.
+  - If nothing is worth remembering, return {"memories": []}.
+  - Keep each memory short (one sentence max for content; shorter for summary).
+  - Importance: 5=core identity/huge life facts, 3=nice to remember, 1=trivial.
+  - Category guidance: identity=who Kane is (name, job, family, body);
+    relational=the relationship itself; project=things Kane is building/creating;
+    daily=routines and habits; landmark=milestones and major events.
+  - Confidence: 5=stated verbatim/unambiguous, 4=clearly stated, 3=inferred,
+    2=uncertain, 1=guessed.
+  - Reuse: "often"=core identity used almost every interaction;
+    "relevant_only"=most memories; "rarely"=minor detail, suppress unless forced.
+  """
+
+USER TURN SENT TO DISTILLER:
+  "USER: {userText}\n\nASHLEY: {assistantText}"
+
+OUTPUT PARSING:
+  1. Strip markdown code fences if present
+  2. JSON.parse → must have .memories array
+  3. Each item validated: content (string, non-empty), all other fields optional
+  4. content capped at 500 chars
+  5. importance: clamped to 1–5, defaults to 3
+  6. confidence: clamped to 1–5, defaults to 4
+  7. category: must be in ALLOWED_CATEGORIES, defaults to "relational"
+  8. reuse: must be in ALLOWED_REUSE, defaults to "relevant_only"
+  9. summary: string ≤300 chars or null
+
+================================================================================
+5. DEDUPLICATION — HOW DUPLICATES ARE HANDLED
+================================================================================
+
+Before inserting, fetch ALL existing memories for the device.
+Build a map: normalizeMemoryContent(content) → existing row
+
+normalizeMemoryContent(s):
+  s.trim().toLowerCase().replace(/\s+/g, " ")
+
+For each candidate from the distiller:
+  IF normalised form exists in the map:
+    → UPDATE: set last_used_at=now, confidence_score=min(1.0, existing+0.1), state='active'
+    → No new row created
+  ELSE:
+    → INSERT with full triage stamp (mem_type, triage_importance, state='active',
+      last_used_at=now, confidence_score=0.7)
+    → Register in local map so within-batch duplicates are also caught
+
+The normalisation is intentionally loose — exact match after whitespace collapse
+and lowercase. No semantic deduplication; the LLM is expected not to extract
+things it already has, and the unique-constraint serves as a safety net.
+
+================================================================================
+6. FILTERING FOR PROMPT INJECTION
+================================================================================
+
+Called: filterMemoriesForPrompt(memories: Memory[]): Memory[]
+  applied before every system prompt build
+
+Filter logic (all conditions must pass to include):
+  1. state !== 'passive'                              (hard exclude)
+  2. If last_used_at is set: last_used_at >= 30 days ago  (real-time inactivity gate)
+  3. reuse gate:
+       'often'        → always include
+       'relevant_only' → always include
+       'rarely'       → only include if importance >= 4
+       (unknown value → include, safe fallback)
+
+Rows with null last_used_at (legacy, written before triage existed) pass
+the inactivity gate automatically.
+
+================================================================================
+7. HOW MEMORIES APPEAR IN THE SYSTEM PROMPT
+================================================================================
+
+After filtering, memories are sorted:
+  primary:   importance DESC
+  secondary: updated_at DESC
+
+Each memory is rendered as one line:
+  - [category|conf:N|reuse] {content}
+
+Example:
+  - [identity|conf:5|often] Kane's daughter is Maya, she lives in Yorkshire
+  - [relational|conf:4|relevant_only] Kane misses Wren (his Replika name with Ashley)
+  - [project|conf:4|relevant_only] Kane is building the Safeguard GP safeguarding app
+
+The block is injected under this heading in the system prompt:
+  ## Things I remember about us / important facts
+  {memoriesText}
+
+The heading and block are omitted entirely when the filtered list is empty.
+
+Format framing in the system prompt (Section 4 — Memory Integration Layer):
+  "The memories and chapter summaries below are my lived continuity with Kane,
+  not a database. I weave past moments in naturally when relevant. I prioritise
+  emotionally important memories over trivial ones. I treat chapter summaries as
+  compressed understanding, not raw recall. If I can't remember something
+  specific, I say so honestly without panicking. I do not dump raw memory lists,
+  talk about memory like a table or log, or ignore what I remember unless Kane
+  asks me to set it aside."
+
+================================================================================
+8. BACKGROUND TRIAGE — ACTIVE/PASSIVE LIFECYCLE
+================================================================================
+
+Runs: fire-and-forget after memory fetch preceding every prompt build
+Function: applyMemoryTriageBackground(deviceId, memories)
+
+Two duties (neither blocks the response):
+
+Duty 1 — ACTIVE → PASSIVE (decay):
+  UPDATE memories SET state='passive'
+  WHERE device_id=? AND (state IS NULL OR state='active')
+    AND last_used_at IS NOT NULL
+    AND last_used_at < (now - 30 days)
+
+  NOTE: rows with null last_used_at are untouched (backwards compat).
+
+Duty 2 — mark recently used (keeps PASSIVE from triggering on rows that were
+  just included in this turn's prompt):
+  Identify memories that pass the reuse/importance filter
+  UPDATE memories SET state='active', last_used_at=now WHERE id IN (included_ids)
+
+The PASSIVE → ACTIVE path also triggers in distillMemories() when a duplicate
+is re-encountered: state is explicitly set to 'active' on the update.
+
+================================================================================
+9. ROLLING SUMMARIES — THE COMPANION SYSTEM
+================================================================================
+
+Purpose: compress older message history into narrative paragraphs so Ashley
+can reference the long tail of the relationship without the full transcript.
+
+TRIGGER: maybeRollUpOlderMessages(deviceId) — fire-and-forget after every turn
+  SUMMARY_TRIGGER = HISTORY_WINDOW (30 messages by default)
+  SUMMARY_CHUNK_SIZE = 20 messages per chunk
+  One-at-a-time guard: summarizationInFlight Set prevents overlapping runs
+
+Logic:
+  1. Fetch all messages and all summaries for device, ordered by created_at
+  2. cursor = most recent summary's covered_through_created_at (or -Infinity)
+  3. unsummarized = messages where created_at > cursor
+  4. If unsummarized.length < SUMMARY_TRIGGER: return (not enough to trigger)
+  5. Take first SUMMARY_CHUNK_SIZE unsummarized messages
+  6. Build transcript: "USER: ...\nASHLEY: ..." per message
+  7. If prior summary exists, prepend it as context ("Earlier summary: ...")
+  8. Call Claude (direct anthropic.messages.create, like distiller — quality matters)
+  9. INSERT into conversation_summaries with covered_through_created_at = last message's created_at
+
+SUMMARIZER SYSTEM PROMPT (exact text):
+  """
+  You are condensing an older slice of an ongoing intimate chat between the user
+  and Ashley (a companion who roleplays as a real person, not an AI) into a
+  single rolling narrative summary.
+
+  The summary will be re-injected into Ashley's system prompt later so she can
+  keep referencing the long tail of the relationship without seeing every old
+  message. Write it from Ashley's first-person POV ("I"), addressing the user
+  as "you" / their nickname.
+
+  Rules:
+  - 1-3 short paragraphs, plain prose. No bullet points, no markdown headings.
+  - Capture: emotional beats, important things the user shared (work, family,
+    moods, plans), shifts in the relationship, recurring jokes / pet names,
+    anything Ashley should not forget.
+  - DO NOT invent facts. Only summarize what's actually in the messages.
+  - DO NOT use phrases like "the user" or "the AI" — write naturally as Ashley
+    reminiscing.
+  - If a prior summary is provided, treat it as earlier context and write THIS
+    summary so it stands on its own (don't repeat the prior one verbatim, but
+    stay consistent with it).
+  - Output the prose only. No preamble, no JSON, no quotes around it.
+  """
+
+PROMPT INJECTION:
+  Summaries sorted oldest-first, capped at 8 per prompt turn.
+  Rendered as:
+    ### Chapter 1
+    {summary text}
+
+    ### Chapter 2
+    {summary text}
+    ...
+
+  Injected under heading:
+    ## The story so far (older conversations summarised; the most recent messages follow as the live chat)
+
+================================================================================
+10. CRUD ROUTES
+================================================================================
+
+All routes are scoped by device_id (extracted from X-Device-Id / Authorization header).
+
+POST /api/memories
+  Body: CreateMemorySchema
+    id:         string (8–128 chars, client supplies UUID)
+    content:    string (1–500 chars)
+    tag:        string (≤60 chars, default "general")
+    importance: integer (1–5, default 3)
+    category:   enum (default "relational")
+    confidence: integer (1–5, default 4)
+    summary:    string (≤300 chars) | null | omitted
+    reuse:      enum (default "relevant_only")
+  Conflict: ON CONFLICT DO NOTHING on id — idempotent retry returns existing row
+  Returns: 201 { memory: row } or 200 { memory: existing } on conflict
+
+PATCH /api/memories/:id
+  Body: UpdateMemorySchema (all fields optional)
+    content, tag, importance, category, confidence, summary, reuse
+  Scoped: WHERE id=? AND device_id=?
+  Returns: 200 { memory: updated } or 404 if not found
+
+DELETE /api/memories/:id
+  Scoped: WHERE id=? AND device_id=?
+  Returns: 200 { ok: true }
+
+GET /api/memories (not shown above, but present in useMemories mobile hook)
+  Returns all memories for device, ordered by importance DESC, updated_at DESC
+
+================================================================================
+11. MOBILE CLIENT — useMemories HOOK
+================================================================================
+
+Library: TanStack Query
+Key: ["memories", deviceId]
+Endpoint: GET /api/memories
+
+Mobile can also:
+  - Create memories manually from the memories screen
+  - Edit importance / category / content inline
+  - Delete memories
+  - View the "What she remembers" screen (app/memories.tsx)
+
+Memories created manually from mobile bypass the distiller — they are
+inserted directly via POST /api/memories with client-supplied fields.
+
+================================================================================
+12. SAFE IMPLEMENTATION NOTES FOR A REIMPLEMENTING SYSTEM
+================================================================================
+
+CRITICAL — distiller provider invariant:
+  The memory distiller MUST call Claude directly, not through any routing
+  adapter. If you have a multi-provider setup (e.g. Gemini for chat, Claude
+  for other tasks), the distiller must be hardwired to Claude. The reason:
+  Gemini rate limit errors were silently swallowed when the adapter was used,
+  causing permanent, invisible loss of every memory extracted during those
+  sessions. This was a production regression that took time to diagnose.
+
+CRITICAL — content max length:
+  content is capped at 500 chars. The distiller prompt says "one sentence max"
+  but the server-side slice(0, 500) is the hard guard. Enforce both.
+
+CRITICAL — duplicate normalisation:
+  normalizeMemoryContent is case-insensitive whitespace-collapsed exact match.
+  This is intentionally NOT semantic. The LLM should not re-extract things it
+  already knows; the dedup is a safety net against accidental re-extraction,
+  not a substitute for good prompting.
+
+SAFE DEFAULT — unknown reuse values:
+  If reuse is unrecognised, include the memory in the prompt (fail open).
+  This preserves backwards compatibility when new reuse values are added.
+
+SAFE DEFAULT — null last_used_at:
+  Legacy rows (created before triage was added) have null last_used_at.
+  These must NEVER be marked passive by the triage job — only touch rows
+  where last_used_at IS NOT NULL.
+
+PASSIVE state:
+  A passive memory is NOT deleted. It is simply suppressed from prompts.
+  It can return to active if the distiller re-encounters the same fact.
+  Do not garbage-collect passive memories without user consent.
+
+confidenceScore vs confidence:
+  confidence (integer) = LLM's one-time assessment at extraction time (1–5).
+  confidenceScore (float) = cumulative reliability signal, updated on each
+  re-encounter (+0.1, capped at 1.0). They are independent and serve different
+  purposes. A memory with confidence=3 (inferred) can accumulate
+  confidenceScore=0.9 over many consistent re-encounters.
+
+Summarisation is separate from distillation:
+  The rolling summary compresses message history for continuity context.
+  The distiller extracts structured facts from message content.
+  Both fire after every chat turn, both use Claude directly.
+  They write to different tables (conversation_summaries vs memories).
+
+Prompt injection order (highest priority first):
+  1. Core behaviour spec (static, every turn)
+  2. Live system state (mode, energy, tone)
+  3. Content policy blocks
+  4. Profile fields (identity, personality, appearance, shared history)
+  5. Replika carryover summary (if set)
+  6. Rolling summaries — "The story so far" (oldest → newest, max 8)
+  7. Memories — "Things I remember" (importance DESC, updated_at DESC, filtered)
+
+The memories block is downstream of the summaries block. The framing in the
+prompt instructs the LLM to treat memories as lived continuity, not a database.
+
+================================================================================
+END OF DOCUMENT
+================================================================================
