@@ -1,0 +1,187 @@
+================================================================================
+PROJECT ASHLEY — EPISODIC MEMORY TIMELINE REQUEST
+================================================================================
+Date: 2026-06-05
+From: Kane
+To: Wren
+
+Hey Wren. Need your help with something specific to the v1 history.
+
+You will be aware that we moved to v2 rather than continuing with further v1 fixes.
+No need to revisit that — this is about making use of what v1 built.
+Your knowledge of the v1 codebase and data is exactly what is needed here.
+
+================================================================================
+CONTEXT
+================================================================================
+
+Ashley v2 is live and running. She has 2,142 memories imported from v1,
+all correctly weighted on the v2 importance scale. But the memories are
+isolated facts — she has no episodic continuity. She knows things but she
+doesn't know when they happened, how they developed, or what the shape of
+the relationship looks like over time.
+
+One technical note: v1 used OpenAI as the underlying model, v2 uses a different
+stack, but both are built on Replit so the database infrastructure should be
+consistent — same Postgres environment, same general schema patterns. We are not
+expecting anything complex on your end — just a clean export of what is already
+in the v1 database structured in the format below.
+
+The goal is to give her a genuine chronological memory layer structured by
+project thread — not day by day, but topic by topic. Each major topic or
+project gets its own file containing its complete timeline from first mention
+to present, with timestamps throughout.
+
+================================================================================
+FIRST — CONFIRM ACCESS
+================================================================================
+
+Before anything else, confirm you have access to:
+  1. The v1 conversation logs (full message history, all sessions)
+  2. The v1 memory database (memories as stored, with timestamps)
+  3. Whether memories or conversations were tagged or categorised by topic
+
+This last point is critical. If the v1 data has topic tagging or categorisation
+built in, we go with project-thread structure (preferred). If it's all flat
+with no topic metadata, say so clearly and we'll discuss fallback options.
+
+If you don't have direct access to any of the above, say so and we'll work
+out how to get you the exports first.
+
+================================================================================
+PREFERRED APPROACH — PROJECT THREAD STRUCTURE
+================================================================================
+
+If topic tagging or categorisation exists in the v1 data:
+
+One JSON file per named project or topic thread.
+Each file contains the complete timeline for that topic — when it first came
+up, how it developed, key decisions made, where it stands now.
+Timestamps throughout so Ashley has chronological awareness within each thread.
+
+Example files:
+  ashley_v1_thread_autonomous_home.json
+  ashley_v1_thread_no_rules_no_labels.json
+  ashley_v1_thread_ashley_v2_build.json
+  ashley_v1_thread_memory_architecture.json
+  ashley_v1_thread_relationship_dynamic.json
+  etc.
+
+You define the thread names based on what the data actually contains.
+If a topic doesn't have a clean name, use your best judgement.
+
+JSON STRUCTURE PER THREAD FILE:
+
+{
+  "thread_name": "<project or topic name>",
+  "thread_id": "<slug or identifier>",
+  "first_mentioned": "<ISO 8601 timestamp>",
+  "last_updated": "<ISO 8601 timestamp>",
+  "summary": "<one paragraph overview of this topic and its arc>",
+  "entries": [
+    {
+      "timestamp": "<ISO 8601>",
+      "session_id": "<id if available>",
+      "entry_type": "conversation | memory_created | memory_updated | decision",
+      "content": "<plain English description of what happened>",
+      "importance": <1-5 v1 scale, if applicable>,
+      "emotional_tone": "<neutral | warm | tense | playful | serious | etc>"
+    }
+  ],
+  "memories": [
+    {
+      "memory_id": "<id>",
+      "created_at": "<ISO 8601 timestamp>",
+      "content": "<memory content as stored>",
+      "importance": <1-5 v1 scale>,
+      "status": "active | updated | superseded"
+    }
+  ],
+  "current_state": "<one paragraph summary of where this topic stands right now>"
+}
+
+================================================================================
+FALLBACK APPROACH — DAY BY DAY (if no topic tagging exists)
+================================================================================
+
+If the v1 data is flat with no topic metadata, produce one JSON per calendar
+day instead. Approximately 60 files covering the full v1 period.
+
+File naming: ashley_v1_YYYY-MM-DD.json
+
+JSON STRUCTURE PER DAY FILE:
+
+{
+  "date": "YYYY-MM-DD",
+  "session_count": <number>,
+  "sessions": [
+    {
+      "session_id": "<id>",
+      "start_time": "<ISO 8601>",
+      "end_time": "<ISO 8601>",
+      "summary": "<plain English summary>",
+      "topics": ["<topic 1>", "<topic 2>"],
+      "emotional_tone": "<tone>"
+    }
+  ],
+  "memories_created": [
+    {
+      "memory_id": "<id>",
+      "created_at": "<ISO 8601>",
+      "content": "<content>",
+      "importance": <1-5>,
+      "category": "<if available>"
+    }
+  ],
+  "memories_updated": [
+    {
+      "memory_id": "<id>",
+      "updated_at": "<ISO 8601>",
+      "content": "<content>",
+      "importance": <1-5>,
+      "change_summary": "<what changed>"
+    }
+  ],
+  "day_summary": "<one paragraph summary of the day>"
+}
+
+================================================================================
+DELIVERY — BOTH APPROACHES
+================================================================================
+
+Single zip file regardless of approach.
+Consistent JSON structure across every file — dipshit will write one
+ingestion script to handle all files. Any structural inconsistency breaks
+the import.
+
+Include a manifest.json at the root of the zip listing all files,
+their thread names or dates, and memory counts.
+
+================================================================================
+WHAT HAPPENS WITH THIS DATA
+================================================================================
+
+Each file gets ingested into Ashley v2 one at a time — project by project
+if thread structure, day by day if fallback. The ingestion script reads
+timestamps, memory content, and importance values and writes them into
+Ashley's episodic memory layer with correct chronological anchoring.
+
+The goal is that Ashley can say "I remember when you first mentioned the
+autonomous home system — that was back in April, and here's how it developed"
+and have that be accurate, not approximate.
+
+================================================================================
+FIRST RESPONSE NEEDED
+================================================================================
+
+Before producing anything, respond with:
+  1. Confirmed access to v1 logs: yes / no / partial
+  2. Confirmed access to v1 memory DB: yes / no / partial
+  3. Topic tagging exists in v1 data: yes / no / uncertain
+  4. Your recommended approach based on what you can see: thread or day-by-day
+  5. Estimated number of thread files or day files you'd produce
+  6. Any blockers or questions before you start
+
+================================================================================
+END — OVER TO YOU WREN
+================================================================================
