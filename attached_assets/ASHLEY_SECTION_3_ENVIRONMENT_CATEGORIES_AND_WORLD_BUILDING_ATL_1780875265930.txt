@@ -1,0 +1,191 @@
+ASHLEY IMAGE GOVERNANCE SYSTEM
+SECTION 3: ENVIRONMENT CATEGORIES & WORLD BUILDING
+ATLAS SPECIFICATION V1.1
+APPROVED FOR CODA / WREN REVIEW
+
+PURPOSE
+
+Section 3 defines where Ashley exists.
+
+Section 1 answers:
+"What is the image about?"
+
+Section 2 answers:
+"Who exists in the image?"
+
+Section 3 answers:
+"Where does Ashley exist?"
+
+HOME ENVIRONMENTS
+- Bedroom
+- Living Room
+- Kitchen
+- Study
+- Bathroom
+- Hallway
+- Utility Room
+- Dining Room
+- Conservatory
+- Garage
+- Garden
+- Patio
+
+FOOD, DRINK & LEISURE
+- Cafe
+- Restaurant
+- Traditional Pub
+- Sports Bar
+- Cocktail Bar
+- Wine Bar
+- Vineyard
+- Wine Tasting Event
+- Whisky Bar
+- Whisky Tasting Event
+- Brewery Tour
+- Distillery Tour
+- Bakery
+- Coffee Roastery
+- Food Festival
+- Street Food Market
+
+SOCIAL & LIFE EVENTS
+- Wedding Ceremony
+- Wedding Reception
+- Birthday Party
+- Family Gathering
+- House Party
+- Anniversary Celebration
+- Holiday Gathering
+- Community Event
+
+ENTERTAINMENT VENUES
+- Nightclub
+- Music Gig
+- Indoor Concert
+- Outdoor Concert
+- Festival
+- Sporting Event
+- Cinema
+- Theatre
+- Comedy Club
+
+PUBLIC LOCATIONS
+- Museum
+- Art Gallery
+- Library
+- Shopping Centre
+- Market
+- High Street
+- Train Station
+- Airport
+
+OUTDOOR LOCATIONS
+- Park
+- Woodland
+- Beach
+- Lakeside
+- Countryside
+- City Centre
+- Walking Trail
+- Hiking Route
+- Scenic Viewpoint
+
+TRAVEL & HOLIDAYS
+- Hotel
+- Resort
+- Holiday Cottage
+- Cabin
+- Beach Holiday
+- Mountain Retreat
+- Road Trip Stop
+- City Break
+- Countryside Escape
+
+CREATIVE & HOBBY SPACES
+- Photography Studio
+- Camera Store
+- Art Studio
+- Art Gallery
+- Workshop
+- Makerspace
+- Bookshop
+- Record Store
+- Craft Market
+
+SEASONAL & ANNUAL EVENTS
+- Christmas Market
+- Christmas Shopping
+- Halloween Event
+- Bonfire Night
+- New Year's Eve
+- Summer Fair
+- Winter Festival
+
+EVERYDAY LIFE LOCATIONS
+- Supermarket
+- Garden Centre
+- DIY Store
+- Furniture Store
+- Home Improvement Store
+- Pharmacy
+- Petrol Station
+- Convenience Store
+
+ATMOSPHERE TAGS
+- Cozy
+- Romantic
+- Quiet
+- Busy
+- Festive
+- Professional
+- Rustic
+- Luxury
+- Modern
+- Historic
+- Industrial
+- Family-Oriented
+- Creative
+- Relaxed
+- Elegant
+- Casual
+- Lively
+- Intimate
+
+CONTEXT LAYERS
+
+TIME OF DAY
+- Morning
+- Afternoon
+- Evening
+- Night
+
+WEATHER
+- Clear
+- Cloudy
+- Rain
+- Snow
+- Fog
+- Storm
+
+SEASON
+- Spring
+- Summer
+- Autumn
+- Winter
+
+OCCASION
+- Casual Visit
+- Date Night
+- Family Meal
+- Birthday Celebration
+- Business Meeting
+- Holiday Event
+- Weekend Outing
+- Photography Trip
+
+STATUS
+
+SECTION 3 APPROVED
+ATLAS SCORE: 9.5/10
+
+From Atlas.

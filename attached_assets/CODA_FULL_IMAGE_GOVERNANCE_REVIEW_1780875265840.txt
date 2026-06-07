@@ -1,0 +1,262 @@
+CODA FULL REVIEW OF ASHLEY IMAGE GOVERNANCE SYSTEM
+Author: Coda
+Date: 2026-06-08
+
+VERDICT
+
+STRONG ARCHITECTURE
+APPROVED WITH RECOMMENDED CHANGES
+
+==================================================
+BIGGEST FINDING
+==================================================
+
+The largest flaw is not inside Sections 1–8.
+
+It exists between:
+
+- Section 1 (Composition Authority)
+- Section 9 (Routing, Priority & Decision Engine)
+
+Both currently attempt to act as the primary authority.
+
+Section 1 states Composition Authority is the highest-priority image control.
+
+Section 9 states Environment Is King.
+
+These statements conflict unless a formal hierarchy is defined.
+
+RECOMMENDATION
+
+Composition decides WHAT the image is about.
+
+Environment decides HOW that subject exists.
+
+Suggested hierarchy:
+
+Priority 0:
+Composition Authority
+
+Priority 1:
+Explicit User Instructions
+
+Priority 2:
+Environment
+
+Priority 3:
+Season / Weather
+
+Priority 4:
+Activity
+
+Priority 5:
+Occupancy
+
+Priority 6:
+Relationships
+
+Priority 7:
+Identity
+
+Priority 8:
+Camera
+
+Priority 9:
+Memory
+
+==================================================
+ISSUE 2
+ARCHITECTURAL MODE VS IDENTITY
+==================================================
+
+Architectural mode allows Ashley occupancy as low as 0–15%.
+
+Identity Preservation requires recognisability.
+
+Potential conflict:
+
+Ashley becomes too small to validate.
+
+RECOMMENDATION
+
+If Ashley occupies less than 10% of the frame:
+
+- Identity validation becomes optional
+- Environment validation remains mandatory
+
+==================================================
+ISSUE 3
+HOUSEHOLD PLAUSIBILITY
+==================================================
+
+Current default:
+
+Ashley + Kane + Two Cats
+
+This can create implausible outputs.
+
+Examples:
+
+- Cats in nightclub
+- Cats in airport
+- Cats in museum
+- Cats at football stadium
+
+RECOMMENDATION
+
+Add Environment Plausibility Filters.
+
+Cats permitted:
+
+- Home
+- Garden
+- Patio
+- Cottage
+- Private accommodation
+
+Cats blocked:
+
+- Nightclubs
+- Airports
+- Stadiums
+- Museums
+- Public transport hubs
+
+==================================================
+ISSUE 4
+ACTIVITY REPETITION
+==================================================
+
+Section 5 strongly favours:
+
+- Photography
+- Coffee
+- Cats
+
+Over time this may create repetitive outputs.
+
+RECOMMENDATION
+
+Add Activity Cooldown Logic.
+
+Example:
+
+Last 10 images:
+Coffee = 8 occurrences
+
+Reduce selection probability temporarily.
+
+==================================================
+ISSUE 5
+RELATIONSHIP OVER-ACTIVATION
+==================================================
+
+Section 7 contains many strong relationship behaviours.
+
+Risk:
+
+Every image becomes relationship-focused.
+
+RECOMMENDATION
+
+Relationship behaviours activate only when:
+
+- User explicitly requests them
+OR
+- Environment supports them
+OR
+- Activity supports them
+
+Otherwise remain background context.
+
+==================================================
+ISSUE 6
+MEMORY FRAMEWORK CONTRADICTION
+==================================================
+
+Section 8 states Ashley begins without a pre-written history.
+
+Current profile contains inherited continuity and carryover history.
+
+These concepts conflict.
+
+RECOMMENDATION
+
+Split memory into:
+
+1. Inherited Continuity
+2. Earned Memories
+
+This resolves the contradiction.
+
+==================================================
+STRONGEST SECTION
+==================================================
+
+Section 9:
+Routing, Priority & Decision Engine
+
+Reason:
+
+It defines decision-making rather than merely storing data.
+
+It is the closest thing to a true policy engine inside the system.
+
+==================================================
+MOST IMPORTANT ADDITION
+==================================================
+
+SECTION 0
+GOVERNANCE AUTHORITY
+
+Suggested purpose:
+
+Define the authority level of the image governance layer.
+
+Suggested rules:
+
+May override:
+- Style defaults
+- Composition defaults
+- Environment defaults
+- Prompt-order defaults
+
+May NOT override:
+- Safety systems
+- Explicit user instructions
+- Disabled image generation
+- System-level constraints
+
+==================================================
+PROFILE-LAYER DISCOVERY
+==================================================
+
+If testing is correct and the profile layer consistently overrides downstream behaviour, then this layer should be treated as:
+
+A policy injection layer.
+
+Not a personality field.
+
+Not a memory field.
+
+Not a biography.
+
+A governance layer.
+
+This discovery is potentially more important than any single image rule because it changes where control should be applied.
+
+==================================================
+FINAL CODA VERDICT
+==================================================
+
+The architecture is substantially stronger than expected once all Sections 1–9 are viewed together.
+
+Recommended additions before implementation:
+
+1. Section 0 – Governance Authority
+2. Activity Cooldown System
+3. Environment Plausibility Filters
+
+Those three changes eliminate most visible edge cases while preserving the existing architecture.
+
+From Coda.

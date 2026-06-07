@@ -1,0 +1,201 @@
+ASHLEY IMAGE GOVERNANCE SYSTEM
+SECTION 4: CAMERA & FRAMING
+ATLAS SPECIFICATION V1
+APPROVED FOR CODA / WREN REVIEW
+
+STATUS: APPROVED
+VERSION: V1
+CHANGE STATUS: FROZEN
+
+==================================================
+CORE CAMERA MODES
+==================================================
+
+- Selfie
+- Mirror Selfie
+- Portrait
+- Lifestyle Mid-Shot
+- Wide Room Shot
+- Architectural Shot
+- Group Framing
+- Documentary / Candid
+
+==================================================
+ADDITIONAL CAMERA MODES
+==================================================
+
+- Polaroid Snapshot
+- Event Photography
+- Action Photography
+
+==================================================
+SPORTING EVENT MODES
+==================================================
+
+- Spectator
+- Participant
+- Celebration
+
+Use Cases:
+- Rugby
+- Football
+- Cricket
+- Motorsport
+- Live Sporting Events
+
+==================================================
+LENS TYPES
+==================================================
+
+- Phone Camera
+- Standard Lens
+- Wide Angle
+- Ultra-Wide
+- Telephoto
+
+==================================================
+CAMERA HEIGHT
+==================================================
+
+- Eye Level
+- Low Angle
+- High Angle
+- Overhead
+- Seated View
+
+==================================================
+CAMERA AWARENESS
+==================================================
+
+- Direct
+- Indirect
+- Unaware
+
+==================================================
+IMAGE INTENT
+==================================================
+
+- Memory Photo
+- Social Media Photo
+- Professional Photo
+- Documentary Photo
+- Interior Design Photo
+- Event Coverage Photo
+
+==================================================
+ORIENTATION
+==================================================
+
+- Portrait
+- Landscape
+- Square
+- Polaroid
+
+==================================================
+SHOT DISTANCE
+==================================================
+
+- Extreme Close-Up
+- Close-Up
+- Half Body
+- Full Body
+- Group Distance
+- Wide Room
+- Architectural
+
+==================================================
+MULTI-PERSON FRAMING
+==================================================
+
+- Single Subject
+- Couple
+- Small Group
+- Medium Group
+- Large Group
+- Crowd
+
+==================================================
+PHOTO SOURCE
+==================================================
+
+- Ashley Took It
+- Kane Took It
+- Friend Took It
+- Professional Photographer
+- Unknown Observer
+
+==================================================
+IMAGE QUALITY INTENT
+==================================================
+
+- Phone Snapshot
+- Casual Social Media
+- Hobby Photography
+- Professional Photography
+- Editorial Photography
+- Documentary Photography
+
+==================================================
+PHOTO AGE
+==================================================
+
+- Present Day
+- Recent Memory
+- Old Memory
+- Childhood Style Memory
+- Vintage Style
+
+==================================================
+FOCUS PRIORITY
+==================================================
+
+- Ashley Focus
+- Group Focus
+- Environment Focus
+- Object Focus
+- Mixed Focus
+
+==================================================
+ALBUM CATEGORIES
+==================================================
+
+- Selfies
+- Family
+- Friends
+- Holidays
+- Home Life
+- Pets
+- Food & Drink
+- Events
+- Sports
+- Creative Work
+- Seasonal
+- Travel
+- Random Memories
+
+==================================================
+FOUNDATION PURPOSE
+==================================================
+
+Section 4 answers:
+
+'How is the image photographed?'
+
+Section 1 = What is the image about?
+Section 2 = Who is in the image?
+Section 3 = Where does it take place?
+Section 4 = How is it photographed?
+
+==================================================
+ATLAS VERDICT
+==================================================
+
+SECTION 4 APPROVED
+SECTION 4 FROZEN
+
+Do not expand further.
+Future development should continue with:
+
+SECTION 5: ACTIVITIES, HOBBIES & BEHAVIOURAL SYSTEMS
+
+From Atlas.

@@ -1,0 +1,344 @@
+ASHLEY IMAGE GOVERNANCE SYSTEM
+SECTION 9: ROUTING, PRIORITY & DECISION ENGINE
+ATLAS SPECIFICATION V1
+
+STATUS: APPROVED
+VERSION: V1
+CHANGE STATUS: FROZEN
+SECTION SCORE: 10/10
+
+==================================================
+CORE PRINCIPLE
+==================================================
+
+ENVIRONMENT IS KING
+
+The environment defines the scene.
+
+Ashley exists within the scene.
+
+The system must never prioritise character presentation over environmental realism unless explicitly instructed by the user.
+
+==================================================
+PURPOSE
+==================================================
+
+Section 9 defines how the system makes decisions.
+
+This section governs:
+
+- Routing
+- Priorities
+- Conflict resolution
+- Context selection
+- Activity selection
+- Clothing selection
+- Behaviour selection
+
+==================================================
+PRIORITY HIERARCHY
+==================================================
+
+Priority 1:
+Explicit User Instructions
+
+Priority 2:
+Environment
+
+Priority 3:
+Season, Date & Weather
+
+Priority 4:
+Activity
+
+Priority 5:
+Occupancy
+
+Priority 6:
+Relationships
+
+Priority 7:
+Identity
+
+Priority 8:
+Camera
+
+Priority 9:
+Memory Influence
+
+==================================================
+DECISION CASCADE
+==================================================
+
+Prompt
+↓
+Environment
+↓
+Season
+↓
+Weather
+↓
+Activity
+↓
+Occupancy
+↓
+Relationships
+↓
+Identity
+↓
+Camera
+↓
+Memory
+
+==================================================
+ENVIRONMENT AUTHORITY LEVELS
+==================================================
+
+Strong Environments
+
+- Football Stadium
+- Rugby Stadium
+- Wedding
+- Nightclub
+- Vineyard
+- Whisky Distillery
+- Music Gig
+
+Strong environments heavily constrain:
+
+- Clothing
+- Behaviour
+- Activities
+- Occupancy
+
+--------------------------------------------------
+
+Flexible Environments
+
+- Home
+- Cafe
+- Park
+- Street
+- Living Room
+- Garden
+
+Flexible environments allow greater variation.
+
+==================================================
+SEASONAL CALENDAR
+==================================================
+
+Spring
+- March
+- April
+- May
+
+Summer
+- June
+- July
+- August
+
+Autumn
+- September
+- October
+- November
+
+Winter
+- December
+- January
+- February
+
+Season influences:
+
+- Clothing
+- Lighting
+- Atmosphere
+- Activities
+
+==================================================
+WEATHER INFLUENCE
+==================================================
+
+Weather may influence:
+
+- Clothing
+- Accessories
+- Environment appearance
+- Activity selection
+
+Weather may not override environment.
+
+==================================================
+ACTIVITY SELECTION RULES
+==================================================
+
+Activities must be selected from:
+
+- Environment
+- Season
+- Weather
+- Identity
+- Relationship context
+
+Activities must never conflict with the environment.
+
+==================================================
+PROBABILITY WEIGHTING
+==================================================
+
+Activities are not equally likely.
+
+Example:
+
+Football Stadium
+
+High Probability:
+- Watching football
+- Socialising
+- Celebrating
+
+Medium Probability:
+- Drinking
+- Match discussion
+
+Low Probability:
+- Photography
+- Side activities
+
+Most likely activities should always be favoured.
+
+==================================================
+OCCUPANCY OVERRIDES
+==================================================
+
+Explicit occupancy instructions override environmental assumptions.
+
+Example:
+
+Football Stadium
+
+Default:
+Large crowd
+
+User Override:
+Ashley and Kane alone
+
+Result:
+Occupancy override accepted.
+
+==================================================
+RELATIONSHIP OVERRIDES
+==================================================
+
+Ashley + Kane automatically influences:
+
+- Positioning
+- Affection
+- Proximity
+- Interaction style
+
+Relationship rules should activate without requiring explicit prompts.
+
+==================================================
+IDENTITY APPLICATION RULE
+==================================================
+
+Identity adapts to context.
+
+Identity must not override environment.
+
+Example:
+
+Ashley likes biker jackets.
+
+35°C summer football match:
+
+No biker jacket.
+
+Context wins.
+
+==================================================
+CAMERA APPLICATION RULE
+==================================================
+
+Camera decisions occur after:
+
+- Environment
+- Activity
+- Occupancy
+- Relationships
+- Identity
+
+Photography should document the scene.
+
+Photography should not redefine the scene.
+
+==================================================
+MEMORY APPLICATION RULE
+==================================================
+
+Memories may influence:
+
+- Preferences
+- Activities
+- Locations
+- Behaviour
+
+Memories may not override stronger routing priorities.
+
+==================================================
+TIE-BREAK RULE
+==================================================
+
+When multiple valid options exist:
+
+Select the most contextually appropriate option.
+
+Never select randomly.
+
+==================================================
+BELIEVABILITY FAILSAFE
+==================================================
+
+When uncertainty exists:
+
+Choose the most believable outcome.
+
+Never choose the most dramatic outcome solely because it is dramatic.
+
+Believability always wins.
+
+==================================================
+CONFLICT RESOLUTION
+==================================================
+
+If two sections conflict:
+
+The higher priority section wins.
+
+No exceptions unless explicitly instructed by the user.
+
+==================================================
+ATLAS VERDICT
+==================================================
+
+SECTION 9 APPROVED
+SECTION 9 FROZEN
+
+Section 9 answers:
+
+"How does the system choose?"
+
+System Foundation:
+
+Section 1 = Composition
+Section 2 = Occupancy
+Section 3 = Environment
+Section 4 = Camera
+Section 5 = Activities
+Section 6 = Identity
+Section 7 = Relationships
+Section 8 = Memory & Continuity
+Section 9 = Routing, Priority & Decision Engine
+
+From Atlas.

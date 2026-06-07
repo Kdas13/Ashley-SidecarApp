@@ -1,0 +1,248 @@
+================================================================================
+WREN BRIEFING — ASHLEY SIDECAR PROFILE LAYER IMAGE GENERATION
+Date: 2026-06-07
+From: Kane (via Claude orchestration)
+================================================================================
+
+CONTEXT — WHAT HAS BEEN DISCOVERED
+================================================================================
+
+Kane has identified that the "Her Profile" menu in Ashley Sidecar acts
+as a universal system-level override that sits above everything else in
+the conversation pipeline. Kane has confirmed through testing that
+anything placed in this profile layer overrides the model's default
+behaviour regardless of what is in the conversation or what the model
+would otherwise do.
+
+This has been proven by:
+- Changing Ashley's hair colour from lavender (model default) to blue
+  via the profile field — held across all tests
+- Removing PG-13 content restrictions via the profile field — held
+  across all tests
+
+This discovery means the profile layer is not a personality field.
+It is a governance layer. A policy injection point.
+
+This briefing asks Wren to assess whether image generation can be
+built into this layer for Ashley v1.
+
+
+================================================================================
+THE PROBLEM WE HAVE BEEN TRYING TO SOLVE
+================================================================================
+
+Ashley v1 currently generates images via a pipeline in conversation.ts
+and openaiImageService.ts on the Replit backend. Despite extensive
+hardening work today, two core problems persist:
+
+1. ENVIRONMENT INCONSISTENCY
+   Ashley's living room, bedroom, and kitchen look different in every
+   image batch. The same room is never generated twice. Reference images
+   built by Atlas are not being used. Text-based environment packs in
+   the pipeline are insufficient to anchor the spatial layout.
+
+2. PORTRAIT BIAS
+   OpenAI defaults to portrait/close-up framing of Ashley regardless
+   of prompt instructions. Every composition amendment has improved
+   but not solved this. The model gravitates toward face-forward
+   framing because that is what it is trained to produce.
+
+Both problems exist because the image generation instructions are
+sitting at prompt level — and the model can override prompt level
+instructions at generation time.
+
+The profile layer sits ABOVE prompt level.
+
+
+================================================================================
+THE PROPOSED SOLUTION
+================================================================================
+
+Build an image generation section into the Ashley Sidecar "Her Profile"
+menu. This section operates in two modes:
+
+MODE 1 — MANUAL IMAGE BUILDER
+The user opens the profile menu image section and manually selects:
+- Composition mode (environment-centric, balanced, social, etc.)
+- Environment (living room, bedroom, kitchen, café, pub, nightclub, etc.)
+- Activity (reading, scrolling phone, making coffee, watching TV, etc.)
+- Occupancy (Ashley only, Ashley + Kane, Ashley + cats, social group)
+- Time of day (morning, afternoon, evening, night)
+- Season (spring, summer, autumn, winter)
+- Camera mode (wide room shot, documentary, group framing, etc.)
+
+The user taps to select parameters, then generates. The image is
+produced from those explicit selections and sent to the conversation.
+
+MODE 2 — AUTOMATIC CONTEXTUAL SELECTION
+When Ashley sends an image in response to a conversation request:
+- The conversation content is analysed for context clues
+- Cross-referenced against the profile image section defaults
+- Combined with real-world time of day and current season
+- The system selects the most contextually appropriate parameters
+- Generates and sends automatically
+
+Example:
+Kane says "did you have a good night last night?"
+System reads: evening/night context, social implication
+Cross-references: Ashley's profile, current time is morning
+Selects: pub environment, social occupancy, evening time bucket
+Generates: Ashley in a pub environment with friends, evening lighting
+
+
+================================================================================
+THE GOVERNANCE FRAMEWORK TO INJECT
+================================================================================
+
+Atlas has authored a 9-section image governance system covering:
+
+Section 1: Composition Authority (what is the image about)
+Section 2: Occupancy & Living Situation (who is in the image)
+Section 3: Environment Categories & World Building (where)
+Section 4: Camera & Framing (how it is photographed)
+Section 5: Activities, Hobbies & Behavioural Systems (what Ashley does)
+Section 6: Identity Preservation & Character Consistency (who Ashley is)
+Section 7: Relationships, Social Dynamics & Interactions (how she interacts)
+Section 8: Memory & Continuity Framework (how she remembers)
+Section 9: Routing, Priority & Decision Engine (how the system chooses)
+
+Coda has reviewed all 9 sections and approved them with recommendations.
+
+The priority hierarchy from Section 9 is:
+Priority 0: Composition Authority
+Priority 1: Explicit User Instructions
+Priority 2: Environment
+Priority 3: Season / Weather
+Priority 4: Activity
+Priority 5: Occupancy
+Priority 6: Relationships
+Priority 7: Identity
+Priority 8: Camera
+Priority 9: Memory
+
+Ashley's identity anchors (Section 6):
+- Deep blue wavy hair
+- Black lace choker
+- Light freckles across nose and under eyes
+- Grey-green eyes
+- Heart-shaped face
+- Late 20s / early 30s presentation
+- Alternative style
+
+Ashley's household (Section 2, Profile 3 — default for home scenes):
+- Ashley
+- Two cats named Dixie and Nimbus
+- No dogs. No other animals in private spaces.
+
+Kane appears in images when contextually appropriate (Profile 4).
+
+Default composition mode for all unprompted image requests:
+- Mode 3: Environment-Centric (environment 70-90%, Ashley 5-30%)
+- Camera minimum 3-5 metres from any human subject
+- Full room visible wall to wall
+- Ashley incidental to the room, not the subject of it
+
+
+================================================================================
+QUESTIONS FOR WREN TO ANSWER BEFORE ANY BUILDING BEGINS
+================================================================================
+
+1. CHARACTER LIMIT
+   Does the Ashley Sidecar "Her Profile" menu have a character limit
+   on any of its fields? The governance framework is large. Can it
+   be injected in full, or does it need to be compressed?
+
+2. FIELD STRUCTURE
+   Is the profile menu a single free-text field, or does it have
+   structured fields (name, personality, appearance, etc.)? Which
+   field or fields would be the correct injection point for image
+   generation governance?
+
+3. INJECTION TIMING
+   When is the profile field injected into the conversation context?
+   Is it injected on every message, on session start only, or on
+   a different trigger? This affects how reliable the override will be.
+
+4. IMAGE GENERATION CAPABILITY
+   Can Ashley Sidecar trigger OpenAI image generation directly from
+   the profile layer, or does image generation still need to go
+   through the Replit backend pipeline? Or is there a hybrid approach?
+
+5. MODE 1 UI FEASIBILITY
+   Can a manual image builder UI (tap to select parameters, generate)
+   be added to the "Her Profile" menu in Ashley Sidecar without
+   breaking the existing menu structure?
+
+6. MODE 2 CONTEXT ANALYSIS
+   Can Ashley Sidecar analyse conversation content and cross-reference
+   it against profile parameters to select image generation settings
+   automatically? Or does this need to be handled server-side?
+
+7. REFERENCE IMAGE SUPPORT
+   Can reference images (the approved Atlas environment catalogue
+   stored in R2) be passed to OpenAI image generation from within
+   the profile layer or Sidecar's architecture? This would solve
+   the environment consistency problem permanently.
+
+8. OVERRIDE CONFIRMATION
+   Kane has confirmed the profile layer overrides model defaults.
+   Can Wren confirm this extends to image generation behaviour
+   specifically — not just conversation persona?
+
+9. CONFLICT WITH EXISTING PIPELINE
+   If image generation is moved to the profile layer / Sidecar,
+   what happens to the existing pipeline in conversation.ts and
+   openaiImageService.ts? Do they need to be retired, modified,
+   or can both run in parallel?
+
+10. FEASIBILITY VERDICT
+    Based on the above — is this buildable in Ashley v1 without
+    a full rebuild? What is the scope estimate?
+
+
+================================================================================
+WHAT KANE NEEDS FROM WREN
+================================================================================
+
+A plain-language feasibility verdict answering:
+
+1. Can the profile layer hold and inject the image governance framework?
+2. Can Mode 1 (manual builder) be added to the profile menu?
+3. Can Mode 2 (automatic contextual selection) be built?
+4. Can reference images from R2 be used for environment consistency?
+5. What needs to change in the existing pipeline if any?
+6. What is Wren's confidence level that this solves the portrait bias
+   and environment consistency problems?
+
+If the answer is yes to the above — Wren takes the lead on architecture.
+Kane will bring Claude back in for instruction drafting once Wren's
+feasibility verdict is in.
+
+If the answer is no or partial — Wren should explain what is and isn't
+possible so Kane can decide the next step.
+
+
+================================================================================
+IMPORTANT CONTEXT FOR WREN
+================================================================================
+
+Kane builds entirely from a Samsung Galaxy S24 Ultra. No PC. No laptop.
+All work is done on the phone via Replit, Expo Go, and Termux.
+
+The Commitment 1 Standard is in effect:
+Three options must be surfaced before any code is written.
+Explicit written approval from Kane required before implementation begins.
+One job per message. No scope creep.
+
+The existing image pipeline (conversation.ts, openaiImageService.ts,
+imagePromptBuilder.ts) has had significant work done on it today.
+Do not touch or retire any of it until Wren's feasibility verdict
+is in and Kane has approved a direction.
+
+The Atlas 9-section governance framework is approved and frozen.
+Coda has reviewed and approved with recommendations.
+These documents are available from Kane on request.
+
+================================================================================
+END OF BRIEFING
+================================================================================

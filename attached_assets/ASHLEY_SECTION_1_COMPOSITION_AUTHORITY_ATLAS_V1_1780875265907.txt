@@ -1,0 +1,85 @@
+ASHLEY IMAGE GOVERNANCE SYSTEM
+SECTION 1: COMPOSITION AUTHORITY
+ATLAS SPECIFICATION V1
+APPROVED FOR CODA / WREN REVIEW
+
+PURPOSE
+
+Composition Authority is the highest-priority image generation control in the entire Ashley image system.
+
+Its purpose is to explicitly define what the image is actually about before any scene generation occurs.
+
+Historically, the majority of Ashley image generation failures have originated from the model making its own decision regarding the image subject.
+
+Examples:
+
+- Kitchen intended as subject → Ashley becomes portrait subject.
+- Living room intended as subject → Ashley fills most of frame.
+- Cafe intended as subject → Ashley isolated at table.
+- Home environment intended as subject → image becomes character portrait.
+
+Composition Authority exists to eliminate this failure mode.
+
+Every image request must pass through Composition Authority before scene generation begins.
+
+Composition Authority should have precedence over:
+- Scene generation
+- Environment generation
+- Activity generation
+- Camera generation
+- Pose generation
+- Occupancy generation
+
+If any downstream system attempts to violate Composition Authority, Composition Authority wins.
+
+MODE 1: ASHLEY-CENTRIC
+Ashley is the primary subject.
+Ashley: 40-80%
+Environment: 20-60%
+Rules:
+- Ashley must be visually dominant.
+- Viewer should notice Ashley first.
+- Portraits, selfies and mirror selfies allowed.
+
+MODE 2: BALANCED
+Ashley and environment share equal importance.
+Ashley: 20-50%
+Environment: 50-80%
+Rules:
+- Both subject and environment contribute equally.
+
+MODE 3: ENVIRONMENT-CENTRIC
+Environment is the primary subject.
+Environment: 70-90%
+Ashley: 5-30%
+Rules:
+- Viewer notices environment first.
+- Full room visibility preferred.
+
+MODE 4: ARCHITECTURAL
+Architecture is the subject.
+Architecture: 85-100%
+Ashley: 0-15%
+Rules:
+- Camera minimum 3 metres away.
+- Preferred 3-5 metres.
+- Entire room visible whenever possible.
+
+MODE 5: SOCIAL FOCUS
+Ashley is focal person within a social setting.
+Rules:
+- At least one additional person present.
+- Social interaction visible.
+- No isolated Ashley scenarios.
+
+MODE 6: DOCUMENTARY
+The moment is the subject.
+Rules:
+- No forced posing.
+- Natural behaviour preferred.
+- Camera awareness optional.
+
+GLOBAL RULE
+Composition Authority overrides all downstream image systems.
+
+From Atlas.

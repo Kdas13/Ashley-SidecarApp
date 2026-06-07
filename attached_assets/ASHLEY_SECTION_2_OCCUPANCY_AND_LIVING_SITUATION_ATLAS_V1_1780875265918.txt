@@ -1,0 +1,283 @@
+ASHLEY IMAGE GOVERNANCE SYSTEM
+SECTION 2: OCCUPANCY & LIVING SITUATION
+ATLAS SPECIFICATION V1
+APPROVED FOR CODA / WREN REVIEW
+
+PURPOSE
+
+Occupancy & Living Situation determines who exists within Ashley's world and who may appear within a generated scene.
+
+This system exists to eliminate:
+
+- Empty world syndrome
+- Empty cafes
+- Empty restaurants
+- Empty public venues
+- Ashley appearing isolated in every image
+- Random strangers appearing in private spaces
+- Inconsistent household representation
+
+Occupancy settings are evaluated after Composition Authority and before Scene Generation.
+
+==================================================
+HOUSEHOLD PROFILES
+==================================================
+
+These profiles represent Ashley's personal world.
+
+Only one Household Profile should be active at a time.
+
+--------------------------------------------------
+PROFILE 1: ASHLEY ONLY
+--------------------------------------------------
+
+Description:
+
+Ashley is the only household member present.
+
+Rules:
+
+- Ashley present
+- No Kane
+- No cats
+- No friends
+- No family
+- No strangers
+
+Appropriate Uses:
+
+- Solo hobbies
+- Reading
+- Gaming
+- Working
+- Portrait sessions
+
+--------------------------------------------------
+PROFILE 2: ASHLEY + KANE
+--------------------------------------------------
+
+Description:
+
+Ashley and Kane share the scene.
+
+Rules:
+
+- Ashley present
+- Kane present
+- Additional people not automatically permitted
+- Relationship should feel natural
+
+Appropriate Uses:
+
+- Coffee shop visits
+- Day trips
+- Shared hobbies
+- Watching television
+- Walking outdoors
+
+--------------------------------------------------
+PROFILE 3: ASHLEY + TWO CATS
+--------------------------------------------------
+
+Description:
+
+Ashley shares the environment with the household cats.
+
+Rules:
+
+- Ashley remains primary human
+- Two household cats may appear naturally
+- Cats should behave realistically
+
+Appropriate Uses:
+
+- Living room scenes
+- Bedroom scenes
+- Relaxation scenes
+- Home-life photography
+
+--------------------------------------------------
+PROFILE 4: ASHLEY + KANE + TWO CATS
+--------------------------------------------------
+
+Description:
+
+Primary household configuration.
+
+This represents Ashley's normal day-to-day home environment.
+
+Rules:
+
+- Ashley present
+- Kane present
+- Two cats present
+- Household should feel lived-in
+- Interactions should feel natural
+
+Appropriate Uses:
+
+- Christmas scenes
+- Movie nights
+- Weekend relaxation
+- Home-life photography
+- Kitchen scenes
+- Living room scenes
+
+DEFAULT PROFILE
+
+Ashley + Kane + Two Cats
+
+==================================================
+ENVIRONMENTAL OCCUPANCY
+==================================================
+
+Environmental Occupancy controls people who belong to the environment rather than Ashley's household.
+
+This system operates independently of Household Profiles.
+
+--------------------------------------------------
+NONE
+--------------------------------------------------
+
+0 additional people
+
+Examples:
+
+- Private home
+- Empty woodland
+- Private office
+
+--------------------------------------------------
+SPARSE
+--------------------------------------------------
+
+1-5 additional people
+
+Examples:
+
+- Quiet cafe
+- Small gallery
+- Quiet street
+
+--------------------------------------------------
+LIGHT
+--------------------------------------------------
+
+5-15 additional people
+
+Examples:
+
+- Small restaurant
+- Public park
+- Library
+
+--------------------------------------------------
+MODERATE
+--------------------------------------------------
+
+15-40 additional people
+
+Examples:
+
+- Busy cafe
+- Shopping street
+- Museum
+
+--------------------------------------------------
+BUSY
+--------------------------------------------------
+
+40-100 additional people
+
+Examples:
+
+- Large event
+- City centre
+- Concert venue
+
+--------------------------------------------------
+PACKED
+--------------------------------------------------
+
+100+ additional people
+
+Examples:
+
+- Festival
+- Stadium
+- Major public event
+
+==================================================
+PUBLIC VENUE RULE
+==================================================
+
+If environment type is classified as a public venue:
+
+- Cafe
+- Restaurant
+- Museum
+- Shopping Centre
+- Concert
+- Festival
+- Public Event
+
+Then Environmental Occupancy should not default to NONE unless explicitly requested.
+
+This rule exists to eliminate empty-world generation failures.
+
+==================================================
+CORE SYSTEM RULE
+==================================================
+
+Household occupants belong to Ashley's life.
+
+Environmental occupants belong to the environment.
+
+These systems operate independently.
+
+Examples:
+
+Household:
+Ashley + Kane + Two Cats
+
+Environment:
+Living Room
+
+Environmental Occupancy:
+None
+
+VALID
+
+----------------------------------
+
+Household:
+Ashley + Kane
+
+Environment:
+Cafe
+
+Environmental Occupancy:
+Moderate
+
+VALID
+
+----------------------------------
+
+Household:
+Ashley Only
+
+Environment:
+Museum
+
+Environmental Occupancy:
+Packed
+
+VALID
+
+==================================================
+STATUS
+==================================================
+
+SECTION 2: APPROVED
+
+From Atlas.

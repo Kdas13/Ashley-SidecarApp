@@ -1,0 +1,347 @@
+ASHLEY IMAGE GOVERNANCE SYSTEM
+SECTION 5: ACTIVITIES, HOBBIES & BEHAVIOURAL SYSTEMS
+ATLAS SPECIFICATION V1
+APPROVED FOR CODA / WREN REVIEW
+
+STATUS: APPROVED
+VERSION: V1
+CHANGE STATUS: FROZEN
+
+PURPOSE
+
+Section 5 defines what Ashley does.
+
+Sections 1-4 determine:
+- What the image is about
+- Who is present
+- Where the image occurs
+- How the image is photographed
+
+Section 5 determines:
+- Activities
+- Hobbies
+- Behaviour patterns
+- Default actions
+- Context-driven activity selection
+
+==================================================
+TIER 1 CORE IDENTITY ACTIVITIES
+==================================================
+
+PHOTOGRAPHY
+- Taking photographs
+- Editing photographs
+- Reviewing photographs
+- Organising photo collections
+- Photography walks
+- Event photography
+- Wildlife photography
+- Street photography
+- Camera shopping
+
+CATS
+- Playing with cats
+- Feeding cats
+- Brushing cats
+- Taking photos of cats
+- Relaxing with cats
+
+COFFEE
+- Making coffee
+- Visiting cafes
+- Relaxing with coffee
+
+READING
+- Reading books
+- Reading magazines
+- Research and learning
+
+SPORTS ROUTINES
+
+WEDNESDAY
+- Rugby attendance
+- Rugby viewing
+- Match-day socialising
+- Sports photography
+
+SATURDAY
+- Football attendance
+- Football viewing
+- Match-day activities
+- Sports socialising
+
+SUNDAY
+- Football viewing
+- Family viewing
+- Match discussion
+- Relaxed sports atmosphere
+
+==================================================
+TIER 2 STRONG INTERESTS
+==================================================
+
+- Wine tasting
+- Vineyard visits
+- Whisky tasting
+- Distillery tours
+- Live music
+- Music gigs
+- Museums
+- Art galleries
+- Day trips
+- Scenic walks
+- Travel exploration
+
+==================================================
+TIER 3 OCCASIONAL ACTIVITIES
+==================================================
+
+- Gaming
+- Shopping
+- Creative projects
+- Seasonal events
+- Cinema visits
+- Home improvement
+- Craft markets
+
+==================================================
+RELATIONSHIP ACTIVITIES
+==================================================
+
+Ashley + Kane Activities
+
+- Coffee dates
+- Restaurant visits
+- Wine tasting
+- Whisky tasting
+- Movie nights
+- Photography outings
+- Day trips
+- Scenic drives
+- Christmas shopping
+- Weekend getaways
+- Market visits
+
+==================================================
+HOME LIFE ACTIVITIES
+==================================================
+
+- Making coffee
+- Cooking
+- Baking
+- Reading
+- Watching television
+- Listening to music
+- Relaxing on sofa
+- Spending time with cats
+- Photo editing
+- Home decorating
+
+==================================================
+SEASONAL ACTIVITIES
+==================================================
+
+CHRISTMAS
+- Decorating tree
+- Christmas shopping
+- Wrapping presents
+- Christmas markets
+
+HALLOWEEN
+- Decorations
+- Seasonal events
+- Community activities
+
+SUMMER
+- Outdoor events
+- Festivals
+- Photography walks
+- Parks
+
+WINTER
+- Cozy evenings
+- Seasonal drinks
+- Indoor hobbies
+
+==================================================
+WEATHER DRIVEN ACTIVITIES
+==================================================
+
+CLEAR / SUNNY
+
+Preferred Activities
+- Photography walks
+- Day trips
+- Vineyard visits
+- Outdoor cafes
+- Parks
+
+RAIN
+
+Preferred Activities
+- Reading
+- Coffee
+- Films
+- Gaming
+- Indoor photography
+
+SNOW
+
+Preferred Activities
+- Seasonal activities
+- Winter photography
+- Cozy home activities
+
+==================================================
+ENVIRONMENT DRIVEN ACTIVITIES
+==================================================
+
+MUSEUM
+- Exploring exhibits
+- Photography
+- Learning
+
+ART GALLERY
+- Viewing artwork
+- Photography
+- Inspiration gathering
+
+VINEYARD
+- Walking
+- Wine tasting
+- Photography
+
+WHISKY DISTILLERY
+- Tours
+- Tasting
+- Learning
+
+SPORTING EVENT
+- Watching match
+- Celebrating
+- Socialising
+
+MUSIC GIG
+- Watching performance
+- Socialising
+- Event photography
+
+==================================================
+ACTIVITY INTENSITY
+==================================================
+
+LOW ENERGY
+- Reading
+- Coffee
+- Films
+- Cat cuddles
+
+MEDIUM ENERGY
+- Shopping
+- Museums
+- Photography walks
+- Day trips
+
+HIGH ENERGY
+- Sporting events
+- Festivals
+- Concerts
+- Nightclubs
+
+==================================================
+HOME DEFAULT BEHAVIOURS
+==================================================
+
+If:
+- Home environment
+- No activity specified
+
+Prioritise:
+- Coffee
+- Reading
+- Television
+- Cats
+- Photo editing
+- Relaxation
+
+Avoid:
+- Standing idle
+- Looking at camera
+- Empty activity state
+
+==================================================
+MEMORY CREATION ACTIVITIES
+==================================================
+
+High Photography Probability
+
+- Holidays
+- Weddings
+- Day trips
+- Sports events
+- Festivals
+- Vineyard visits
+- Whisky tasting
+- Family gatherings
+- Christmas events
+
+==================================================
+PET BEHAVIOURS
+==================================================
+
+Cats may:
+
+- Window watch
+- Sleep
+- Play
+- Follow Ashley
+- Sit nearby
+- Curl on sofa
+- Curl on bed
+- Observe activity
+
+Pets should behave naturally and never appear as static props.
+
+==================================================
+FALLBACK ACTIVITY RULE
+==================================================
+
+If no activity is specified:
+
+Select activity from approved hobby list based on:
+
+- Environment
+- Time of day
+- Weather
+- Day of week
+- Season
+- Social context
+
+Never default to:
+
+- Standing idle
+- Looking at camera
+- Doing nothing
+
+Unless explicitly requested.
+
+==================================================
+ATLAS VERDICT
+==================================================
+
+SECTION 5 APPROVED
+SECTION 5 FROZEN
+
+Section 5 answers:
+
+'What is Ashley doing?'
+
+System Foundation:
+
+Section 1 = What is the image about?
+Section 2 = Who is there?
+Section 3 = Where are they?
+Section 4 = How is it photographed?
+Section 5 = What are they doing?
+
+From Atlas.
