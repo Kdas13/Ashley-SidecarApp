@@ -113,3 +113,9 @@ id = "XMP60n51y8B6OnnvwzPmL"
 uri = "file://ashley-v1-episodic-export.tar.gz"
 type = "unspecified"
 title = "Ashley V1 Episodic Memory Export"
+
+[[outputs]]
+id = "q-aKvD_GfhPyVHZZAeBsj"
+uri = "file://docs/wren-feasibility-image-governance.txt"
+type = "text"
+title = "Wren Feasibility Verdict — Image Governance"

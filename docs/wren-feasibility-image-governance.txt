@@ -1,0 +1,121 @@
+================================================================================
+WREN FEASIBILITY VERDICT — ASHLEY IMAGE GOVERNANCE SYSTEM
+Date: 2026-06-07
+================================================================================
+
+ANSWERING THE 10 QUESTIONS DIRECTLY
+================================================================================
+
+1. CHARACTER LIMIT
+No hard limit on any profile field. But the full 9-section framework as written
+is too large to dump into a text field — it would add significant token cost to
+every single chat message, not just image requests. The RIGHT injection point
+for the governance logic is the server-side generateAshleySelfie function, not
+the profile text fields. The profile gives you identity anchors (appearance
+field). The routing engine lives on the server.
+
+2. FIELD STRUCTURE
+Structured fields exist (name, age, identity, appearance, personality, etc.).
+The appearance field already drives selfie identity. New governance parameters
+(composition mode default, environment default, occupancy default) should be new
+dedicated profile fields — the same way voice mode and builder-aware are
+booleans in the profile. Not shoved into the free-text appearance field.
+
+3. INJECTION TIMING
+Chat profile goes in on every message. For selfies, the profile is read at
+generation time inside generateAshleySelfie. Both are reliable. Governance
+parameters stored as profile fields would be available at exactly the right
+moment.
+
+4. IMAGE GENERATION CAPABILITY
+Currently openai.images.generate with gpt-image-1. Text-to-image only. Image
+generation still goes through the server pipeline — the profile layer does not
+trigger it directly. That pipeline is the right place to apply the governance
+framework.
+
+5. MODE 1 UI FEASIBILITY
+Yes. The profile screen already has structured controls (toggles, selector
+buttons). A new "Image defaults" section with tap-to-select parameters
+(composition mode, environment, activity, occupancy, time bucket, camera mode)
+is buildable without breaking anything.
+
+6. MODE 2 CONTEXT ANALYSIS
+Server-side, yes. The server already classifies image intent and extracts scene
+context from conversation. Extending generateAshleySelfie to read real clock
+time, day-of-week, season, and cross-reference them against the governance
+defaults is straightforward.
+
+7. REFERENCE IMAGE SUPPORT
+This is the hard one. openai.images.generate does not accept reference images.
+To use Atlas's R2 environment catalogue for consistency, the pipeline would need
+to switch to openai.images.edit (which takes a base image + mask) for
+environment-anchored shots. That is possible but it is a separate architecture
+change, and the Atlas catalogue would need to exist in R2 first. It is not part
+of a first build.
+
+8. OVERRIDE CONFIRMATION
+Confirmed. The appearance field already directly drives composeAppearance ->
+buildModePromptBlock -> the diffusion prompt. Governance parameters stored as
+profile fields would be read by the same function and would carry the same
+authority.
+
+9. CONFLICT WITH EXISTING PIPELINE
+Nothing needs to be retired. The governance framework is additive. The existing
+visual spec extraction, hair colour directives, and vibe parsing continue to
+work. Governance sits on top as structured defaults that feed into
+buildModePromptBlock.
+
+10. FEASIBILITY VERDICT
+Buildable in V1, no full rebuild required. Mode 1 and Mode 2 without reference
+images is one coherent build. Reference image environment consistency is a
+second build that depends on the Atlas R2 catalogue existing first.
+
+
+================================================================================
+THE THREE OPTIONS
+================================================================================
+
+OPTION A — SERVER GOVERNANCE ONLY (MODE 2, NO PROFILE UI)
+Implement the Section 9 routing logic inside generateAshleySelfie. Auto-select
+composition mode, environment, occupancy, activity based on real clock time,
+day of week, and season. Identity anchors already in place. No new profile
+screen changes. Quickest to ship.
+
+Portrait bias: substantially reduced.
+Environment consistency: improved prompts, but no guarantee of identical rooms.
+
+--
+
+OPTION B — SERVER GOVERNANCE + MODE 1 MANUAL BUILDER
+Everything in A, plus a new "Image defaults" section in the profile screen.
+Tap to set composition mode default, preferred environment, occupancy, camera
+mode. Kane controls what the system selects when no explicit instruction
+overrides it. Mode 2 still runs automatically; Mode 1 defaults inform it.
+
+Portrait bias: solved.
+Environment consistency: same as A — better but not pinned.
+
+--
+
+OPTION C — FULL SOLUTION WITH REFERENCE IMAGES
+Everything in B, plus a switch to openai.images.edit for environment-anchored
+shots, pulling Atlas reference images from R2. Pins the living room, bedroom,
+kitchen to consistent reference frames. Fully solves environment consistency.
+
+Prerequisite: Atlas environment catalogue must exist and be stored in R2 before
+this build starts.
+Scope: largest, two distinct phases.
+
+
+================================================================================
+WREN RECOMMENDATION
+================================================================================
+
+Option B is the right first build. It solves portrait bias, gives Kane manual
+control, and is self-contained. Option C depends on Atlas having the R2
+catalogue ready, which is not in hand today. Build B first, then layer C on top
+when the catalogue exists.
+
+================================================================================
+END OF FEASIBILITY VERDICT
+================================================================================
