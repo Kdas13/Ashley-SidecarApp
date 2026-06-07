@@ -779,7 +779,7 @@ async function supplementVibesForMultiImage(
       const personSubjects = personQueue.map((p) => p.subject);
       const personPrompt =
         `Generate ${personSubjects.length} selfie scene description${personSubjects.length > 1 ? "s" : ""} ` +
-        `for Ashley (a young woman with lavender hair and blue eyes).\n` +
+        `for Ashley (a young woman with blue eyes).\n` +
         `Each scene must be inspired by EXACTLY ONE subject, in order:\n` +
         personSubjects.map((s, i) => `${i + 1}. ${s}`).join("\n") +
         `\n\nRules:\n` +
@@ -2136,7 +2136,7 @@ function pruneSelfieCache(): void {
 const IDENTITY_CORE_HAIR_CONTAMINATION: readonly string[] = [
   // Hair-structure / style words
   "hair", "locks", "wavy", "curly", "straight", "braided",
-  // Forbidden base colours (appear in Ashley's lavender profile)
+  // Forbidden base colours (hair-specific; excluded from identity core extraction)
   "lavender", "purple", "violet", "lilac", "mauve", "plum",
   "grey", "gray", "silver", "platinum",
   // Hair-specific colour descriptors (never used for eyes or skin)
@@ -2218,7 +2218,7 @@ function renderIdentityCore(core: IdentityCore): string {
 
 // Returns the hair-related clauses from profile.appearance — the complement
 // of extractIdentityCore.  These form Ashley's DEFAULT VISUAL STATE for
-// identity-mode prompts (lavender hair when no override is requested).
+// identity-mode prompts when no override is requested.
 // In descriptor mode they are entirely bypassed — the descriptor replaces
 // the default visual state completely.
 function extractDefaultHairState(appearance: string): string {
@@ -2318,9 +2318,9 @@ async function generateAshleySelfie(
   // DEFAULT_IDENTITY. Pull the carried VisualSpec out of the vibe (it was
   // round-tripped through encodeVibeWithSpec when the assistant row was
   // persisted) and resolve the final appearance string via composeAppearance.
-  // This HARD REPLACES per-slot identity ("lavender hair" → "black hair" when
+  // This HARD REPLACES per-slot identity ("profile hair" → "black hair" when
   // the user said "black hair") and STRIPS clauses matching any user-stated
-  // negation ("no lavender at all" → drop every "lavender ..." clause from
+  // negation ("no X at all" → drop every "X ..." clause from
   // profile.appearance) BEFORE the prompt is built — diffusion never sees
   // contradictory clauses, and never sees a negation phrase.
   const { description: vibeDesc, spec: carriedSpec } = extractVisualSpecFromVibe(vibe);
@@ -2443,15 +2443,15 @@ async function generateAshleySelfie(
 
   // Marker-descriptor override: when vibe has no VSPEC (e.g. "redhead portrait"
   // from [image:redhead|portrait]) the descriptor word is just free text and the
-  // model defaults to Ashley's lavender hair profile. Detect the leading descriptor
+  // model may default to the profile hair colour. Detect the leading descriptor
   // and synthesise a minimal VisualSpec so composeAppearance + buildHairColourDirective
   // apply a hard hair-colour override — same precedence path as USER_EXPLICIT.
   //
   // Mapping (per product spec):
-  //   redhead   → "natural bright copper-red"  + negate lavender/purple/grey
-  //   blonde    → "light blonde"               + negate lavender/purple/grey
-  //   brunette  → "medium brown"               + negate lavender/purple/grey
-  //   blackhair → "jet black"                  + negate lavender/purple/grey
+  //   redhead   → "natural bright copper-red"  + negate purple/grey drift
+  //   blonde    → "light blonde"               + negate purple/grey drift
+  //   brunette  → "medium brown"               + negate purple/grey drift
+  //   blackhair → "jet black"                  + negate purple/grey drift
   // Mandatory descriptor map — hairColour values are used verbatim in the
   // final prompt; the model sees e.g. "She has natural bright copper-red hair."
   const DESCRIPTOR_HAIR_OVERRIDES: Record<string, { hairColour: string; negations: string[] }> = {
@@ -2464,7 +2464,7 @@ async function generateAshleySelfie(
   // FIX (root-cause May 2026): the imageGateSynth path calls encodeVibeWithSpec()
   // which bakes an EMPTY VSPEC marker into the description. extractVisualSpecFromVibe
   // then returns a non-null carriedSpec (appearance={}) which caused the old
-  // `!carriedSpec` guard to skip the descriptor override, leaving the lavender
+  // `!carriedSpec` guard to skip the descriptor override, leaving the
   // profile appearance untouched for every descriptor-driven job.
   // Correct gate: fire the override whenever the carried spec has NO explicit
   // hairColour — an empty VSPEC must not block the descriptor from controlling hair.
@@ -2504,7 +2504,7 @@ async function generateAshleySelfie(
     : (carriedSpec ?? _emptyBase);
   // DESCRIPTOR_MODE hard switch (spec Section 7):
   //   When descriptor is active, identity appearance is COMPLETELY DISABLED.
-  //   Skip composeAppearance entirely — it would inject Ashley's lavender profile.
+  //   Skip composeAppearance entirely — it would inject the profile appearance.
   //   The appearance string is ONLY the mapped hair colour; the shot type in
   //   buildModePromptBlock already anchors "young woman" as neutral baseline.
   //
@@ -2515,11 +2515,11 @@ async function generateAshleySelfie(
   // Scrub the vibe TEXT itself of any negated tokens or profile-default
   // colours that the user has overridden. The LLM writes the vibe with
   // Ashley's persona context (profile.appearance) in the system prompt, so
-  // it happily includes "lavender hair" in the scene description even when
-  // the current turn says "Black hair, no lavender". Without this scrub,
-  // diffusion sees "She has black hair." next to "Scene: ... lavender hair
-  // tied up ..." and renders a lavender-tinted result. The composed
-  // appearance sentence remains the sole identity anchor.
+  // it can include profile hair colour in the scene description even when
+  // the current turn overrides it. Without this scrub, diffusion sees
+  // the override colour next to the old profile colour in the scene text
+  // and blends them. The composed appearance sentence remains the sole
+  // identity anchor.
   const scrubbedVibe = scrubVibeForOverrides(vibeDesc, baseAppearance, effectiveSpec);
   // Re-encode the VSPEC marker onto the scrubbed vibe so any further
   // round-trip (cache key, follow-up rehydration) preserves the spec.
@@ -2563,9 +2563,8 @@ async function generateAshleySelfie(
   // sets a hair colour OR negates one, emit a dedicated colour anchor
   // (positive synonyms + explicit forbidden list) right after the framing
   // sentence. Defeats the model's cool-tone gravity that produced
-  // lavender-grey hair on the bar-stool/jacket scene despite three
-  // "ginger hair" mentions in the prompt body. Empty string when no
-  // hair-colour intent is present — buildModePromptBlock filters it out.
+  // off-colour hair on scenes despite explicit colour mentions in the prompt.
+  // Empty string when no hair-colour intent is present — buildModePromptBlock filters it out.
   const hairDirective = effectiveSpec ? buildHairColourDirective(effectiveSpec) : "";
   // Wren May 2026: Visual Memory Anchor injection. The `{{VMEM}}<id>{{/VMEM}}`
   // marker (if present) was baked into the description by the chat-route
@@ -2610,7 +2609,7 @@ async function generateAshleySelfie(
   // IDENTITY MODE (no descriptor): same two-layer structure as descriptor mode.
   //   Layer 1 — STABLE ASHLEY IDENTITY: identityCore (face/eyes/complexion).
   //             Hair is NEVER in this layer in either mode.
-  //   Layer 2 — VISUAL STATE: default hair (lavender from profile) unless
+  //   Layer 2 — VISUAL STATE: default hair from profile unless
   //             effectiveSpec.appearance.hairColour is set by the user's
   //             message, in which case it replaces the default completely.
   //
@@ -2667,7 +2666,7 @@ async function generateAshleySelfie(
     // IDENTITY MODE — two-layer prompt.
     // Layer 1: STABLE ASHLEY IDENTITY — identityCore only (face/eyes/complexion).
     //   Hair is never in this layer.
-    // Layer 2: VISUAL STATE — default hair from profile (lavender), OR
+    // Layer 2: VISUAL STATE — default hair from profile, OR
     //   effectiveSpec.appearance.hairColour if the user's message set one
     //   ("make her hair red today" → replaces default completely).
     const _idCore = extractIdentityCore(baseAppearance);
@@ -2678,7 +2677,7 @@ async function generateAshleySelfie(
     }
     const idStable = renderIdentityCore(_idCore);
 
-    // Default visual state: hair clauses from profile (e.g. "lavender hair (long, wavy)").
+    // Default visual state: hair clauses from profile appearance field.
     const defaultHair = extractDefaultHairState(baseAppearance);
     // effectiveSpec override wins when the message turn set a hairColour.
     const activeHairSentence = effectiveSpec?.appearance?.hairColour
@@ -2741,7 +2740,7 @@ async function generateAshleySelfie(
       "lavender", "purple", "lilac", "violet",
     ];
     // Strip the negation/directive section before scanning so legitimate
-    // "MUST NOT be lavender..." text doesn't trigger a false positive.
+    // "MUST NOT be ..." directive text doesn't trigger a false positive.
     const promptWithoutNegation = _descriptorOverride
       ? fullPrompt.replace(DESCRIPTOR_NEGATIVE_DIRECTIVE, "")
       : (hairDirective ? fullPrompt.replace(hairDirective, "") : fullPrompt);
@@ -3209,15 +3208,14 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
   //   3. Legacy bare vibes get classified by keyword.
   const decoded = decodeStoredVibe(vibe);
   const imageMode: ImageMode = clientImageMode ?? decoded.mode;
-  // Wren May 2026 fix (regression: lavender hair on "Blonde hair no lavender"
-  // even though the spec was extracted correctly upstream): KEEP the VSPEC
-  // marker on the vibe forwarded to generateAshleySelfie. The marker is the
-  // only mechanism that round-trips the user's hair-colour overrides and
-  // negations from extractVisualSpecCompound through the assistant message
-  // back to the image generator. Stripping it here meant carriedSpec arrived
-  // null inside generateAshleySelfie, composeAppearance returned the raw
-  // profile (lavender hair survived in the identity sentence) and
-  // buildHairColourDirective was never called. generateAshleySelfie does its
+  // Wren May 2026 fix (regression: wrong hair colour rendered even though the
+  // spec was extracted correctly upstream): KEEP the VSPEC marker on the vibe
+  // forwarded to generateAshleySelfie. The marker is the only mechanism that
+  // round-trips the user's hair-colour overrides and negations from
+  // extractVisualSpecCompound through the assistant message back to the image
+  // generator. Stripping it here meant carriedSpec arrived null inside
+  // generateAshleySelfie, composeAppearance returned the raw profile appearance
+  // and buildHairColourDirective was never called. generateAshleySelfie does its
   // own extractVisualSpecFromVibe call to separate description from spec for
   // prompt assembly, so the marker never reaches the diffusion prompt body.
   // Cache keys are built from the FINAL prompt (post-extraction), so they

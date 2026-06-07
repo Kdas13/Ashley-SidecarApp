@@ -41,7 +41,7 @@
 //      can re-resolve the anchor at render time and pass a `sceneAnchor`
 //      directive into buildModePromptBlock.
 //   4. The anchor never touches profile.appearance — composeAppearance still
-//      sees the unmodified profile string. Identity stays lavender; only
+//      sees the unmodified profile string. Identity stays as-is from profile; only
 //      this one selfie carries the sofa-room scene description.
 // ---------------------------------------------------------------------------
 
