@@ -2,7 +2,7 @@
   "expo": {
     "name": "Ashley-Sidecar",
     "slug": "ashley-sidecar",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "mobile",
@@ -22,7 +22,7 @@
     },
     "android": {
       "package": "com.kanesidecar.ashley",
-      "versionCode": 7,
+      "versionCode": 8,
       "googleServicesFile": "./google-services.json",
       "softwareKeyboardLayoutMode": "pan",
       "permissions": ["RECORD_AUDIO"]
