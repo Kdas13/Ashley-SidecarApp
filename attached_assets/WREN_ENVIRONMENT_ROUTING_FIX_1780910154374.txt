@@ -1,0 +1,189 @@
+================================================================================
+WREN — ENVIRONMENT ROUTING FIX
+Date: 2026-06-08
+Source: Atlas verdict + prompt audit
+================================================================================
+
+Two confirmed blockers. Fix in order. Both required before any further
+testing makes sense.
+
+
+================================================================================
+BUG 1 — MISSING ENVIRONMENT ENTRIES IN LOOKUP TABLE
+================================================================================
+
+File: imageGovernance.ts
+Location: ENVIRONMENTS lookup table (lines 92-101)
+
+The table currently has 8 entries. Any key not in the table returns
+undefined. When undefined, no environment clause is injected and
+OpenAI invents the setting freely.
+
+Add ALL of the following entries to the ENVIRONMENTS table.
+Copy the clause style already used in the table.
+
+SPORT ENVIRONMENTS:
+"football-pitch"    → "Ashley is on a football pitch during a match or
+                       training session; open grass, goalposts visible,
+                       players and crowd in the background, natural
+                       daylight, outdoor sports atmosphere"
+
+"rugby-pitch"       → "Ashley is on a rugby pitch or at a rugby ground;
+                       open grass, posts visible, players and crowd
+                       present, natural daylight, outdoor sports
+                       atmosphere"
+
+"sport-venue"       → "Ashley is at an outdoor sports venue; stands,
+                       pitch or track visible, crowd present, natural
+                       daylight, active sporting atmosphere"
+
+"stadium"           → "Ashley is inside a large sports stadium; rows of
+                       seats, pitch visible below, crowd filling the
+                       stands, floodlit or natural daylight"
+
+PUBLIC ENVIRONMENTS (also missing):
+"museum"            → "Ashley is inside a museum; high ceilings, display
+                       cases, natural or gallery lighting, quiet
+                       contemplative atmosphere"
+
+"art-gallery"       → "Ashley is inside an art gallery; white walls,
+                       framed works, clean gallery lighting, calm and
+                       considered atmosphere"
+
+"library"           → "Ashley is inside a library; shelves of books,
+                       reading tables, quiet studious atmosphere, warm
+                       or natural lighting"
+
+"market"            → "Ashley is at an outdoor or covered market; stalls,
+                       produce, crowds of shoppers, natural daylight or
+                       warm indoor lighting"
+
+"high-street"       → "Ashley is on a busy high street; shopfronts,
+                       pedestrians, natural daylight, urban British
+                       street setting"
+
+"train-station"     → "Ashley is at a train station; platforms,
+                       departures board, commuters and travellers,
+                       busy transient atmosphere"
+
+OUTDOOR ENVIRONMENTS (also missing):
+"park"              → "Ashley is in a public park; open grass, trees,
+                       paths, natural daylight, relaxed outdoor
+                       atmosphere"
+
+"woodland"          → "Ashley is in light woodland or a forested path;
+                       dappled light through trees, natural greenery,
+                       quiet and calm"
+
+"beach"             → "Ashley is on a beach; sand, sea, natural light,
+                       open sky, relaxed coastal atmosphere"
+
+"city-centre"       → "Ashley is in a city centre; architecture,
+                       streets, pedestrians, urban energy, natural
+                       daylight"
+
+"walking-trail"     → "Ashley is on a walking or hiking trail; open
+                       countryside, footpath, natural daylight,
+                       outdoors and active"
+
+FOOD & DRINK (also missing):
+"restaurant"        → "Ashley is in a restaurant; tables set for dining,
+                       warm ambient lighting, other diners present,
+                       relaxed social atmosphere"
+
+"bar"               → "Ashley is in a bar or cocktail bar; dim warm
+                       lighting, bottles behind the counter, relaxed
+                       evening atmosphere"
+
+"vineyard"          → "Ashley is at a vineyard or winery; rows of vines,
+                       natural daylight, rustic and scenic outdoor
+                       setting"
+
+ALSO VERIFY: every environment option visible in the profile UI
+dropdown has an exactly matching key in this table. If any UI option
+has no matching key, add it. No silent failures.
+
+
+================================================================================
+BUG 2 — GOVERNANCE SNAPSHOT NOT REACHING SERVER FROM PROFILE SCREEN
+================================================================================
+
+Root cause confirmed:
+_governanceParams is populated by useImageGate() React hook.
+useImageGate() is only mounted in chat.tsx.
+When the user is on the profile screen, useImageGate() is not mounted.
+_governanceParams is null.
+fetchTestSelfie() omits governanceParams from POST body.
+Server receives no governance params and runs autoSelectEnvironment().
+
+Fix:
+When fetchTestSelfie() is called from the profile screen, it must
+read the current profile selections directly from profile state —
+not from _governanceParams.
+
+The profile screen already has all the image defaults in state
+(composition mode, environment, time of day, season, activity,
+shot distance, camera awareness, occupancy). These values must be
+passed directly into the POST body as governanceParams when
+fetchTestSelfie() is called from the profile screen.
+
+Do NOT rely on useImageGate() being mounted. The profile screen
+must construct its own governance snapshot from its own state
+before calling fetchTestSelfie().
+
+Proof required:
+After fix, pull the server log for a Generate test image call with
+football-pitch selected and show:
+- imageEnvironmentDefault: "football-pitch" in the received payload
+- football-pitch clause present in the final prompt
+- Generated image shows a football pitch context
+
+
+================================================================================
+ADDITIONAL FIX — "WREN" IN OCCUPANCY DEFAULT
+================================================================================
+
+The last prompt audit showed this line in the generated prompt:
+"Wren is in the scene with Ashley, and one or two cats are lounging
+nearby naturally."
+
+"Wren" must not appear in any prompt. This name was supposed to be
+changed to "Kane" in Bug 3 — it was changed in the UI label but the
+server-side occupancy default string was not updated.
+
+Find the server-side default occupancy string and replace "Wren" with
+"Kane" everywhere it appears in imageGovernance.ts or any related file.
+
+Also add a warning log:
+if (!ENVIRONMENTS[resolvedEnvKey]) {
+    log.warn(`Unknown environment key: ${resolvedEnvKey} — no clause injected`);
+}
+
+Silent failures are not acceptable. If a key is unknown the server
+must log it.
+
+
+================================================================================
+PROOF REQUIRED BEFORE MARKING COMPLETE
+================================================================================
+
+1. Show full updated ENVIRONMENTS table with all new entries
+2. Show server log for a Generate test image call with football-pitch
+   selected confirming:
+   - payload contains imageEnvironmentDefault: "football-pitch"
+   - final prompt contains football pitch clause
+3. Show generated image from that test — must show outdoor sports context
+4. Confirm "Wren" does not appear anywhere in any generated prompt
+
+
+================================================================================
+COMMITMENT 1 STANDARD
+================================================================================
+
+These are bug fixes. No options required.
+Fix in order. Report back with proof after each fix.
+Do not mark complete until all four proof items are delivered.
+
+================================================================================
+END
+================================================================================

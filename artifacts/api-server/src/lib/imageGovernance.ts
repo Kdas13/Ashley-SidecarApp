@@ -23,6 +23,7 @@
 // =============================================================================
 
 import { type ImageMode } from "./imageIntent.js";
+import { logger } from "./logger.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -90,18 +91,60 @@ type EnvEntry = {
 };
 
 const ENVIRONMENTS: Partial<Record<string, EnvEntry>> = {
-  "living-room":     { clause: "Ashley is in the living room of her flat; warm, familiar home setting with soft furnishings and natural daylight" },
-  "bedroom":         { clause: "Ashley is in the bedroom; soft ambient light, relaxed and private atmosphere" },
-  "kitchen":         { clause: "Ashley is in the kitchen; bright everyday domestic setting" },
-  "garden":          { clause: "Ashley is in a residential back garden; natural daylight, greenery, relaxed outdoor setting" },
-  "outdoors-urban":  { clause: "Ashley is outdoors in a quiet residential street or urban setting; natural light, urban backdrop" },
-  "outdoors-nature": { clause: "Ashley is outdoors in a natural setting — park, field, or light woodland; natural daylight and greenery" },
-  "cafe":            { clause: "Ashley is in a cosy café; warm interior lighting, wooden furniture, soft background atmosphere" },
-  "gym":             { clause: "Ashley is in a gym; functional interior, good overhead lighting, athletic surroundings" },
+  // ── Home ──────────────────────────────────────────────────────────────────
+  "living-room":      { clause: "Ashley is in the living room of her flat; warm, familiar home setting with soft furnishings and natural daylight" },
+  "bedroom":          { clause: "Ashley is in the bedroom; soft ambient light, relaxed and private atmosphere" },
+  "kitchen":          { clause: "Ashley is in the kitchen; bright everyday domestic setting" },
+  "study":            { clause: "Ashley is in a home study or office; bookshelves, a desk, focused quiet atmosphere with warm lighting" },
+  "garden":           { clause: "Ashley is in a residential back garden; natural daylight, greenery, relaxed outdoor setting" },
+  "bathroom":         { clause: "Ashley is in a home bathroom; clean domestic interior, bright or warm lighting, private and relaxed" },
+  // ── Food & Drink ──────────────────────────────────────────────────────────
+  "cafe":             { clause: "Ashley is in a cosy café; warm interior lighting, wooden furniture, soft background atmosphere" },
+  "restaurant":       { clause: "Ashley is in a restaurant; tables set for dining, warm ambient lighting, other diners present, relaxed social atmosphere" },
+  "pub":              { clause: "Ashley is in a British pub; wooden furniture, beer taps at the bar, warm lighting, relaxed social atmosphere" },
+  "bar":              { clause: "Ashley is in a bar or cocktail bar; dim warm lighting, bottles behind the counter, relaxed evening atmosphere" },
+  "vineyard":         { clause: "Ashley is at a vineyard or winery; rows of vines, natural daylight, rustic and scenic outdoor setting" },
+  "whisky-distillery":{ clause: "Ashley is inside a whisky distillery; copper stills, oak casks, stone or brick interior, warm atmospheric lighting" },
+  // ── Entertainment ─────────────────────────────────────────────────────────
+  "nightclub":        { clause: "Ashley is in a nightclub; low lighting, coloured lights, dancing crowd, music venue atmosphere" },
+  "music-gig":        { clause: "Ashley is at a live music gig; stage lighting, crowd, intimate venue atmosphere" },
+  "festival":         { clause: "Ashley is at an outdoor music festival; colourful crowds, tents and stages, natural daylight, lively atmosphere" },
+  "concert":          { clause: "Ashley is at a concert or live performance; auditorium seating, stage lighting, expectant atmosphere" },
+  "sporting-event":   { clause: "Ashley is watching a sporting event from the stands; crowd, pitch or track visible, natural daylight or floodlighting" },
+  "cinema":           { clause: "Ashley is in a cinema; rows of seats, large screen, darkened room, warm ambient lighting" },
+  "house-party":      { clause: "Ashley is at a house party; domestic interior, groups of people, relaxed social atmosphere, warm lighting" },
+  // ── Sports Venues ─────────────────────────────────────────────────────────
+  "football-pitch":   { clause: "Ashley is on a football pitch during a match or training session; open grass, goalposts visible, players and crowd in the background, natural daylight, outdoor sports atmosphere" },
+  "football-stadium": { clause: "Ashley is inside a football stadium; rows of seats, pitch visible below, crowd filling the stands, floodlit or natural daylight" },
+  "rugby-ground":     { clause: "Ashley is at a rugby ground; open grass pitch, posts visible, players and crowd present, natural daylight, outdoor sports atmosphere" },
+  "rugby-pitch":      { clause: "Ashley is on a rugby pitch or at a rugby ground; open grass, posts visible, players and crowd present, natural daylight, outdoor sports atmosphere" },
+  "sport-venue":      { clause: "Ashley is at an outdoor sports venue; stands, pitch or track visible, crowd present, natural daylight, active sporting atmosphere" },
+  "stadium":          { clause: "Ashley is inside a large sports stadium; rows of seats, pitch visible below, crowd filling the stands, floodlit or natural daylight" },
+  "gym":              { clause: "Ashley is in a gym; functional interior, good overhead lighting, athletic surroundings" },
+  // ── Public ────────────────────────────────────────────────────────────────
+  "museum":           { clause: "Ashley is inside a museum; high ceilings, display cases, natural or gallery lighting, quiet contemplative atmosphere" },
+  "art-gallery":      { clause: "Ashley is inside an art gallery; white walls, framed works, clean gallery lighting, calm and considered atmosphere" },
+  "library":          { clause: "Ashley is inside a library; shelves of books, reading tables, quiet studious atmosphere, warm or natural lighting" },
+  "market":           { clause: "Ashley is at an outdoor or covered market; stalls, produce, crowds of shoppers, natural daylight or warm indoor lighting" },
+  "high-street":      { clause: "Ashley is on a busy high street; shopfronts, pedestrians, natural daylight, urban British street setting" },
+  "train-station":    { clause: "Ashley is at a train station; platforms, departures board, commuters and travellers, busy transient atmosphere" },
+  // ── Outdoor ───────────────────────────────────────────────────────────────
+  "outdoors-urban":   { clause: "Ashley is outdoors in a quiet residential street or urban setting; natural light, urban backdrop" },
+  "outdoors-nature":  { clause: "Ashley is outdoors in a natural setting — park, field, or light woodland; natural daylight and greenery" },
+  "park":             { clause: "Ashley is in a public park; open grass, trees, paths, natural daylight, relaxed outdoor atmosphere" },
+  "woodland":         { clause: "Ashley is in light woodland or a forested path; dappled light through trees, natural greenery, quiet and calm" },
+  "beach":            { clause: "Ashley is on a beach; sand, sea, natural light, open sky, relaxed coastal atmosphere" },
+  "city-centre":      { clause: "Ashley is in a city centre; architecture, streets, pedestrians, urban energy, natural daylight" },
+  "walking-trail":    { clause: "Ashley is on a walking or hiking trail; open countryside, footpath, natural daylight, outdoors and active" },
+  // ── Travel ────────────────────────────────────────────────────────────────
+  "hotel":            { clause: "Ashley is in a hotel room or hotel lobby; well-appointed interior, soft furnishings, ambient lighting, temporary-stay atmosphere" },
+  "holiday-cottage":  { clause: "Ashley is in a holiday cottage; cosy domestic interior, exposed beams or stone, warm lighting, relaxed holiday atmosphere" },
+  "beach-holiday":    { clause: "Ashley is on a beach holiday; sand, sea, sun, natural light, open sky, relaxed coastal atmosphere" },
+  "mountain-retreat": { clause: "Ashley is at a mountain retreat or highland setting; dramatic landscape, open sky, natural daylight, rugged outdoor atmosphere" },
 };
 
 // Cat plausibility filter: cats only plausible in home / garden environments.
-const HOME_ENVIRONMENTS = new Set(["living-room", "bedroom", "kitchen", "garden"]);
+const HOME_ENVIRONMENTS = new Set(["living-room", "bedroom", "kitchen", "study", "garden", "bathroom", "holiday-cottage"]);
 
 // ---------------------------------------------------------------------------
 // Section 2: Occupancy profiles
@@ -111,13 +154,13 @@ function buildOccupancyClause(occupancy: string, envKey: string): string {
   const inHome = HOME_ENVIRONMENTS.has(envKey);
   switch (occupancy) {
     case "with-kane":
-      return "Wren is in the scene with Ashley, sitting or standing nearby in a relaxed and natural way";
+      return "Kane is in the scene with Ashley, sitting or standing nearby in a relaxed and natural way";
     case "with-cats":
       if (!inHome) return "";          // cats implausible in café / gym / outdoors
       return "one or two cats are present in the scene, lounging nearby in a natural relaxed way";
     case "with-kane-and-cats":
-      if (!inHome) return "Wren is in the scene with Ashley, sitting or standing nearby in a relaxed way";
-      return "Wren is in the scene with Ashley, and one or two cats are lounging nearby naturally";
+      if (!inHome) return "Kane is in the scene with Ashley, sitting or standing nearby in a relaxed way";
+      return "Kane is in the scene with Ashley, and one or two cats are lounging nearby naturally";
     case "solo":
     default:
       return "";
@@ -221,6 +264,9 @@ export function applyGovernance(
   // ── 1. Resolve environment (Mode 1 explicit or Mode 2 auto) ───────────────
   const resolvedEnvKey = envPref !== "auto" ? envPref : autoSelectEnvironment(now, tz);
   const envEntry = ENVIRONMENTS[resolvedEnvKey];
+  if (!envEntry) {
+    logger.warn({ resolvedEnvKey, envPref }, `Unknown environment key: "${resolvedEnvKey}" — no environment clause injected into prompt`);
+  }
 
   // ── 2. Resolve composition / camera (only overrides PORTRAIT_MODE) ────────
   // Priority: explicit camera > explicit composition > product default.

@@ -423,7 +423,23 @@ export default function ProfileScreen(): React.JSX.Element {
     setTestImageUrl(null);
     setTestImageLoading(true);
     try {
-      const result = await fetchTestSelfie();
+      // Build governance snapshot directly from draft state.
+      // Do NOT rely on _governanceParams from imageGate — that module-level
+      // variable is only synced while chat.tsx is mounted, not profile.tsx.
+      const governanceSnapshot = {
+        imageCompositionMode: compositionMode !== "auto" ? compositionMode : null,
+        imageEnvironmentDefault: environmentDefault !== "auto" ? environmentDefault : null,
+        imageOccupancyDefault: occupancyDefault !== "auto" ? occupancyDefault : null,
+        imageCameraDefault: draft.imageCameraDefault ?? null,
+        imageDefaultsExtra: {
+          timeOfDay: timeOfDay !== "auto" ? timeOfDay : null,
+          season: season !== "auto" ? season : null,
+          activity: activity !== "auto" ? activity : null,
+          shotDistance: shotDistance !== "auto" ? shotDistance : null,
+          cameraAwareness: cameraAwareness,
+        },
+      };
+      const result = await fetchTestSelfie(governanceSnapshot);
       setTestImageUrl(result.imageUrl);
     } catch {
       Alert.alert("Generation failed", "Could not generate a test image. Try again.");

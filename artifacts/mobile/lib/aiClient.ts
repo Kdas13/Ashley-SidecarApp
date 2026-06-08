@@ -1631,15 +1631,9 @@ export async function sendDocumentIngest({
  * Posts testMode=true so the server skips the message ownership check.
  * Returns the image URL once generation completes.
  */
-export async function fetchTestSelfie(): Promise<{ imageUrl: string }> {
-  let governanceParams: Record<string, unknown> | null = null;
-  try {
-    const { getGovernanceParams } = await import("./imageGate");
-    governanceParams = getGovernanceParams() as Record<string, unknown> | null;
-  } catch {
-    // non-fatal — server applies its own defaults
-  }
-
+export async function fetchTestSelfie(
+  governanceParams?: Record<string, unknown> | null,
+): Promise<{ imageUrl: string }> {
   const fakeId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const startRes = await fetchJSON<{ jobId?: unknown }>("/chat/selfie", {
     method: "POST",
