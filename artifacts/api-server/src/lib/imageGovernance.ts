@@ -114,7 +114,7 @@ const ENVIRONMENTS: Partial<Record<string, EnvEntry>> = {
   "cinema":           { clause: "Ashley is in a cinema; rows of seats, large screen, darkened room, warm ambient lighting" },
   "house-party":      { clause: "Ashley is at a house party; domestic interior, groups of people, relaxed social atmosphere, warm lighting" },
   // ── Sports Venues ─────────────────────────────────────────────────────────
-  "football-pitch":   { clause: "Ashley is on a football pitch during a match or training session; open grass, goalposts visible, players and crowd in the background, natural daylight, outdoor sports atmosphere. The camera is positioned 15-20 metres back. Ashley is a small figure on the pitch, not the foreground subject. The match and the pitch are the subject. She is one player among fifteen or twenty visible on the field. Ashley occupies no more than 10-15% of the total frame. Ashley is captured mid-action — running, sprinting toward the ball, making a tackle, calling for a pass, or celebrating. She is not standing still. She is not posing. She does not know the camera is there." },
+  "football-pitch":   { clause: "Outdoor grass football pitch. A live match or training session in progress. Goalposts visible at both ends. Approximately twenty players spread across the field, moving. Natural daylight. Camera positioned 15-20 metres back from the action at ground level. Wide establishing shot. Multiple players visible throughout the frame. One player among the group has teal-blue hair and is a small figure in the mid-ground — not the focal subject. The pitch, the other players, and the atmosphere fill the majority of the frame." },
   "football-stadium": { clause: "Ashley is inside a football stadium; rows of seats, pitch visible below, crowd filling the stands, floodlit or natural daylight" },
   "rugby-ground":     { clause: "Ashley is at a rugby ground; open grass pitch, posts visible, players and crowd present, natural daylight, outdoor sports atmosphere" },
   "rugby-pitch":      { clause: "Ashley is on a rugby pitch or at a rugby ground; open grass, posts visible, players and crowd present, natural daylight, outdoor sports atmosphere" },
@@ -336,15 +336,16 @@ export function applyGovernance(
     parts.push(`Season: ${SEASON_LABELS[season]}.`);
   }
 
-  if (activity !== "auto" && activity) {
+  // Activity and camera awareness are omitted in SCENE_MODE.
+  // The environment clause already establishes what is happening — repeating
+  // the activity (e.g. "playing football") and appending a kit or awareness
+  // clause triggers a strong model prior for domestic/home scenes (person in
+  // kit doing kick-ups in a kitchen) that overrides every location instruction.
+  // For non-SCENE_MODE, activity and awareness remain in the prompt.
+  if (!isSceneMode && activity !== "auto" && activity) {
     parts.push(`Activity: ${activity}.`);
     if (activity === "playing football") {
-      if (isSceneMode) {
-        // In SCENE_MODE the figure is one player among many — no named reference.
-        parts.push("She wears a football jersey and shorts in one of the teams' colours, dressed as a player not a spectator.");
-      } else {
-        parts.push("Ashley is wearing a football jersey and shorts in colours matching one of the teams visible on the pitch. She is dressed as a player, not a spectator.");
-      }
+      parts.push("Ashley is wearing a football jersey and shorts in colours matching one of the teams visible on the pitch. She is dressed as a player, not a spectator.");
     }
   }
 
@@ -359,23 +360,19 @@ export function applyGovernance(
     parts.push(`Shot distance: ${SHOT_LABELS[shotDistance]}.`);
   }
 
-  // ── 6. Camera awareness ───────────────────────────────────────────────────
-  // In SCENE_MODE use subject-neutral phrasing — no named reference.
-  const AWARENESS_LABELS: Record<string, string> = isSceneMode
-    ? {
-        unaware:  "unaware of the camera — candid, natural, not posed",
-        indirect: "glancing obliquely toward the camera, not directly",
-        direct:   "looking directly into the camera",
-        auto:     "unaware of the camera — candid, natural, not posed",
-      }
-    : {
-        unaware:  "Ashley is unaware of the camera — candid, natural, not posed",
-        indirect: "Ashley is glancing obliquely toward the camera, not directly",
-        direct:   "Ashley is looking directly into the camera",
-        auto:     "Ashley is unaware of the camera — candid, natural, not posed",
-      };
-  const awarenessClause = AWARENESS_LABELS[cameraAwareness] ?? AWARENESS_LABELS["unaware"]!;
-  parts.push(`Camera awareness: ${awarenessClause}.`);
+  // Camera awareness: omit entirely in SCENE_MODE — "unaware of camera" and
+  // "candid, natural, not posed" are domestic-photography phrases that push
+  // the model toward interior home scenes.
+  if (!isSceneMode) {
+    const AWARENESS_LABELS: Record<string, string> = {
+      unaware:  "Ashley is unaware of the camera — candid, natural, not posed",
+      indirect: "Ashley is glancing obliquely toward the camera, not directly",
+      direct:   "Ashley is looking directly into the camera",
+      auto:     "Ashley is unaware of the camera — candid, natural, not posed",
+    };
+    const awarenessClause = AWARENESS_LABELS[cameraAwareness] ?? AWARENESS_LABELS["unaware"]!;
+    parts.push(`Camera awareness: ${awarenessClause}.`);
+  }
 
   return {
     imageMode: resolvedImageMode,

@@ -2755,7 +2755,13 @@ async function generateAshleySelfie(
       ? `She has ${effectiveSpec.appearance.hairColour} hair.`
       : (defaultHair ? `She has ${defaultHair}.` : "");
 
-    const sceneText = [governedVibePrefix, vibeNoMem.trim()].filter(Boolean).join(" ");
+    // For SCENE_MODE: use only the governance prefix — do NOT append vibeNoMem.
+    // The test vibe ("candid natural moment") and similar phrases are domestic
+    // photography idioms that pull the model toward interior home scenes
+    // regardless of what the environment clause says.
+    const sceneText = imageMode === "SCENE_MODE"
+      ? governedVibePrefix
+      : [governedVibePrefix, vibeNoMem.trim()].filter(Boolean).join(" ");
 
     if (imageMode === "SCENE_MODE") {
       // ENVIRONMENT-FIRST structure.
