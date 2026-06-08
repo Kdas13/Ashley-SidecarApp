@@ -335,7 +335,7 @@ export function applyGovernance(
     "close-up":     "close-up shot",
     "half-body":    "half-body shot",
     "full-body":    "full-body shot",
-    "wide-room":    "wide room shot",
+    "wide-room":    "wide environmental shot",
     "architectural":"architectural wide shot",
   };
   if (shotDistance !== "auto" && SHOT_LABELS[shotDistance]) {
