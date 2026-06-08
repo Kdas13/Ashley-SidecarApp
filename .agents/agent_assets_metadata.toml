@@ -149,3 +149,15 @@ id = "PIares7KUg-_RdblTcW9B"
 uri = "file://attached_assets/audit_5_bug_confirmation.txt"
 type = "text"
 title = "5 — Bug confirmation (exact changes per bug)"
+
+[[outputs]]
+id = "KOkOaukbC3L_tB2EDX0b0"
+uri = "file://.local/audit/environment-table.txt"
+type = "text"
+title = "Environment lookup table"
+
+[[outputs]]
+id = "i3Amyyr5Xk8zhz_FrazyN"
+uri = "file://.local/audit/last-prompt.txt"
+type = "text"
+title = "Full prompt — last test image request"
