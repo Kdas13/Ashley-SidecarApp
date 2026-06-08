@@ -2739,12 +2739,7 @@ async function generateAshleySelfie(
       .filter(Boolean)
       .join("\n\n");
   } else {
-    // IDENTITY MODE — two-layer prompt.
-    // Layer 1: STABLE ASHLEY IDENTITY — identityCore only (face/eyes/complexion).
-    //   Hair is never in this layer.
-    // Layer 2: VISUAL STATE — default hair from profile, OR
-    //   effectiveSpec.appearance.hairColour if the user's message set one
-    //   ("make her hair red today" → replaces default completely).
+    // IDENTITY MODE — prompt structure varies by imageMode.
     const _idCore = extractIdentityCore(baseAppearance);
     try {
       assertIdentityCoreIsClean(_idCore, jobId);
@@ -2760,34 +2755,73 @@ async function generateAshleySelfie(
       ? `She has ${effectiveSpec.appearance.hairColour} hair.`
       : (defaultHair ? `She has ${defaultHair}.` : "");
 
-    const shot = wrapper.shotType.replace(/{subject}/g, ashleyName);
-    const identityModifier = idStable ? ` with ${idStable}` : "";
-    const stableShot = shot.includes(", a young woman,")
-      ? shot.replace(", a young woman,", `, a young woman${identityModifier},`)
-      : shot;
-
-    // Visual state block — active hair → colour directive (if override) →
-    // scene anchor → vibe/scene. Joins with newline within the block;
-    // double-newline separates it from the identity layer above.
-    // Prepend the governance vibe prefix (environment + occupancy clauses)
-    // to the scene description. When governance is inactive the prefix is empty
-    // and the scene is assembled from the vibe alone.
     const sceneText = [governedVibePrefix, vibeNoMem.trim()].filter(Boolean).join(" ");
-    const visualStateLines = [
-      activeHairSentence,
-      hairDirective,
-      sceneAnchorDirective,
-      sceneText ? `Scene: ${sceneText}.` : "",
-    ].filter(Boolean).join("\n");
 
-    fullPrompt = [
-      buildSelfiePromptSafetyPrefix(),
-      `STABLE ASHLEY IDENTITY: ${stableShot}.`,
-      visualStateLines,
-      wrapper.styleLine + ".",
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    if (imageMode === "SCENE_MODE") {
+      // ENVIRONMENT-FIRST structure.
+      //
+      // Models build images from the start of the prompt outwards. Placing
+      // Ashley's identity anchor first makes her the focal point regardless of
+      // what follows. For environment-centric images the scene must be
+      // established before she is introduced — she is then a small recognisable
+      // figure placed within the already-composed scene rather than the subject
+      // the composition is built around.
+      //
+      // Prompt order:
+      //   1. Safety prefix
+      //   2. SCENE — environment, atmosphere, activity (the primary subject)
+      //   3. Style line
+      //   4. FIGURE IN SCENE — Ashley injected last, ~5% of frame
+      //
+      // Hair is carried inside the FIGURE block so it remains available for
+      // identity but does not influence the spatial composition.
+      const figureDescription = [
+        idStable ? `A young woman with ${idStable}` : "A young woman",
+        "is present in the scene as a small, recognisable figure.",
+        activeHairSentence,
+        "She occupies approximately 5% of the total frame area and is not the focal point.",
+        "The environment and scene are the primary subject of this image.",
+      ].filter(Boolean).join(" ");
+
+      fullPrompt = [
+        buildSelfiePromptSafetyPrefix(),
+        sceneText ? `SCENE: ${sceneText}.` : "",
+        wrapper.styleLine + ".",
+        `FIGURE IN SCENE: ${figureDescription}`,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    } else {
+      // STANDARD IDENTITY MODE — Ashley-first two-layer prompt.
+      // Layer 1: STABLE ASHLEY IDENTITY — identityCore only (face/eyes/complexion).
+      //   Hair is never in this layer.
+      // Layer 2: VISUAL STATE — default hair from profile, OR
+      //   effectiveSpec.appearance.hairColour if the user's message set one.
+      const shot = wrapper.shotType.replace(/{subject}/g, ashleyName);
+      const identityModifier = idStable ? ` with ${idStable}` : "";
+      const stableShot = shot.includes(", a young woman,")
+        ? shot.replace(", a young woman,", `, a young woman${identityModifier},`)
+        : shot;
+
+      // Visual state block — active hair → colour directive (if override) →
+      // scene anchor → vibe/scene. Joins with newline within the block;
+      // double-newline separates it from the identity layer above.
+      const visualStateLines = [
+        activeHairSentence,
+        hairDirective,
+        sceneAnchorDirective,
+        sceneText ? `Scene: ${sceneText}.` : "",
+      ].filter(Boolean).join("\n");
+
+      fullPrompt = [
+        buildSelfiePromptSafetyPrefix(),
+        `STABLE ASHLEY IDENTITY: ${stableShot}.`,
+        visualStateLines,
+        wrapper.styleLine + ".",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
   }
   // ─────────────────────────────────────────────────────────────────────────
 
