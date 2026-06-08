@@ -606,6 +606,10 @@ export type ProfileUpdate = Partial<{
   proactiveCadence: "off" | "low" | "normal" | "high";
   greetOnAppOpen: boolean;
   imageGenerationEnabled: boolean;
+  imageCompositionMode: string;
+  imageEnvironmentDefault: string;
+  imageOccupancyDefault: string;
+  imageCameraDefault: string;
   markOnboarded: boolean;
 }>;
 

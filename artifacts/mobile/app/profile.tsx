@@ -613,7 +613,7 @@ export default function ProfileScreen(): React.JSX.Element {
           <View style={styles.cadenceRow}>
             {[
               { value: "auto",                label: "Auto (solo)" },
-              { value: "with-kane",           label: "With Wren" },
+              { value: "with-kane",           label: "With Kane" },
               { value: "with-cats",           label: "With cats" },
               { value: "with-kane-and-cats",  label: "With both" },
             ].map((opt) => {

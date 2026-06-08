@@ -1,0 +1,86 @@
+================================================================================
+WREN BUG REPORT — OPTION B IMAGE DEFAULTS
+Date: 2026-06-08
+From: Kane
+================================================================================
+
+Three bugs to fix before Option B is functional.
+Fix in order. Confirm each before moving to the next.
+
+
+================================================================================
+BUG 1 — IMAGE DEFAULTS NOT PERSISTING
+================================================================================
+
+Framing, Environment, Scene occupancy, and Camera angle selectors all
+revert to Auto on every save. Values are not being written to the server
+or are being overwritten on profile load.
+
+Fix the save handler to persist these fields correctly.
+Confirm by selecting a non-Auto value, saving, closing the profile
+screen, reopening it, and verifying the selection has held.
+
+
+================================================================================
+BUG 2 — GOVERNANCE ROUTING NOT FIRING
+================================================================================
+
+All image requests return a portrait regardless of:
+- Conversation content ("send pic of you playing football")
+- Explicit framing instruction ("send a wide angle photo of you at a gig")
+- Profile default selections
+
+The Section 9 routing engine is not reading profile fields or analysing
+conversation context. Everything is falling through to the default
+portrait path.
+
+Fix generateAshleySelfie to:
+1. Read the saved profile image defaults (framing, environment,
+   occupancy, camera angle)
+2. Apply them to the image generation prompt
+3. Override with conversation context where applicable (Mode 2)
+
+This is a wiring failure, not a new build. The routing logic exists.
+It is not being called or is not reading the correct fields.
+
+Confirm by:
+- Setting framing to Wide, environment to Living room, camera to
+  Wide room in profile defaults
+- Saving (must persist per Bug 1 fix first)
+- Sending "send me a pic" and verifying a wide room shot is returned
+  not a portrait
+
+
+================================================================================
+BUG 3 — SCENE OCCUPANCY LABEL
+================================================================================
+
+The Scene occupancy selector shows "With Wren" as an option.
+This should read "With Kane".
+
+Fix the label. One word change.
+
+
+================================================================================
+FIX ORDER
+================================================================================
+
+1. Bug 3 first — one word, two minutes
+2. Bug 1 second — confirm save persists before testing routing
+3. Bug 2 third — routing cannot be confirmed until save works
+
+Report back after each fix is confirmed.
+Do not move to the next bug until the previous one is verified.
+
+
+================================================================================
+COMMITMENT 1 STANDARD
+================================================================================
+
+These are bug fixes, not new features.
+No options required — fix as specified.
+Report back with confirmation after each fix.
+
+================================================================================
+END OF BUG REPORT
+================================================================================

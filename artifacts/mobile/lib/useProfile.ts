@@ -154,6 +154,14 @@ export function useUpdateProfile() {
         wirePatch.greetOnAppOpen = patch.greetOnAppOpen;
       if (patch.imageGenerationEnabled !== undefined)
         wirePatch.imageGenerationEnabled = patch.imageGenerationEnabled;
+      if (patch.imageCompositionMode !== undefined)
+        wirePatch.imageCompositionMode = patch.imageCompositionMode;
+      if (patch.imageEnvironmentDefault !== undefined)
+        wirePatch.imageEnvironmentDefault = patch.imageEnvironmentDefault;
+      if (patch.imageOccupancyDefault !== undefined)
+        wirePatch.imageOccupancyDefault = patch.imageOccupancyDefault;
+      if (patch.imageCameraDefault !== undefined)
+        wirePatch.imageCameraDefault = patch.imageCameraDefault;
       if (patch.contentMode !== undefined)
         wirePatch.contentMode = patch.contentMode;
       if (patch.intimacyLevel !== undefined)
