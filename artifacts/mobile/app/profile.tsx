@@ -742,7 +742,7 @@ export default function ProfileScreen(): React.JSX.Element {
             if (cameraSet.size > 0) {
               const CAMERA_LABELS: Record<string, string> = {
                 "selfie": "Selfie", "portrait": "Portrait", "lifestyle": "Lifestyle",
-                "wide-room": "Wide Room", "architectural": "Architectural",
+                "wide-room": "Wide Angle", "architectural": "Architectural",
                 "documentary": "Documentary / Candid", "group-shot": "Group Shot",
                 "action": "Action / Sport", "event": "Event Photography",
               };
@@ -1026,7 +1026,7 @@ export default function ProfileScreen(): React.JSX.Element {
                 { value: "selfie",        label: "Selfie" },
                 { value: "portrait",      label: "Portrait" },
                 { value: "lifestyle",     label: "Lifestyle" },
-                { value: "wide-room",     label: "Wide Room" },
+                { value: "wide-room",     label: "Wide Angle" },
                 { value: "architectural", label: "Architectural" },
                 { value: "documentary",   label: "Documentary / Candid" },
                 { value: "group-shot",    label: "Group Shot" },
@@ -1058,7 +1058,7 @@ export default function ProfileScreen(): React.JSX.Element {
                 { value: "close-up",       label: "Close-Up" },
                 { value: "half-body",      label: "Half Body" },
                 { value: "full-body",      label: "Full Body" },
-                { value: "wide-room",      label: "Wide Room" },
+                { value: "wide-room",      label: "Wide Angle" },
                 { value: "architectural",  label: "Architectural" },
               ] as { value: string; label: string }[]).map((opt) => {
                 const sel = opt.value === shotDistance;
