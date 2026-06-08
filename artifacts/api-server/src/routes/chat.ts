@@ -1962,6 +1962,12 @@ const ChatSelfieBodySchema = z.object({
     imageOccupancyDefault: z.string().optional().nullable(),
     imageCameraDefault: z.string().optional().nullable(),
   }).optional().nullable(),
+  /**
+   * When true, skip the message ownership check. Used by the profile
+   * "Generate test image" button, which has no real chat message.
+   * The selfie still generates; the DB patch simply finds 0 rows.
+   */
+  testMode: z.boolean().optional(),
 });
 
 type SelfieJob =
@@ -3246,21 +3252,25 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
     return;
   }
 
-  // Confirm the message belongs to this device — prevents using another
-  // device's id with our own deviceId via header.
-  const owns = await db
-    .select({ id: messagesTable.id })
-    .from(messagesTable)
-    .where(
-      and(
-        eq(messagesTable.id, messageId),
-        eq(messagesTable.deviceId, deviceId),
-      ),
-    )
-    .limit(1);
-  if (owns.length === 0) {
-    res.status(404).json({ error: "Message not found" });
-    return;
+  // testMode skips ownership — the profile "Generate test image" button has
+  // no real chat message. The DB patch later finds 0 rows and is a no-op.
+  if (!parsed.data.testMode) {
+    // Confirm the message belongs to this device — prevents using another
+    // device's id with our own deviceId via header.
+    const owns = await db
+      .select({ id: messagesTable.id })
+      .from(messagesTable)
+      .where(
+        and(
+          eq(messagesTable.id, messageId),
+          eq(messagesTable.deviceId, deviceId),
+        ),
+      )
+      .limit(1);
+    if (owns.length === 0) {
+      res.status(404).json({ error: "Message not found" });
+      return;
+    }
   }
 
   // Resolve (imageMode, vibe). Priority:

@@ -1623,6 +1623,64 @@ export async function sendDocumentIngest({
 }
 
 // ---------------------------------------------------------------------------
+// Generate a test selfie from the profile screen (no real chat message)
+// ---------------------------------------------------------------------------
+
+/**
+ * Generates a single test image using the current governance params.
+ * Posts testMode=true so the server skips the message ownership check.
+ * Returns the image URL once generation completes.
+ */
+export async function fetchTestSelfie(): Promise<{ imageUrl: string }> {
+  let governanceParams: Record<string, unknown> | null = null;
+  try {
+    const { getGovernanceParams } = await import("./imageGate");
+    governanceParams = getGovernanceParams() as Record<string, unknown> | null;
+  } catch {
+    // non-fatal — server applies its own defaults
+  }
+
+  const fakeId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const startRes = await fetchJSON<{ jobId?: unknown }>("/chat/selfie", {
+    method: "POST",
+    headers: apiHeaders(),
+    body: JSON.stringify({
+      messageId: fakeId,
+      vibe: "SCENE_MODE|candid natural moment",
+      testMode: true,
+      ...(governanceParams ? { governanceParams } : {}),
+    }),
+  });
+  if (typeof startRes.jobId !== "string" || !startRes.jobId.trim()) {
+    throw new Error("Selfie generation didn't return a job id.");
+  }
+  const jobId = startRes.jobId.trim();
+  const base = getApiBase();
+
+  for (let attempt = 0; attempt < SELFIE_POLL_MAX_ATTEMPTS; attempt++) {
+    await new Promise<void>((resolve) => setTimeout(resolve, SELFIE_POLL_INTERVAL_MS));
+    let res: Response;
+    try {
+      res = await fetch(`${base}/chat/selfie/${encodeURIComponent(jobId)}`, {
+        method: "GET",
+        headers: apiHeaders({ ...authHeaders(), "Cache-Control": "no-cache" }),
+      });
+    } catch {
+      continue;
+    }
+    if (!res.ok) continue;
+    const body = await res.json() as Record<string, unknown>;
+    if (body.status === "done" && typeof body.imageUrl === "string") {
+      return { imageUrl: body.imageUrl };
+    }
+    if (body.status === "failed") {
+      throw new Error(typeof body.error === "string" ? body.error : "Generation failed");
+    }
+  }
+  throw new Error("Timed out waiting for test image.");
+}
+
+// ---------------------------------------------------------------------------
 // Insert a pre-formed Ashley message with an image (profile → Send to chat)
 // ---------------------------------------------------------------------------
 export async function insertAshleyImageMessage(

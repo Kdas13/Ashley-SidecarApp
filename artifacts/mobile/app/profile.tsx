@@ -28,7 +28,7 @@ import {
   useUpdateProfile,
   useWithdrawAdultConfirmation,
 } from "@/lib/useProfile";
-import { fetchSelfieForMessage, insertAshleyImageMessage, type ReplikaCarryoverInput } from "@/lib/aiClient";
+import { fetchTestSelfie, insertAshleyImageMessage, type ReplikaCarryoverInput } from "@/lib/aiClient";
 import type { AshleyProfile } from "@/lib/storage";
 import { intimacyRung } from "@/lib/policy";
 import { getDeviceIdSync, hasDeviceId, setDeviceId } from "@/lib/deviceId";
@@ -423,8 +423,7 @@ export default function ProfileScreen(): React.JSX.Element {
     setTestImageUrl(null);
     setTestImageLoading(true);
     try {
-      const fakeId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const result = await fetchSelfieForMessage(fakeId, "SCENE_MODE|candid natural moment");
+      const result = await fetchTestSelfie();
       setTestImageUrl(result.imageUrl);
     } catch {
       Alert.alert("Generation failed", "Could not generate a test image. Try again.");
