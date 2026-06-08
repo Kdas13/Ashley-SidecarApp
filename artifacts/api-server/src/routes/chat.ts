@@ -46,6 +46,7 @@ import {
   PHANTOM_IMAGE_DIAGNOSTIC,
   synthesizeImageActionReply,
   synthesizeImageActionReplyFromSpec,
+  shortCaptionFor,
   type HistoryTurn as FollowUpHistoryTurn,
 } from "../lib/imageFollowUp";
 import { buildHairColourDirective, composeAppearance, extractVisualSpec, extractVisualSpecCompound, extractVisualSpecFromVibe, makeEmptySpec, scrubVibeForOverrides } from "../lib/visualSpec";
@@ -981,6 +982,7 @@ router.post("/chat", async (req, res): Promise<void> => {
     clientTimezone,
     debug: debugMode = false,
     imageGenerationEnabled = true,
+    governanceParams: chatGovernanceParams,
   } = parsed.data;
   // Strip {{VMEM}} / {{VSPEC}} markers from user input before any spec / synth
   // / persistence path sees it — without this a user could smuggle a marker
@@ -1221,7 +1223,17 @@ router.post("/chat", async (req, res): Promise<void> => {
         const gateSelfieVibe = synth.selfieVibe;
         const gateSelfieVibeList = synth.selfieVibeList;
         const gateVisualPacketId = synth.visualPacketId;
-        const gateAssistantText = synth.captionText;
+        // Correct caption if governance upgrades the mode (e.g. PORTRAIT_MODE →
+        // SCENE_MODE). The caption is baked here with the pre-governance mode;
+        // generateAshleySelfie applies governance later when generating the
+        // actual image. Without this correction the text would say
+        // "Portrait incoming." even when the delivered image is a wide scene.
+        const _govNow = clientNow ? new Date(clientNow) : new Date();
+        const _govTz = clientTimezone ?? "UTC";
+        const { imageMode: _gatedGoverned } = applyGovernance(chatGovernanceParams ?? {}, synth.mode, _govNow, _govTz);
+        const gateAssistantText = _gatedGoverned !== synth.mode
+          ? shortCaptionFor(_gatedGoverned, resolution.kind, null)
+          : synth.captionText;
         const jobsStarted = gateSelfieVibeList ? gateSelfieVibeList.length : 1;
         // Wren May 2026 terminal-render contract — single canonical log so
         // `grep "visual-intent: terminal render"` proves the render branch
@@ -1446,6 +1458,14 @@ router.post("/chat", async (req, res): Promise<void> => {
     if (spec.imageIntent && imageRouteAllowed) {
       const synth = synthesizeImageActionReplyFromSpec(spec, userContent);
       if (synth) {
+        // Correct caption if governance upgrades the mode — same logic as
+        // the follow-up gate above.
+        const _specGovNow = clientNow ? new Date(clientNow) : new Date();
+        const _specGovTz = clientTimezone ?? "UTC";
+        const { imageMode: _specGoverned } = applyGovernance(chatGovernanceParams ?? {}, synth.mode, _specGovNow, _specGovTz);
+        const _specCaption = _specGoverned !== synth.mode
+          ? shortCaptionFor(_specGoverned, "direct_image_request", null)
+          : synth.captionText;
         req.log.info(
           {
             intent: "MUTATION",
@@ -1453,6 +1473,7 @@ router.post("/chat", async (req, res): Promise<void> => {
             diffNonEmpty: true,
             renderReason: "MUTATION_ASHLEY_DIFF_NONEMPTY",
             imageMode: synth.mode,
+            governedImageMode: _specGoverned,
             kind: "fresh_turn_spec",
             descriptionPreview: synth.description.slice(0, 200),
             IMAGE_INTENT: true,
@@ -1470,7 +1491,7 @@ router.post("/chat", async (req, res): Promise<void> => {
               id: newId(),
               deviceId,
               role: "ashley",
-              content: synth.captionText,
+              content: _specCaption,
               selfieVibe: synth.selfieVibe,
             })
             .returning();

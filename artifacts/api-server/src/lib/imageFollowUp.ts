@@ -1344,7 +1344,7 @@ export type SynthesizedImageReply = {
   description: string;
 };
 
-function shortCaptionFor(
+export function shortCaptionFor(
   mode: ImageMode,
   kind: FollowUpResolution["kind"],
   priorAttemptMode?: ImageMode | null,

@@ -1,0 +1,87 @@
+================================================================================
+WREN — FINAL LABEL FIXES + RESPONSE TEXT CHECK
+Date: 2026-06-08
+================================================================================
+
+Audit complete. All three bugs confirmed fixed correctly.
+Two outstanding items before the build is considered clean.
+
+
+================================================================================
+FIX 1 — OCCUPANCY LABEL CORRECTION
+================================================================================
+
+File: artifacts/mobile/app/profile.tsx
+Location: Scene occupancy chip array (line ~616)
+
+The chip with value "auto" is currently labelled "Auto (solo)".
+As of the Bug 2 fix, the server product default for "auto" occupancy is
+"with-kane-and-cats" — not solo. The label is now misleading.
+
+Change:
+  BEFORE: { value: "auto", label: "Auto (solo)" }
+  AFTER:  { value: "auto", label: "Auto" }
+
+One word removed. No logic change.
+
+
+================================================================================
+FIX 2 — "PORTRAIT INCOMING" RESPONSE TEXT
+================================================================================
+
+Every image response currently says "Portrait incoming." in the chat
+regardless of what mode was actually used.
+
+Check the following and confirm:
+
+1. Where is "Portrait incoming." generated?
+   Is it hardcoded in the chat response builder, or is it dynamically
+   generated based on the resolved imageMode?
+
+2. If hardcoded — update it to reflect the actual mode used.
+   Examples:
+   - SCENE_MODE     → "here you go 📷"
+   - PORTRAIT_MODE  → "portrait incoming"
+   - WIDE_ROOM      → "here you go 📷"
+
+   The response text should never say "portrait" when a scene or
+   wide room shot was generated. It is confusing and incorrect.
+
+3. If already dynamic — confirm why it is still showing "Portrait
+   incoming." for scene mode requests and fix the mapping.
+
+Report back with: where the text is generated, what change was made,
+and which file and line it is on.
+
+
+================================================================================
+AFTER THESE TWO FIXES
+================================================================================
+
+Run the following production tests and report results:
+
+Test 1: "Send me a pic"
+Expected: Scene/wide room shot. Response text does NOT say portrait.
+
+Test 2: Set environment to Living Room, camera to Wide room in profile,
+        save, then "Send me a pic"
+Expected: Living room wide shot. Profile selection honoured.
+
+Test 3: Set occupancy to "With cats", save, then "Send me a pic"
+Expected: Scene with cats present.
+
+These three confirm Bug 2 is genuinely working end to end, not just
+fixed at the code level.
+
+
+================================================================================
+COMMITMENT 1 STANDARD
+================================================================================
+
+These are bug fixes and a confirmation check.
+No options required — fix as specified.
+Report back after each fix before moving to the next.
+
+================================================================================
+END
+================================================================================

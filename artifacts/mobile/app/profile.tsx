@@ -612,7 +612,7 @@ export default function ProfileScreen(): React.JSX.Element {
           <Text style={[styles.hint, { marginTop: 10, marginBottom: 4 }]}>Scene occupancy</Text>
           <View style={styles.cadenceRow}>
             {[
-              { value: "auto",                label: "Auto (solo)" },
+              { value: "auto",                label: "Auto" },
               { value: "with-kane",           label: "With Kane" },
               { value: "with-cats",           label: "With cats" },
               { value: "with-kane-and-cats",  label: "With both" },
