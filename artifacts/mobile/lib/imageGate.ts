@@ -40,6 +40,13 @@ let _governanceParams: {
   imageEnvironmentDefault?: string | null;
   imageOccupancyDefault?: string | null;
   imageCameraDefault?: string | null;
+  imageDefaultsExtra?: {
+    timeOfDay?: string | null;
+    season?: string | null;
+    activity?: string | null;
+    shotDistance?: string | null;
+    cameraAwareness?: string | null;
+  } | null;
 } | null = null;
 
 // ---------------------------------------------------------------------------
@@ -137,16 +144,26 @@ export function useImageGate(): boolean {
   const ev = profile?.imageEnvironmentDefault ?? null;
   const oc = profile?.imageOccupancyDefault ?? null;
   const ca = profile?.imageCameraDefault ?? null;
+  const xe = profile?.imageDefaultsExtra ?? null;
   useEffect(() => {
     if (!profile) return;
+    let extra: typeof _governanceParams extends null ? never : NonNullable<typeof _governanceParams>["imageDefaultsExtra"] = null;
+    if (xe) {
+      try {
+        extra = JSON.parse(xe) as NonNullable<typeof extra>;
+      } catch {
+        extra = null;
+      }
+    }
     syncGovernanceFromProfile({
       imageCompositionMode: cm,
       imageEnvironmentDefault: ev,
       imageOccupancyDefault: oc,
       imageCameraDefault: ca,
+      imageDefaultsExtra: extra,
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cm, ev, oc, ca]);
+  }, [cm, ev, oc, ca, xe]);
 
   return enabled;
 }

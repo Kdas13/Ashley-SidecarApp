@@ -126,6 +126,11 @@ export const ashleyProfileTable = pgTable("ashley_profile", {
   imageEnvironmentDefault: text("image_environment_default"),
   imageOccupancyDefault: text("image_occupancy_default"),
   imageCameraDefault: text("image_camera_default"),
+  // JSON blob for extended image defaults (Option B migration — no further
+  // migrations needed for new image preference fields).
+  // Shape: { timeOfDay?, season?, activity?, shotDistance?, cameraAwareness? }
+  // All fields nullable strings; null / absent means "auto".
+  imageDefaultsExtra: text("image_defaults_extra"),
   // Daily medical check-in eligibility input. The medical check-in feature
   // itself is NOT built yet — the scheduler scaffolds the category but the
   // medical_checkin slot is gated OFF at runtime until that feature lands.

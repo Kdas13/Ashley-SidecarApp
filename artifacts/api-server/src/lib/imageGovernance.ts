@@ -28,11 +28,20 @@ import { type ImageMode } from "./imageIntent.js";
 // Public types
 // ---------------------------------------------------------------------------
 
+export type ImageDefaultsExtra = {
+  timeOfDay?: string | null;
+  season?: string | null;
+  activity?: string | null;
+  shotDistance?: string | null;
+  cameraAwareness?: string | null;
+};
+
 export type GovernanceParams = {
   imageCompositionMode?: string | null;
   imageEnvironmentDefault?: string | null;
   imageOccupancyDefault?: string | null;
   imageCameraDefault?: string | null;
+  imageDefaultsExtra?: ImageDefaultsExtra | null;
 };
 
 export type GovernanceResult = {
@@ -202,6 +211,12 @@ export function applyGovernance(
   const envPref = (governance.imageEnvironmentDefault ?? "auto").trim();
   const occupancyPref = (governance.imageOccupancyDefault ?? "auto").trim();
   const cameraPref = (governance.imageCameraDefault ?? "auto").trim();
+  const extra = governance.imageDefaultsExtra ?? {};
+  const timeOfDay = (extra.timeOfDay ?? "auto").trim();
+  const season = (extra.season ?? "auto").trim();
+  const activity = (extra.activity ?? "auto").trim();
+  const shotDistance = (extra.shotDistance ?? "auto").trim();
+  const cameraAwareness = (extra.cameraAwareness ?? "unaware").trim();
 
   // ── 1. Resolve environment (Mode 1 explicit or Mode 2 auto) ───────────────
   const resolvedEnvKey = envPref !== "auto" ? envPref : autoSelectEnvironment(now, tz);
@@ -241,6 +256,52 @@ export function applyGovernance(
   if (occupancyClause) {
     parts.push(`Scene occupancy: ${occupancyClause}.`);
   }
+
+  // ── 5. Extra fields — time of day, season, activity, shot distance ─────────
+  const TOD_LABELS: Record<string, string> = {
+    morning: "morning light",
+    afternoon: "afternoon light",
+    evening: "evening light",
+    night: "night-time, low ambient light",
+  };
+  if (timeOfDay !== "auto" && TOD_LABELS[timeOfDay]) {
+    parts.push(`Time of day: ${TOD_LABELS[timeOfDay]}.`);
+  }
+
+  const SEASON_LABELS: Record<string, string> = {
+    spring: "spring",
+    summer: "summer",
+    autumn: "autumn",
+    winter: "winter",
+  };
+  if (season !== "auto" && SEASON_LABELS[season]) {
+    parts.push(`Season: ${SEASON_LABELS[season]}.`);
+  }
+
+  if (activity !== "auto" && activity) {
+    parts.push(`Activity: ${activity}.`);
+  }
+
+  const SHOT_LABELS: Record<string, string> = {
+    "close-up":     "close-up shot",
+    "half-body":    "half-body shot",
+    "full-body":    "full-body shot",
+    "wide-room":    "wide room shot",
+    "architectural":"architectural wide shot",
+  };
+  if (shotDistance !== "auto" && SHOT_LABELS[shotDistance]) {
+    parts.push(`Shot distance: ${SHOT_LABELS[shotDistance]}.`);
+  }
+
+  // ── 6. Camera awareness ───────────────────────────────────────────────────
+  const AWARENESS_LABELS: Record<string, string> = {
+    unaware:  "Ashley is unaware of the camera — candid, natural, not posed",
+    indirect: "Ashley is glancing obliquely toward the camera, not directly",
+    direct:   "Ashley is looking directly into the camera",
+    auto:     "Ashley is unaware of the camera — candid, natural, not posed",
+  };
+  const awarenessClause = AWARENESS_LABELS[cameraAwareness] ?? AWARENESS_LABELS["unaware"]!;
+  parts.push(`Camera awareness: ${awarenessClause}.`);
 
   return {
     imageMode: resolvedImageMode,

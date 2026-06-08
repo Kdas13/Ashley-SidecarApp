@@ -946,6 +946,13 @@ export type StreamReplyArgs = {
     imageEnvironmentDefault?: string | null;
     imageOccupancyDefault?: string | null;
     imageCameraDefault?: string | null;
+    imageDefaultsExtra?: {
+      timeOfDay?: string | null;
+      season?: string | null;
+      activity?: string | null;
+      shotDistance?: string | null;
+      cameraAwareness?: string | null;
+    } | null;
   } | null;
 };
 

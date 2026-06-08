@@ -50,6 +50,39 @@ import colors from "@/constants/colors";
 
 type ProactiveCadence = AshleyProfile["proactiveCadence"];
 
+// ---------------------------------------------------------------------------
+// Image defaults types
+// ---------------------------------------------------------------------------
+
+type ImageDefaultsExtra = {
+  timeOfDay?: string | null;
+  season?: string | null;
+  activity?: string | null;
+  shotDistance?: string | null;
+  cameraAwareness?: string | null;
+};
+
+function parseImageDefaultsExtra(raw: string | null | undefined): ImageDefaultsExtra {
+  if (!raw) return {};
+  try { return JSON.parse(raw) as ImageDefaultsExtra; } catch { return {}; }
+}
+
+function encodeImageDefaultsExtra(extra: ImageDefaultsExtra): string {
+  return JSON.stringify(extra);
+}
+
+// Camera mode can be multi-select (stored as comma-separated string).
+// "auto" means the set is empty (server decides).
+function parseCameraSet(raw: string | null | undefined): Set<string> {
+  if (!raw || raw === "auto") return new Set(["wide-room"]);
+  return new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
+}
+
+function encodeCameraSet(set: Set<string>): string {
+  if (set.size === 0) return "auto";
+  return [...set].join(",");
+}
+
 const CADENCE_OPTIONS: Array<{
   value: ProactiveCadence;
   label: string;
@@ -297,41 +330,74 @@ export default function ProfileScreen(): React.JSX.Element {
     });
   };
 
-  // Section 9 governance — Mode 1 manual defaults. "auto" fields hand control
-  // to Mode 2 (server derives from real clock / day / season). Auto-save on
-  // each chip tap, same pattern as cadence.
+  // ---------------------------------------------------------------------------
+  // Image defaults — full accordion state (9 sections). All auto-save on tap.
+  // ---------------------------------------------------------------------------
   const compositionMode = draft.imageCompositionMode ?? "auto";
   const environmentDefault = draft.imageEnvironmentDefault ?? "auto";
   const occupancyDefault = draft.imageOccupancyDefault ?? "auto";
-  const cameraDefault = draft.imageCameraDefault ?? "auto";
+  // Camera mode is multi-select stored as comma-separated string.
+  const cameraSet = parseCameraSet(draft.imageCameraDefault);
+
+  const imgExtra = parseImageDefaultsExtra(draft.imageDefaultsExtra);
+  const timeOfDay = imgExtra.timeOfDay ?? "auto";
+  const season = imgExtra.season ?? "auto";
+  const activity = imgExtra.activity ?? "auto";
+  const shotDistance = imgExtra.shotDistance ?? "auto";
+  const cameraAwareness = imgExtra.cameraAwareness ?? "unaware";
+
+  // Accordion open/close state for each section.
+  const [openSection, setOpenSection] = React.useState<number | null>(null);
+  const toggleSection = (n: number) => setOpenSection((prev) => (prev === n ? null : n));
 
   const setCompositionMode = (v: string) => {
     const next = v as typeof draft.imageCompositionMode;
     setDraft((prev) => ({ ...prev, imageCompositionMode: next }));
-    void update.mutateAsync({ imageCompositionMode: next }).catch((err) => {
-      console.warn("[profile] imageCompositionMode save failed", err);
-    });
+    void update.mutateAsync({ imageCompositionMode: next }).catch(() => undefined);
   };
   const setEnvironmentDefault = (v: string) => {
     const next = v as typeof draft.imageEnvironmentDefault;
     setDraft((prev) => ({ ...prev, imageEnvironmentDefault: next }));
-    void update.mutateAsync({ imageEnvironmentDefault: next }).catch((err) => {
-      console.warn("[profile] imageEnvironmentDefault save failed", err);
-    });
+    void update.mutateAsync({ imageEnvironmentDefault: next }).catch(() => undefined);
   };
   const setOccupancyDefault = (v: string) => {
     const next = v as typeof draft.imageOccupancyDefault;
     setDraft((prev) => ({ ...prev, imageOccupancyDefault: next }));
-    void update.mutateAsync({ imageOccupancyDefault: next }).catch((err) => {
-      console.warn("[profile] imageOccupancyDefault save failed", err);
-    });
+    void update.mutateAsync({ imageOccupancyDefault: next }).catch(() => undefined);
   };
-  const setCameraDefault = (v: string) => {
-    const next = v as typeof draft.imageCameraDefault;
-    setDraft((prev) => ({ ...prev, imageCameraDefault: next }));
-    void update.mutateAsync({ imageCameraDefault: next }).catch((err) => {
-      console.warn("[profile] imageCameraDefault save failed", err);
-    });
+
+  // Camera mode is multi-select. Toggling a value adds/removes from the set.
+  const toggleCameraMode = (v: string) => {
+    const next = new Set(cameraSet);
+    if (next.has(v)) { next.delete(v); } else { next.add(v); }
+    const encoded = encodeCameraSet(next) as typeof draft.imageCameraDefault;
+    setDraft((prev) => ({ ...prev, imageCameraDefault: encoded }));
+    void update.mutateAsync({ imageCameraDefault: encoded }).catch(() => undefined);
+  };
+
+  const setExtra = (patch: Partial<ImageDefaultsExtra>) => {
+    const next = { ...imgExtra, ...patch };
+    const encoded = encodeImageDefaultsExtra(next);
+    setDraft((prev) => ({ ...prev, imageDefaultsExtra: encoded }));
+    void update.mutateAsync({ imageDefaultsExtra: encoded }).catch(() => undefined);
+  };
+
+  const resetImageDefaults = () => {
+    const defaults = {
+      imageCompositionMode: "environment-centric" as typeof draft.imageCompositionMode,
+      imageEnvironmentDefault: "auto" as typeof draft.imageEnvironmentDefault,
+      imageOccupancyDefault: "auto" as typeof draft.imageOccupancyDefault,
+      imageCameraDefault: "wide-room" as typeof draft.imageCameraDefault,
+      imageDefaultsExtra: encodeImageDefaultsExtra({
+        timeOfDay: "auto",
+        season: "auto",
+        activity: "auto",
+        shotDistance: "auto",
+        cameraAwareness: "unaware",
+      }),
+    };
+    setDraft((prev) => ({ ...prev, ...defaults }));
+    void update.mutateAsync(defaults).catch(() => undefined);
   };
 
   const cadence: ProactiveCadence =
@@ -549,113 +615,391 @@ export default function ProfileScreen(): React.JSX.Element {
           </Pressable>
         </View>
 
+        {/* ================================================================
+            IMAGE DEFAULTS — 9-section accordion
+            ================================================================ */}
         <View style={styles.fieldGroup}>
           <Text style={styles.label}>Image defaults</Text>
           <Text style={styles.hint}>
-            These control how Ashley frames her photos. All fields default to
-            Auto — the server picks sensible values from the time of day, day
-            of week, and season. Override any field to lock in your preference.
+            Tick what you want. Untick what you don&apos;t. Each selection
+            becomes a direct instruction to the image generator. Auto means
+            the server picks a sensible value. Tap a section header to expand.
           </Text>
 
-          <Text style={[styles.hint, { marginTop: 10, marginBottom: 4 }]}>Framing</Text>
-          <View style={styles.cadenceRow}>
-            {[
-              { value: "auto",                 label: "Auto" },
-              { value: "ashley-centric",       label: "Close" },
-              { value: "balanced",             label: "Balanced" },
-              { value: "environment-centric",  label: "Wide" },
-              { value: "documentary",          label: "Doc" },
-            ].map((opt) => {
-              const sel = opt.value === compositionMode;
-              return (
-                <Pressable
-                  key={opt.value}
-                  onPress={() => setCompositionMode(opt.value)}
-                  style={[styles.cadenceChip, sel && styles.cadenceChipSelected]}
-                >
-                  <Text style={[styles.cadenceChipLabel, sel && styles.cadenceChipLabelSelected]}>
-                    {opt.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
+          {/* Summary line */}
+          {(() => {
+            const parts: string[] = [];
+            if (compositionMode !== "auto") {
+              const COMP_LABELS: Record<string, string> = {
+                "ashley-centric": "Ashley-Centric",
+                "balanced": "Balanced",
+                "environment-centric": "Environment-Centric",
+                "architectural": "Architectural",
+                "social": "Social",
+                "documentary": "Documentary",
+              };
+              parts.push(COMP_LABELS[compositionMode] ?? compositionMode);
+            }
+            if (environmentDefault !== "auto") {
+              const ENV_LABELS: Record<string, string> = {
+                "living-room": "Living Room", "bedroom": "Bedroom",
+                "kitchen": "Kitchen", "study": "Study", "garden": "Garden",
+                "bathroom": "Bathroom", "cafe": "Cafe", "restaurant": "Restaurant",
+                "pub": "Pub", "bar": "Bar", "vineyard": "Vineyard",
+                "nightclub": "Nightclub", "music-gig": "Music Gig",
+                "festival": "Festival", "concert": "Concert",
+                "sporting-event": "Sporting Event", "cinema": "Cinema",
+                "museum": "Museum", "art-gallery": "Art Gallery",
+                "library": "Library", "market": "Market",
+                "high-street": "High Street", "train-station": "Train Station",
+                "park": "Park", "woodland": "Woodland", "beach": "Beach",
+                "city-centre": "City Centre", "walking-trail": "Walking Trail",
+                "hotel": "Hotel", "holiday-cottage": "Holiday Cottage",
+                "beach-holiday": "Beach Holiday", "mountain-retreat": "Mountain Retreat",
+              };
+              parts.push(ENV_LABELS[environmentDefault] ?? environmentDefault);
+            }
+            if (timeOfDay !== "auto") parts.push(timeOfDay.charAt(0).toUpperCase() + timeOfDay.slice(1));
+            if (cameraSet.size > 0) {
+              const CAMERA_LABELS: Record<string, string> = {
+                "selfie": "Selfie", "portrait": "Portrait", "lifestyle": "Lifestyle",
+                "wide-room": "Wide Room", "architectural": "Architectural",
+                "documentary": "Documentary / Candid", "group-shot": "Group Shot",
+                "action": "Action / Sport", "event": "Event Photography",
+              };
+              parts.push([...cameraSet].map((c) => CAMERA_LABELS[c] ?? c).join(", "));
+            }
+            const summary = parts.length > 0 ? parts.join(" · ") : "All Auto";
+            return (
+              <Text style={styles.imgDefaultsSummary} numberOfLines={2}>{summary}</Text>
+            );
+          })()}
 
-          <Text style={[styles.hint, { marginTop: 10, marginBottom: 4 }]}>Environment</Text>
-          <View style={styles.cadenceRow}>
-            {[
-              { value: "auto",             label: "Auto" },
-              { value: "living-room",      label: "Living room" },
-              { value: "bedroom",          label: "Bedroom" },
-              { value: "kitchen",          label: "Kitchen" },
-              { value: "garden",           label: "Garden" },
-              { value: "outdoors-urban",   label: "Urban" },
-              { value: "outdoors-nature",  label: "Nature" },
-              { value: "cafe",             label: "Cafe" },
-              { value: "gym",              label: "Gym" },
-            ].map((opt) => {
-              const sel = opt.value === environmentDefault;
-              return (
-                <Pressable
-                  key={opt.value}
-                  onPress={() => setEnvironmentDefault(opt.value)}
-                  style={[styles.cadenceChip, sel && styles.cadenceChipSelected]}
-                >
-                  <Text style={[styles.cadenceChipLabel, sel && styles.cadenceChipLabelSelected]}>
-                    {opt.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
+          {/* SECTION 1 — Composition Mode */}
+          <Pressable style={styles.accordionHeader} onPress={() => toggleSection(1)}>
+            <Text style={styles.accordionHeaderText}>Composition Mode</Text>
+            <Text style={styles.accordionChevron}>{openSection === 1 ? "▲" : "▼"}</Text>
+          </Pressable>
+          {openSection === 1 && (
+            <View style={styles.accordionBody}>
+              {([
+                { value: "auto",                label: "Auto (server decides)" },
+                { value: "ashley-centric",      label: "Ashley-Centric (Ashley fills most of frame)" },
+                { value: "balanced",            label: "Balanced (Ashley and room share frame)" },
+                { value: "environment-centric", label: "Environment-Centric (room is the subject, Ashley is small)" },
+                { value: "architectural",       label: "Architectural (room only, Ashley minimal or absent)" },
+                { value: "social",              label: "Social (group setting, Ashley is one of many)" },
+                { value: "documentary",         label: "Documentary (candid moment, natural behaviour)" },
+              ] as { value: string; label: string }[]).map((opt) => {
+                const sel = opt.value === compositionMode;
+                return (
+                  <Pressable key={opt.value} style={styles.checkRow} onPress={() => setCompositionMode(opt.value)}>
+                    <View style={[styles.checkbox, sel && styles.checkboxOn]}>
+                      {sel && <Text style={styles.checkmark}>✓</Text>}
+                    </View>
+                    <Text style={styles.checkLabel}>{opt.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
 
-          <Text style={[styles.hint, { marginTop: 10, marginBottom: 4 }]}>Scene occupancy</Text>
-          <View style={styles.cadenceRow}>
-            {[
-              { value: "auto",                label: "Auto" },
-              { value: "with-kane",           label: "With Kane" },
-              { value: "with-cats",           label: "With cats" },
-              { value: "with-kane-and-cats",  label: "With both" },
-            ].map((opt) => {
-              const sel = opt.value === occupancyDefault;
-              return (
-                <Pressable
-                  key={opt.value}
-                  onPress={() => setOccupancyDefault(opt.value)}
-                  style={[styles.cadenceChip, sel && styles.cadenceChipSelected]}
-                >
-                  <Text style={[styles.cadenceChipLabel, sel && styles.cadenceChipLabelSelected]}>
-                    {opt.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
+          {/* SECTION 2 — Environment */}
+          <Pressable style={styles.accordionHeader} onPress={() => toggleSection(2)}>
+            <Text style={styles.accordionHeaderText}>Environment</Text>
+            <Text style={styles.accordionChevron}>{openSection === 2 ? "▲" : "▼"}</Text>
+          </Pressable>
+          {openSection === 2 && (
+            <View style={styles.accordionBody}>
+              {([
+                { value: "auto", label: "Auto" },
+                { value: "__home__", label: "— HOME —", divider: true },
+                { value: "living-room", label: "Living Room" },
+                { value: "bedroom", label: "Bedroom" },
+                { value: "kitchen", label: "Kitchen" },
+                { value: "study", label: "Study" },
+                { value: "garden", label: "Garden" },
+                { value: "bathroom", label: "Bathroom" },
+                { value: "__food__", label: "— FOOD & DRINK —", divider: true },
+                { value: "cafe", label: "Cafe" },
+                { value: "restaurant", label: "Restaurant" },
+                { value: "pub", label: "Pub" },
+                { value: "bar", label: "Bar" },
+                { value: "vineyard", label: "Vineyard" },
+                { value: "__ent__", label: "— ENTERTAINMENT —", divider: true },
+                { value: "nightclub", label: "Nightclub" },
+                { value: "music-gig", label: "Music Gig" },
+                { value: "festival", label: "Festival" },
+                { value: "concert", label: "Concert" },
+                { value: "sporting-event", label: "Sporting Event" },
+                { value: "cinema", label: "Cinema" },
+                { value: "__pub__", label: "— PUBLIC —", divider: true },
+                { value: "museum", label: "Museum" },
+                { value: "art-gallery", label: "Art Gallery" },
+                { value: "library", label: "Library" },
+                { value: "market", label: "Market" },
+                { value: "high-street", label: "High Street" },
+                { value: "train-station", label: "Train Station" },
+                { value: "__outdoor__", label: "— OUTDOOR —", divider: true },
+                { value: "park", label: "Park" },
+                { value: "woodland", label: "Woodland" },
+                { value: "beach", label: "Beach" },
+                { value: "city-centre", label: "City Centre" },
+                { value: "walking-trail", label: "Walking Trail" },
+                { value: "__travel__", label: "— TRAVEL —", divider: true },
+                { value: "hotel", label: "Hotel" },
+                { value: "holiday-cottage", label: "Holiday Cottage" },
+                { value: "beach-holiday", label: "Beach Holiday" },
+                { value: "mountain-retreat", label: "Mountain Retreat" },
+              ] as { value: string; label: string; divider?: boolean }[]).map((opt) => {
+                if (opt.divider) {
+                  return <Text key={opt.value} style={styles.accordionDivider}>{opt.label}</Text>;
+                }
+                const sel = opt.value === environmentDefault;
+                return (
+                  <Pressable key={opt.value} style={styles.checkRow} onPress={() => setEnvironmentDefault(opt.value)}>
+                    <View style={[styles.checkbox, sel && styles.checkboxOn]}>
+                      {sel && <Text style={styles.checkmark}>✓</Text>}
+                    </View>
+                    <Text style={styles.checkLabel}>{opt.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
 
-          <Text style={[styles.hint, { marginTop: 10, marginBottom: 4 }]}>Camera angle</Text>
-          <View style={styles.cadenceRow}>
-            {[
-              { value: "auto",          label: "Auto" },
-              { value: "selfie",        label: "Selfie" },
-              { value: "portrait",      label: "Portrait" },
-              { value: "lifestyle",     label: "Lifestyle" },
-              { value: "wide-room",     label: "Wide room" },
-              { value: "architectural", label: "Arch" },
-            ].map((opt) => {
-              const sel = opt.value === cameraDefault;
-              return (
-                <Pressable
-                  key={opt.value}
-                  onPress={() => setCameraDefault(opt.value)}
-                  style={[styles.cadenceChip, sel && styles.cadenceChipSelected]}
-                >
-                  <Text style={[styles.cadenceChipLabel, sel && styles.cadenceChipLabelSelected]}>
-                    {opt.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
+          {/* SECTION 3 — Time of Day */}
+          <Pressable style={styles.accordionHeader} onPress={() => toggleSection(3)}>
+            <Text style={styles.accordionHeaderText}>Time of Day</Text>
+            <Text style={styles.accordionChevron}>{openSection === 3 ? "▲" : "▼"}</Text>
+          </Pressable>
+          {openSection === 3 && (
+            <View style={styles.accordionBody}>
+              {([
+                { value: "auto",      label: "Auto (uses real device clock)" },
+                { value: "morning",   label: "Morning" },
+                { value: "afternoon", label: "Afternoon" },
+                { value: "evening",   label: "Evening" },
+                { value: "night",     label: "Night" },
+              ] as { value: string; label: string }[]).map((opt) => {
+                const sel = opt.value === timeOfDay;
+                return (
+                  <Pressable key={opt.value} style={styles.checkRow} onPress={() => setExtra({ timeOfDay: opt.value })}>
+                    <View style={[styles.checkbox, sel && styles.checkboxOn]}>
+                      {sel && <Text style={styles.checkmark}>✓</Text>}
+                    </View>
+                    <Text style={styles.checkLabel}>{opt.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+
+          {/* SECTION 4 — Season */}
+          <Pressable style={styles.accordionHeader} onPress={() => toggleSection(4)}>
+            <Text style={styles.accordionHeaderText}>Season</Text>
+            <Text style={styles.accordionChevron}>{openSection === 4 ? "▲" : "▼"}</Text>
+          </Pressable>
+          {openSection === 4 && (
+            <View style={styles.accordionBody}>
+              {([
+                { value: "auto",   label: "Auto (uses real calendar month)" },
+                { value: "spring", label: "Spring" },
+                { value: "summer", label: "Summer" },
+                { value: "autumn", label: "Autumn" },
+                { value: "winter", label: "Winter" },
+              ] as { value: string; label: string }[]).map((opt) => {
+                const sel = opt.value === season;
+                return (
+                  <Pressable key={opt.value} style={styles.checkRow} onPress={() => setExtra({ season: opt.value })}>
+                    <View style={[styles.checkbox, sel && styles.checkboxOn]}>
+                      {sel && <Text style={styles.checkmark}>✓</Text>}
+                    </View>
+                    <Text style={styles.checkLabel}>{opt.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+
+          {/* SECTION 5 — Activity */}
+          <Pressable style={styles.accordionHeader} onPress={() => toggleSection(5)}>
+            <Text style={styles.accordionHeaderText}>Activity</Text>
+            <Text style={styles.accordionChevron}>{openSection === 5 ? "▲" : "▼"}</Text>
+          </Pressable>
+          {openSection === 5 && (
+            <View style={styles.accordionBody}>
+              {([
+                { value: "auto", label: "Auto" },
+                { value: "__home__", label: "— HOME —", divider: true },
+                { value: "reading", label: "Reading" },
+                { value: "making coffee", label: "Making coffee" },
+                { value: "cooking", label: "Cooking" },
+                { value: "watching tv", label: "Watching TV" },
+                { value: "listening to music", label: "Listening to music" },
+                { value: "relaxing", label: "Relaxing" },
+                { value: "photo editing", label: "Photo editing" },
+                { value: "__photo__", label: "— PHOTOGRAPHY —", divider: true },
+                { value: "taking photographs", label: "Taking photographs" },
+                { value: "photography walk", label: "Photography walk" },
+                { value: "__sports__", label: "— SPORTS —", divider: true },
+                { value: "watching football", label: "Watching football" },
+                { value: "watching rugby", label: "Watching rugby" },
+                { value: "at a match", label: "At a match" },
+                { value: "__food__", label: "— FOOD & DRINK —", divider: true },
+                { value: "coffee", label: "Coffee" },
+                { value: "wine tasting", label: "Wine tasting" },
+                { value: "whisky tasting", label: "Whisky tasting" },
+                { value: "pub visit", label: "Pub visit" },
+                { value: "__culture__", label: "— CULTURE —", divider: true },
+                { value: "museum visit", label: "Museum visit" },
+                { value: "art gallery", label: "Art gallery" },
+                { value: "live music", label: "Live music" },
+                { value: "day trip", label: "Day trip" },
+                { value: "__social__", label: "— SOCIAL —", divider: true },
+                { value: "socialising with friends", label: "Socialising with friends" },
+                { value: "party", label: "Party" },
+                { value: "__cats__", label: "— CATS —", divider: true },
+                { value: "playing with cats", label: "Playing with cats" },
+                { value: "relaxing with cats", label: "Relaxing with cats" },
+              ] as { value: string; label: string; divider?: boolean }[]).map((opt) => {
+                if (opt.divider) {
+                  return <Text key={opt.value} style={styles.accordionDivider}>{opt.label}</Text>;
+                }
+                const sel = opt.value === activity;
+                return (
+                  <Pressable key={opt.value} style={styles.checkRow} onPress={() => setExtra({ activity: opt.value })}>
+                    <View style={[styles.checkbox, sel && styles.checkboxOn]}>
+                      {sel && <Text style={styles.checkmark}>✓</Text>}
+                    </View>
+                    <Text style={styles.checkLabel}>{opt.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+
+          {/* SECTION 6 — Who Is In The Scene */}
+          <Pressable style={styles.accordionHeader} onPress={() => toggleSection(6)}>
+            <Text style={styles.accordionHeaderText}>Who Is In The Scene</Text>
+            <Text style={styles.accordionChevron}>{openSection === 6 ? "▲" : "▼"}</Text>
+          </Pressable>
+          {openSection === 6 && (
+            <View style={styles.accordionBody}>
+              {([
+                { value: "auto",                label: "Auto (server decides — defaults to Ashley + Kane + cats)" },
+                { value: "solo",                label: "Ashley only" },
+                { value: "with-kane",           label: "Ashley + Kane" },
+                { value: "with-cats",           label: "Ashley + Dixie and Nimbus (cats)" },
+                { value: "with-kane-and-cats",  label: "Ashley + Kane + Dixie and Nimbus" },
+              ] as { value: string; label: string }[]).map((opt) => {
+                const sel = opt.value === occupancyDefault;
+                return (
+                  <Pressable key={opt.value} style={styles.checkRow} onPress={() => setOccupancyDefault(opt.value)}>
+                    <View style={[styles.checkbox, sel && styles.checkboxOn]}>
+                      {sel && <Text style={styles.checkmark}>✓</Text>}
+                    </View>
+                    <Text style={styles.checkLabel}>{opt.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+
+          {/* SECTION 7 — Camera Mode (multi-select) */}
+          <Pressable style={styles.accordionHeader} onPress={() => toggleSection(7)}>
+            <Text style={styles.accordionHeaderText}>Camera Mode</Text>
+            <Text style={styles.accordionHeaderHint}> (multi-select)</Text>
+            <Text style={styles.accordionChevron}>{openSection === 7 ? "▲" : "▼"}</Text>
+          </Pressable>
+          {openSection === 7 && (
+            <View style={styles.accordionBody}>
+              <Text style={styles.accordionBodyHint}>
+                Tick every mode that should be in the pool. Server picks from ticked options.
+                Portrait and Selfie are unticked by default — tick them to enable.
+              </Text>
+              {([
+                { value: "selfie",        label: "Selfie" },
+                { value: "portrait",      label: "Portrait" },
+                { value: "lifestyle",     label: "Lifestyle" },
+                { value: "wide-room",     label: "Wide Room" },
+                { value: "architectural", label: "Architectural" },
+                { value: "documentary",   label: "Documentary / Candid" },
+                { value: "group-shot",    label: "Group Shot" },
+                { value: "action",        label: "Action / Sport" },
+                { value: "event",         label: "Event Photography" },
+              ] as { value: string; label: string }[]).map((opt) => {
+                const sel = cameraSet.has(opt.value);
+                return (
+                  <Pressable key={opt.value} style={styles.checkRow} onPress={() => toggleCameraMode(opt.value)}>
+                    <View style={[styles.checkbox, sel && styles.checkboxOn]}>
+                      {sel && <Text style={styles.checkmark}>✓</Text>}
+                    </View>
+                    <Text style={styles.checkLabel}>{opt.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+
+          {/* SECTION 8 — Shot Distance */}
+          <Pressable style={styles.accordionHeader} onPress={() => toggleSection(8)}>
+            <Text style={styles.accordionHeaderText}>Shot Distance</Text>
+            <Text style={styles.accordionChevron}>{openSection === 8 ? "▲" : "▼"}</Text>
+          </Pressable>
+          {openSection === 8 && (
+            <View style={styles.accordionBody}>
+              {([
+                { value: "auto",           label: "Auto" },
+                { value: "close-up",       label: "Close-Up" },
+                { value: "half-body",      label: "Half Body" },
+                { value: "full-body",      label: "Full Body" },
+                { value: "wide-room",      label: "Wide Room" },
+                { value: "architectural",  label: "Architectural" },
+              ] as { value: string; label: string }[]).map((opt) => {
+                const sel = opt.value === shotDistance;
+                return (
+                  <Pressable key={opt.value} style={styles.checkRow} onPress={() => setExtra({ shotDistance: opt.value })}>
+                    <View style={[styles.checkbox, sel && styles.checkboxOn]}>
+                      {sel && <Text style={styles.checkmark}>✓</Text>}
+                    </View>
+                    <Text style={styles.checkLabel}>{opt.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+
+          {/* SECTION 9 — Camera Awareness */}
+          <Pressable style={styles.accordionHeader} onPress={() => toggleSection(9)}>
+            <Text style={styles.accordionHeaderText}>Camera Awareness</Text>
+            <Text style={styles.accordionChevron}>{openSection === 9 ? "▲" : "▼"}</Text>
+          </Pressable>
+          {openSection === 9 && (
+            <View style={styles.accordionBody}>
+              {([
+                { value: "auto",     label: "Auto" },
+                { value: "unaware",  label: "Unaware (Ashley does not know camera is there)" },
+                { value: "indirect", label: "Indirect (Ashley glancing toward camera)" },
+                { value: "direct",   label: "Direct (Ashley looking at camera)" },
+              ] as { value: string; label: string }[]).map((opt) => {
+                const sel = opt.value === cameraAwareness;
+                return (
+                  <Pressable key={opt.value} style={styles.checkRow} onPress={() => setExtra({ cameraAwareness: opt.value })}>
+                    <View style={[styles.checkbox, sel && styles.checkboxOn]}>
+                      {sel && <Text style={styles.checkmark}>✓</Text>}
+                    </View>
+                    <Text style={styles.checkLabel}>{opt.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+
+          {/* Reset button */}
+          <Pressable style={styles.imgDefaultsResetBtn} onPress={resetImageDefaults}>
+            <Text style={styles.imgDefaultsResetLabel}>Reset all to defaults</Text>
+          </Pressable>
         </View>
 
         <View style={styles.fieldGroup}>
@@ -2004,6 +2348,112 @@ const styles = StyleSheet.create({
   },
   toggleLabel: {
     color: colors.light.text,
+    fontFamily: "Inter_500Medium",
+    fontSize: 13,
+  },
+  // Image defaults accordion styles
+  imgDefaultsSummary: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
+    marginTop: 8,
+    marginBottom: 4,
+    lineHeight: 18,
+  },
+  accordionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: 48,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.light.border,
+    marginTop: 2,
+  },
+  accordionHeaderText: {
+    flex: 1,
+    color: colors.light.text,
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 14,
+  },
+  accordionHeaderHint: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_400Regular",
+    fontSize: 12,
+  },
+  accordionChevron: {
+    color: colors.light.mutedForeground,
+    fontSize: 11,
+    marginLeft: 8,
+  },
+  accordionBody: {
+    paddingVertical: 4,
+    paddingLeft: 4,
+    gap: 0,
+  },
+  accordionBodyHint: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_400Regular",
+    fontSize: 12,
+    lineHeight: 17,
+    marginBottom: 6,
+    marginTop: 2,
+  },
+  accordionDivider: {
+    color: colors.light.mutedForeground,
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 11,
+    marginTop: 10,
+    marginBottom: 2,
+    paddingLeft: 2,
+  },
+  checkRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: 44,
+    paddingVertical: 8,
+    gap: 12,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: colors.light.border,
+    backgroundColor: colors.light.background,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  checkboxOn: {
+    backgroundColor: colors.light.primary,
+    borderColor: colors.light.primary,
+  },
+  checkmark: {
+    color: "#fff",
+    fontSize: 13,
+    fontFamily: "Inter_700Bold",
+    lineHeight: 16,
+  },
+  checkLabel: {
+    flex: 1,
+    color: colors.light.text,
+    fontFamily: "Inter_400Regular",
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  imgDefaultsResetBtn: {
+    marginTop: 14,
+    alignSelf: "flex-start",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    backgroundColor: colors.light.muted,
+  },
+  imgDefaultsResetLabel: {
+    color: colors.light.mutedForeground,
     fontFamily: "Inter_500Medium",
     fontSize: 13,
   },

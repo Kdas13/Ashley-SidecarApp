@@ -117,6 +117,12 @@ export type AshleyProfile = {
    * Camera mode default. "auto" = use the composition mode's natural framing.
    */
   imageCameraDefault: "auto" | "selfie" | "portrait" | "lifestyle" | "wide-room" | "architectural" | "documentary";
+  /**
+   * Extended image defaults (Option B JSON blob). Null = not set yet.
+   * Parsed shape: { timeOfDay?, season?, activity?, shotDistance?, cameraAwareness? }
+   * All fields are string | null; null / absent means "auto".
+   */
+  imageDefaultsExtra?: string | null;
   onboardedAt: string | null;
   updatedAt: string;
 };
