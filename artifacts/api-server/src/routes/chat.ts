@@ -38,6 +38,7 @@ import {
   encodeStoredVibe,
   decodeStoredVibe,
 } from "../lib/imageIntent";
+import { applyGovernance, type GovernanceParams } from "../lib/imageGovernance.js";
 import {
   resolveImageFollowUp,
   buildFollowUpTurnHint,
@@ -271,6 +272,13 @@ const ChatBodySchema = z.object({
   debug: z.boolean().optional(),
   /** When false, suppress all image generation in this request. */
   imageGenerationEnabled: z.boolean().optional(),
+  /** Section 9 governance params — Mode 1 manual defaults + Mode 2 context signals. */
+  governanceParams: z.object({
+    imageCompositionMode: z.string().optional().nullable(),
+    imageEnvironmentDefault: z.string().optional().nullable(),
+    imageOccupancyDefault: z.string().optional().nullable(),
+    imageCameraDefault: z.string().optional().nullable(),
+  }).optional().nullable(),
 });
 
 // ---------------------------------------------------------------------------
@@ -1926,6 +1934,13 @@ const ChatSelfieBodySchema = z.object({
   sortOrder: z.number().int().min(0).optional(),
   /** When false, block this selfie generation call entirely. */
   imageGenerationEnabled: z.boolean().optional(),
+  /** Section 9 governance params forwarded from the mobile profile. */
+  governanceParams: z.object({
+    imageCompositionMode: z.string().optional().nullable(),
+    imageEnvironmentDefault: z.string().optional().nullable(),
+    imageOccupancyDefault: z.string().optional().nullable(),
+    imageCameraDefault: z.string().optional().nullable(),
+  }).optional().nullable(),
 });
 
 type SelfieJob =
@@ -1946,6 +1961,8 @@ type SelfieJob =
        * Undefined for single-image jobs (always patch messages.imageUrl).
        */
       attachmentSortOrder?: number;
+      /** Section 9 governance params captured at job creation time. */
+      governanceParams?: GovernanceParams;
     }
   | {
       status: "ready";
@@ -2310,7 +2327,26 @@ async function generateAshleySelfie(
   mode: SelfieMode,
   imageMode: ImageMode,
   jobId?: string,
+  governance?: GovernanceParams | null,
+  clientNow?: Date,
+  clientTz?: string,
 ): Promise<string | null> {
+  // Apply Section 9 governance framework before mode / wrapper resolution.
+  // Governance may remap imageMode (e.g. environment-centric → SCENE_MODE)
+  // and builds a vibe prefix (environment + occupancy clauses) that is
+  // injected into the identity-mode scene block.
+  let governedVibePrefix = "";
+  if (governance) {
+    const govResult = applyGovernance(
+      governance,
+      imageMode,
+      clientNow ?? new Date(),
+      clientTz ?? "UTC",
+    );
+    imageMode = govResult.imageMode;
+    governedVibePrefix = govResult.vibePrefix;
+  }
+
   const baseAppearance = (profile.appearance ?? "").trim();
   const ashleyName = (profile.name ?? "Ashley").trim() || "Ashley";
   const wrapper = wrapperFor(imageMode);
@@ -2693,11 +2729,15 @@ async function generateAshleySelfie(
     // Visual state block — active hair → colour directive (if override) →
     // scene anchor → vibe/scene. Joins with newline within the block;
     // double-newline separates it from the identity layer above.
+    // Prepend the governance vibe prefix (environment + occupancy clauses)
+    // to the scene description. When governance is inactive the prefix is empty
+    // and the scene is assembled from the vibe alone.
+    const sceneText = [governedVibePrefix, vibeNoMem.trim()].filter(Boolean).join(" ");
     const visualStateLines = [
       activeHairSentence,
       hairDirective,
       sceneAnchorDirective,
-      vibeNoMem.trim() ? `Scene: ${vibeNoMem.trim()}.` : "",
+      sceneText ? `Scene: ${sceneText}.` : "",
     ].filter(Boolean).join("\n");
 
     fullPrompt = [
@@ -2953,6 +2993,7 @@ function startSelfieGeneration(
   messageId: string,
   attachmentId?: string,
   attachmentSortOrder?: number,
+  governance?: GovernanceParams | null,
 ): void {
   void (async () => {
     try {
@@ -2974,7 +3015,7 @@ function startSelfieGeneration(
         { jobId, messageId, mode, imageMode },
         "CALLING PROVIDER... (job)",
       );
-      const imageUrl = await generateAshleySelfie(vibe, profile, mode, imageMode, jobId);
+      const imageUrl = await generateAshleySelfie(vibe, profile, mode, imageMode, jobId, governance, new Date());
       logger.info(
         {
           jobId,
@@ -3165,6 +3206,7 @@ for (const [id, job] of selfieJobs) {
       job.messageId,
       job.attachmentId,
       job.attachmentSortOrder,
+      job.governanceParams,
     );
   }
 }
@@ -3369,6 +3411,7 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
           createdAt: Date.now(),
           attachmentId: att.id,
           attachmentSortOrder: att.sortOrder,
+          governanceParams: parsed.data.governanceParams ?? undefined,
         });
         startSelfieGeneration(
           jId,
@@ -3379,6 +3422,7 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
           messageId,
           att.id,
           att.sortOrder,
+          parsed.data.governanceParams ?? undefined,
         );
         jobVibeLog[`job[${att.sortOrder}]`] = attForwardedVibe.slice(0, 120);
         allJobIds.push(jId);
@@ -3406,6 +3450,7 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
     }
   }
 
+  const governanceParams = parsed.data.governanceParams ?? undefined;
   setSelfieJob(jobId, {
     status: "pending",
     vibe: forwardedVibe,
@@ -3416,8 +3461,9 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
     createdAt: Date.now(),
     attachmentId,
     attachmentSortOrder,
+    governanceParams,
   });
-  startSelfieGeneration(jobId, forwardedVibe, mode, imageMode, deviceId, messageId, attachmentId, attachmentSortOrder);
+  startSelfieGeneration(jobId, forwardedVibe, mode, imageMode, deviceId, messageId, attachmentId, attachmentSortOrder, governanceParams);
   res.status(202).json({ jobId });
 });
 

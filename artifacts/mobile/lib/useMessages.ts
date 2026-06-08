@@ -27,6 +27,7 @@ import {
 import type { ImageAnalysisMode, ImageCategory } from "./storage";
 import {
   canUseImageGeneration,
+  getGovernanceParams,
   registerSelfieAbortController,
 } from "./imageGate";
 
@@ -343,8 +344,8 @@ async function runStream(args: RunStreamArgs): Promise<StreamReplyOutcome> {
 
   const outcome = await streamAshleyReply(
     args.newTurn
-      ? { newTurn: args.newTurn, requestId: args.requestId, imageGenerationEnabled: canUseImageGeneration() }
-      : { continueFromMessageId: args.continueFromMessageId!, imageGenerationEnabled: canUseImageGeneration() },
+      ? { newTurn: args.newTurn, requestId: args.requestId, imageGenerationEnabled: canUseImageGeneration(), governanceParams: getGovernanceParams() }
+      : { continueFromMessageId: args.continueFromMessageId!, imageGenerationEnabled: canUseImageGeneration(), governanceParams: getGovernanceParams() },
     {
       onMeta: (meta: StreamReplyMeta) => {
         ashleyId = meta.ashleyMessage.id;

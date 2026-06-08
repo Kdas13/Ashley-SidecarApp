@@ -8,6 +8,13 @@
       "when": 1747353600000,
       "tag": "0001_visual_intelligence_pipeline",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1749254400000,
+      "tag": "0002_image_governance_columns",
+      "breakpoints": true
     }
   ]
 }

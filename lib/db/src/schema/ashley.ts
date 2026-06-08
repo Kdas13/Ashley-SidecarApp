@@ -114,6 +114,18 @@ export const ashleyProfileTable = pgTable("ashley_profile", {
   imageGenerationEnabled: boolean("image_generation_enabled")
     .notNull()
     .default(true),
+  // Section 9 image governance — Mode 1 manual defaults.
+  // All default to null, which the server interprets as "auto" (Mode 2:
+  // derive from real clock time / day of week / season). Non-null values
+  // override a specific dimension explicitly (Mode 1).
+  //   imageCompositionMode: "auto"|"ashley-centric"|"balanced"|"environment-centric"|"scene"|"social"|"documentary"
+  //   imageEnvironmentDefault: "auto"|"living-room"|"bedroom"|"kitchen"|"garden"|"outdoors-urban"|"outdoors-nature"|"cafe"|"gym"
+  //   imageOccupancyDefault: "auto"|"solo"|"with-kane"|"with-cats"|"with-kane-and-cats"
+  //   imageCameraDefault: "auto"|"selfie"|"portrait"|"lifestyle"|"wide-room"|"architectural"|"documentary"
+  imageCompositionMode: text("image_composition_mode"),
+  imageEnvironmentDefault: text("image_environment_default"),
+  imageOccupancyDefault: text("image_occupancy_default"),
+  imageCameraDefault: text("image_camera_default"),
   // Daily medical check-in eligibility input. The medical check-in feature
   // itself is NOT built yet — the scheduler scaffolds the category but the
   // medical_checkin slot is gated OFF at runtime until that feature lands.

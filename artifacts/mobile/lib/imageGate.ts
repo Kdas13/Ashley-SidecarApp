@@ -33,6 +33,15 @@ import { useProfile } from "./useProfile";
 let _imageGenEnabled = true;
 const _abortControllers = new Set<AbortController>();
 
+// Section 9 governance params snapshot — updated whenever the profile changes.
+// Starts null (triggers Mode 2 auto-selection on the server).
+let _governanceParams: {
+  imageCompositionMode?: string | null;
+  imageEnvironmentDefault?: string | null;
+  imageOccupancyDefault?: string | null;
+  imageCameraDefault?: string | null;
+} | null = null;
+
 // ---------------------------------------------------------------------------
 // Synchronous API (safe from async functions and non-React code)
 // ---------------------------------------------------------------------------
@@ -40,6 +49,24 @@ const _abortControllers = new Set<AbortController>();
 /** Returns true when image generation is permitted. Never throws. */
 export function canUseImageGeneration(): boolean {
   return _imageGenEnabled;
+}
+
+/**
+ * Returns the current Section 9 governance params snapshot.
+ * Called by startSelfieJob in aiClient.ts to attach governance to every
+ * /chat/selfie request without threading the profile through the call chain.
+ * Returns null when not yet synced — server falls back to Mode 2 auto-selection.
+ */
+export function getGovernanceParams(): typeof _governanceParams {
+  return _governanceParams;
+}
+
+/**
+ * Sync the governance snapshot from the current profile.
+ * Called by useImageGate() whenever relevant profile fields change.
+ */
+export function syncGovernanceFromProfile(params: typeof _governanceParams): void {
+  _governanceParams = params;
 }
 
 /**
@@ -104,6 +131,22 @@ export function useImageGate(): boolean {
   useEffect(() => {
     syncGateFromProfile(enabled);
   }, [enabled]);
+
+  // Sync governance snapshot whenever relevant profile fields change.
+  const cm = profile?.imageCompositionMode ?? null;
+  const ev = profile?.imageEnvironmentDefault ?? null;
+  const oc = profile?.imageOccupancyDefault ?? null;
+  const ca = profile?.imageCameraDefault ?? null;
+  useEffect(() => {
+    if (!profile) return;
+    syncGovernanceFromProfile({
+      imageCompositionMode: cm,
+      imageEnvironmentDefault: ev,
+      imageOccupancyDefault: oc,
+      imageCameraDefault: ca,
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cm, ev, oc, ca]);
 
   return enabled;
 }

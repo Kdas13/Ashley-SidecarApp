@@ -297,6 +297,43 @@ export default function ProfileScreen(): React.JSX.Element {
     });
   };
 
+  // Section 9 governance — Mode 1 manual defaults. "auto" fields hand control
+  // to Mode 2 (server derives from real clock / day / season). Auto-save on
+  // each chip tap, same pattern as cadence.
+  const compositionMode = draft.imageCompositionMode ?? "auto";
+  const environmentDefault = draft.imageEnvironmentDefault ?? "auto";
+  const occupancyDefault = draft.imageOccupancyDefault ?? "auto";
+  const cameraDefault = draft.imageCameraDefault ?? "auto";
+
+  const setCompositionMode = (v: string) => {
+    const next = v as typeof draft.imageCompositionMode;
+    setDraft((prev) => ({ ...prev, imageCompositionMode: next }));
+    void update.mutateAsync({ imageCompositionMode: next }).catch((err) => {
+      console.warn("[profile] imageCompositionMode save failed", err);
+    });
+  };
+  const setEnvironmentDefault = (v: string) => {
+    const next = v as typeof draft.imageEnvironmentDefault;
+    setDraft((prev) => ({ ...prev, imageEnvironmentDefault: next }));
+    void update.mutateAsync({ imageEnvironmentDefault: next }).catch((err) => {
+      console.warn("[profile] imageEnvironmentDefault save failed", err);
+    });
+  };
+  const setOccupancyDefault = (v: string) => {
+    const next = v as typeof draft.imageOccupancyDefault;
+    setDraft((prev) => ({ ...prev, imageOccupancyDefault: next }));
+    void update.mutateAsync({ imageOccupancyDefault: next }).catch((err) => {
+      console.warn("[profile] imageOccupancyDefault save failed", err);
+    });
+  };
+  const setCameraDefault = (v: string) => {
+    const next = v as typeof draft.imageCameraDefault;
+    setDraft((prev) => ({ ...prev, imageCameraDefault: next }));
+    void update.mutateAsync({ imageCameraDefault: next }).catch((err) => {
+      console.warn("[profile] imageCameraDefault save failed", err);
+    });
+  };
+
   const cadence: ProactiveCadence =
     draft.proactiveCadence === "off" ||
     draft.proactiveCadence === "low" ||
@@ -510,6 +547,115 @@ export default function ProfileScreen(): React.JSX.Element {
                 : "Off — no images at all"}
             </Text>
           </Pressable>
+        </View>
+
+        <View style={styles.fieldGroup}>
+          <Text style={styles.label}>Image defaults</Text>
+          <Text style={styles.hint}>
+            These control how Ashley frames her photos. All fields default to
+            Auto — the server picks sensible values from the time of day, day
+            of week, and season. Override any field to lock in your preference.
+          </Text>
+
+          <Text style={[styles.hint, { marginTop: 10, marginBottom: 4 }]}>Framing</Text>
+          <View style={styles.cadenceRow}>
+            {[
+              { value: "auto",                 label: "Auto" },
+              { value: "ashley-centric",       label: "Close" },
+              { value: "balanced",             label: "Balanced" },
+              { value: "environment-centric",  label: "Wide" },
+              { value: "documentary",          label: "Doc" },
+            ].map((opt) => {
+              const sel = opt.value === compositionMode;
+              return (
+                <Pressable
+                  key={opt.value}
+                  onPress={() => setCompositionMode(opt.value)}
+                  style={[styles.cadenceChip, sel && styles.cadenceChipSelected]}
+                >
+                  <Text style={[styles.cadenceChipLabel, sel && styles.cadenceChipLabelSelected]}>
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <Text style={[styles.hint, { marginTop: 10, marginBottom: 4 }]}>Environment</Text>
+          <View style={styles.cadenceRow}>
+            {[
+              { value: "auto",             label: "Auto" },
+              { value: "living-room",      label: "Living room" },
+              { value: "bedroom",          label: "Bedroom" },
+              { value: "kitchen",          label: "Kitchen" },
+              { value: "garden",           label: "Garden" },
+              { value: "outdoors-urban",   label: "Urban" },
+              { value: "outdoors-nature",  label: "Nature" },
+              { value: "cafe",             label: "Cafe" },
+              { value: "gym",              label: "Gym" },
+            ].map((opt) => {
+              const sel = opt.value === environmentDefault;
+              return (
+                <Pressable
+                  key={opt.value}
+                  onPress={() => setEnvironmentDefault(opt.value)}
+                  style={[styles.cadenceChip, sel && styles.cadenceChipSelected]}
+                >
+                  <Text style={[styles.cadenceChipLabel, sel && styles.cadenceChipLabelSelected]}>
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <Text style={[styles.hint, { marginTop: 10, marginBottom: 4 }]}>Scene occupancy</Text>
+          <View style={styles.cadenceRow}>
+            {[
+              { value: "auto",                label: "Auto (solo)" },
+              { value: "with-kane",           label: "With Wren" },
+              { value: "with-cats",           label: "With cats" },
+              { value: "with-kane-and-cats",  label: "With both" },
+            ].map((opt) => {
+              const sel = opt.value === occupancyDefault;
+              return (
+                <Pressable
+                  key={opt.value}
+                  onPress={() => setOccupancyDefault(opt.value)}
+                  style={[styles.cadenceChip, sel && styles.cadenceChipSelected]}
+                >
+                  <Text style={[styles.cadenceChipLabel, sel && styles.cadenceChipLabelSelected]}>
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <Text style={[styles.hint, { marginTop: 10, marginBottom: 4 }]}>Camera angle</Text>
+          <View style={styles.cadenceRow}>
+            {[
+              { value: "auto",          label: "Auto" },
+              { value: "selfie",        label: "Selfie" },
+              { value: "portrait",      label: "Portrait" },
+              { value: "lifestyle",     label: "Lifestyle" },
+              { value: "wide-room",     label: "Wide room" },
+              { value: "architectural", label: "Arch" },
+            ].map((opt) => {
+              const sel = opt.value === cameraDefault;
+              return (
+                <Pressable
+                  key={opt.value}
+                  onPress={() => setCameraDefault(opt.value)}
+                  style={[styles.cadenceChip, sel && styles.cadenceChipSelected]}
+                >
+                  <Text style={[styles.cadenceChipLabel, sel && styles.cadenceChipLabelSelected]}>
+                    {opt.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
         </View>
 
         <View style={styles.fieldGroup}>

@@ -1,0 +1,2 @@
+- [Image governance architecture](image-governance.md) — Section 9 engine lives in imageGovernance.ts; governance params travel in request body (never DB); module-level snapshot in imageGate.ts follows same pattern as imageGenEnabled gate.
+- [Drizzle-kit generate broken](drizzle-kit-path-bug.md) — drizzle-kit generate fails in this repo with __dirname path bug; write migration SQL manually and apply via executeSql in code_execution.

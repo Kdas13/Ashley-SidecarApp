@@ -63,6 +63,11 @@ const ProfileUpdateSchema = z
     proactiveCadence: z.enum(PROACTIVE_CADENCES).optional(),
     greetOnAppOpen: z.boolean().optional(),
     imageGenerationEnabled: z.boolean().optional(),
+    /** Section 9 image governance — Mode 1 manual defaults. */
+    imageCompositionMode: z.string().max(64).optional(),
+    imageEnvironmentDefault: z.string().max(64).optional(),
+    imageOccupancyDefault: z.string().max(64).optional(),
+    imageCameraDefault: z.string().max(64).optional(),
     markOnboarded: z.boolean().optional(),
   })
   .strict();

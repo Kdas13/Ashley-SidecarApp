@@ -176,6 +176,10 @@ type WireProfile = {
   proactiveCadence?: string | null;
   greetOnAppOpen?: boolean | null;
   imageGenerationEnabled?: boolean | null;
+  imageCompositionMode?: string | null;
+  imageEnvironmentDefault?: string | null;
+  imageOccupancyDefault?: string | null;
+  imageCameraDefault?: string | null;
   onboardedAt: string | null;
   updatedAt: string;
 };
@@ -262,6 +266,10 @@ function profileFromWire(p: WireProfile): AshleyProfile {
     proactiveCadence: normalizeProactiveCadence(p.proactiveCadence),
     greetOnAppOpen: p.greetOnAppOpen !== false,
     imageGenerationEnabled: p.imageGenerationEnabled !== false,
+    imageCompositionMode: (p.imageCompositionMode as AshleyProfile["imageCompositionMode"] | undefined) ?? "auto",
+    imageEnvironmentDefault: (p.imageEnvironmentDefault as AshleyProfile["imageEnvironmentDefault"] | undefined) ?? "auto",
+    imageOccupancyDefault: (p.imageOccupancyDefault as AshleyProfile["imageOccupancyDefault"] | undefined) ?? "auto",
+    imageCameraDefault: (p.imageCameraDefault as AshleyProfile["imageCameraDefault"] | undefined) ?? "auto",
     onboardedAt: p.onboardedAt,
     updatedAt: p.updatedAt,
   };
@@ -924,6 +932,17 @@ export type StreamReplyArgs = {
    * and forces selfieVibe=null so the mobile never sees a vibe to trigger on.
    */
   imageGenerationEnabled?: boolean;
+  /**
+   * Section 9 governance params for this turn's image generation.
+   * Sent with every streaming chat request so the server can apply
+   * Mode 1/Mode 2 defaults when generating inline selfies.
+   */
+  governanceParams?: {
+    imageCompositionMode?: string | null;
+    imageEnvironmentDefault?: string | null;
+    imageOccupancyDefault?: string | null;
+    imageCameraDefault?: string | null;
+  } | null;
 };
 
 export type StreamReplyOutcome =
@@ -959,6 +978,9 @@ export async function streamAshleyReply(
   }
   if (typeof args.imageGenerationEnabled === "boolean") {
     body["imageGenerationEnabled"] = args.imageGenerationEnabled;
+  }
+  if (args.governanceParams) {
+    body["governanceParams"] = args.governanceParams;
   }
   if (args.newTurn) {
     body["userMessage"] = {
@@ -1292,14 +1314,26 @@ async function startSelfieJob(
   vibe: string,
   sortOrder?: number,
 ): Promise<string> {
+  // Attach the current governance params snapshot so the server can apply
+  // Mode 1/Mode 2 defaults. Populated by useImageGate() → syncGovernanceFromProfile.
+  // Lazy import avoids circular dep (imageGate ← useProfile; aiClient ← imageGate is fine).
+  let governanceParams: Record<string, unknown> | null = null;
+  try {
+    const { getGovernanceParams } = await import("./imageGate");
+    governanceParams = getGovernanceParams() as Record<string, unknown> | null;
+  } catch {
+    // non-fatal — server falls back to Mode 2 auto-selection
+  }
+
   const data = await fetchJSON<{ jobId?: unknown }>("/chat/selfie", {
     method: "POST",
     headers: apiHeaders(),
-    body: JSON.stringify(
-      typeof sortOrder === "number"
-        ? { messageId, vibe, sortOrder }
-        : { messageId, vibe },
-    ),
+    body: JSON.stringify({
+      messageId,
+      vibe,
+      ...(typeof sortOrder === "number" ? { sortOrder } : {}),
+      ...(governanceParams ? { governanceParams } : {}),
+    }),
   });
   if (typeof data.jobId !== "string" || !data.jobId.trim()) {
     throw new Error("Selfie generation didn't return a job id.");

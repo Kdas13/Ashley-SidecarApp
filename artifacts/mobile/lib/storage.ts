@@ -92,6 +92,31 @@ export type AshleyProfile = {
    * Default ON.
    */
   imageGenerationEnabled: boolean;
+  /**
+   * Image composition mode default (Mode 1 / Mode 2 governance).
+   *   "auto"                — Mode 2: server derives from time/day/season (default).
+   *   "ashley-centric"      — Portrait-dominant. Ashley fills most of the frame.
+   *   "balanced"            — Mid-shot: Ashley + some environment visible.
+   *   "environment-centric" — Wide shot: environment prominent, Ashley in the scene.
+   *   "scene"               — Full cinematic/environmental composition.
+   *   "social"              — Ashley with others (see imageOccupancyDefault).
+   *   "documentary"         — Reportage-style wide framing.
+   */
+  imageCompositionMode: "auto" | "ashley-centric" | "balanced" | "environment-centric" | "scene" | "social" | "documentary";
+  /**
+   * Default environment for image generation.
+   * "auto" = Mode 2: server derives from real clock time / day / season.
+   */
+  imageEnvironmentDefault: "auto" | "living-room" | "bedroom" | "kitchen" | "garden" | "outdoors-urban" | "outdoors-nature" | "cafe" | "gym";
+  /**
+   * Occupancy profile for image generation.
+   * "auto" = Ashley alone. Cats only appear in home/garden environments.
+   */
+  imageOccupancyDefault: "auto" | "solo" | "with-kane" | "with-cats" | "with-kane-and-cats";
+  /**
+   * Camera mode default. "auto" = use the composition mode's natural framing.
+   */
+  imageCameraDefault: "auto" | "selfie" | "portrait" | "lifestyle" | "wide-room" | "architectural" | "documentary";
   onboardedAt: string | null;
   updatedAt: string;
 };
@@ -245,6 +270,10 @@ export const DEFAULT_PROFILE: AshleyProfile = {
   proactiveCadence: "normal",
   greetOnAppOpen: true,
   imageGenerationEnabled: true,
+  imageCompositionMode: "auto",
+  imageEnvironmentDefault: "auto",
+  imageOccupancyDefault: "auto",
+  imageCameraDefault: "auto",
   onboardedAt: null,
   updatedAt: new Date(0).toISOString(),
 };
