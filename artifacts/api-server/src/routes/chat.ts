@@ -279,6 +279,13 @@ const ChatBodySchema = z.object({
     imageEnvironmentDefault: z.string().optional().nullable(),
     imageOccupancyDefault: z.string().optional().nullable(),
     imageCameraDefault: z.string().optional().nullable(),
+    imageDefaultsExtra: z.object({
+      timeOfDay: z.string().optional().nullable(),
+      season: z.string().optional().nullable(),
+      activity: z.string().optional().nullable(),
+      shotDistance: z.string().optional().nullable(),
+      cameraAwareness: z.string().optional().nullable(),
+    }).optional().nullable(),
   }).optional().nullable(),
 });
 
@@ -1961,6 +1968,13 @@ const ChatSelfieBodySchema = z.object({
     imageEnvironmentDefault: z.string().optional().nullable(),
     imageOccupancyDefault: z.string().optional().nullable(),
     imageCameraDefault: z.string().optional().nullable(),
+    imageDefaultsExtra: z.object({
+      timeOfDay: z.string().optional().nullable(),
+      season: z.string().optional().nullable(),
+      activity: z.string().optional().nullable(),
+      shotDistance: z.string().optional().nullable(),
+      cameraAwareness: z.string().optional().nullable(),
+    }).optional().nullable(),
   }).optional().nullable(),
   /**
    * When true, skip the message ownership check. Used by the profile
