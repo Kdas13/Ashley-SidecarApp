@@ -180,6 +180,7 @@ type WireProfile = {
   imageEnvironmentDefault?: string | null;
   imageOccupancyDefault?: string | null;
   imageCameraDefault?: string | null;
+  imageDefaultsExtra?: string | null;
   onboardedAt: string | null;
   updatedAt: string;
 };
@@ -270,6 +271,7 @@ function profileFromWire(p: WireProfile): AshleyProfile {
     imageEnvironmentDefault: (p.imageEnvironmentDefault as AshleyProfile["imageEnvironmentDefault"] | undefined) ?? "auto",
     imageOccupancyDefault: (p.imageOccupancyDefault as AshleyProfile["imageOccupancyDefault"] | undefined) ?? "auto",
     imageCameraDefault: (p.imageCameraDefault as AshleyProfile["imageCameraDefault"] | undefined) ?? "auto",
+    imageDefaultsExtra: p.imageDefaultsExtra ?? null,
     onboardedAt: p.onboardedAt,
     updatedAt: p.updatedAt,
   };
@@ -610,6 +612,7 @@ export type ProfileUpdate = Partial<{
   imageEnvironmentDefault: string;
   imageOccupancyDefault: string;
   imageCameraDefault: string;
+  imageDefaultsExtra: string;
   markOnboarded: boolean;
 }>;
 
