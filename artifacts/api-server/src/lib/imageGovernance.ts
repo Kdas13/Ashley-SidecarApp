@@ -208,18 +208,29 @@ export function applyGovernance(
   const envEntry = ENVIRONMENTS[resolvedEnvKey];
 
   // ── 2. Resolve composition / camera (only overrides PORTRAIT_MODE) ────────
+  // Priority: explicit camera > explicit composition > product default.
+  // Product default for "auto" on both = SCENE_MODE (environment-centric /
+  // wide-room). If either is set explicitly, honour it — the product default
+  // only fires when the user hasn't expressed a preference on either axis.
   let resolvedImageMode = imageMode;
   if (imageMode === "PORTRAIT_MODE") {
-    // Camera default takes precedence over composition mode.
     const cameraMapped = cameraPref !== "auto" ? CAMERA_TO_IMAGE_MODE[cameraPref] : undefined;
     const compositionMapped = compositionPref !== "auto" ? COMPOSITION_TO_IMAGE_MODE[compositionPref] : undefined;
-    resolvedImageMode = cameraMapped ?? compositionMapped ?? imageMode;
+    if (cameraMapped !== undefined || compositionMapped !== undefined) {
+      // At least one axis has an explicit preference — honour the priority chain.
+      resolvedImageMode = cameraMapped ?? compositionMapped ?? imageMode;
+    } else {
+      // Both "auto" → product default: environment-centric / wide-room = SCENE_MODE.
+      resolvedImageMode = "SCENE_MODE";
+    }
   }
 
   // ── 3. Occupancy clause (with cat plausibility filter) ────────────────────
+  // "auto" → product default: Ashley + Kane + cats.
+  const effectiveOccupancy = occupancyPref !== "auto" ? occupancyPref : "with-kane-and-cats";
   const occupancyClause =
-    occupancyPref !== "auto" && occupancyPref !== "solo"
-      ? buildOccupancyClause(occupancyPref, resolvedEnvKey)
+    effectiveOccupancy !== "solo"
+      ? buildOccupancyClause(effectiveOccupancy, resolvedEnvKey)
       : "";
 
   // ── 4. Assemble vibe prefix ───────────────────────────────────────────────

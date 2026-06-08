@@ -2332,20 +2332,19 @@ async function generateAshleySelfie(
   clientTz?: string,
 ): Promise<string | null> {
   // Apply Section 9 governance framework before mode / wrapper resolution.
-  // Governance may remap imageMode (e.g. environment-centric → SCENE_MODE)
-  // and builds a vibe prefix (environment + occupancy clauses) that is
-  // injected into the identity-mode scene block.
-  let governedVibePrefix = "";
-  if (governance) {
-    const govResult = applyGovernance(
-      governance,
-      imageMode,
-      clientNow ?? new Date(),
-      clientTz ?? "UTC",
-    );
-    imageMode = govResult.imageMode;
-    governedVibePrefix = govResult.vibePrefix;
-  }
+  // Governance runs unconditionally — null/undefined governance is treated as
+  // all-auto, which applies product defaults (environment-centric, wide-room,
+  // with-kane-and-cats) rather than leaving imageMode as portrait.
+  const {
+    imageMode: governedImageMode,
+    vibePrefix: governedVibePrefix,
+  } = applyGovernance(
+    governance ?? {},
+    imageMode,
+    clientNow ?? new Date(),
+    clientTz ?? "UTC",
+  );
+  imageMode = governedImageMode;
 
   const baseAppearance = (profile.appearance ?? "").trim();
   const ashleyName = (profile.name ?? "Ashley").trim() || "Ashley";
