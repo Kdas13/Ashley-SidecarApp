@@ -1670,7 +1670,7 @@ export async function fetchTestSelfie(): Promise<{ imageUrl: string }> {
     }
     if (!res.ok) continue;
     const body = await res.json() as Record<string, unknown>;
-    if (body.status === "done" && typeof body.imageUrl === "string") {
+    if (body.status === "ready" && typeof body.imageUrl === "string") {
       return { imageUrl: body.imageUrl };
     }
     if (body.status === "failed") {
