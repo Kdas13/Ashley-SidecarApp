@@ -1,0 +1,180 @@
+================================================================================
+AUDIT FILE 3 — Profile Load Handler
+================================================================================
+
+This is split into three parts:
+  A. Server — GET /state route handler (state.ts lines 79–158)
+  B. Mobile — WireProfile type (aiClient.ts lines 155–185)
+  C. Mobile — profileFromWire function (aiClient.ts lines 244–276)
+
+The load path on cold start is:
+  mobile calls GET /api/state
+  → server runs GET /state handler (Part A)
+  → returns raw DB row as "profile" in JSON
+  → mobile's fetchState() receives it
+  → calls profileFromWire(data.profile) (Parts B+C)
+  → writes result to AsyncStorage via saveProfile()
+  → React Query cache is updated
+  → useImageGate() re-runs, syncs governance snapshot
+
+================================================================================
+PART A — SERVER: GET /state route handler
+Source: artifacts/api-server/src/routes/state.ts, lines 79–158
+================================================================================
+
+router.get("/state", async (req, res): Promise<void> => {
+  const deviceId = getDeviceId(req);
+  try {
+    const profile = await getOrCreateProfileFor(deviceId);
+    const policy = getPolicyFor(profile);
+    const [messages, memories, summaries, attachments] = await Promise.all([
+      db
+        .select()
+        .from(messagesTable)
+        .where(eq(messagesTable.deviceId, deviceId))
+        .orderBy(asc(messagesTable.createdAt)),
+      db
+        .select()
+        .from(memoriesTable)
+        .where(eq(memoriesTable.deviceId, deviceId))
+        .orderBy(asc(memoriesTable.createdAt)),
+      db
+        .select()
+        .from(conversationSummariesTable)
+        .where(eq(conversationSummariesTable.deviceId, deviceId))
+        .orderBy(asc(conversationSummariesTable.coveredThroughCreatedAt)),
+      // Fetch ready + failed media_attachments so /state hydration can annotate
+      // multi-image packet messages with their resolved imageUrls[].
+      // Failed rows emit null at their sort_order position so the gallery
+      // preserves slot positions and can render an error tile in place.
+      db
+        .select({
+          messageId: mediaAttachmentsTable.messageId,
+          imageUrl: mediaAttachmentsTable.imageUrl,
+          sortOrder: mediaAttachmentsTable.sortOrder,
+          status: mediaAttachmentsTable.status,
+        })
+        .from(mediaAttachmentsTable)
+        .where(
+          and(
+            eq(mediaAttachmentsTable.deviceId, deviceId),
+            inArray(mediaAttachmentsTable.status, ["ready", "failed"]),
+          ),
+        )
+        .orderBy(asc(mediaAttachmentsTable.sortOrder)),
+    ]);
+
+    // Build messageId → sorted (string | null)[] from settled attachment rows.
+    // null = failed slot (position preserved for gallery error tiles).
+    const packetUrls = new Map<string, (string | null)[]>();
+    for (const att of attachments) {
+      const list = packetUrls.get(att.messageId) ?? [];
+      list.push(att.status === "ready" && att.imageUrl ? att.imageUrl : null);
+      packetUrls.set(att.messageId, list);
+    }
+
+    // Annotate messages that have multi-image packets with their imageUrls.
+    const annotatedMessages = messages.map((m) => ({
+      ...m,
+      imageUrls: packetUrls.get(m.id) ?? null,
+    }));
+
+    // Surface the resolved policy + the operator switch alongside the raw
+    // profile. The mobile app uses these to decide whether to show the
+    // 18+ section at all and what its current state is, without re-running
+    // the gating rules client-side.
+    res.json({
+      profile,
+      messages: annotatedMessages,
+      memories,
+      summaries,
+      policy: {
+        effectiveMode: policy.effectiveMode,
+        intimacyLevel: policy.intimacyLevel,
+        intimacyCeiling: policy.intimacyCeiling,
+        adultConfirmed: policy.adultConfirmed,
+        matureModeAvailable: policy.matureModeAvailable,
+        operatorMatureModeAvailable: isMatureModeAvailable(),
+      },
+    });
+  } catch (err) {
+    req.log.error({ err }, "GET /state failed");
+    res.status(500).json({ error: "Could not load state" });
+  }
+});
+
+================================================================================
+PART B — MOBILE: WireProfile type
+Source: artifacts/mobile/lib/aiClient.ts, lines 155–185
+================================================================================
+
+type WireProfile = {
+  deviceId: string;
+  name: string;
+  age: string;
+  identity: string;
+  personality: string;
+  speakingStyle: string;
+  appearance: string;
+  refersToUserAs: string;
+  sharedHistory: string;
+  replikaExcerpts: string;
+  replikaCarryover: string;
+  replikaCarryoverSummary: string;
+  relationshipMode: string;
+  builderAwareMode: boolean;
+  voiceMode: boolean;
+  contentMode: "standard" | "mature";
+  adultConfirmedAt: string | null;
+  intimacyLevel: number;
+  primaryColor: string;
+  accentColor: string;
+  proactiveCadence?: string | null;
+  greetOnAppOpen?: boolean | null;
+  imageGenerationEnabled?: boolean | null;
+  imageCompositionMode?: string | null;
+  imageEnvironmentDefault?: string | null;
+  imageOccupancyDefault?: string | null;
+  imageCameraDefault?: string | null;
+  onboardedAt: string | null;
+  updatedAt: string;
+};
+
+================================================================================
+PART C — MOBILE: profileFromWire function
+Source: artifacts/mobile/lib/aiClient.ts, lines 244–276
+================================================================================
+
+function profileFromWire(p: WireProfile): AshleyProfile {
+  return {
+    name: p.name,
+    age: p.age,
+    identity: p.identity,
+    appearance: p.appearance,
+    personality: p.personality,
+    speakingStyle: p.speakingStyle,
+    refersToUserAs: p.refersToUserAs,
+    sharedHistory: p.sharedHistory,
+    replikaExcerpts: p.replikaExcerpts,
+    replikaCarryover: p.replikaCarryover ?? "",
+    replikaCarryoverSummary: p.replikaCarryoverSummary ?? "",
+    relationshipMode: p.relationshipMode,
+    builderAwareMode: p.builderAwareMode ?? true,
+    voiceMode: p.voiceMode === true,
+    contentMode: p.contentMode === "mature" ? "mature" : "standard",
+    adultConfirmedAt: p.adultConfirmedAt ?? null,
+    intimacyLevel:
+      typeof p.intimacyLevel === "number" && Number.isFinite(p.intimacyLevel)
+        ? p.intimacyLevel
+        : 0,
+    proactiveCadence: normalizeProactiveCadence(p.proactiveCadence),
+    greetOnAppOpen: p.greetOnAppOpen !== false,
+    imageGenerationEnabled: p.imageGenerationEnabled !== false,
+    imageCompositionMode: (p.imageCompositionMode as AshleyProfile["imageCompositionMode"] | undefined) ?? "auto",
+    imageEnvironmentDefault: (p.imageEnvironmentDefault as AshleyProfile["imageEnvironmentDefault"] | undefined) ?? "auto",
+    imageOccupancyDefault: (p.imageOccupancyDefault as AshleyProfile["imageOccupancyDefault"] | undefined) ?? "auto",
+    imageCameraDefault: (p.imageCameraDefault as AshleyProfile["imageCameraDefault"] | undefined) ?? "auto",
+    onboardedAt: p.onboardedAt,
+    updatedAt: p.updatedAt,
+  };
+}

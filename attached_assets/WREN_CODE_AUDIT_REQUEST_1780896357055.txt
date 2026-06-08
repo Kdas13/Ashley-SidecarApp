@@ -1,0 +1,58 @@
+================================================================================
+WREN — FULL CODE AUDIT REQUEST
+Date: 2026-06-08
+================================================================================
+
+Before any further work proceeds a full code audit is required.
+
+Export the complete current code for each of the following as separate
+txt files. No summaries. No descriptions. Full code only.
+
+
+================================================================================
+FILES REQUIRED
+================================================================================
+
+1. generateAshleySelfie
+   The full function. Every line.
+
+2. Profile save handler
+   The full function that writes profile fields to the server on save.
+
+3. Profile load handler
+   The full function that reads profile fields back on profile screen open.
+
+4. Image defaults UI component
+   The full code for the image defaults section of the profile screen.
+
+
+================================================================================
+ALSO CONFIRM IN WRITING
+================================================================================
+
+For each of the three bugs from the bug report:
+
+Bug 1 — Profile settings not persisting
+What exact change was made? Which file? Which function? Which lines?
+
+Bug 2 — Governance routing not firing
+What exact change was made? Which file? Which function? Which lines?
+
+Bug 3 — Label fix
+What exact change was made? Which file? Which line?
+
+If no change was made for any of these, state that explicitly.
+
+
+================================================================================
+DELIVER AS
+================================================================================
+
+Four separate txt files — one per code item above.
+Plus one txt file answering the bug confirmation questions.
+
+Do not send anything else until this audit is complete.
+
+================================================================================
+END OF AUDIT REQUEST
+================================================================================

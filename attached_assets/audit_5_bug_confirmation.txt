@@ -1,0 +1,214 @@
+================================================================================
+AUDIT FILE 5 — Bug Confirmation
+Date: 2026-06-08
+================================================================================
+
+
+BUG 1 — Profile settings not persisting
+================================================================================
+
+Two changes were made.
+
+CHANGE 1 of 2
+File: artifacts/mobile/lib/aiClient.ts
+Function: ProfileUpdate type (exported type declaration)
+Lines before fix: 587–610
+Lines after fix: 587–617
+
+What changed:
+The ProfileUpdate type is the shape the mobile sends to PUT /profile.
+Four fields were missing from this type:
+
+  BEFORE (fields not present):
+    (imageCompositionMode was absent)
+    (imageEnvironmentDefault was absent)
+    (imageOccupancyDefault was absent)
+    (imageCameraDefault was absent)
+
+  AFTER (fields added):
+    imageCompositionMode: string;
+    imageEnvironmentDefault: string;
+    imageOccupancyDefault: string;
+    imageCameraDefault: string;
+
+Without these in the type, TypeScript would accept the fields but they
+were not listed in the type so tooling would never catch the gap. The
+actual wire payload never included them because of Change 2 below.
+
+CHANGE 2 of 2
+File: artifacts/mobile/lib/useProfile.ts
+Function: useUpdateProfile (mutationFn)
+Lines before fix: ~155–161
+Lines after fix: ~157–167
+
+What changed:
+useUpdateProfile builds a wirePatch object by copying fields from the
+input patch one by one. It did not copy the four governance fields.
+They were added:
+
+  BEFORE (these four lines did not exist):
+    (imageCompositionMode was not copied)
+    (imageEnvironmentDefault was not copied)
+    (imageOccupancyDefault was not copied)
+    (imageCameraDefault was not copied)
+
+  AFTER (added):
+    if (patch.imageCompositionMode !== undefined)
+      wirePatch.imageCompositionMode = patch.imageCompositionMode;
+    if (patch.imageEnvironmentDefault !== undefined)
+      wirePatch.imageEnvironmentDefault = patch.imageEnvironmentDefault;
+    if (patch.imageOccupancyDefault !== undefined)
+      wirePatch.imageOccupancyDefault = patch.imageOccupancyDefault;
+    if (patch.imageCameraDefault !== undefined)
+      wirePatch.imageCameraDefault = patch.imageCameraDefault;
+
+Effect: the four governance fields now travel in the PUT /profile body
+to the server. The server's ProfileUpdateSchema already had them
+(imageCompositionMode, imageEnvironmentDefault, imageOccupancyDefault,
+imageCameraDefault are all present as z.string().max(64).optional()).
+The Drizzle .set(updates) call passes them through to the DB columns
+image_composition_mode, image_environment_default, image_occupancy_default,
+image_camera_default which were added to ashley_profile in the migration
+applied in the previous session.
+
+
+BUG 2 — Governance routing not firing
+================================================================================
+
+Two changes were made. Both are server-only. No mobile change was needed.
+
+CHANGE 1 of 2
+File: artifacts/api-server/src/routes/chat.ts
+Function: generateAshleySelfie
+Lines before fix: ~2338–2348
+Lines after fix: ~2337–2350
+
+What changed:
+The governance block was inside an if (governance) guard. When the mobile
+client had not yet synced a governance snapshot (null on first run, cold
+start, or any run before a profile save), governance was null, the guard
+was false, applyGovernance was never called, and imageMode stayed as
+whatever the vibe classifier returned — PORTRAIT_MODE for a generic "send
+me a pic" request.
+
+  BEFORE:
+    let governedVibePrefix = "";
+    if (governance) {
+      const govResult = applyGovernance(
+        governance,
+        imageMode,
+        clientNow ?? new Date(),
+        clientTz ?? "UTC",
+      );
+      imageMode = govResult.imageMode;
+      governedVibePrefix = govResult.vibePrefix;
+    }
+
+  AFTER:
+    const {
+      imageMode: governedImageMode,
+      vibePrefix: governedVibePrefix,
+    } = applyGovernance(
+      governance ?? {},
+      imageMode,
+      clientNow ?? new Date(),
+      clientTz ?? "UTC",
+    );
+    imageMode = governedImageMode;
+
+Effect: applyGovernance now runs on every selfie request. null governance
+is passed as {} (empty object), which triggers all-auto handling. See
+Change 2 for what all-auto now means.
+
+CHANGE 2 of 2
+File: artifacts/api-server/src/lib/imageGovernance.ts
+Function: applyGovernance
+Lines before fix: ~210–223
+Lines after fix: ~210–237
+
+What changed:
+applyGovernance treated "auto" on both camera and composition as "no
+preference, keep imageMode as-is." For PORTRAIT_MODE input with both
+fields on auto, the function returned PORTRAIT_MODE unchanged. Per the
+spec, "auto" means the product default applies, not "no opinion."
+
+Product defaults per the spec document:
+  Composition auto → Environment-Centric → SCENE_MODE
+  Camera auto      → Wide Room          → SCENE_MODE
+  Occupancy auto   → with-kane-and-cats
+
+  BEFORE:
+    if (imageMode === "PORTRAIT_MODE") {
+      const cameraMapped = cameraPref !== "auto"
+        ? CAMERA_TO_IMAGE_MODE[cameraPref] : undefined;
+      const compositionMapped = compositionPref !== "auto"
+        ? COMPOSITION_TO_IMAGE_MODE[compositionPref] : undefined;
+      resolvedImageMode = cameraMapped ?? compositionMapped ?? imageMode;
+    }
+
+    const occupancyClause =
+      occupancyPref !== "auto" && occupancyPref !== "solo"
+        ? buildOccupancyClause(occupancyPref, resolvedEnvKey)
+        : "";
+
+  AFTER:
+    if (imageMode === "PORTRAIT_MODE") {
+      const cameraMapped = cameraPref !== "auto"
+        ? CAMERA_TO_IMAGE_MODE[cameraPref] : undefined;
+      const compositionMapped = compositionPref !== "auto"
+        ? COMPOSITION_TO_IMAGE_MODE[compositionPref] : undefined;
+      if (cameraMapped !== undefined || compositionMapped !== undefined) {
+        // At least one axis has an explicit preference — honour it.
+        resolvedImageMode = cameraMapped ?? compositionMapped ?? imageMode;
+      } else {
+        // Both "auto" → product default: SCENE_MODE.
+        resolvedImageMode = "SCENE_MODE";
+      }
+    }
+
+    const effectiveOccupancy = occupancyPref !== "auto"
+      ? occupancyPref : "with-kane-and-cats";
+    const occupancyClause =
+      effectiveOccupancy !== "solo"
+        ? buildOccupancyClause(effectiveOccupancy, resolvedEnvKey)
+        : "";
+
+Priority contract preserved: explicit camera > explicit composition >
+product default. If either axis is set explicitly, the explicit value
+wins. Product default (SCENE_MODE) only fires when both are "auto."
+
+Combined effect of Changes 1 and 2: every selfie request now goes through
+applyGovernance. With no governance params sent (or all-auto), PORTRAIT_MODE
+is upgraded to SCENE_MODE. Environment is auto-selected from time/day/season.
+Occupancy defaults to with-kane-and-cats.
+
+
+BUG 3 — Label fix
+================================================================================
+
+One change was made.
+
+File: artifacts/mobile/app/profile.tsx
+Function: rendered JSX in the main profile screen component
+Line: 616 (the occupancy chip option array)
+
+What changed:
+The "with-kane" chip label was "With Wren" and was changed to "With Kane".
+
+  BEFORE: { value: "with-kane", label: "With Wren" }
+  AFTER:  { value: "with-kane", label: "With Kane" }
+
+No logic change. Label text only.
+
+
+ADDITIONAL NOTE — occupancy "Auto (solo)" label
+================================================================================
+
+The occupancy chip for value "auto" is still labelled "Auto (solo)" in the
+UI. As of the Bug 2 fix, the server's product default for "auto" occupancy
+is "with-kane-and-cats", not solo. The label is now misleading. No change was
+made to this label yet — flagging for a decision.
+
+================================================================================
+END OF AUDIT
+================================================================================

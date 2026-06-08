@@ -1,0 +1,667 @@
+================================================================================
+AUDIT FILE 1 — generateAshleySelfie
+Source: artifacts/api-server/src/routes/chat.ts
+Lines: 2324–2984
+================================================================================
+
+async function generateAshleySelfie(
+  vibe: string,
+  profile: AshleyProfile,
+  mode: SelfieMode,
+  imageMode: ImageMode,
+  jobId?: string,
+  governance?: GovernanceParams | null,
+  clientNow?: Date,
+  clientTz?: string,
+): Promise<string | null> {
+  // Apply Section 9 governance framework before mode / wrapper resolution.
+  // Governance runs unconditionally — null/undefined governance is treated as
+  // all-auto, which applies product defaults (environment-centric, wide-room,
+  // with-kane-and-cats) rather than leaving imageMode as portrait.
+  const {
+    imageMode: governedImageMode,
+    vibePrefix: governedVibePrefix,
+  } = applyGovernance(
+    governance ?? {},
+    imageMode,
+    clientNow ?? new Date(),
+    clientTz ?? "UTC",
+  );
+  imageMode = governedImageMode;
+
+  const baseAppearance = (profile.appearance ?? "").trim();
+  const ashleyName = (profile.name ?? "Ashley").trim() || "Ashley";
+  const wrapper = wrapperFor(imageMode);
+  // Wren May 2026 precedence contract: USER_EXPLICIT > SESSION_MEMORY >
+  // DEFAULT_IDENTITY. Pull the carried VisualSpec out of the vibe (it was
+  // round-tripped through encodeVibeWithSpec when the assistant row was
+  // persisted) and resolve the final appearance string via composeAppearance.
+  // This HARD REPLACES per-slot identity ("profile hair" → "black hair" when
+  // the user said "black hair") and STRIPS clauses matching any user-stated
+  // negation ("no X at all" → drop every "X ..." clause from
+  // profile.appearance) BEFORE the prompt is built — diffusion never sees
+  // contradictory clauses, and never sees a negation phrase.
+  const { description: vibeDesc, spec: carriedSpec } = extractVisualSpecFromVibe(vibe);
+
+  // ── OBJECT_ONLY early branch ─────────────────────────────────────────────
+  // When the subject does not involve a person, the supplement encodes the vibe
+  // with an "[OBJECT_ONLY] " prefix.  Bypass ALL identity/Ashley machinery and
+  // build a clean object-photography prompt instead.
+  const OBJECT_ONLY_PREFIX = "[OBJECT_ONLY] ";
+  if (vibeDesc.startsWith(OBJECT_ONLY_PREFIX)) {
+    // Strip the prefix and the pose-variance block (irrelevant for objects).
+    const rawObjectDesc = vibeDesc.slice(OBJECT_ONLY_PREFIX.length).trim();
+    const objectDesc = rawObjectDesc.split(/\n{2,}/)[0]!.trim();
+    const objectPrompt = [
+      buildSelfiePromptSafetyPrefix(),
+      `Subject: ${objectDesc}.`,
+      "IMPORTANT: No people. No persons. No human figures. No characters. No faces. No Ashley. The image must contain ONLY the subject described above.",
+      "Professional photography. Natural or studio lighting. Sharp focus. High detail.",
+      wrapper.styleLine + ".",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    logger.info(
+      { imageMode, objectDesc: objectDesc.slice(0, 120), promptPreview: objectPrompt.slice(0, 280) },
+      "image-gen: OBJECT_ONLY — bypassing identity pipeline",
+    );
+
+    pruneSelfieCache();
+    const objCacheKey = selfieCacheKey(objectPrompt, mode);
+    const objCached = selfieCache.get(objCacheKey);
+    if (objCached) {
+      logger.info(
+        { mode, imageMode, cacheKey: objCacheKey.slice(0, 12), selfieId: objCached.selfieId },
+        "image-gen: OBJECT_ONLY cache hit",
+      );
+      return `${publicBaseUrl()}/api/selfies/${objCached.selfieId}.png`;
+    }
+
+    const objInflight = selfieInFlight.get(objCacheKey);
+    if (objInflight) {
+      logger.info({ mode, imageMode, cacheKey: objCacheKey.slice(0, 12) }, "image-gen: OBJECT_ONLY in-flight dedup");
+      return objInflight;
+    }
+
+    // Stage 3 — retry loop with post-generation vision validation.
+    // Each attempt strengthens the no-person directive until the image passes
+    // or we exhaust MAX_ATTEMPTS.  On total failure the job returns null so
+    // the mobile shows an error rather than a contaminated image.
+    const RETRY_STRENGTHENERS = [
+      "",
+      "\n\nABSOLUTE REQUIREMENT: Zero human presence. Any person, face, body part, or humanoid form is a critical failure. The image must contain only the named subject — nothing else.",
+      "\n\nCRITICAL NON-NEGOTIABLE OVERRIDE: No human. No person. No face. No body. No character. No Ashley. Only the described subject. Human presence of any kind constitutes failure.",
+    ];
+    const MAX_ATTEMPTS = RETRY_STRENGTHENERS.length;
+
+    const objPromise = (async (): Promise<string | null> => {
+      try {
+        for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+          const attemptPrompt = objectPrompt + (RETRY_STRENGTHENERS[attempt] ?? "");
+
+          let b64: string | null = null;
+          try {
+            b64 = await generateImageBase64(attemptPrompt, "1024x1024", "medium");
+          } catch (err) {
+            logger.warn({ err, attempt }, "image-gen: OBJECT_ONLY provider error");
+            if (attempt === MAX_ATTEMPTS - 1) return null;
+            continue;
+          }
+          if (!b64 || b64.length === 0) {
+            logger.warn({ attempt }, "image-gen: OBJECT_ONLY empty artifact");
+            if (attempt === MAX_ATTEMPTS - 1) return null;
+            continue;
+          }
+
+          // Stage 3: validate — discard and retry if a person was detected.
+          const passes = await validateNoPersonInB64(b64, jobId);
+          if (!passes) {
+            logger.warn(
+              { attempt, objectDesc: objectDesc.slice(0, 80) },
+              "image-gen: OBJECT_ONLY Stage 3 FAIL — person detected, discarding and retrying",
+            );
+            if (attempt === MAX_ATTEMPTS - 1) {
+              logger.error(
+                { objectDesc: objectDesc.slice(0, 80) },
+                "image-gen: OBJECT_ONLY all attempts failed Stage 3 validation — returning null",
+              );
+              return null;
+            }
+            continue;
+          }
+
+          // Passed — save and return.
+          const objId = randomUUID();
+          try {
+            const relUrl = await saveSelfie(objId, Buffer.from(b64, "base64"));
+            selfieCache.set(objCacheKey, { selfieId: objId, createdAt: Date.now() });
+            persistSelfieCache();
+            const finalUrl = `${publicBaseUrl()}${relUrl}`;
+            logger.info(
+              { mode, imageMode, selfieId: objId, attempt, relUrl, finalUrl },
+              "image-gen: OBJECT_ONLY done — passed Stage 3 validation",
+            );
+            return finalUrl;
+          } catch (err) {
+            logger.warn({ err }, "image-gen: OBJECT_ONLY save failed");
+            return null;
+          }
+        }
+        return null;
+      } finally {
+        selfieInFlight.delete(objCacheKey);
+      }
+    })();
+
+    selfieInFlight.set(objCacheKey, objPromise);
+    return objPromise;
+  }
+  // ── end OBJECT_ONLY branch ───────────────────────────────────────────────
+
+  // Marker-descriptor override: when vibe has no VSPEC (e.g. "redhead portrait"
+  // from [image:redhead|portrait]) the descriptor word is just free text and the
+  // model may default to the profile hair colour. Detect the leading descriptor
+  // and synthesise a minimal VisualSpec so composeAppearance + buildHairColourDirective
+  // apply a hard hair-colour override — same precedence path as USER_EXPLICIT.
+  //
+  // Mapping (per product spec):
+  //   redhead   → "natural bright copper-red"  + negate purple/grey drift
+  //   blonde    → "light blonde"               + negate purple/grey drift
+  //   brunette  → "medium brown"               + negate purple/grey drift
+  //   blackhair → "jet black"                  + negate purple/grey drift
+  // Mandatory descriptor map — hairColour values are used verbatim in the
+  // final prompt; the model sees e.g. "She has natural bright copper-red hair."
+  const DESCRIPTOR_HAIR_OVERRIDES: Record<string, { hairColour: string; negations: string[] }> = {
+    redhead:   { hairColour: "natural bright copper-red",  negations: ["lavender", "purple", "grey", "gray", "silver", "violet", "lilac"] },
+    blonde:    { hairColour: "light blonde",               negations: ["lavender", "purple", "grey", "gray", "silver", "violet", "lilac"] },
+    brunette:  { hairColour: "medium brown brunette",      negations: ["lavender", "purple", "grey", "gray", "silver", "violet", "lilac"] },
+    blackhair: { hairColour: "solid jet black",            negations: ["lavender", "purple", "grey", "gray", "silver", "violet", "lilac"] },
+  };
+  const _descriptorWord = vibeDesc.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  // FIX (root-cause May 2026): the imageGateSynth path calls encodeVibeWithSpec()
+  // which bakes an EMPTY VSPEC marker into the description. extractVisualSpecFromVibe
+  // then returns a non-null carriedSpec (appearance={}) which caused the old
+  // `!carriedSpec` guard to skip the descriptor override, leaving the
+  // profile appearance untouched for every descriptor-driven job.
+  // Correct gate: fire the override whenever the carried spec has NO explicit
+  // hairColour — an empty VSPEC must not block the descriptor from controlling hair.
+  const _carriedHasHairColour = Boolean(carriedSpec?.appearance?.hairColour);
+  const _descriptorOverride = !_carriedHasHairColour
+    ? (DESCRIPTOR_HAIR_OVERRIDES[_descriptorWord] ?? null)
+    : null;
+  // Section 3/5: NULL SPEC IS FORBIDDEN. Fall back to empty-but-non-null spec
+  // for unknown descriptors (no-op overrides, profile defaults apply) rather
+  // than passing null and silently skipping the whole override machinery.
+  //
+  // DESCRIPTOR MODE — HARD ISOLATION (spec Sections 2/3/4/7):
+  //   carriedSpec.appearance is COMPLETELY IGNORED.
+  //   No merge, no blending, no inheritance of any identity appearance fields.
+  //   effectiveSpec starts from makeEmptySpec() (zero identity data) and
+  //   receives ONLY: descriptor hairColour, descriptor negations, and the
+  //   pose/environment/framing slots from carriedSpec (non-appearance, allowed
+  //   by Section 3). Everything else from carriedSpec is discarded.
+  //
+  // IDENTITY MODE (no descriptor): normal carriedSpec pass-through.
+  const _emptyBase = makeEmptySpec(vibeDesc);
+  const effectiveSpec = _descriptorOverride
+    ? {
+        ..._emptyBase,
+        imageIntent: true,
+        intentReason: `marker_descriptor:${_descriptorWord}`,
+        // Appearance: descriptor hairColour ONLY — no profile, no carriedSpec.
+        appearance: { hairColour: _descriptorOverride.hairColour },
+        // Negations: descriptor list only — no carriedSpec residue.
+        negations: [..._descriptorOverride.negations],
+        // Pose / environment / framing — the ONLY carriedSpec fields allowed
+        // through (spec Section 3: these are not identity / appearance data).
+        pose: carriedSpec?.pose ?? _emptyBase.pose,
+        environment: carriedSpec?.environment ?? _emptyBase.environment,
+        framing: carriedSpec?.framing ?? _emptyBase.framing,
+      }
+    : (carriedSpec ?? _emptyBase);
+  // DESCRIPTOR_MODE hard switch (spec Section 7):
+  //   When descriptor is active, identity appearance is COMPLETELY DISABLED.
+  //   Skip composeAppearance entirely — it would inject the profile appearance.
+  //   The appearance string is ONLY the mapped hair colour; the shot type in
+  //   buildModePromptBlock already anchors "young woman" as neutral baseline.
+  //
+  // IDENTITY_MODE: normal composeAppearance path (unchanged).
+  const appearance = _descriptorOverride
+    ? `${_descriptorOverride.hairColour} hair`
+    : composeAppearance(baseAppearance, effectiveSpec);
+  // Scrub the vibe TEXT itself of any negated tokens or profile-default
+  // colours that the user has overridden. The LLM writes the vibe with
+  // Ashley's persona context (profile.appearance) in the system prompt, so
+  // it can include profile hair colour in the scene description even when
+  // the current turn overrides it. Without this scrub, diffusion sees
+  // the override colour next to the old profile colour in the scene text
+  // and blends them. The composed appearance sentence remains the sole
+  // identity anchor.
+  const scrubbedVibe = scrubVibeForOverrides(vibeDesc, baseAppearance, effectiveSpec);
+  // Re-encode the VSPEC marker onto the scrubbed vibe so any further
+  // round-trip (cache key, follow-up rehydration) preserves the spec.
+  const scrubbedVibeWithSpec = effectiveSpec
+    ? `${scrubbedVibe} {{VSPEC}}${Buffer.from(JSON.stringify({
+        appearance: effectiveSpec.appearance,
+        clothing: effectiveSpec.clothing,
+        environment: effectiveSpec.environment,
+        pose: effectiveSpec.pose,
+        framing: effectiveSpec.framing,
+        props: effectiveSpec.props,
+        style: effectiveSpec.style,
+        negations: effectiveSpec.negations,
+      }), "utf8").toString("base64")}{{/VSPEC}}`
+    : scrubbedVibe;
+  // The buildModePromptBlock takes raw vibe text — pass the scrubbed
+  // (description-only) form, not the VSPEC-decorated version, so the marker
+  // tokens don't bleed into the diffusion prompt.
+  if (effectiveSpec && (
+    effectiveSpec.negations.length > 0 ||
+    effectiveSpec.appearance.hairColour ||
+    effectiveSpec.appearance.hairstyle ||
+    effectiveSpec.appearance.skinTone ||
+    effectiveSpec.appearance.expression
+  )) {
+    logger.info(
+      {
+        baseAppearancePreview: baseAppearance.slice(0, 200),
+        composedAppearancePreview: appearance.slice(0, 200),
+        descriptorSource: _descriptorOverride ? _descriptorWord : "carried_vspec",
+        appliedHairColour: effectiveSpec.appearance.hairColour ?? null,
+        forbiddenColours: effectiveSpec.negations,
+        userStyle: effectiveSpec.appearance.hairstyle ?? null,
+        userSkin: effectiveSpec.appearance.skinTone ?? null,
+        userExpression: effectiveSpec.appearance.expression ?? null,
+      },
+      "image-gen: appearance precedence applied (USER_EXPLICIT > SESSION > IDENTITY, negations stripped)",
+    );
+  }
+  // Wren May 2026: hair-colour-override directive. When the carried spec
+  // sets a hair colour OR negates one, emit a dedicated colour anchor
+  // (positive synonyms + explicit forbidden list) right after the framing
+  // sentence. Defeats the model's cool-tone gravity that produced
+  // off-colour hair on scenes despite explicit colour mentions in the prompt.
+  // Empty string when no hair-colour intent is present — buildModePromptBlock filters it out.
+  const hairDirective = effectiveSpec ? buildHairColourDirective(effectiveSpec) : "";
+  // Wren May 2026: Visual Memory Anchor injection. The `{{VMEM}}<id>{{/VMEM}}`
+  // marker (if present) was baked into the description by the chat-route
+  // synth path when Kane explicitly invoked a stored anchor. Re-resolve the
+  // anchor against the live STORE so anchor edits land on the next render
+  // without re-baking the assistant message; never invent fields. Goes
+  // through buildModePromptBlock as `sceneAnchor` — sits below identity in
+  // the prompt order but above the LLM-written vibe.
+  const { description: vibeNoMemRaw, memoryId: anchorId } = extractMemoryIdFromVibe(scrubbedVibe);
+  // Scrub Azure-blocked words from the vibe before they enter the diffusion
+  // prompt. Preserves the pose/mood intent while avoiding moderation_blocked.
+  const vibeNoMem = sanitiseVibeForProvider(vibeNoMemRaw);
+  const anchor = anchorId ? getVisualMemory(anchorId) : null;
+  const sceneAnchorDirective = anchor ? formatVisualMemoryDirective(anchor) : "";
+  if (anchor) {
+    logger.info(
+      {
+        memoryId: anchor.memoryId,
+        label: anchor.label,
+        importance: anchor.importance,
+        sceneAnchorPreview: sceneAnchorDirective.slice(0, 200),
+      },
+      "image-gen: visual memory anchor applied",
+    );
+  }
+  // Discard the unused round-trip variable; declared for documentation +
+  // future reuse if the cache key ever needs the full VSPEC form.
+  void scrubbedVibeWithSpec;
+
+  // ── Section 4 prompt assembly: DESCRIPTOR MODE vs IDENTITY MODE ──────────
+  //
+  // DESCRIPTOR MODE (spec Sections 4/5/7):
+  //   Build a three-layer structured prompt that keeps the stable identity
+  //   anchor (face/skin/eyes) while completely replacing the hair layer.
+  //   Layer order is MANDATORY:
+  //     1. Safety prefix
+  //     2. STABLE ASHLEY IDENTITY  — face / eyes / skin only, NO hair colour
+  //     3. TEMPORARY APPEARANCE    — descriptor hair + pose / framing / scene
+  //     4. NEGATIVE DIRECTIVE      — the ONLY place forbidden colours may appear
+  //     5. Style line
+  //
+  // IDENTITY MODE (no descriptor): same two-layer structure as descriptor mode.
+  //   Layer 1 — STABLE ASHLEY IDENTITY: identityCore (face/eyes/complexion).
+  //             Hair is NEVER in this layer in either mode.
+  //   Layer 2 — VISUAL STATE: default hair from profile unless
+  //             effectiveSpec.appearance.hairColour is set by the user's
+  //             message, in which case it replaces the default completely.
+  //
+  // DESCRIPTOR_NEGATIVE_DIRECTIVE is declared here so both the descriptor-mode
+  // prompt builder and the Section 7 audit block use the identical string.
+  const DESCRIPTOR_NEGATIVE_DIRECTIVE =
+    "Hair colour MUST NOT be lavender, purple, violet, lilac, mauve, plum, grey, gray, or silver. This overrides any model default and is absolute.";
+
+  let descriptorStableIdentity = "";
+  let fullPrompt: string;
+
+  if (_descriptorOverride) {
+    // STABLE IDENTITY: extract typed identityCore, verify clean, render.
+    // assertIdentityCoreIsClean throws on contamination — job aborts before
+    // any prompt string is constructed (Section 9 contract).
+    const _identityCore = extractIdentityCore(baseAppearance);
+    try {
+      assertIdentityCoreIsClean(_identityCore, jobId);
+    } catch {
+      return null;
+    }
+    descriptorStableIdentity = renderIdentityCore(_identityCore);
+
+    // POSE BLOCK: the scrubbed vibe is "<descriptor> portrait\n\nPose: ...\n..."
+    // Split on the first double-newline; everything AFTER it is the
+    // pose / expression / framing / scene block that is allowed through.
+    const vibeParts = vibeNoMem.split(/\n{2,}/);
+    const poseBlock = vibeParts.slice(1).join("\n\n").trim();
+
+    // Embed stable identity into the mode's shot-type sentence.
+    const shot = wrapper.shotType.replace(/{subject}/g, ashleyName);
+    const identityModifier = descriptorStableIdentity
+      ? ` with ${descriptorStableIdentity}`
+      : "";
+    const stableShot = shot.includes(", a young woman,")
+      ? shot.replace(", a young woman,", `, a young woman${identityModifier},`)
+      : shot;
+
+    fullPrompt = [
+      buildSelfiePromptSafetyPrefix(),
+      `STABLE ASHLEY IDENTITY: ${stableShot}.`,
+      [
+        `TEMPORARY APPEARANCE FOR THIS IMAGE: She has ${_descriptorOverride.hairColour} hair.`,
+        poseBlock,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      DESCRIPTOR_NEGATIVE_DIRECTIVE,
+      wrapper.styleLine + ".",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  } else {
+    // IDENTITY MODE — two-layer prompt.
+    // Layer 1: STABLE ASHLEY IDENTITY — identityCore only (face/eyes/complexion).
+    //   Hair is never in this layer.
+    // Layer 2: VISUAL STATE — default hair from profile, OR
+    //   effectiveSpec.appearance.hairColour if the user's message set one
+    //   ("make her hair red today" → replaces default completely).
+    const _idCore = extractIdentityCore(baseAppearance);
+    try {
+      assertIdentityCoreIsClean(_idCore, jobId);
+    } catch {
+      return null;
+    }
+    const idStable = renderIdentityCore(_idCore);
+
+    // Default visual state: hair clauses from profile appearance field.
+    const defaultHair = extractDefaultHairState(baseAppearance);
+    // effectiveSpec override wins when the message turn set a hairColour.
+    const activeHairSentence = effectiveSpec?.appearance?.hairColour
+      ? `She has ${effectiveSpec.appearance.hairColour} hair.`
+      : (defaultHair ? `She has ${defaultHair}.` : "");
+
+    const shot = wrapper.shotType.replace(/{subject}/g, ashleyName);
+    const identityModifier = idStable ? ` with ${idStable}` : "";
+    const stableShot = shot.includes(", a young woman,")
+      ? shot.replace(", a young woman,", `, a young woman${identityModifier},`)
+      : shot;
+
+    // Visual state block — active hair → colour directive (if override) →
+    // scene anchor → vibe/scene. Joins with newline within the block;
+    // double-newline separates it from the identity layer above.
+    // Prepend the governance vibe prefix (environment + occupancy clauses)
+    // to the scene description. When governance is inactive the prefix is empty
+    // and the scene is assembled from the vibe alone.
+    const sceneText = [governedVibePrefix, vibeNoMem.trim()].filter(Boolean).join(" ");
+    const visualStateLines = [
+      activeHairSentence,
+      hairDirective,
+      sceneAnchorDirective,
+      sceneText ? `Scene: ${sceneText}.` : "",
+    ].filter(Boolean).join("\n");
+
+    fullPrompt = [
+      buildSelfiePromptSafetyPrefix(),
+      `STABLE ASHLEY IDENTITY: ${stableShot}.`,
+      visualStateLines,
+      wrapper.styleLine + ".",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // Pre-generation log. Captures: imageMode, why (wrapper hint), final
+  // framing/sizing, vibe preview. Required by the image-intent spec so we
+  // can audit "Schrödinger's legs" regressions after the fact.
+  logger.info(
+    {
+      imageMode,
+      framingHint: wrapper.framingHint,
+      validationRequired: wrapper.requiresFullBodyValidation,
+      providerMode: mode,
+      vibePreview: vibe.slice(0, 160),
+      promptPreview: fullPrompt.slice(0, 280),
+    },
+    "image-gen: pre-generation request",
+  );
+
+  // ── Section 7: Mandatory final-prompt audit (blocking) ───────────────────
+  // Audit the EXACT payload sent to the image model.
+  // In descriptor mode the ONLY legitimate location for forbidden colour names
+  // is DESCRIPTOR_NEGATIVE_DIRECTIVE — strip it before scanning.
+  // In identity mode strip the hairDirective block instead.
+  {
+    const FORBIDDEN_HAIR_WORDS = ["lavender", "purple", "grey", "gray", "silver", "violet", "lilac", "mauve", "plum"];
+    const KNOWN_HAIR_COLOURS = [
+      "natural bright copper-red", "light blonde", "medium brown brunette", "solid jet black",
+      "ginger", "red", "auburn", "copper", "strawberry blonde", "blonde", "blond", "platinum",
+      "silver", "white", "grey", "gray", "brunette", "brown", "chestnut", "black", "jet black",
+      "lavender", "purple", "lilac", "violet",
+    ];
+    // Strip the negation/directive section before scanning so legitimate
+    // "MUST NOT be ..." directive text doesn't trigger a false positive.
+    const promptWithoutNegation = _descriptorOverride
+      ? fullPrompt.replace(DESCRIPTOR_NEGATIVE_DIRECTIVE, "")
+      : (hairDirective ? fullPrompt.replace(hairDirective, "") : fullPrompt);
+
+    // Section 7.1 — stable identity checks (descriptor mode only).
+    const STABLE_ID_HAIR_WORDS = [
+      ...FORBIDDEN_HAIR_WORDS,
+      "hair", "locks", "wavy", "curly", "straight", "braided",
+      "ginger", "auburn", "copper", "blonde", "brunette", "chestnut", "redhead", "blackhair",
+    ];
+    const stableIdentityContainsHairColour = _descriptorOverride != null
+      && STABLE_ID_HAIR_WORDS.some((w) => new RegExp(`\\b${w}\\b`, "i").test(descriptorStableIdentity));
+    const stableIdentityContainsMutableAppearance = _descriptorOverride != null
+      && /\b(outfit|dress|wearing|pose|seated|standing|lighting|scene|setting)\b/i.test(descriptorStableIdentity);
+
+    // Section 7.2 — scan remaining prompt for forbidden colours.
+    const detectedColours: string[] = [];
+    for (const hc of KNOWN_HAIR_COLOURS) {
+      const rx = hc.includes(" ")
+        ? new RegExp(hc.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")
+        : new RegExp(`\\b${hc}\\b`, "i");
+      if (rx.test(promptWithoutNegation) && !detectedColours.includes(hc)) detectedColours.push(hc);
+    }
+    const forbiddenFound = _descriptorOverride != null
+      ? FORBIDDEN_HAIR_WORDS.filter((fw) => new RegExp(`\\b${fw}\\b`, "i").test(promptWithoutNegation))
+      : [];
+    const hasForbidden = forbiddenFound.length > 0 || stableIdentityContainsHairColour;
+    const overrideApplied = _descriptorOverride != null && !hasForbidden;
+
+    logger.info(
+      {
+        jobId: jobId ?? null,
+        descriptorSource: _descriptorOverride ? _descriptorWord : null,
+        mappedHairColour: _descriptorOverride?.hairColour ?? null,
+        stableIdentityContainsHairColour: _descriptorOverride != null ? stableIdentityContainsHairColour : null,
+        stableIdentityContainsMutableAppearance: _descriptorOverride != null ? stableIdentityContainsMutableAppearance : null,
+        finalModelInputHairColoursDetected: detectedColours,
+        finalModelInputContainsForbiddenHairColourOutsideNegation: hasForbidden,
+        overrideAppliedAtModelInput: overrideApplied,
+        finalModelInputTextPreview: fullPrompt,
+      },
+      "image-gen: FINAL MODEL INPUT AUDIT",
+    );
+    if (hasForbidden) {
+      logger.error(
+        {
+          jobId: jobId ?? null,
+          descriptorSource: _descriptorOverride ? _descriptorWord : null,
+          mappedHairColour: _descriptorOverride?.hairColour ?? null,
+          forbiddenColoursFound: forbiddenFound,
+          stableIdentityContainsHairColour,
+          overrideFailure: true,
+          finalModelInputTextPreview: fullPrompt,
+        },
+        "image-gen: DESCRIPTOR OVERRIDE FAILURE — forbidden hair colour in final model input; job aborted",
+      );
+      return null;
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // Cache check by (mode, fullPrompt). Cross-message reuse — saves 6-40s
+  // when the same vibe + appearance + mode recurs within 24h.
+  pruneSelfieCache();
+  const cacheKey = selfieCacheKey(fullPrompt, mode);
+  const cached = selfieCache.get(cacheKey);
+  if (cached) {
+    logger.info(
+      { mode, imageMode, cacheKey: cacheKey.slice(0, 12), selfieId: cached.selfieId },
+      "Image cache hit — reusing previously generated image",
+    );
+    return `${publicBaseUrl()}/api/selfies/${cached.selfieId}.png`;
+  }
+
+  // In-flight dedup: if another request is already generating this exact
+  // prompt+mode, await its promise instead of paying for a duplicate call.
+  // Common case: user spam-taps retry, or boot recovery re-triggers a job
+  // whose original promise is still mid-flight.
+  const inflight = selfieInFlight.get(cacheKey);
+  if (inflight) {
+    logger.info(
+      { mode, imageMode, cacheKey: cacheKey.slice(0, 12) },
+      "Image in-flight dedup — joining existing generation",
+    );
+    return inflight;
+  }
+
+  // Sizing: the per-mode framing hint OVERRIDES the user's fast/quality
+  // preference for canvas shape. Full-body / outfit / pose / scene / art
+  // require a tall canvas — a square crop is the root cause of cropped
+  // legs. Quality bit (medium vs high) still respects the user's choice.
+  // Per-mode framing hint dictates the canvas shape:
+  //   "tall"      -> 1024x1536 (full-body, outfit, pose, foot-retry, etc.)
+  //   "landscape" -> 1536x1024 (seated-lengthwise sofa, etc.)
+  //   "square"    -> 1024x1024 (selfie, portrait, abstract)
+  // Quality bit (medium vs high) still respects the user's choice and
+  // upgrades a square selfie to a tall canvas for higher fidelity.
+  const size: "1024x1024" | "1024x1536" | "1536x1024" =
+    wrapper.framingHint === "landscape"
+      ? "1536x1024"
+      : wrapper.framingHint === "tall" || mode === "quality"
+        ? "1024x1536"
+        : "1024x1024";
+  const quality: "low" | "medium" | "high" = mode === "quality" ? "high" : "medium";
+
+  const promise: Promise<string | null> = (async () => {
+    let b64: string;
+    // Wren May 2026 provider instrumentation: explicit START / CALLING /
+    // RESPONSE / ERROR breadcrumbs around the actual provider call so
+    // adb logcat (or pino-pretty) shows exactly what the image API
+    // returned. No assumption of success — we only log RESPONSE after
+    // the await resolves, and ERROR if it throws.
+    // DIAGNOSTIC: if FORCE_HAIR_DIAGNOSTIC env var is set, replace whatever
+    // hair sentence is in fullPrompt with the forced colour at the very last
+    // stage before the model call. If the output image changes → the pipeline
+    // is dropping the override upstream. If not → model bias / seed cache.
+    // Remove this block once the pipeline failure is confirmed and fixed.
+    const _forceHairColour = process.env["FORCE_HAIR_DIAGNOSTIC"];
+    const _promptToSend = _forceHairColour
+      ? fullPrompt.replace(
+          /She has [^.]+?hair[^.]*\./gi,
+          `She has ${_forceHairColour} hair.`,
+        )
+      : fullPrompt;
+
+    logger.info(
+      {
+        mode,
+        imageMode,
+        size,
+        quality,
+        cacheKey: cacheKey.slice(0, 12),
+        forceHairDiagnostic: _forceHairColour ?? null,
+        promptFull: _promptToSend,
+        promptLength: _promptToSend.length,
+      },
+      "IMAGE REQUEST START — FULL PROMPT",
+    );
+    logger.info(
+      { mode, imageMode, size, quality, cacheKey: cacheKey.slice(0, 12) },
+      "CALLING PROVIDER...",
+    );
+    try {
+      b64 = await generateImageBase64(_promptToSend, size, quality);
+      logger.info(
+        {
+          mode,
+          imageMode,
+          size,
+          quality,
+          cacheKey: cacheKey.slice(0, 12),
+          b64Length: b64?.length ?? 0,
+          gotArtifact: Boolean(b64 && b64.length > 0),
+        },
+        "PROVIDER RESPONSE",
+      );
+    } catch (err) {
+      logger.warn(
+        {
+          err,
+          errMessage: err instanceof Error ? err.message : String(err),
+          errName: err instanceof Error ? err.name : undefined,
+          mode,
+          imageMode,
+          size,
+          quality,
+          cacheKey: cacheKey.slice(0, 12),
+        },
+        "PROVIDER ERROR",
+      );
+      return null;
+    }
+
+    if (!b64 || b64.length === 0) {
+      logger.warn(
+        { mode, imageMode, cacheKey: cacheKey.slice(0, 12) },
+        "PROVIDER RETURNED EMPTY ARTIFACT — treating as failure",
+      );
+      return null;
+    }
+
+    const id = randomUUID();
+    try {
+      const relUrl = await saveSelfie(id, Buffer.from(b64, "base64"));
+      selfieCache.set(cacheKey, { selfieId: id, createdAt: Date.now() });
+      persistSelfieCache();
+      const finalUrl = `${publicBaseUrl()}${relUrl}`;
+      logger.info(
+        { mode, imageMode, selfieId: id, relUrl, finalUrl },
+        "IMAGE REQUEST DONE — artifact persisted and URL ready",
+      );
+      return finalUrl;
+    } catch (err) {
+      logger.warn({ err }, "Failed to persist selfie");
+      return null;
+    }
+  })().finally(() => {
+    selfieInFlight.delete(cacheKey);
+  });
+  selfieInFlight.set(cacheKey, promise);
+  return promise;
+}

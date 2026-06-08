@@ -119,3 +119,33 @@ id = "q-aKvD_GfhPyVHZZAeBsj"
 uri = "file://docs/wren-feasibility-image-governance.txt"
 type = "text"
 title = "Wren Feasibility Verdict — Image Governance"
+
+[[outputs]]
+id = "Gfe_QTmihddvk7rY-MENN"
+uri = "file://attached_assets/audit_1_generateAshleySelfie.txt"
+type = "text"
+title = "1 — generateAshleySelfie (full function)"
+
+[[outputs]]
+id = "WVl5zd6wS7AyFKenXS5X8"
+uri = "file://attached_assets/audit_2_profile_save_handler.txt"
+type = "text"
+title = "2 — Profile save handler (schema + server route + mobile mutation)"
+
+[[outputs]]
+id = "hYlnDDRw3JbuhyA3yyDFy"
+uri = "file://attached_assets/audit_3_profile_load_handler.txt"
+type = "text"
+title = "3 — Profile load handler (server GET /state + WireProfile + profileFromWire)"
+
+[[outputs]]
+id = "POrgUpPolzSdqGmWJwvS2"
+uri = "file://attached_assets/audit_4_image_defaults_ui.txt"
+type = "text"
+title = "4 — Image defaults UI component"
+
+[[outputs]]
+id = "PIares7KUg-_RdblTcW9B"
+uri = "file://attached_assets/audit_5_bug_confirmation.txt"
+type = "text"
+title = "5 — Bug confirmation (exact changes per bug)"

@@ -1,0 +1,248 @@
+================================================================================
+AUDIT FILE 2 — Profile Save Handler
+================================================================================
+
+This is split into three parts:
+  A. Server — Zod validation schema (state.ts lines 29–73)
+  B. Server — PUT /profile route handler (state.ts lines 160–207)
+  C. Mobile — ProfileUpdate type + useUpdateProfile mutation (aiClient.ts + useProfile.ts)
+
+================================================================================
+PART A — SERVER: ProfileUpdateSchema
+Source: artifacts/api-server/src/routes/state.ts, lines 29–73
+================================================================================
+
+const ProfileUpdateSchema = z
+  .object({
+    name: z.string().max(MAX_FIELD_LEN).optional(),
+    age: z.string().max(MAX_FIELD_LEN).optional(),
+    identity: z.string().max(MAX_FIELD_LEN).optional(),
+    personality: z.string().max(MAX_FIELD_LEN).optional(),
+    speakingStyle: z.string().max(MAX_FIELD_LEN).optional(),
+    appearance: z.string().max(MAX_FIELD_LEN).optional(),
+    refersToUserAs: z.string().max(120).optional(),
+    sharedHistory: z.string().max(MAX_LARGE_FIELD_LEN).optional(),
+    replikaExcerpts: z.string().max(MAX_LARGE_FIELD_LEN).optional(),
+    // Raw structured carryover (JSON-encoded). Allowed up to 64KB so
+    // large pasted excerpts fit comfortably.
+    replikaCarryover: z.string().max(64_000).optional(),
+    replikaCarryoverSummary: z.string().max(MAX_LARGE_FIELD_LEN).optional(),
+    relationshipMode: z.string().max(120).optional(),
+    builderAwareMode: z.boolean().optional(),
+    voiceMode: z.boolean().optional(),
+    // 18+ / Mature scaffolding. These pass through validatePolicyPatch
+    // (lib/contentPolicy.ts) before hitting the database — the zod shape
+    // here only enforces the wire types, the policy module enforces the
+    // gating (server flag, age confirmation, intimacy ceiling).
+    contentMode: z.enum(["standard", "mature"]).optional(),
+    intimacyLevel: z
+      .number()
+      .int()
+      .min(INTIMACY_MIN)
+      .max(INTIMACY_MAX)
+      .optional(),
+    primaryColor: z.string().max(32).optional(),
+    accentColor: z.string().max(32).optional(),
+    // How often Ashley reaches out first. The scheduler reads this on
+    // every tick — flipping to "off" stops further proactive sends within
+    // one tick (≤5min). See lib/db/src/schema/ashley.ts for cap mapping.
+    proactiveCadence: z.enum(PROACTIVE_CADENCES).optional(),
+    greetOnAppOpen: z.boolean().optional(),
+    imageGenerationEnabled: z.boolean().optional(),
+    /** Section 9 image governance — Mode 1 manual defaults. */
+    imageCompositionMode: z.string().max(64).optional(),
+    imageEnvironmentDefault: z.string().max(64).optional(),
+    imageOccupancyDefault: z.string().max(64).optional(),
+    imageCameraDefault: z.string().max(64).optional(),
+    markOnboarded: z.boolean().optional(),
+  })
+  .strict();
+
+================================================================================
+PART B — SERVER: PUT /profile route handler
+Source: artifacts/api-server/src/routes/state.ts, lines 160–207
+================================================================================
+
+router.put("/profile", async (req, res): Promise<void> => {
+  const deviceId = getDeviceId(req);
+  const parsed = ProfileUpdateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const { markOnboarded, contentMode, intimacyLevel, ...fields } = parsed.data;
+
+  try {
+    // Make sure the row exists so the update has something to hit, and
+    // so the policy guard sees the actual current state (esp. whether
+    // adultConfirmedAt is set).
+    const current = await getOrCreateProfileFor(deviceId);
+
+    // Run the policy chokepoint BEFORE building the SQL update. This
+    // rejects mature-mode requests that don't meet the operator-flag +
+    // age-gate requirements, and clamps intimacyLevel to the per-mode
+    // ceiling.
+    const guard = validatePolicyPatch({
+      current,
+      patch: { contentMode, intimacyLevel },
+    });
+    if (!guard.ok) {
+      res.status(guard.status).json({ error: guard.error });
+      return;
+    }
+
+    const updates: Record<string, unknown> = { ...fields, ...guard.sanitised };
+    if (markOnboarded) {
+      updates["onboardedAt"] = new Date();
+    }
+    if (Object.keys(updates).length === 0) {
+      const profile = await getOrCreateProfileFor(deviceId);
+      res.json({ profile });
+      return;
+    }
+    const [profile] = await db
+      .update(ashleyProfileTable)
+      .set(updates)
+      .where(eq(ashleyProfileTable.deviceId, deviceId))
+      .returning();
+    res.json({ profile });
+  } catch (err) {
+    req.log.error({ err }, "PUT /profile failed");
+    res.status(500).json({ error: "Could not update profile" });
+  }
+});
+
+================================================================================
+PART C — MOBILE: ProfileUpdate type
+Source: artifacts/mobile/lib/aiClient.ts, lines 587–617
+================================================================================
+
+export type ProfileUpdate = Partial<{
+  name: string;
+  age: string;
+  identity: string;
+  personality: string;
+  speakingStyle: string;
+  appearance: string;
+  refersToUserAs: string;
+  sharedHistory: string;
+  replikaExcerpts: string;
+  replikaCarryover: string;
+  replikaCarryoverSummary: string;
+  relationshipMode: string;
+  builderAwareMode: boolean;
+  voiceMode: boolean;
+  contentMode: "standard" | "mature";
+  intimacyLevel: number;
+  primaryColor: string;
+  accentColor: string;
+  proactiveCadence: "off" | "low" | "normal" | "high";
+  greetOnAppOpen: boolean;
+  imageGenerationEnabled: boolean;
+  imageCompositionMode: string;
+  imageEnvironmentDefault: string;
+  imageOccupancyDefault: string;
+  imageCameraDefault: string;
+  markOnboarded: boolean;
+}>;
+
+================================================================================
+PART D — MOBILE: updateProfileOnServer
+Source: artifacts/mobile/lib/aiClient.ts, lines 651–659
+================================================================================
+
+export async function updateProfileOnServer(
+  patch: ProfileUpdate,
+): Promise<AshleyProfile> {
+  const data = await fetchJSON<{ profile: WireProfile }>("/profile", {
+    method: "PUT",
+    body: JSON.stringify(patch),
+  });
+  return profileFromWire(data.profile);
+}
+
+================================================================================
+PART E — MOBILE: useUpdateProfile mutation
+Source: artifacts/mobile/lib/useProfile.ts, lines 120–199
+================================================================================
+
+export function useUpdateProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (
+      patch: Partial<AshleyProfile> & { markOnboarded?: boolean },
+    ): Promise<AshleyProfile> => {
+      const wirePatch: ProfileUpdate = {};
+      if (patch.name !== undefined) wirePatch.name = patch.name;
+      if (patch.age !== undefined) wirePatch.age = patch.age;
+      if (patch.identity !== undefined) wirePatch.identity = patch.identity;
+      if (patch.personality !== undefined)
+        wirePatch.personality = patch.personality;
+      if (patch.speakingStyle !== undefined)
+        wirePatch.speakingStyle = patch.speakingStyle;
+      if (patch.appearance !== undefined)
+        wirePatch.appearance = patch.appearance;
+      if (patch.refersToUserAs !== undefined)
+        wirePatch.refersToUserAs = patch.refersToUserAs;
+      if (patch.sharedHistory !== undefined)
+        wirePatch.sharedHistory = patch.sharedHistory;
+      if (patch.replikaExcerpts !== undefined)
+        wirePatch.replikaExcerpts = patch.replikaExcerpts;
+      if (patch.replikaCarryover !== undefined)
+        wirePatch.replikaCarryover = patch.replikaCarryover;
+      if (patch.replikaCarryoverSummary !== undefined)
+        wirePatch.replikaCarryoverSummary = patch.replikaCarryoverSummary;
+      if (patch.relationshipMode !== undefined)
+        wirePatch.relationshipMode = patch.relationshipMode;
+      if (patch.builderAwareMode !== undefined)
+        wirePatch.builderAwareMode = patch.builderAwareMode;
+      if (patch.voiceMode !== undefined) wirePatch.voiceMode = patch.voiceMode;
+      if (patch.proactiveCadence !== undefined)
+        wirePatch.proactiveCadence = patch.proactiveCadence;
+      if (patch.greetOnAppOpen !== undefined)
+        wirePatch.greetOnAppOpen = patch.greetOnAppOpen;
+      if (patch.imageGenerationEnabled !== undefined)
+        wirePatch.imageGenerationEnabled = patch.imageGenerationEnabled;
+      if (patch.imageCompositionMode !== undefined)
+        wirePatch.imageCompositionMode = patch.imageCompositionMode;
+      if (patch.imageEnvironmentDefault !== undefined)
+        wirePatch.imageEnvironmentDefault = patch.imageEnvironmentDefault;
+      if (patch.imageOccupancyDefault !== undefined)
+        wirePatch.imageOccupancyDefault = patch.imageOccupancyDefault;
+      if (patch.imageCameraDefault !== undefined)
+        wirePatch.imageCameraDefault = patch.imageCameraDefault;
+      if (patch.contentMode !== undefined)
+        wirePatch.contentMode = patch.contentMode;
+      if (patch.intimacyLevel !== undefined)
+        wirePatch.intimacyLevel = patch.intimacyLevel;
+      if (patch.markOnboarded) wirePatch.markOnboarded = true;
+
+      const next = await updateProfileOnServer(wirePatch);
+      await saveProfile(next);
+      return next;
+    },
+    onSuccess: (next) => {
+      qc.setQueryData(PROFILE_KEY, next);
+      // contentMode/intimacyLevel may have changed — patch the policy
+      // snapshot from the new profile + the cached operator switch so
+      // the 18+ UI re-renders without a round trip.
+      qc.setQueryData<ServerPolicy | undefined>(POLICY_KEY, (prev) => {
+        if (!prev) return prev;
+        const operatorOn = prev.operatorMatureModeAvailable;
+        const adultOk = next.adultConfirmedAt != null;
+        const wantsMature = next.contentMode === "mature";
+        const effective: "standard" | "mature" =
+          wantsMature && operatorOn && adultOk ? "mature" : "standard";
+        const ceiling = effective === "mature" ? 5 : 3;
+        return {
+          ...prev,
+          effectiveMode: effective,
+          intimacyCeiling: ceiling,
+          intimacyLevel: Math.max(0, Math.min(ceiling, next.intimacyLevel)),
+          adultConfirmed: adultOk,
+          matureModeAvailable: operatorOn && adultOk,
+        };
+      });
+    },
+  });
+}
