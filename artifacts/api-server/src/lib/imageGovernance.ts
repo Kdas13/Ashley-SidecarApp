@@ -114,7 +114,7 @@ const ENVIRONMENTS: Partial<Record<string, EnvEntry>> = {
   "cinema":           { clause: "Ashley is in a cinema; rows of seats, large screen, darkened room, warm ambient lighting" },
   "house-party":      { clause: "Ashley is at a house party; domestic interior, groups of people, relaxed social atmosphere, warm lighting" },
   // ── Sports Venues ─────────────────────────────────────────────────────────
-  "football-pitch":   { clause: "Ashley is on a football pitch during a match or training session; open grass, goalposts visible, players and crowd in the background, natural daylight, outdoor sports atmosphere" },
+  "football-pitch":   { clause: "Ashley is on a football pitch during a match or training session; open grass, goalposts visible, players and crowd in the background, natural daylight, outdoor sports atmosphere. The camera is positioned 8-10 metres back. Ashley occupies no more than 10-15% of the total frame. The pitch, players, and match action are the primary subject. Ashley is one player among many, not the focal point." },
   "football-stadium": { clause: "Ashley is inside a football stadium; rows of seats, pitch visible below, crowd filling the stands, floodlit or natural daylight" },
   "rugby-ground":     { clause: "Ashley is at a rugby ground; open grass pitch, posts visible, players and crowd present, natural daylight, outdoor sports atmosphere" },
   "rugby-pitch":      { clause: "Ashley is on a rugby pitch or at a rugby ground; open grass, posts visible, players and crowd present, natural daylight, outdoor sports atmosphere" },
@@ -326,6 +326,9 @@ export function applyGovernance(
 
   if (activity !== "auto" && activity) {
     parts.push(`Activity: ${activity}.`);
+    if (activity === "playing football") {
+      parts.push("Ashley is wearing a football jersey and shorts in colours matching one of the teams visible on the pitch. She is dressed as a player, not a spectator.");
+    }
   }
 
   const SHOT_LABELS: Record<string, string> = {
