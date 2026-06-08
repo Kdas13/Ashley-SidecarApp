@@ -1,0 +1,147 @@
+================================================================================
+WREN — QUICK FIX LIST + FULL PICTURE
+Date: 2026-06-08
+================================================================================
+
+THE FULL PICTURE
+================================================================================
+
+Kane discovered that the "Her Profile" menu in Ashley Sidecar is a
+universal system-level override. Anything stored there overrides the
+model's defaults on every message. This makes it the correct control
+plane for image generation governance in v1.
+
+The goal is an 11-layer image builder inside the profile screen.
+Each layer = one parameter of the image prompt. By the time the user
+has tapped through all 11 layers, a complete unambiguous master prompt
+has been built without typing a single word. OpenAI gets fully specified
+instructions and has zero decisions to make on its own.
+
+This eliminates portrait bias, wrong environments, wrong animals, and
+wrong framing — because every parameter is explicitly locked before
+the request reaches OpenAI.
+
+Appearance drift is accepted. At wide angle / environment-centric
+framing, Ashley occupies 5-15% of the frame. Blue hair and choker
+carry identity at that scale. Facial consistency doesn't matter.
+
+No R2 storage needed. No reference images needed for v1.
+The funnel + correct routing is the complete solution.
+
+
+================================================================================
+IMMEDIATE FIXES — DO THESE FIRST IN ORDER
+================================================================================
+
+FIX 1 — LABEL (2 minutes)
+"With Wren" on scene occupancy button → change to "With Kane"
+
+FIX 2 — PROFILE NOT SAVING
+Image defaults selections revert to Auto on every save.
+Fix the save handler to persist all image defaults fields to server.
+Fix the load handler to read them back correctly on profile open.
+Confirm: select Wide framing, save, close, reopen → Wide must still
+be selected.
+
+FIX 3 — ROUTING NOT FIRING (most important)
+All image requests return portrait regardless of what is selected
+or what Kane says in chat. generateAshleySelfie is not reading
+profile fields. Hardcoded to portrait.
+Fix: generateAshleySelfie must read the saved profile image defaults
+and apply them to the generation prompt.
+Confirm: set framing to Wide, environment to Living Room, camera to
+Wide Room, save, send "send me a pic" → must return wide room shot,
+not portrait.
+
+DO NOT start the UI rebuild until Fix 3 is confirmed working
+in production.
+
+
+================================================================================
+AFTER FIXES CONFIRMED — UI REBUILD
+================================================================================
+
+Full spec is in: WREN_IMAGE_BUILDER_UI_REBUILD.txt
+
+Short version: replace the current flat button rows with an 11-layer
+linear funnel. Each layer unlocks the next. Auto on any layer = server
+decides. The layers in order:
+
+1. Composition Mode (Ashley-Centric / Balanced / Environment-Centric /
+   Architectural / Social / Documentary)
+2. Environment (Home / Food & Drink / Entertainment / Public / Outdoor
+   / Travel / Creative / Seasonal — with sub-categories)
+3. Atmosphere (Cozy / Romantic / Busy / Festive / Rustic / Lively etc)
+4. Time of Day (Morning / Afternoon / Evening / Night)
+5. Season & Weather (Spring-Winter / Clear-Snow)
+6. Activity (Photography / Sports / Home / Food & Drink / Culture /
+   Social / Cats)
+7. Occupancy — Household (Ashley only / + Kane / + Cats / + Both)
+   + Environmental (None / Sparse / Light / Moderate / Busy / Packed)
+8. Relationships (Relaxed / Playful / Affectionate / Group Banter)
+9. Camera & Framing (Mode / Lens / Awareness / Shot Distance /
+   Orientation)
+10. Occasion (Casual / Date Night / Birthday / Weekend Outing etc)
+11. Confirm & Save — full summary of all selections, Save + Reset
+
+Breadcrumb trail at bottom of every layer showing selections so far.
+Tapping breadcrumb jumps back to that layer.
+Back button on every layer.
+Mobile-first tap targets — S24 Ultra is the primary device.
+
+
+================================================================================
+DEFAULT SETTINGS (when Auto is selected)
+================================================================================
+
+Composition: Environment-Centric
+Camera: Wide Room / Wide Angle
+Camera awareness: Unaware
+Ashley frame presence: 5-15%
+Household: Ashley + Kane + Dixie and Nimbus
+Animals: Cats only. No dogs. Ever.
+
+
+================================================================================
+ASHLEY IDENTITY ANCHORS (for generateAshleySelfie)
+================================================================================
+
+- Deep blue wavy hair
+- Black lace choker
+- Natural freckles across nose and under eyes
+- Grey-green eyes
+- Heart-shaped face
+- Late 20s / early 30s
+- Two cats: Dixie and Nimbus
+- No dogs. No other animals in private spaces.
+
+
+================================================================================
+AFTER UI REBUILD — ONE MORE FIX
+================================================================================
+
+Ashley photo memory:
+When Ashley generates and sends images, Grok has no knowledge of it.
+If Kane references the photos, Ashley denies sending them.
+
+Fix: inject a system note into Grok's conversation context when images
+are sent:
+"[SYSTEM: Ashley just sent 4 photos from her [environment]. She is
+aware she sent them and can reference them in conversation.]"
+
+This comes after the UI rebuild is confirmed working.
+
+
+================================================================================
+COMMITMENT 1 STANDARD
+================================================================================
+
+Three options before any code on new features.
+Written approval from Kane before implementation.
+One job per message. No scope creep.
+Bug fixes don't need three options — fix as specified.
+Report back after each fix before moving to the next.
+
+================================================================================
+END
+================================================================================
