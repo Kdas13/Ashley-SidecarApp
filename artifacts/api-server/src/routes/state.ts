@@ -68,6 +68,8 @@ const ProfileUpdateSchema = z
     imageEnvironmentDefault: z.string().max(64).optional(),
     imageOccupancyDefault: z.string().max(64).optional(),
     imageCameraDefault: z.string().max(64).optional(),
+    /** Section 9 extended defaults — JSON blob (timeOfDay, season, activity, shotDistance, cameraAwareness). */
+    imageDefaultsExtra: z.string().max(4096).optional().nullable(),
     markOnboarded: z.boolean().optional(),
   })
   .strict();
