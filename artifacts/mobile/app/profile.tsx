@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -27,7 +28,7 @@ import {
   useUpdateProfile,
   useWithdrawAdultConfirmation,
 } from "@/lib/useProfile";
-import type { ReplikaCarryoverInput } from "@/lib/aiClient";
+import { fetchSelfieForMessage, insertAshleyImageMessage, type ReplikaCarryoverInput } from "@/lib/aiClient";
 import type { AshleyProfile } from "@/lib/storage";
 import { intimacyRung } from "@/lib/policy";
 import { getDeviceIdSync, hasDeviceId, setDeviceId } from "@/lib/deviceId";
@@ -53,6 +54,24 @@ type ProactiveCadence = AshleyProfile["proactiveCadence"];
 // ---------------------------------------------------------------------------
 // Image defaults types
 // ---------------------------------------------------------------------------
+
+// Activity value → implied environment. Used by handleActivitySelect to
+// auto-set Section 2 when Kane picks an activity with a known environment.
+const ACTIVITY_ENV_MAP: Record<string, { value: string; label: string }> = {
+  "watching football in stadium": { value: "football-stadium",   label: "Football Stadium" },
+  "watching rugby at ground":     { value: "rugby-ground",       label: "Rugby Ground" },
+  "playing football":             { value: "football-pitch",     label: "Football Pitch" },
+  "playing rugby":                { value: "rugby-ground",       label: "Rugby Ground" },
+  "photography walk":             { value: "walking-trail",      label: "Walking Trail" },
+  "visiting a museum":            { value: "museum",             label: "Museum" },
+  "visiting an art gallery":      { value: "art-gallery",        label: "Art Gallery" },
+  "having coffee at a cafe":      { value: "cafe",               label: "Cafe" },
+  "having a meal at a restaurant":{ value: "restaurant",         label: "Restaurant" },
+  "at the pub":                   { value: "pub",                label: "Pub" },
+  "wine tasting":                 { value: "vineyard",           label: "Vineyard" },
+  "whisky tasting":               { value: "whisky-distillery",  label: "Whisky Distillery" },
+  "at a party":                   { value: "house-party",        label: "House Party / Event Venue" },
+};
 
 type ImageDefaultsExtra = {
   timeOfDay?: string | null;
@@ -380,6 +399,51 @@ export default function ProfileScreen(): React.JSX.Element {
     const encoded = encodeImageDefaultsExtra(next);
     setDraft((prev) => ({ ...prev, imageDefaultsExtra: encoded }));
     void update.mutateAsync({ imageDefaultsExtra: encoded }).catch(() => undefined);
+  };
+
+  const [activityImpliedEnvNote, setActivityImpliedEnvNote] = React.useState<string | null>(null);
+  const [testImageLoading, setTestImageLoading] = React.useState(false);
+  const [testImageUrl, setTestImageUrl] = React.useState<string | null>(null);
+  const [testImageZoomed, setTestImageZoomed] = React.useState(false);
+  const [testImageSending, setTestImageSending] = React.useState(false);
+
+  const handleActivitySelect = (value: string): void => {
+    setExtra({ activity: value });
+    const implied = ACTIVITY_ENV_MAP[value];
+    if (implied) {
+      setEnvironmentDefault(implied.value);
+      setActivityImpliedEnvNote(`Environment auto-set to ${implied.label} based on activity.`);
+    } else {
+      setActivityImpliedEnvNote(null);
+    }
+  };
+
+  const onGenerateTestImage = async (): Promise<void> => {
+    if (testImageLoading) return;
+    setTestImageUrl(null);
+    setTestImageLoading(true);
+    try {
+      const fakeId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const result = await fetchSelfieForMessage(fakeId, "SCENE_MODE|candid natural moment");
+      setTestImageUrl(result.imageUrl);
+    } catch {
+      Alert.alert("Generation failed", "Could not generate a test image. Try again.");
+    } finally {
+      setTestImageLoading(false);
+    }
+  };
+
+  const onSendToChat = async (): Promise<void> => {
+    if (!testImageUrl || testImageSending) return;
+    setTestImageSending(true);
+    try {
+      await insertAshleyImageMessage(testImageUrl);
+      router.push("/chat" as never);
+    } catch {
+      Alert.alert("Send failed", "Could not send to chat. Try again.");
+    } finally {
+      setTestImageSending(false);
+    }
   };
 
   const resetImageDefaults = () => {
@@ -726,6 +790,7 @@ export default function ProfileScreen(): React.JSX.Element {
                 { value: "pub", label: "Pub" },
                 { value: "bar", label: "Bar" },
                 { value: "vineyard", label: "Vineyard" },
+                { value: "whisky-distillery", label: "Whisky Distillery" },
                 { value: "__ent__", label: "— ENTERTAINMENT —", divider: true },
                 { value: "nightclub", label: "Nightclub" },
                 { value: "music-gig", label: "Music Gig" },
@@ -733,6 +798,11 @@ export default function ProfileScreen(): React.JSX.Element {
                 { value: "concert", label: "Concert" },
                 { value: "sporting-event", label: "Sporting Event" },
                 { value: "cinema", label: "Cinema" },
+                { value: "house-party", label: "House Party" },
+                { value: "__sports__", label: "— SPORTS VENUES —", divider: true },
+                { value: "football-pitch", label: "Football Pitch" },
+                { value: "football-stadium", label: "Football Stadium" },
+                { value: "rugby-ground", label: "Rugby Ground" },
                 { value: "__pub__", label: "— PUBLIC —", divider: true },
                 { value: "museum", label: "Museum" },
                 { value: "art-gallery", label: "Art Gallery" },
@@ -831,44 +901,60 @@ export default function ProfileScreen(): React.JSX.Element {
             <View style={styles.accordionBody}>
               {([
                 { value: "auto", label: "Auto" },
-                { value: "__home__", label: "— HOME —", divider: true },
-                { value: "reading", label: "Reading" },
-                { value: "making coffee", label: "Making coffee" },
-                { value: "cooking", label: "Cooking" },
-                { value: "watching tv", label: "Watching TV" },
-                { value: "listening to music", label: "Listening to music" },
-                { value: "relaxing", label: "Relaxing" },
-                { value: "photo editing", label: "Photo editing" },
-                { value: "__photo__", label: "— PHOTOGRAPHY —", divider: true },
-                { value: "taking photographs", label: "Taking photographs" },
-                { value: "photography walk", label: "Photography walk" },
-                { value: "__sports__", label: "— SPORTS —", divider: true },
-                { value: "watching football", label: "Watching football" },
-                { value: "watching rugby", label: "Watching rugby" },
-                { value: "at a match", label: "At a match" },
+                { value: "__football__", label: "— FOOTBALL —", divider: true },
+                { value: "watching football in stadium",  label: "Watching football (in stadium)" },
+                { value: "watching football at home",     label: "Watching football (at home / pub)" },
+                { value: "playing football",              label: "Playing football" },
+                { value: "match day socialising",         label: "Match day socialising" },
+                { value: "__rugby__", label: "— RUGBY —", divider: true },
+                { value: "watching rugby at ground",      label: "Watching rugby (at ground)" },
+                { value: "watching rugby at home",        label: "Watching rugby (at home / pub)" },
+                { value: "playing rugby",                 label: "Playing rugby" },
+                { value: "match day socialising rugby",   label: "Match day socialising" },
+                { value: "__othersport__", label: "— OTHER SPORT —", divider: true },
+                { value: "at a sporting event",           label: "At a sporting event (spectator)" },
+                { value: "playing sport",                 label: "Playing sport (general)" },
+                { value: "__home__", label: "— AT HOME —", divider: true },
+                { value: "reading",                       label: "Reading" },
+                { value: "making coffee",                 label: "Making coffee / tea" },
+                { value: "cooking",                       label: "Cooking" },
+                { value: "baking",                        label: "Baking" },
+                { value: "watching tv",                   label: "Watching TV" },
+                { value: "listening to music",            label: "Listening to music" },
+                { value: "relaxing on sofa",              label: "Relaxing on sofa" },
+                { value: "photo editing",                 label: "Photo editing" },
+                { value: "gaming",                        label: "Gaming" },
+                { value: "decorating",                    label: "Decorating / tidying" },
                 { value: "__food__", label: "— FOOD & DRINK —", divider: true },
-                { value: "coffee", label: "Coffee" },
-                { value: "wine tasting", label: "Wine tasting" },
-                { value: "whisky tasting", label: "Whisky tasting" },
-                { value: "pub visit", label: "Pub visit" },
-                { value: "__culture__", label: "— CULTURE —", divider: true },
-                { value: "museum visit", label: "Museum visit" },
-                { value: "art gallery", label: "Art gallery" },
-                { value: "live music", label: "Live music" },
-                { value: "day trip", label: "Day trip" },
+                { value: "having coffee at a cafe",        label: "Having coffee at a cafe" },
+                { value: "having a meal at a restaurant",  label: "Having a meal at a restaurant" },
+                { value: "at the pub",                     label: "At the pub" },
+                { value: "wine tasting",                   label: "Wine tasting" },
+                { value: "whisky tasting",                 label: "Whisky tasting" },
+                { value: "__culture__", label: "— CULTURE & LEISURE —", divider: true },
+                { value: "visiting a museum",              label: "Visiting a museum" },
+                { value: "visiting an art gallery",        label: "Visiting an art gallery" },
+                { value: "watching live music",            label: "Watching live music / gig" },
+                { value: "day trip",                       label: "Day trip / exploring" },
+                { value: "walking",                        label: "Walking / hiking" },
+                { value: "photography walk",               label: "Photography walk" },
+                { value: "shopping",                       label: "Shopping" },
                 { value: "__social__", label: "— SOCIAL —", divider: true },
-                { value: "socialising with friends", label: "Socialising with friends" },
-                { value: "party", label: "Party" },
-                { value: "__cats__", label: "— CATS —", divider: true },
-                { value: "playing with cats", label: "Playing with cats" },
-                { value: "relaxing with cats", label: "Relaxing with cats" },
+                { value: "at a party",                     label: "At a party" },
+                { value: "catching up with friends",       label: "Catching up with friends" },
+                { value: "group night out",                label: "Group night out" },
+                { value: "__cats__", label: "— WITH CATS —", divider: true },
+                { value: "playing with dixie and nimbus",  label: "Playing with Dixie and Nimbus" },
+                { value: "relaxing with dixie and nimbus", label: "Relaxing with Dixie and Nimbus" },
+                { value: "feeding the cats",               label: "Feeding the cats" },
+                { value: "taking photos of the cats",      label: "Taking photos of the cats" },
               ] as { value: string; label: string; divider?: boolean }[]).map((opt) => {
                 if (opt.divider) {
                   return <Text key={opt.value} style={styles.accordionDivider}>{opt.label}</Text>;
                 }
                 const sel = opt.value === activity;
                 return (
-                  <Pressable key={opt.value} style={styles.checkRow} onPress={() => setExtra({ activity: opt.value })}>
+                  <Pressable key={opt.value} style={styles.checkRow} onPress={() => handleActivitySelect(opt.value)}>
                     <View style={[styles.checkbox, sel && styles.checkboxOn]}>
                       {sel && <Text style={styles.checkmark}>✓</Text>}
                     </View>
@@ -878,6 +964,9 @@ export default function ProfileScreen(): React.JSX.Element {
               })}
             </View>
           )}
+          {activityImpliedEnvNote ? (
+            <Text style={styles.impliedEnvNote}>{activityImpliedEnvNote}</Text>
+          ) : null}
 
           {/* SECTION 6 — Who Is In The Scene */}
           <Pressable style={styles.accordionHeader} onPress={() => toggleSection(6)}>
@@ -1000,6 +1089,60 @@ export default function ProfileScreen(): React.JSX.Element {
           <Pressable style={styles.imgDefaultsResetBtn} onPress={resetImageDefaults}>
             <Text style={styles.imgDefaultsResetLabel}>Reset all to defaults</Text>
           </Pressable>
+
+          {/* Generate test image */}
+          <Pressable
+            style={[styles.imgDefaultsResetBtn, { marginTop: 8, backgroundColor: colors.light.primary }]}
+            onPress={() => { void onGenerateTestImage(); }}
+            disabled={testImageLoading}
+          >
+            {testImageLoading
+              ? <ActivityIndicator color="#fff" size="small" />
+              : <Text style={[styles.imgDefaultsResetLabel, { color: "#fff" }]}>Generate test image</Text>
+            }
+          </Pressable>
+
+          {testImageUrl ? (
+            <View style={{ marginTop: 12 }}>
+              <Pressable onPress={() => setTestImageZoomed(true)}>
+                <Image
+                  source={{ uri: testImageUrl }}
+                  style={{ width: "100%", aspectRatio: 1, borderRadius: 8 }}
+                  resizeMode="cover"
+                />
+              </Pressable>
+              <Pressable
+                style={[styles.imgDefaultsResetBtn, { marginTop: 8, backgroundColor: "#2a2a2a" }]}
+                onPress={() => { void onSendToChat(); }}
+                disabled={testImageSending}
+              >
+                {testImageSending
+                  ? <ActivityIndicator color="#fff" size="small" />
+                  : <Text style={[styles.imgDefaultsResetLabel, { color: "#fff" }]}>Send to chat</Text>
+                }
+              </Pressable>
+            </View>
+          ) : null}
+
+          <Modal
+            visible={testImageZoomed}
+            transparent
+            animationType="fade"
+            onRequestClose={() => setTestImageZoomed(false)}
+          >
+            <Pressable
+              style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.92)", justifyContent: "center", alignItems: "center" }}
+              onPress={() => setTestImageZoomed(false)}
+            >
+              {testImageUrl ? (
+                <Image
+                  source={{ uri: testImageUrl }}
+                  style={{ width: "100%", aspectRatio: 1 }}
+                  resizeMode="contain"
+                />
+              ) : null}
+            </Pressable>
+          </Modal>
         </View>
 
         <View style={styles.fieldGroup}>
@@ -2456,6 +2599,14 @@ const styles = StyleSheet.create({
     color: colors.light.mutedForeground,
     fontFamily: "Inter_500Medium",
     fontSize: 13,
+  },
+  impliedEnvNote: {
+    marginTop: 6,
+    marginHorizontal: 4,
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    color: colors.light.primary,
+    fontStyle: "italic",
   },
   cadenceRow: {
     flexDirection: "row",

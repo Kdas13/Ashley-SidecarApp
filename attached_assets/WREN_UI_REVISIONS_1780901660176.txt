@@ -1,0 +1,183 @@
+================================================================================
+WREN — IMAGE DEFAULTS UI REVISIONS
+Date: 2026-06-08
+================================================================================
+
+Three revisions to the Image defaults accordion UI before it ships.
+
+
+================================================================================
+REVISION 1 — ACTIVITY LIST: BE SPECIFIC
+================================================================================
+
+The activity options are too broad. "Sporting event" means nothing to
+the prompt builder. Replace all broad category labels with specific
+activities.
+
+Replace the Sports section with:
+
+--- FOOTBALL ---
+[ ] Watching football (in stadium)
+[ ] Watching football (at home / pub)
+[ ] Playing football
+[ ] Match day socialising
+
+--- RUGBY ---
+[ ] Watching rugby (at ground)
+[ ] Watching rugby (at home / pub)
+[ ] Playing rugby
+[ ] Match day socialising
+
+--- OTHER SPORT ---
+[ ] At a sporting event (spectator)
+[ ] Playing sport (general)
+
+Replace the Home section with:
+
+--- AT HOME ---
+[ ] Reading
+[ ] Making coffee / tea
+[ ] Cooking
+[ ] Baking
+[ ] Watching TV
+[ ] Listening to music
+[ ] Relaxing on sofa
+[ ] Photo editing
+[ ] Gaming
+[ ] Decorating / tidying
+
+Replace Food & Drink with:
+
+--- FOOD & DRINK ---
+[ ] Having coffee at a cafe
+[ ] Having a meal at a restaurant
+[ ] At the pub
+[ ] Wine tasting
+[ ] Whisky tasting
+
+Replace Culture with:
+
+--- CULTURE & LEISURE ---
+[ ] Visiting a museum
+[ ] Visiting an art gallery
+[ ] Watching live music / gig
+[ ] Day trip / exploring
+[ ] Walking / hiking
+[ ] Photography walk
+[ ] Shopping
+
+Replace Social with:
+
+--- SOCIAL ---
+[ ] At a party
+[ ] Catching up with friends
+[ ] Group night out
+
+Replace Cats with:
+
+--- WITH CATS ---
+[ ] Playing with Dixie and Nimbus
+[ ] Relaxing with Dixie and Nimbus
+[ ] Feeding the cats
+[ ] Taking photos of the cats
+
+
+================================================================================
+REVISION 2 — ACTIVITY IMPLIES ENVIRONMENT
+================================================================================
+
+Certain activities imply a specific environment. When Kane selects one
+of these activities, the environment selection should auto-update to
+match — and a note should appear:
+"Environment auto-set to [X] based on activity."
+
+Kane can override the environment manually if he wants.
+
+Implied environment mappings:
+
+Playing football         → Football pitch / outdoor sports ground
+Playing rugby            → Rugby ground / outdoor sports ground
+Watching football (stadium) → Football stadium
+Watching rugby (at ground)  → Rugby ground
+Photography walk         → Outdoors (urban or nature based on other settings)
+Visiting a museum        → Museum
+Visiting an art gallery  → Art gallery
+Having coffee at a cafe  → Cafe
+Having a meal at a restaurant → Restaurant
+At the pub               → Pub
+Wine tasting             → Vineyard
+Whisky tasting           → Whisky distillery
+At a party               → House party / event venue
+
+
+================================================================================
+REVISION 3 — GENERATE BUTTON IN THE UI
+================================================================================
+
+Add a "Generate test image" button at the bottom of the Image defaults
+section, below the Reset button.
+
+Behaviour:
+- Kane taps "Generate test image"
+- The current profile selections are used as the prompt parameters
+- A single image is generated (not four — this is a preview)
+- A loading spinner shows while generating
+- The generated image appears inline in the profile screen directly
+  below the button
+- The image is tappable to enlarge (same as chat images)
+- A "Send to chat" button appears below the generated image
+  — tapping it sends the image into the main chat as if Ashley sent it
+- The generated image does not auto-send to chat unless Kane taps
+  "Send to chat"
+
+This allows Kane to preview exactly what his selections produce
+without going back to chat and typing a request.
+
+The generate button uses the same image generation endpoint already
+in use. No new backend endpoint needed — just call it with the current
+profile governance params directly.
+
+
+================================================================================
+ALSO FIX — "Portrait incoming." RESPONSE TEXT
+================================================================================
+
+This was flagged in the previous instruction and still not fixed.
+The chat response text always says "Portrait incoming." regardless of
+what mode was generated.
+
+Find where this text is hardcoded and make it dynamic:
+
+SCENE_MODE / WIDE_ROOM / ENVIRONMENT_CENTRIC → "here you go 📷"
+PORTRAIT_MODE → "portrait incoming."
+SELFIE → "here you go 😏"
+DOCUMENTARY → "caught a moment 📷"
+SOCIAL / GROUP → "here you go 📷"
+
+If the mode is not portrait, it must never say "portrait incoming."
+
+
+================================================================================
+SUCCESS CONDITIONS
+================================================================================
+
+- Activity list shows specific activities not broad categories
+- Selecting "Playing football" auto-sets environment to football pitch
+- Generate test image button appears below Reset
+- Tapping Generate produces a single preview image inline
+- Preview image is tappable to enlarge
+- "Send to chat" button sends image to main conversation
+- Response text in chat reflects actual mode used, not always portrait
+- All tap targets mobile-friendly on S24 Ultra
+
+
+================================================================================
+COMMITMENT 1 STANDARD
+================================================================================
+
+No schema changes without Kane's written approval.
+Report back when deployed and ready to test.
+
+================================================================================
+END
+================================================================================

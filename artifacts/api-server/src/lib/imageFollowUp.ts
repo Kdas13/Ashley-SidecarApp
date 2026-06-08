@@ -1384,16 +1384,16 @@ export function shortCaptionFor(
     case "POSE_REFERENCE_MODE":
       return "Pose reference incoming.";
     case "SCENE_MODE":
-      return "Scene shot incoming.";
+      return "here you go 📷";
     case "ART_REFERENCE_MODE":
       return "Art reference incoming.";
     case "ABSTRACT_OR_SYMBOLIC_MODE":
       return "Symbolic shot incoming.";
     case "PORTRAIT_MODE":
-      return "Portrait incoming.";
+      return "portrait incoming.";
     case "SELFIE_MODE":
     default:
-      return "Selfie incoming.";
+      return "here you go 😏";
   }
 }
 

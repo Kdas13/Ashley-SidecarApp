@@ -5667,6 +5667,37 @@ router.post(
   },
 );
 
+// ---------------------------------------------------------------------------
+// POST /chat/insert-ashley-image
+// Inserts a pre-formed Ashley message with an imageUrl.
+// Used by the profile "Send to chat" action after test image generation.
+// ---------------------------------------------------------------------------
+router.post("/insert-ashley-image", async (req, res) => {
+  const deviceId = getDeviceId(req);
+  if (!deviceId) { res.status(401).json({ error: "Missing device id" }); return; }
+  const parsed = z.object({
+    imageUrl: z.string().min(1),
+    captionText: z.string().optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: "imageUrl required" }); return; }
+  const { imageUrl, captionText } = parsed.data;
+  const content = captionText?.trim() || "here you go 📷";
+  const id = randomUUID();
+  try {
+    await db.insert(messagesTable).values({
+      id,
+      deviceId,
+      role: "ashley",
+      content,
+      imageUrl: imageUrl.trim(),
+    });
+    res.json({ messageId: id });
+  } catch (err) {
+    req.log.error({ err }, "insert-ashley-image failed");
+    res.status(500).json({ error: "Insert failed" });
+  }
+});
+
 export default router;
 
 // ---------------------------------------------------------------------------

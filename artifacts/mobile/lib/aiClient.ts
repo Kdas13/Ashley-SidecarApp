@@ -1621,3 +1621,19 @@ export async function sendDocumentIngest({
     body: JSON.stringify({ content, filename }),
   });
 }
+
+// ---------------------------------------------------------------------------
+// Insert a pre-formed Ashley message with an image (profile → Send to chat)
+// ---------------------------------------------------------------------------
+export async function insertAshleyImageMessage(
+  imageUrl: string,
+  captionText?: string,
+): Promise<{ messageId: string }> {
+  const data = await fetchJSON<{ messageId?: unknown }>("/chat/insert-ashley-image", {
+    method: "POST",
+    headers: apiHeaders(),
+    body: JSON.stringify({ imageUrl, captionText }),
+  });
+  if (typeof data.messageId !== "string") throw new Error("No messageId returned");
+  return { messageId: data.messageId };
+}
