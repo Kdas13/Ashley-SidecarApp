@@ -1,0 +1,338 @@
+================================================================================
+WREN — IMAGE DEFAULTS FULL UI REBUILD
+Date: 2026-06-08
+================================================================================
+
+Forget the routing bugs for now.
+
+Build a proper image defaults UI that gives Kane direct explicit control
+over every image parameter. Checkboxes and dropdowns. Kane ticks what he
+wants, unticks what he doesn't. No ambiguity. No auto-guessing.
+
+This is the priority. Everything else waits.
+
+
+================================================================================
+WHAT TO BUILD
+================================================================================
+
+Replace the current flat chip row layout in the Image defaults section
+of profile.tsx entirely.
+
+Replace it with a series of expandable dropdown sections.
+Each section has a label and a list of checkboxable options.
+Kane ticks what he wants active. Unticks what he doesn't.
+Multiple selections allowed unless stated otherwise.
+
+The selections save to the server immediately on tap (same auto-save
+pattern already in use). No separate save button needed.
+
+
+================================================================================
+THE SECTIONS AND OPTIONS
+================================================================================
+
+SECTION 1 — COMPOSITION MODE
+Single select (only one can be active at a time)
+Default: Environment-Centric
+
+Options:
+[ ] Auto (server decides)
+[ ] Ashley-Centric (Ashley fills most of frame)
+[ ] Balanced (Ashley and room share frame equally)
+[x] Environment-Centric (room is the subject, Ashley is small)
+[ ] Architectural (room only, Ashley minimal or absent)
+[ ] Social (group setting, Ashley is one of many)
+[ ] Documentary (candid moment, natural behaviour)
+
+
+SECTION 2 — ENVIRONMENT
+Single select
+Default: Auto
+
+Options:
+[ ] Auto
+--- HOME ---
+[ ] Living Room
+[ ] Bedroom
+[ ] Kitchen
+[ ] Study
+[ ] Garden
+[ ] Bathroom
+--- FOOD & DRINK ---
+[ ] Cafe
+[ ] Restaurant
+[ ] Pub
+[ ] Bar
+[ ] Vineyard
+--- ENTERTAINMENT ---
+[ ] Nightclub
+[ ] Music Gig
+[ ] Festival
+[ ] Concert
+[ ] Sporting Event
+[ ] Cinema
+--- PUBLIC ---
+[ ] Museum
+[ ] Art Gallery
+[ ] Library
+[ ] Market
+[ ] High Street
+[ ] Train Station
+--- OUTDOOR ---
+[ ] Park
+[ ] Woodland
+[ ] Beach
+[ ] City Centre
+[ ] Walking Trail
+--- TRAVEL ---
+[ ] Hotel
+[ ] Holiday Cottage
+[ ] Beach Holiday
+[ ] Mountain Retreat
+
+
+SECTION 3 — TIME OF DAY
+Single select
+Default: Auto (uses real device clock)
+
+Options:
+[ ] Auto
+[ ] Morning
+[ ] Afternoon
+[ ] Evening
+[ ] Night
+
+
+SECTION 4 — SEASON
+Single select
+Default: Auto (uses real calendar month)
+
+Options:
+[ ] Auto
+[ ] Spring
+[ ] Summer
+[ ] Autumn
+[ ] Winter
+
+
+SECTION 5 — ACTIVITY
+Single select
+Default: Auto
+
+Options:
+[ ] Auto
+--- HOME ---
+[ ] Reading
+[ ] Making coffee
+[ ] Cooking
+[ ] Watching TV
+[ ] Listening to music
+[ ] Relaxing
+[ ] Photo editing
+--- PHOTOGRAPHY ---
+[ ] Taking photographs
+[ ] Photography walk
+--- SPORTS ---
+[ ] Watching football
+[ ] Watching rugby
+[ ] At a match
+--- FOOD & DRINK ---
+[ ] Coffee
+[ ] Wine tasting
+[ ] Whisky tasting
+[ ] Pub visit
+--- CULTURE ---
+[ ] Museum visit
+[ ] Art gallery
+[ ] Live music
+[ ] Day trip
+--- SOCIAL ---
+[ ] Socialising with friends
+[ ] Party
+--- CATS ---
+[ ] Playing with cats
+[ ] Relaxing with cats
+
+
+SECTION 6 — WHO IS IN THE SCENE
+Single select
+Default: Auto (server decides — currently defaults to Ashley + Kane + cats)
+
+Options:
+[ ] Auto
+[ ] Ashley only
+[ ] Ashley + Kane
+[ ] Ashley + Dixie and Nimbus (cats)
+[ ] Ashley + Kane + Dixie and Nimbus
+
+
+SECTION 7 — CAMERA MODE
+Multi-select — Kane can tick multiple, system picks from ticked options
+Default: Wide Room ticked only
+
+IMPORTANT: Portrait and Selfie are unticked by default.
+Kane must explicitly tick them to enable them.
+
+Options:
+[ ] Selfie          ← UNTICKED BY DEFAULT
+[ ] Portrait        ← UNTICKED BY DEFAULT
+[ ] Lifestyle
+[ ] Wide Room       ← TICKED BY DEFAULT
+[ ] Architectural
+[ ] Documentary / Candid
+[ ] Group Shot
+[ ] Action / Sport
+[ ] Event Photography
+
+
+SECTION 8 — SHOT DISTANCE
+Single select
+Default: Auto
+
+Options:
+[ ] Auto
+[ ] Close-Up
+[ ] Half Body
+[ ] Full Body
+[ ] Wide Room
+[ ] Architectural
+
+
+SECTION 9 — CAMERA AWARENESS
+Single select (is Ashley aware of the camera?)
+Default: Unaware
+
+Options:
+[ ] Auto
+[x] Unaware (default — Ashley does not know camera is there)
+[ ] Indirect (Ashley glancing toward camera)
+[ ] Direct (Ashley looking at camera)
+
+
+================================================================================
+UI BEHAVIOUR
+================================================================================
+
+Each section is a collapsible accordion.
+Tap the section header to expand or collapse it.
+Expanded sections show all options as tappable rows with a checkbox.
+Tapping a row toggles the checkbox and auto-saves immediately.
+Single-select sections deselect the previous selection automatically.
+Multi-select sections (Camera Mode only) allow multiple ticked options.
+
+At the top of the Image defaults section show a summary line:
+"Environment-Centric · Living Room · Evening · Wide Room"
+showing the current active selections for quick reference without
+expanding all sections.
+
+A "Reset all to defaults" button at the bottom of the section.
+Tapping it resets all sections to the defaults listed above and saves.
+
+
+================================================================================
+WHAT THIS FIXES
+================================================================================
+
+Kane can explicitly untick Selfie and Portrait from Camera Mode.
+If they are unticked, they are excluded from image generation entirely.
+No routing bug can override an explicit untick — the UI is the authority.
+
+Kane can explicitly lock environment, time, activity, and occupancy.
+No auto-guessing. No server defaults overriding intent.
+
+The system has zero ambiguity about what to generate.
+
+
+================================================================================
+FILES TOUCHED
+================================================================================
+
+- artifacts/mobile/app/profile.tsx — Image defaults section only
+- No backend changes required for the UI itself
+
+The existing four profile fields (imageCompositionMode,
+imageEnvironmentDefault, imageOccupancyDefault, imageCameraDefault)
+cover Sections 1, 2, 6, and 7. New fields will be needed for Sections
+3, 4, 5, 8, and 9. Before adding new DB columns, confirm with Kane
+whether to extend the existing fields or add new ones. Surface three
+options for Kane's approval before touching the schema.
+
+
+================================================================================
+MOBILE-FIRST REQUIREMENTS
+================================================================================
+
+Primary device is Samsung Galaxy S24 Ultra.
+All tap targets minimum 44px height.
+Accordion headers minimum 48px height.
+Checkbox rows minimum 44px height.
+Summary line at top must be readable without scrolling.
+Reset button must be clearly visible and labeled.
+No horizontal scrolling anywhere in this section.
+
+
+================================================================================
+SUCCESS CONDITIONS
+================================================================================
+
+- Image defaults section shows 9 collapsible accordion sections
+- Each section expands to show tappable checkbox options
+- Single-select sections deselect previous on new tap
+- Camera Mode section is multi-select
+- Portrait and Selfie are unticked by default in Camera Mode
+- All selections auto-save on tap
+- Summary line at top shows current active selections
+- Reset button returns all to defaults
+- No portrait or selfie image is generated when those options are unticked
+- All tap targets mobile-friendly on S24 Ultra
+
+
+================================================================================
+CRITICAL — HOW TO THINK ABOUT THIS
+================================================================================
+
+This UI is a manual image prompt builder.
+
+Treat it exactly like typing a prompt into ChatGPT image generation.
+There are no reference images. There is no assumed knowledge of who
+Ashley is. The system has no memory of previous images. Every generation
+starts from zero.
+
+What Kane ticks in this UI becomes the prompt. Every ticked option is
+one more line of instruction sent to OpenAI. The more specific the
+selections, the more specific the output.
+
+If Kane ticks:
+  Environment-Centric + Living Room + Evening + Wide Room + Unaware +
+  Ashley only + Relaxing
+
+The prompt that goes to OpenAI should read something like:
+  "Wide angle photograph of a lived-in living room in the evening.
+  The room is the subject. A young woman with blue wavy hair and a
+  black lace choker is present in the scene, occupying roughly 10-15%
+  of the frame. She is relaxing, unaware of the camera. Documentary
+  photography style. Natural lighting. Film grain."
+
+That is a ChatGPT image prompt. Built entirely from Kane's checkbox
+selections. No assumed knowledge. No reference images. No shortcuts.
+
+Every section Kane ticks adds specificity to that prompt.
+Every section left on Auto gets a sensible default inserted by the server.
+Portrait and Selfie unticked means those words never appear in the prompt.
+
+Build the UI as a prompt construction tool, not a settings panel.
+
+
+================================================================================
+COMMITMENT 1 STANDARD
+================================================================================
+
+Three options must be surfaced before any schema changes.
+No schema changes without Kane's written approval.
+The UI build itself does not require three options — build as specified.
+Report back when UI is deployed and ready to test.
+
+================================================================================
+END
+================================================================================
