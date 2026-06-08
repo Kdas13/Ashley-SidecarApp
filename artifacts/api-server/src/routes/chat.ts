@@ -2775,12 +2775,16 @@ async function generateAshleySelfie(
       //
       // Hair is carried inside the FIGURE block so it remains available for
       // identity but does not influence the spatial composition.
+      // idStable (face/complexion) is deliberately excluded here.
+      // At 5% of the frame facial features are invisible — including an identity
+      // anchor pulls the model into portrait framing to "show" the face.
+      // Hair colour alone is sufficient for the figure to be recognisable at
+      // small scale without fighting the environment-first composition.
       const figureDescription = [
-        idStable ? `A young woman with ${idStable}` : "A young woman",
-        "is present in the scene as a small, recognisable figure.",
+        "A young woman",
+        "is somewhere in the scene as a small figure, occupying roughly 5% of the total frame.",
         activeHairSentence,
-        "She occupies approximately 5% of the total frame area and is not the focal point.",
-        "The environment and scene are the primary subject of this image.",
+        "She is not the focal point. The scene and environment fill the majority of the frame.",
       ].filter(Boolean).join(" ");
 
       fullPrompt = [

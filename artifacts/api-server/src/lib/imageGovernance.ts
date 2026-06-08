@@ -294,10 +294,22 @@ export function applyGovernance(
       ? buildOccupancyClause(effectiveOccupancy, resolvedEnvKey)
       : "";
 
+  // In SCENE_MODE the environment is the primary subject. Named references to
+  // Ashley in the environment clause cause the model to anchor on her as the
+  // focal point regardless of framing instructions. Strip her name — replace
+  // "Ashley is" with "She is" and remaining "Ashley" with "she" — so the model
+  // reads a location description first, not a character description.
+  const isSceneMode = resolvedImageMode === "SCENE_MODE";
+  const dePersonalise = (text: string): string =>
+    text
+      .replace(/\bAshley is\b/g, "She is")
+      .replace(/\bAshley\b/g, "she");
+
   // ── 4. Assemble vibe prefix ───────────────────────────────────────────────
   const parts: string[] = [];
   if (envEntry) {
-    parts.push(`Environment: ${envEntry.clause}.`);
+    const clause = isSceneMode ? dePersonalise(envEntry.clause) : envEntry.clause;
+    parts.push(`Environment: ${clause}.`);
   }
   if (occupancyClause) {
     parts.push(`Scene occupancy: ${occupancyClause}.`);
@@ -327,7 +339,12 @@ export function applyGovernance(
   if (activity !== "auto" && activity) {
     parts.push(`Activity: ${activity}.`);
     if (activity === "playing football") {
-      parts.push("Ashley is wearing a football jersey and shorts in colours matching one of the teams visible on the pitch. She is dressed as a player, not a spectator.");
+      if (isSceneMode) {
+        // In SCENE_MODE the figure is one player among many — no named reference.
+        parts.push("She wears a football jersey and shorts in one of the teams' colours, dressed as a player not a spectator.");
+      } else {
+        parts.push("Ashley is wearing a football jersey and shorts in colours matching one of the teams visible on the pitch. She is dressed as a player, not a spectator.");
+      }
     }
   }
 
@@ -343,12 +360,20 @@ export function applyGovernance(
   }
 
   // ── 6. Camera awareness ───────────────────────────────────────────────────
-  const AWARENESS_LABELS: Record<string, string> = {
-    unaware:  "Ashley is unaware of the camera — candid, natural, not posed",
-    indirect: "Ashley is glancing obliquely toward the camera, not directly",
-    direct:   "Ashley is looking directly into the camera",
-    auto:     "Ashley is unaware of the camera — candid, natural, not posed",
-  };
+  // In SCENE_MODE use subject-neutral phrasing — no named reference.
+  const AWARENESS_LABELS: Record<string, string> = isSceneMode
+    ? {
+        unaware:  "unaware of the camera — candid, natural, not posed",
+        indirect: "glancing obliquely toward the camera, not directly",
+        direct:   "looking directly into the camera",
+        auto:     "unaware of the camera — candid, natural, not posed",
+      }
+    : {
+        unaware:  "Ashley is unaware of the camera — candid, natural, not posed",
+        indirect: "Ashley is glancing obliquely toward the camera, not directly",
+        direct:   "Ashley is looking directly into the camera",
+        auto:     "Ashley is unaware of the camera — candid, natural, not posed",
+      };
   const awarenessClause = AWARENESS_LABELS[cameraAwareness] ?? AWARENESS_LABELS["unaware"]!;
   parts.push(`Camera awareness: ${awarenessClause}.`);
 
