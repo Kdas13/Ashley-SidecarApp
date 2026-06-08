@@ -1,0 +1,91 @@
+================================================================================
+AUDIT STEP 7 — OPENAI CALL
+File: artifacts/api-server/src/lib/openai.ts (lines 259–281)
+Called from: chat.ts line 2967
+================================================================================
+
+FUNCTION
+--------
+export async function generateImageBase64(
+  prompt: string,
+  size: "1024x1024" | "1024x1536" | "1536x1024" = "1024x1024",
+  quality: "low" | "medium" | "high" = "low",
+): Promise<string>
+
+EXACT OPENAI API CALL (lines 269–275)
+---------------------------------------
+const response = await openai.images.generate({
+  model:   "gpt-image-1",
+  prompt:  <fullPrompt from Step 6>,
+  size:    "1024x1536",
+  quality: "medium",
+  n:       1,
+});
+
+PARAMETER DERIVATION
+---------------------
+model:
+  Hardcoded to "gpt-image-1". Not configurable.
+
+prompt:
+  fullPrompt assembled in Step 6.
+  The "IMAGE REQUEST START — FULL PROMPT" log emits promptFull = exact string sent.
+  To see the exact runtime value: check the api-server logs immediately after
+  a "Generate test image" tap, filter for msg="IMAGE REQUEST START — FULL PROMPT".
+
+size = "1024x1536" (tall):
+  Derived from wrapper.framingHint (lines 2921–2926):
+    wrapper.framingHint === "landscape" → 1536x1024
+    wrapper.framingHint === "tall" || mode === "quality" → 1024x1536
+    else → 1024x1024
+  SCENE_MODE has framingHint = "tall" → size = "1024x1536"
+
+quality = "medium":
+  Derived from mode (line 2927):
+    mode === "quality" → "high"
+    else               → "medium"
+  mode = "fast" (Zod default) → quality = "medium"
+
+n: hardcoded to 1.
+
+NO OTHER PARAMETERS.
+gpt-image-1 does not accept: style, response_format, user.
+(response_format defaults to b64_json internally per Replit AI Integrations.)
+
+RESPONSE HANDLING (lines 276–280)
+-----------------------------------
+const b64 = response.data?.[0]?.b64_json;
+if (!b64) {
+  throw new Error("OpenAI image generation returned no data");
+}
+return b64;
+
+Returns raw base64-encoded PNG. Control returns to generateAshleySelfie.
+
+WHAT THE MODEL RECEIVES — EXACT STRUCTURE
+------------------------------------------
+The model receives one string (the prompt). There is no system message,
+no negative prompt, no inpainting mask, no style reference image.
+The entire framing, distance, action, and kit directives exist only as
+plain text inside the single prompt string.
+
+This is significant: gpt-image-1 treats all prompt text as a single
+instruction block with no hierarchy. Long complex prompts with many
+directives can see later or weaker directives overridden by the model's
+prior training distribution. Framing constraints ("15-20 metres back",
+"Ashley is a small figure") are abstract spatial concepts that diffusion
+models are trained to treat as suggestions, not hard constraints.
+Identity anchors (STABLE ASHLEY IDENTITY) typically dominate. The model
+gravitates toward close framing of named subjects.
+
+CACHE CHECK (lines 2885–2909)
+-------------------------------
+Before the OpenAI call, the server checks:
+  cacheKey = SHA-256(fullPrompt + "|" + mode).slice(0,12)
+  if selfieCache.get(cacheKey) → return cached URL (no API call)
+  if selfieInFlight.get(cacheKey) → join existing promise (no duplicate call)
+
+The cache is in-memory plus disk-persisted. On server restart it reloads
+from disk. Cache keys are prompt-content-based, so changing the football-pitch
+clause produces a new cache key and forces a fresh OpenAI call.
+

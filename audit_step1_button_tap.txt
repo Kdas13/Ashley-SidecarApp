@@ -1,0 +1,76 @@
+================================================================================
+AUDIT STEP 1 — BUTTON TAP (Profile screen)
+File: artifacts/mobile/app/profile.tsx
+================================================================================
+
+FUNCTION CALLED
+---------------
+onGenerateTestImage
+Defined at line 421.
+
+EXACT CODE (lines 421–449)
+--------------------------
+  const onGenerateTestImage = async (): Promise<void> => {
+    if (testImageLoading) return;
+    setTestImageUrl(null);
+    setTestImageLoading(true);
+    try {
+      // Build governance snapshot directly from draft state.
+      // Do NOT rely on _governanceParams from imageGate — that module-level
+      // variable is only synced while chat.tsx is mounted, not profile.tsx.
+      const governanceSnapshot = {
+        imageCompositionMode: compositionMode !== "auto" ? compositionMode : null,
+        imageEnvironmentDefault: environmentDefault !== "auto" ? environmentDefault : null,
+        imageOccupancyDefault: occupancyDefault !== "auto" ? occupancyDefault : null,
+        imageCameraDefault: draft.imageCameraDefault ?? null,
+        imageDefaultsExtra: {
+          timeOfDay: timeOfDay !== "auto" ? timeOfDay : null,
+          season: season !== "auto" ? season : null,
+          activity: activity !== "auto" ? activity : null,
+          shotDistance: shotDistance !== "auto" ? shotDistance : null,
+          cameraAwareness: cameraAwareness,
+        },
+      };
+      const result = await fetchTestSelfie(governanceSnapshot);
+      setTestImageUrl(result.imageUrl);
+    } catch {
+      Alert.alert("Generation failed", "Could not generate a test image. Try again.");
+    } finally {
+      setTestImageLoading(false);
+    }
+  };
+
+VARIABLES FEEDING INTO governanceSnapshot
+------------------------------------------
+compositionMode    → draft.imageCompositionMode ?? "auto"         (line 355)
+environmentDefault → draft.imageEnvironmentDefault ?? "auto"       (line 356)
+occupancyDefault   → draft.imageOccupancyDefault ?? "auto"         (line 357)
+cameraSet          → parseCameraSet(draft.imageCameraDefault)       (line 359)
+imgExtra           → parseImageDefaultsExtra(draft.imageDefaultsExtra) (line 361)
+timeOfDay          → imgExtra.timeOfDay ?? "auto"                   (line 362)
+season             → imgExtra.season ?? "auto"                      (line 363)
+activity           → imgExtra.activity ?? "auto"                    (line 364)
+shotDistance       → imgExtra.shotDistance ?? "auto"                (line 365)
+cameraAwareness    → imgExtra.cameraAwareness ?? "unaware"          (line 366)
+
+SOURCE OF draft
+---------------
+draft is React local state: const [draft, setDraft] = useState<Partial<AshleyProfile>>({})  (line 270)
+Initialised from profileQuery.data inside a useEffect:
+  useEffect(() => { if (profileQuery.data) setDraft(profileQuery.data); }, [profileQuery.data])  (line 273–274)
+
+draft is updated by:
+  setDraft((prev) => ({ ...prev, <field>: value }))
+called inside setCompositionMode, setEnvironmentDefault, setOccupancyDefault,
+toggleCameraMode, and setExtra whenever the user taps an option.
+
+CALL CHAIN
+----------
+onGenerateTestImage()
+  → fetchTestSelfie(governanceSnapshot)        [lib/aiClient.ts, line 1637]
+    → POST /api/chat/selfie
+      → poll GET /api/chat/selfie/:jobId
+    → returns { imageUrl: string }
+  → setTestImageUrl(result.imageUrl)
+  → image renders in UI
+

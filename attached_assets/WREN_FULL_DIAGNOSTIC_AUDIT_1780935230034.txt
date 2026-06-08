@@ -1,0 +1,134 @@
+================================================================================
+WREN — FULL DIAGNOSTIC ROUTE AUDIT REQUEST
+Date: 2026-06-08
+================================================================================
+
+A full end-to-end diagnostic trace is required.
+This will be sent to Atlas for independent review.
+Atlas will identify exactly where the pipeline is breaking.
+
+Do not fix anything. Do not change anything.
+Document everything exactly as it currently is.
+
+
+================================================================================
+WHAT IS NEEDED
+================================================================================
+
+Trace the complete journey of a Generate test image request from the
+moment Kane taps the button to the moment the image appears on screen.
+
+Document every step. Every function call. Every variable. Every value.
+No summaries. No paraphrasing. Exact code paths and exact values.
+
+
+================================================================================
+THE TRACE — STEP BY STEP
+================================================================================
+
+Run a Generate test image request with these selections active:
+- Composition Mode: Environment-Centric
+- Environment: Football Pitch
+- Time of Day: Afternoon
+- Season: Summer
+- Activity: Playing football
+- Who is in the scene: Ashley only
+- Camera Mode: Wide Room
+- Shot Distance: Wide Room
+- Camera Awareness: Unaware
+
+Then document each of the following:
+
+STEP 1 — BUTTON TAP (Profile screen)
+What function is called when Kane taps "Generate test image"?
+Show the exact function name and file path.
+Show the exact code that runs at that moment.
+
+STEP 2 — GOVERNANCE SNAPSHOT CONSTRUCTION
+How does the profile screen collect the current selections?
+What variable or state holds the selections?
+What is the exact value of that variable at the moment the button
+is tapped? Show the actual object — every key and value.
+
+STEP 3 — API CALL CONSTRUCTION
+What POST body is constructed before the API call?
+Show the exact JSON object sent to the server.
+Every key. Every value. Nothing omitted.
+
+STEP 4 — SERVER RECEIPT
+What does the server receive?
+Show the exact parsed request body logged on the server side.
+Every key. Every value.
+Is governanceParams present? What is its exact value?
+
+STEP 5 — GOVERNANCE RESOLUTION (imageGovernance.ts)
+What function processes the governance params?
+Show the exact function.
+What is the value of imageEnvironmentDefault at this point?
+What is resolvedEnvKey after resolution?
+What does ENVIRONMENTS[resolvedEnvKey] return?
+Show the exact environment clause string that results.
+If it returns undefined — show that explicitly.
+
+STEP 6 — PROMPT ASSEMBLY
+What function assembles the final prompt?
+Show the exact function.
+Show the exact final prompt string that is assembled.
+Every line. Nothing omitted.
+
+STEP 7 — OPENAI CALL
+What is sent to OpenAI?
+Show the exact API call parameters:
+- model
+- prompt (full string)
+- size
+- quality
+- any other parameters
+
+STEP 8 — RESPONSE HANDLING
+What does OpenAI return?
+How is the image URL extracted?
+How is it passed back to the profile screen?
+How does it appear in the UI?
+
+
+================================================================================
+DELIVER AS
+================================================================================
+
+One txt file per step (8 files total).
+Name them:
+  audit_step1_button_tap.txt
+  audit_step2_governance_snapshot.txt
+  audit_step3_api_call.txt
+  audit_step4_server_receipt.txt
+  audit_step5_governance_resolution.txt
+  audit_step6_prompt_assembly.txt
+  audit_step7_openai_call.txt
+  audit_step8_response_handling.txt
+
+Each file must contain:
+- The exact code for that step
+- The exact runtime values observed during the test run
+- Any anomalies, nulls, undefineds, or unexpected values
+
+Do not summarise. Do not paraphrase. Exact code and exact values only.
+This is going to Atlas for independent review.
+Atlas needs the full picture, not Wren's interpretation of it.
+
+
+================================================================================
+DO NOT FIX ANYTHING
+================================================================================
+
+This is a diagnostic exercise only.
+Do not change any code.
+Do not attempt any fixes.
+Do not deploy anything.
+
+Document what exists. Atlas will determine what needs fixing.
+
+
+================================================================================
+DELIVER ALL 8 FILES BEFORE KANE RESPONDS FURTHER
+================================================================================

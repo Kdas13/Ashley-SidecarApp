@@ -1,0 +1,67 @@
+================================================================================
+AUDIT STEP 3 — API CALL CONSTRUCTION
+File: artifacts/mobile/lib/aiClient.ts (lines 1637–1650)
+================================================================================
+
+FUNCTION
+--------
+export async function fetchTestSelfie(
+  governanceParams?: Record<string, unknown> | null,
+): Promise<{ imageUrl: string }>
+
+EXACT POST BODY CONSTRUCTED
+----------------------------
+{
+  "messageId": "test-<Date.now()>-<Math.random().toString(36).slice(2)>",
+  "vibe":      "SCENE_MODE|candid natural moment",
+  "testMode":  true,
+  "governanceParams": {
+    "imageCompositionMode":    "environment-centric",
+    "imageEnvironmentDefault": "football-pitch",
+    "imageOccupancyDefault":   "solo",
+    "imageCameraDefault":      "wide-room",
+    "imageDefaultsExtra": {
+      "timeOfDay":       "afternoon",
+      "season":          "summer",
+      "activity":        "playing football",
+      "shotDistance":    "wide-room",
+      "cameraAwareness": "unaware"
+    }
+  }
+}
+
+EXACT FUNCTION CODE (lines 1640–1650)
+--------------------------------------
+  const fakeId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const startRes = await fetchJSON<{ jobId?: unknown }>("/chat/selfie", {
+    method: "POST",
+    headers: apiHeaders(),
+    body: JSON.stringify({
+      messageId: fakeId,
+      vibe: "SCENE_MODE|candid natural moment",
+      testMode: true,
+      ...(governanceParams ? { governanceParams } : {}),
+    }),
+  });
+
+HEADERS SENT
+------------
+  X-API-Key:     <value of EXPO_PUBLIC_API_KEY env var>
+  Authorization: Bearer <device-id from AsyncStorage>
+  Content-Type:  application/json
+
+ENDPOINT
+--------
+  POST /api/chat/selfie
+  Routed through the Replit proxy → Express route at artifacts/api-server/src/routes/chat.ts line 3254
+
+NOTE ON vibe FIELD
+------------------
+The vibe is hardcoded to "SCENE_MODE|candid natural moment" in fetchTestSelfie.
+This means the server will decode imageMode = "SCENE_MODE" from the vibe prefix
+regardless of what governance params say. This is intentional — the test image
+always uses SCENE_MODE. The governanceParams.imageCompositionMode field exists
+to override mode when the incoming vibe arrives as PORTRAIT_MODE; since this
+vibe already declares SCENE_MODE, the composition governance override in Section 2
+of applyGovernance is bypassed (see Step 5 for details).
+

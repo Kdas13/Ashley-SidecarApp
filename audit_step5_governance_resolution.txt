@@ -1,0 +1,118 @@
+================================================================================
+AUDIT STEP 5 — GOVERNANCE RESOLUTION
+File: artifacts/api-server/src/lib/imageGovernance.ts
+Function: applyGovernance (line 247)
+================================================================================
+
+FUNCTION SIGNATURE
+------------------
+export function applyGovernance(
+  governance: GovernanceParams,
+  imageMode: ImageMode,
+  now: Date,
+  tz: string,
+): GovernanceResult
+
+CALL SITE (chat.ts line 2382–2387)
+------------------------------------
+applyGovernance(
+  governance ?? {},      // = { imageCompositionMode: "environment-centric", ... }
+  imageMode,             // = "SCENE_MODE"
+  clientNow ?? new Date(), // = new Date() (no clientNow supplied from startSelfieGeneration)
+  clientTz ?? "UTC",     // = "UTC"  ← NOTE: clientTz is never passed by startSelfieGeneration
+)
+
+VARIABLES EXTRACTED FROM governance (lines 253–262)
+-----------------------------------------------------
+  compositionPref  = "environment-centric"
+  envPref          = "football-pitch"
+  occupancyPref    = "solo"
+  cameraPref       = "wide-room"
+  extra            = { timeOfDay: "afternoon", season: "summer",
+                       activity: "playing football", shotDistance: "wide-room",
+                       cameraAwareness: "unaware" }
+  timeOfDay        = "afternoon"
+  season           = "summer"
+  activity         = "playing football"
+  shotDistance     = "wide-room"
+  cameraAwareness  = "unaware"
+
+SECTION 1 — ENVIRONMENT RESOLUTION (lines 264–269)
+-----------------------------------------------------
+  envPref !== "auto"  → TRUE
+  resolvedEnvKey      = "football-pitch"
+  envEntry            = ENVIRONMENTS["football-pitch"]
+
+ENVIRONMENTS["football-pitch"] (imageGovernance.ts line 120, as of deploy 37f7bdde):
+  {
+    clause: "Ashley is on a football pitch during a match or training session; open grass,
+             goalposts visible, players and crowd in the background, natural daylight, outdoor
+             sports atmosphere. The camera is positioned 15-20 metres back. Ashley is a small
+             figure on the pitch, not the foreground subject. The match and the pitch are the
+             subject. She is one player among fifteen or twenty visible on the field. Ashley
+             occupies no more than 10-15% of the total frame. Ashley is captured mid-action —
+             running, sprinting toward the ball, making a tackle, calling for a pass, or
+             celebrating. She is not standing still. She is not posing. She does not know the
+             camera is there."
+  }
+
+  envEntry is NOT undefined. No warn log emitted.
+  parts.push("Environment: <clause above>.")
+
+SECTION 2 — COMPOSITION / CAMERA RESOLUTION (lines 271–287)
+--------------------------------------------------------------
+  imageMode = "SCENE_MODE"
+  Condition: if (imageMode === "PORTRAIT_MODE") → FALSE
+
+  *** THIS ENTIRE BLOCK IS SKIPPED ***
+
+  resolvedImageMode = "SCENE_MODE"  (unchanged from input)
+
+  CONSEQUENCE: The imageCompositionMode ("environment-centric") and imageCameraDefault
+  ("wide-room") governance fields have NO effect on resolvedImageMode in this path.
+  They would only fire if the incoming imageMode were "PORTRAIT_MODE".
+  Because fetchTestSelfie hardcodes vibe = "SCENE_MODE|candid natural moment",
+  the decoded imageMode is already SCENE_MODE and Section 2 is permanently bypassed
+  for all test image generations.
+
+SECTION 3 — OCCUPANCY (lines 289–295)
+----------------------------------------
+  effectiveOccupancy = "solo"   (occupancyPref !== "auto")
+  Branch: effectiveOccupancy !== "solo" → FALSE
+  occupancyClause = ""
+  Nothing pushed to parts.
+
+SECTION 4 — ASSEMBLE VIBE PREFIX (lines 297–304)
+--------------------------------------------------
+  parts (so far) = [
+    "Environment: Ashley is on a football pitch during a match or training session; ... She does not know the camera is there."
+  ]
+  occupancyClause = "" → nothing pushed
+
+SECTION 5 — EXTRA FIELDS (lines 306–343)
+------------------------------------------
+  TOD_LABELS["afternoon"] = "afternoon light"   → parts.push("Time of day: afternoon light.")
+  SEASON_LABELS["summer"] = "summer"             → parts.push("Season: summer.")
+  activity = "playing football" (not "auto")
+    → parts.push("Activity: playing football.")
+    → activity === "playing football" → TRUE
+    → parts.push("Ashley is wearing a football jersey and shorts in colours matching one of the teams visible on the pitch. She is dressed as a player, not a spectator.")
+  shotDistance = "wide-room"
+  SHOT_LABELS["wide-room"] = "wide room shot"   → parts.push("Shot distance: wide room shot.")
+
+SECTION 6 — CAMERA AWARENESS (lines 345–353)
+----------------------------------------------
+  AWARENESS_LABELS["unaware"] = "Ashley is unaware of the camera — candid, natural, not posed"
+  parts.push("Camera awareness: Ashley is unaware of the camera — candid, natural, not posed.")
+
+FINAL vibePrefix (parts.join(" "))
+------------------------------------
+"Environment: Ashley is on a football pitch during a match or training session; open grass, goalposts visible, players and crowd in the background, natural daylight, outdoor sports atmosphere. The camera is positioned 15-20 metres back. Ashley is a small figure on the pitch, not the foreground subject. The match and the pitch are the subject. She is one player among fifteen or twenty visible on the field. Ashley occupies no more than 10-15% of the total frame. Ashley is captured mid-action — running, sprinting toward the ball, making a tackle, calling for a pass, or celebrating. She is not standing still. She is not posing. She does not know the camera is there. Time of day: afternoon light. Season: summer. Activity: playing football. Ashley is wearing a football jersey and shorts in colours matching one of the teams visible on the pitch. She is dressed as a player, not a spectator. Shot distance: wide room shot. Camera awareness: Ashley is unaware of the camera — candid, natural, not posed."
+
+RETURN VALUE
+------------
+{
+  imageMode: "SCENE_MODE",
+  vibePrefix: "<string above>"
+}
+

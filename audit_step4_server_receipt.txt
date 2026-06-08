@@ -1,0 +1,90 @@
+================================================================================
+AUDIT STEP 4 — SERVER RECEIPT
+File: artifacts/api-server/src/routes/chat.ts (lines 3254–3260)
+================================================================================
+
+ROUTE HANDLER
+-------------
+router.post("/chat/selfie", async (req, res): Promise<void> => {
+  const deviceId = getDeviceId(req);
+  const parsed = ChatSelfieBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  ...
+
+SCHEMA: ChatSelfieBodySchema (lines 1946–1985)
+-----------------------------------------------
+z.object({
+  messageId:             z.string().min(8).max(128),
+  vibe:                  z.string().min(1).max(MAX_VIBE_LEN),
+  mode:                  z.enum(["fast", "quality"]).optional().default("fast"),
+  imageMode:             z.enum(IMAGE_MODES).optional(),
+  sortOrder:             z.number().int().min(0).optional(),
+  imageGenerationEnabled:z.boolean().optional(),
+  governanceParams: z.object({
+    imageCompositionMode:    z.string().optional().nullable(),
+    imageEnvironmentDefault: z.string().optional().nullable(),
+    imageOccupancyDefault:   z.string().optional().nullable(),
+    imageCameraDefault:      z.string().optional().nullable(),
+    imageDefaultsExtra: z.object({
+      timeOfDay:       z.string().optional().nullable(),
+      season:          z.string().optional().nullable(),
+      activity:        z.string().optional().nullable(),
+      shotDistance:    z.string().optional().nullable(),
+      cameraAwareness: z.string().optional().nullable(),
+    }).optional().nullable(),
+  }).optional().nullable(),
+  testMode: z.boolean().optional(),
+})
+
+PARSED REQUEST BODY (exact values after Zod parse)
+----------------------------------------------------
+{
+  messageId:    "test-<timestamp>-<random>",
+  vibe:         "SCENE_MODE|candid natural moment",
+  mode:         "fast",            (Zod default applied — not sent by client)
+  testMode:     true,
+  governanceParams: {
+    imageCompositionMode:    "environment-centric",
+    imageEnvironmentDefault: "football-pitch",
+    imageOccupancyDefault:   "solo",
+    imageCameraDefault:      "wide-room",
+    imageDefaultsExtra: {
+      timeOfDay:       "afternoon",
+      season:          "summer",
+      activity:        "playing football",
+      shotDistance:    "wide-room",
+      cameraAwareness: "unaware"
+    }
+  }
+}
+
+IS governanceParams PRESENT?
+-----------------------------
+YES. All fields present and correctly typed. Zod schema accepts them without
+stripping. The schema previously had imageDefaultsExtra in the correct shape;
+no schema issue exists on the server side for this route.
+
+FLOW AFTER PARSE (testMode path)
+----------------------------------
+Line 3271: if (!parsed.data.testMode) { ... message ownership check ... }
+→ testMode = true → ownership check is SKIPPED.
+
+Line 3295: const decoded = decodeStoredVibe("SCENE_MODE|candid natural moment")
+→ returns { mode: "SCENE_MODE", vibe: "candid natural moment", reason: "encoded prefix" }
+
+Line 3296: const imageMode: ImageMode = clientImageMode ?? decoded.mode
+→ clientImageMode is undefined (not sent)
+→ imageMode = "SCENE_MODE"
+
+Line 3297: governanceParams is extracted at line 3497:
+  const governanceParams = parsed.data.governanceParams ?? undefined;
+→ governanceParams = { imageCompositionMode: "environment-centric", ... } (full object)
+
+Line 3510: startSelfieGeneration(jobId, forwardedVibe, "fast", "SCENE_MODE",
+                                  deviceId, messageId, undefined, undefined, governanceParams)
+
+Server responds immediately: HTTP 202 { jobId: "<uuid>" }
+

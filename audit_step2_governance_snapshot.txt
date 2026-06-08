@@ -1,0 +1,73 @@
+================================================================================
+AUDIT STEP 2 — GOVERNANCE SNAPSHOT CONSTRUCTION
+File: artifacts/mobile/app/profile.tsx (lines 421–441)
+================================================================================
+
+WITH THESE SELECTIONS ACTIVE
+------------------------------
+  Composition Mode:       Environment-Centric
+  Environment:            Football Pitch
+  Time of Day:            Afternoon
+  Season:                 Summer
+  Activity:               Playing football
+  Who is in the scene:    Ashley only
+  Camera Mode:            Wide Room
+  Shot Distance:          Wide Room
+  Camera Awareness:       Unaware
+
+RESOLVED VARIABLE VALUES BEFORE SNAPSHOT CONSTRUCTION
+-------------------------------------------------------
+  compositionMode    = "environment-centric"    (stored as draft.imageCompositionMode)
+  environmentDefault = "football-pitch"          (stored as draft.imageEnvironmentDefault)
+  occupancyDefault   = "solo"                    (stored as draft.imageOccupancyDefault; "Ashley only" maps to value "solo" — profile.tsx line 995)
+  draft.imageCameraDefault = "wide-room"         (Camera Mode is multi-select stored comma-separated; single selection = "wide-room")
+  imgExtra.timeOfDay = "afternoon"               (from parseImageDefaultsExtra(draft.imageDefaultsExtra))
+  imgExtra.season    = "summer"
+  imgExtra.activity  = "playing football"
+  imgExtra.shotDistance = "wide-room"
+  imgExtra.cameraAwareness = "unaware"
+
+GOVERNANCE SNAPSHOT OBJECT (exact value at button tap)
+-------------------------------------------------------
+{
+  "imageCompositionMode":    "environment-centric",
+  "imageEnvironmentDefault": "football-pitch",
+  "imageOccupancyDefault":   "solo",
+  "imageCameraDefault":      "wide-room",
+  "imageDefaultsExtra": {
+    "timeOfDay":        "afternoon",
+    "season":           "summer",
+    "activity":         "playing football",
+    "shotDistance":     "wide-room",
+    "cameraAwareness":  "unaware"
+  }
+}
+
+NOTES
+-----
+- compositionMode !== "auto" → "environment-centric" is kept (not null).
+- environmentDefault !== "auto" → "football-pitch" is kept (not null).
+- occupancyDefault !== "auto" → "solo" is kept (not null).
+- timeOfDay !== "auto" → "afternoon" is kept (not null).
+- season !== "auto" → "summer" is kept (not null).
+- activity !== "auto" → "playing football" is kept (not null).
+- shotDistance !== "auto" → "wide-room" is kept (not null).
+- cameraAwareness is passed through unconditionally (always sent, default "unaware").
+
+PREREQUISITE: imageDefaultsExtra must be correctly saved to the server
+-----------------------------------------------------------------------
+Prior to commit 8b0824e (fix: add imageDefaultsExtra to wirePatch) and
+commit c6ddc13 (fix: add imageDefaultsExtra to WireProfile/ProfileUpdate types),
+the imageDefaultsExtra field was silently dropped at THREE points:
+
+  1. useProfile.ts (wirePatch mapping) — field never included in PUT body
+  2. WireProfile type in aiClient.ts — field absent from server response type
+  3. profileFromWire() in aiClient.ts — field stripped on every server response parse
+
+These three gaps meant every save of activity/timeOfDay/season/shotDistance
+was a no-op. The onSuccess callback from update.mutateAsync() wrote back a
+profile with imageDefaultsExtra: null, which then overwrote the local draft
+via the useEffect at line 274, causing the selection to revert to "Auto".
+
+All three gaps are fixed as of the deployed build (commit 531e653f).
+

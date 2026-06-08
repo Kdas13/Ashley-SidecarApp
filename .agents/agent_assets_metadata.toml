@@ -161,3 +161,51 @@ id = "i3Amyyr5Xk8zhz_FrazyN"
 uri = "file://.local/audit/last-prompt.txt"
 type = "text"
 title = "Full prompt — last test image request"
+
+[[outputs]]
+id = "vi6n-jhwoN2hue_axmnNG"
+uri = "file://audit_step1_button_tap.txt"
+type = "text"
+title = "Step 1 — Button tap"
+
+[[outputs]]
+id = "PsDU1TVNOPJ-kXS_Xoyzh"
+uri = "file://audit_step2_governance_snapshot.txt"
+type = "text"
+title = "Step 2 — Governance snapshot"
+
+[[outputs]]
+id = "RatE88t11mSpvdttVGuF5"
+uri = "file://audit_step3_api_call.txt"
+type = "text"
+title = "Step 3 — API call construction"
+
+[[outputs]]
+id = "9hV_b3-wKmYuxrYNE8-G8"
+uri = "file://audit_step4_server_receipt.txt"
+type = "text"
+title = "Step 4 — Server receipt"
+
+[[outputs]]
+id = "e5kTg8tX6pInW9ng8Crhr"
+uri = "file://audit_step5_governance_resolution.txt"
+type = "text"
+title = "Step 5 — Governance resolution"
+
+[[outputs]]
+id = "5lMAN4aUj8tqEVtGhdoIh"
+uri = "file://audit_step6_prompt_assembly.txt"
+type = "text"
+title = "Step 6 — Prompt assembly"
+
+[[outputs]]
+id = "mtNKjAglg3-Czak4QM0U4"
+uri = "file://audit_step7_openai_call.txt"
+type = "text"
+title = "Step 7 — OpenAI call"
+
+[[outputs]]
+id = "Qo32H1e9r1r0O53UYCX7l"
+uri = "file://audit_step8_response_handling.txt"
+type = "text"
+title = "Step 8 — Response handling"

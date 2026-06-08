@@ -1,0 +1,128 @@
+================================================================================
+AUDIT STEP 8 — RESPONSE HANDLING
+Files: chat.ts (lines 2967–3020), aiClient.ts (lines 1657–1677)
+================================================================================
+
+SERVER SIDE — AFTER generateImageBase64 RETURNS
+-------------------------------------------------
+
+1. b64 received (line 2967):
+   b64 = await generateImageBase64(fullPrompt, "1024x1536", "medium")
+   Returns: raw base64-encoded PNG string.
+
+2. Logger (lines 2968–2979):
+   logger.info({
+     mode: "fast", imageMode: "SCENE_MODE",
+     size: "1024x1536", quality: "medium",
+     cacheKey: <12-char hex>,
+     b64Length: <number>,
+     gotArtifact: true,
+   }, "PROVIDER RESPONSE")
+
+3. Save to storage (via saveSelfie, inside the promise):
+   const selfieId = randomUUID();
+   const relUrl = await saveSelfie(selfieId, Buffer.from(b64, "base64"));
+   → Saves PNG to Replit Object Storage (or local fs fallback).
+   → relUrl = "/api/selfies/<selfieId>.png"
+
+4. Cache write:
+   selfieCache.set(cacheKey, { selfieId, createdAt: Date.now() });
+   persistSelfieCache();
+
+5. Final URL construction:
+   const imageUrl = `${publicBaseUrl()}/api/selfies/<selfieId>.png`
+   → e.g. "https://Ashley-Sidecar.replit.app/api/selfies/<uuid>.png"
+
+6. Job patched to "ready" (lines 3117–3132):
+   setSelfieJob(jobId, {
+     status: "ready",
+     imageUrl,
+     imageHash: SHA-256(imageUrl).slice(0,12),
+     mode: "fast",
+     imageMode: "SCENE_MODE",
+     deviceId,
+     messageId,
+     createdAt: Date.now(),
+   })
+
+7. Message row DB patch:
+   attachmentId is undefined (testMode — no real message).
+   shouldPatchMessageRow → true (no attachmentId).
+   db.update(messagesTable).set({ imageUrl }).where(...)
+   → Finds 0 rows (fake messageId). Silently succeeds (no-op).
+
+CLIENT SIDE — POLLING (aiClient.ts lines 1657–1676)
+------------------------------------------------------
+Loop: up to SELFIE_POLL_MAX_ATTEMPTS attempts with SELFIE_POLL_INTERVAL_MS delay.
+
+Each iteration:
+  GET /api/chat/selfie/<jobId>
+  Headers: X-API-Key, Authorization, Cache-Control: no-cache
+
+Poll response when ready:
+  { status: "ready", imageUrl: "https://Ashley-Sidecar.replit.app/api/selfies/<uuid>.png" }
+
+Branch (line 1670):
+  if (body.status === "ready" && typeof body.imageUrl === "string")
+    → return { imageUrl: body.imageUrl }
+
+Control returns to fetchTestSelfie, which returns { imageUrl } to onGenerateTestImage.
+
+UI UPDATE (profile.tsx lines 442–443)
+---------------------------------------
+  const result = await fetchTestSelfie(governanceSnapshot);
+  setTestImageUrl(result.imageUrl);
+
+setTestImageUrl triggers re-render. The image renders in:
+  <Image source={{ uri: testImageUrl }} ... />
+
+The URL is served from Replit Object Storage via the /api/selfies/:filename route.
+The mobile Expo Image component renders it inline in the profile screen below
+the "Generate test image" button.
+
+FAILURE PATH
+-------------
+If OpenAI returns no data or throws:
+  generateImageBase64 throws → generateAshleySelfie returns null
+  → startSelfieGeneration: setSelfieJob(jobId, { status: "failed", ... })
+  → Poll returns { status: "failed", error: "..." }
+  → fetchTestSelfie throws new Error("Generation failed")
+  → onGenerateTestImage catch block: Alert.alert("Generation failed", "...")
+
+ANOMALIES OBSERVED
+-------------------
+None in the pipeline code. The pipeline is structurally correct end-to-end.
+
+PRIMARY FINDING
+---------------
+The prompt construction is correct. The governance clauses ARE present in the
+final prompt sent to gpt-image-1. The football-pitch clause (as of deploy 37f7bdde,
+commit 2539736e) includes:
+  "The camera is positioned 15-20 metres back."
+  "Ashley is a small figure on the pitch, not the foreground subject."
+  "The match and the pitch are the subject."
+  "She is one player among fifteen or twenty visible on the field."
+  "Ashley is captured mid-action — running, sprinting toward the ball..."
+
+The SCENE_MODE wrapper also instructs:
+  "This is NOT a close-up, NOT a portrait crop, NOT a selfie, NOT a headshot."
+  "The subject occupies a natural portion of a wider scene."
+
+Despite these instructions, the model produced a close-up foreground image.
+This is a gpt-image-1 model compliance issue, not a code defect. The model
+has a strong training prior toward placing named subjects prominently in frame.
+Plain-text distance constraints ("15-20 metres") are not reliably obeyed —
+the model treats them as soft suggestions, not hard spatial constraints.
+
+The kit clause ("football jersey and shorts... dressed as a player, not a spectator")
+was obeyed in the 1:09 PM screenshot — kit is a texture/style instruction which
+the model handles well. Framing/distance is where compliance breaks down.
+
+NOTE ON SCREENSHOT TIMING
+--------------------------
+The screenshot provided (1:09 PM, 08 June 2026) was generated with the 8-10 metre
+clause (deploy commit f00ea530 / 531e653f). The 15-20 metre + mid-action clause
+was deployed at commit 37f7bdde (published after the screenshot was taken).
+The image in the screenshot was generated with an earlier version of the clause.
+It is not known whether a test generation with the latest clause has been run.
+

@@ -1,0 +1,132 @@
+================================================================================
+AUDIT STEP 6 — PROMPT ASSEMBLY
+File: artifacts/api-server/src/routes/chat.ts
+Function: generateAshleySelfie (line 2365)
+================================================================================
+
+ENTRY STATE
+-----------
+  vibe (forwarded)  = "candid natural moment"
+  imageMode         = "SCENE_MODE"     (from governance output)
+  governedVibePrefix = <vibePrefix from Step 5>
+  wrapper           = wrapperFor("SCENE_MODE")
+
+SCENE_MODE WRAPPER (imageIntent.ts lines 340–348)
+---------------------------------------------------
+  shotType:
+    "Wide-framed cinematic environmental photograph showing {subject}, a young woman,
+     situated inside her surroundings so that BOTH she AND the environment around her
+     are clearly visible — the camera pulls back far enough to show her body, her
+     clothing, and the scene she is in. This is NOT a close-up, NOT a portrait crop,
+     NOT a selfie, NOT a headshot. The subject occupies a natural portion of a wider
+     scene, in a vertical composition"
+
+  styleLine:
+    "Photorealistic cinematic lighting that suits the scene, environmental detail
+     present and legible, single subject, no text or watermarks"
+
+  framingHint: "tall"    → determines canvas size = "1024x1536"
+  requiresFullBodyValidation: false
+  pendingLabel: "composing a scene"
+
+SAFETY PREFIX (contentPolicy.ts line 334)
+-------------------------------------------
+  "No nudity. No explicit sexual acts. No minors. No violence. No text or watermarks.
+   Subject is fully clothed throughout.
+   Single image only — do not create a collage, photo strip, contact sheet, grid layout,
+   diptych, triptych, or any multi-panel composition.
+   One continuous scene, one moment in time."
+
+VIBE PROCESSING (lines 2402, 2599, 2652, 2655)
+------------------------------------------------
+  extractVisualSpecFromVibe("candid natural moment")
+  → vibeDesc    = "candid natural moment"
+  → carriedSpec = null  (no {{VSPEC}} marker in vibe)
+
+  _descriptorWord = "candid"
+  DESCRIPTOR_HAIR_OVERRIDES["candid"] → undefined → _descriptorOverride = null
+
+  effectiveSpec = makeEmptySpec("candid natural moment")  (empty, non-null)
+  appearance    = composeAppearance(profile.appearance, effectiveSpec)
+                = profile.appearance string (no override)
+
+  scrubbedVibe  = "candid natural moment"  (no negations to scrub)
+  vibeNoMem     = "candid natural moment"  (no {{VMEM}} anchor)
+
+IDENTITY MODE BRANCH (lines 2742–2790)
+-----------------------------------------
+  (not DESCRIPTOR MODE — _descriptorOverride is null)
+
+  extractIdentityCore(profile.appearance) → <face/eyes/complexion only, no hair>
+  renderIdentityCore() → e.g. "dark eyes, olive-fair complexion" (exact value depends on profile row)
+
+  shot = "Wide-framed cinematic environmental photograph showing Ashley, a young woman,
+          with <idCore>, situated inside her surroundings so that BOTH she AND the
+          environment around her are clearly visible..."
+
+  activeHairSentence → extracted from profile.appearance hair clauses
+                     → e.g. "She has vibrant blue hair, [style details]."  (exact value from profile row)
+
+  hairDirective = ""  (effectiveSpec has no hairColour override)
+  sceneAnchorDirective = ""  (no visual memory anchor in vibe)
+
+  sceneText = [governedVibePrefix, "candid natural moment"].filter(Boolean).join(" ")
+            = "<vibePrefix from Step 5> candid natural moment"
+
+  visualStateLines = [
+    "<activeHairSentence>",
+    "",   (hairDirective empty)
+    "",   (sceneAnchorDirective empty)
+    "Scene: <sceneText>.",
+  ].filter(Boolean).join("\n")
+  = "<activeHairSentence>\nScene: <sceneText>."
+
+FULL PROMPT (assembled at lines 2783–2790)
+-------------------------------------------
+  fullPrompt = [
+    buildSelfiePromptSafetyPrefix(),
+    "STABLE ASHLEY IDENTITY: <stableShot>.",
+    "<activeHairSentence>\nScene: <governedVibePrefix> candid natural moment.",
+    "Photorealistic cinematic lighting that suits the scene, environmental detail present and legible, single subject, no text or watermarks.",
+  ].filter(Boolean).join("\n\n")
+
+RENDERED AS:
+------------
+No nudity. No explicit sexual acts. No minors. No violence. No text or watermarks. Subject is fully clothed throughout. Single image only — do not create a collage, photo strip, contact sheet, grid layout, diptych, triptych, or any multi-panel composition. One continuous scene, one moment in time.
+
+STABLE ASHLEY IDENTITY: Wide-framed cinematic environmental photograph showing Ashley, a young woman, with <identityCore>, situated inside her surroundings so that BOTH she AND the environment around her are clearly visible — the camera pulls back far enough to show her body, her clothing, and the scene she is in. This is NOT a close-up, NOT a portrait crop, NOT a selfie, NOT a headshot. The subject occupies a natural portion of a wider scene, in a vertical composition.
+
+<activeHairSentence>
+Scene: Environment: Ashley is on a football pitch during a match or training session; open grass, goalposts visible, players and crowd in the background, natural daylight, outdoor sports atmosphere. The camera is positioned 15-20 metres back. Ashley is a small figure on the pitch, not the foreground subject. The match and the pitch are the subject. She is one player among fifteen or twenty visible on the field. Ashley occupies no more than 10-15% of the total frame. Ashley is captured mid-action — running, sprinting toward the ball, making a tackle, calling for a pass, or celebrating. She is not standing still. She is not posing. She does not know the camera is there. Time of day: afternoon light. Season: summer. Activity: playing football. Ashley is wearing a football jersey and shorts in colours matching one of the teams visible on the pitch. She is dressed as a player, not a spectator. Shot distance: wide room shot. Camera awareness: Ashley is unaware of the camera — candid, natural, not posed. candid natural moment.
+
+Photorealistic cinematic lighting that suits the scene, environmental detail present and legible, single subject, no text or watermarks.
+
+NOTE: The identity core and active hair sentence above are placeholders.
+Their exact values depend on the profile.appearance string in the database row
+for device 6e1af2db-fb82-42db-9ced-b34f8af8cc74. The profile cannot be read
+without an authenticated server call. The structure above is exact; only those
+two interpolated values are unresolved.
+
+LOG EMITTED AT THIS POINT (lines 2797–2807)
+--------------------------------------------
+logger.info({
+  imageMode: "SCENE_MODE",
+  framingHint: "tall",
+  validationRequired: false,
+  providerMode: "fast",
+  vibePreview: "candid natural moment" (first 160 chars),
+  promptPreview: <fullPrompt first 280 chars>,
+}, "image-gen: pre-generation request")
+
+THEN (lines 2949–2961):
+logger.info({
+  mode: "fast",
+  imageMode: "SCENE_MODE",
+  size: "1024x1536",
+  quality: "medium",
+  cacheKey: <first 12 chars of SHA-256(fullPrompt + "|fast")>,
+  forceHairDiagnostic: null,
+  promptFull: <complete fullPrompt string>,
+  promptLength: <length>,
+}, "IMAGE REQUEST START — FULL PROMPT")
+
