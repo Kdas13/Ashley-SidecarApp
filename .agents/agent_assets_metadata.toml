@@ -209,3 +209,9 @@ id = "Qo32H1e9r1r0O53UYCX7l"
 uri = "file://audit_step8_response_handling.txt"
 type = "text"
 title = "Step 8 — Response handling"
+
+[[outputs]]
+id = "SY7Y8mzkHTPK8GTcHUpSI"
+uri = "file://exports/ashley-technical-snapshot-june-2026.txt"
+type = "text"
+title = "Ashley Technical Snapshot — June 2026"

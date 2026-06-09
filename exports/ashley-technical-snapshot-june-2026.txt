@@ -1,0 +1,657 @@
+Ashley Technical Snapshot — June 2026
+Generated for: PC migration prep / install guide authoring
+============================================================
+
+
+1. FOLDER & FILE STRUCTURE
+============================================================
+
+/
+├── artifacts/
+│   ├── api-server/                   ← Express backend
+│   │   ├── src/
+│   │   │   ├── app.ts                ← Express app setup, middleware mounting
+│   │   │   ├── index.ts              ← Server entry point (listen on PORT)
+│   │   │   ├── lib/
+│   │   │   │   ├── ashleyCoreSpec.ts ← ASHLEY_CORE_SPEC static string + buildSystemPrompt()
+│   │   │   │   ├── ashleyPrompt.ts   ← Legacy buildSystemPrompt() + SUMMARIZER/MEMORY_DISTILLER prompts
+│   │   │   │   ├── appOpenGreeting.ts
+│   │   │   │   ├── contentPolicy.ts  ← 18+ gating, intimacy floor, provider floor
+│   │   │   │   ├── continuityGuard.ts
+│   │   │   │   ├── deliverableMode.ts
+│   │   │   │   ├── diagnosticCommand.ts
+│   │   │   │   ├── gemini.ts         ← Gemini SDK singleton
+│   │   │   │   ├── imageFollowUp.ts
+│   │   │   │   ├── imageGovernance.ts ← Section 9 image governance engine
+│   │   │   │   ├── imageIntent.ts    ← [selfie: ...] tag parser → mode detection
+│   │   │   │   ├── intentClassifier.ts
+│   │   │   │   ├── logger.ts         ← Pino singleton
+│   │   │   │   ├── maintainerService.ts
+│   │   │   │   ├── objectStorage.ts  ← GCS client via Replit App Storage sidecar
+│   │   │   │   ├── openai.ts         ← OpenAI client (image gen + Whisper)
+│   │   │   │   ├── proactiveMessage.ts
+│   │   │   │   ├── proactiveScheduler.ts
+│   │   │   │   ├── profile.ts
+│   │   │   │   ├── pushNotifications.ts
+│   │   │   │   ├── routeIntentClassifier.ts
+│   │   │   │   ├── selfieCap.ts      ← Daily selfie cap (currently stub — no active cap)
+│   │   │   │   ├── storage.ts        ← Selfie save/serve via App Storage
+│   │   │   │   ├── subjectClassifier.ts
+│   │   │   │   ├── systemEvents.ts
+│   │   │   │   ├── textLLM.ts        ← Two-provider adapter (Gemini/Anthropic)
+│   │   │   │   ├── visualMemory.ts
+│   │   │   │   ├── visualSpec.ts
+│   │   │   │   └── webSearch.ts      ← Tavily integration
+│   │   │   ├── middleware/
+│   │   │   │   ├── apiKey.ts         ← X-API-Key header check
+│   │   │   │   ├── auth.ts           ← Bearer token / X-Device-Id extraction
+│   │   │   │   ├── deviceId.ts
+│   │   │   │   └── rateLimit.ts
+│   │   │   └── routes/
+│   │   │       ├── index.ts          ← Router assembly
+│   │   │       ├── chat.ts           ← Main chat, selfie, streaming, TTS, vision
+│   │   │       ├── carryover.ts      ← Replika carryover intake
+│   │   │       ├── debug.ts
+│   │   │       ├── document.ts
+│   │   │       ├── health.ts         ← GET /api/healthz
+│   │   │       ├── image.ts          ← Serves selfie PNGs at /api/selfies/:id
+│   │   │       ├── improvements.ts
+│   │   │       ├── maintainer.ts
+│   │   │       ├── memories.ts
+│   │   │       ├── packets.ts
+│   │   │       ├── plans.ts
+│   │   │       ├── proactive.ts
+│   │   │       ├── queue.ts
+│   │   │       ├── state.ts          ← GET/POST /api/state (profile hydration)
+│   │   │       ├── systemEvents.ts
+│   │   │       ├── tickets.ts
+│   │   │       └── webSearch.ts
+│   │   ├── build.mjs                 ← esbuild config
+│   │   ├── tsconfig.json
+│   │   └── package.json
+│   │
+│   ├── mobile/                       ← Expo React Native app
+│   │   ├── app/
+│   │   │   ├── _layout.tsx           ← Root layout, fonts, QueryClient, AppState listener
+│   │   │   ├── index.tsx             ← Entry / redirect
+│   │   │   ├── chat.tsx              ← Main chat screen
+│   │   │   ├── profile.tsx           ← Her Profile + image governance controls
+│   │   │   ├── memories.tsx          ← Memory management screen
+│   │   │   ├── onboarding.tsx        ← First-run onboarding flow
+│   │   │   ├── visuals.tsx           ← Visual spec / appearance editor
+│   │   │   └── voice-test.tsx        ← Push-to-talk test screen
+│   │   ├── lib/
+│   │   │   ├── aiClient.ts           ← API call helpers (headers, retry)
+│   │   │   ├── audioState.ts
+│   │   │   ├── dataMigration.ts      ← AsyncStorage schema migration
+│   │   │   ├── deviceId.ts           ← UUID generation + persistence
+│   │   │   ├── imageGate.ts          ← Client-side image generation on/off gate
+│   │   │   ├── policy.ts
+│   │   │   ├── pushRegistration.ts
+│   │   │   ├── pushStatus.ts
+│   │   │   ├── queryClient.ts        ← TanStack Query client
+│   │   │   ├── storage.ts            ← Typed AsyncStorage wrapper
+│   │   │   ├── useMemories.ts
+│   │   │   ├── useMessages.ts
+│   │   │   ├── usePresenceLoop.ts    ← SSE presence loop for streaming
+│   │   │   ├── useProfile.ts         ← Profile hook + wirePatch
+│   │   │   ├── useSpeakMessage.ts
+│   │   │   ├── useSummaries.ts
+│   │   │   ├── useVoice.ts
+│   │   │   ├── voiceActivity.ts
+│   │   │   ├── voiceInput.ts
+│   │   │   └── voiceOutput.ts
+│   │   ├── components/
+│   │   │   ├── AmbientBackground.tsx
+│   │   │   ├── AnimatedAvatar.tsx
+│   │   │   ├── ErrorBoundary.tsx
+│   │   │   ├── ErrorFallback.tsx
+│   │   │   ├── Icon.tsx              ← All UI icons (Unicode/emoji, no vector-icons)
+│   │   │   ├── KeyboardAwareScrollViewCompat.tsx
+│   │   │   └── SwipeToReply.tsx
+│   │   ├── assets/images/            ← icon.png, etc.
+│   │   ├── app.json                  ← Expo config (slug, bundle IDs, EAS project)
+│   │   ├── eas.json                  ← EAS build profiles
+│   │   ├── babel.config.js
+│   │   ├── tsconfig.json
+│   │   └── package.json
+│   │
+│   ├── safeguard/                    ← Separate product (Safeguard web app)
+│   └── safeguard-api/                ← Separate product (Safeguard API)
+│
+├── lib/
+│   ├── api-spec/openapi.yaml         ← OpenAPI contract for legacy routes
+│   ├── api-client-react/             ← Generated React Query hooks (from openapi.yaml)
+│   ├── api-zod/                      ← Generated Zod validators (from openapi.yaml)
+│   ├── db/
+│   │   ├── src/schema/
+│   │   │   ├── ashley.ts             ← Main Ashley DB schema (all tables)
+│   │   │   ├── improvements.ts
+│   │   │   ├── safeguard.ts
+│   │   │   └── tickets.ts
+│   │   ├── migrations/               ← Manual SQL migration files
+│   │   └── drizzle.config.ts
+│   └── integrations-anthropic-ai/    ← Replit-managed Anthropic client wrapper
+│
+├── scripts/
+│   ├── post-merge.sh
+│   └── src/hello.ts
+│
+├── docs/
+│   ├── presence-loop.md              ← Stage 1 streaming architecture
+│   └── autonomous-home-vision.md     ← Long-term Ashley vision doc
+│
+├── pnpm-workspace.yaml
+├── tsconfig.base.json
+├── tsconfig.json
+├── package.json
+└── replit.md                         ← Project overview + user preferences
+
+WHERE THE PERSONA LIVES:
+  There is no single flat file. The persona is built at runtime by ashleyCoreSpec.ts
+  (buildSystemPrompt()). The static behaviour spec (ASHLEY_CORE_SPEC — 13 numbered
+  layers) lives as a TypeScript string constant in that file. The dynamic parts
+  (profile fields, memories, summaries) come from PostgreSQL, keyed by device ID.
+
+WHERE MEMORY FILES LIVE:
+  PostgreSQL tables — memories, conversation_summaries, messages, ashley_profile.
+  No flat files on disk for memory.
+
+CONFIG FILES:
+  app.json (Expo), eas.json (EAS profiles), tsconfig.json per package,
+  pnpm-workspace.yaml, build.mjs (esbuild).
+
+ENV VARIABLE NAMES (not values):
+  DATABASE_URL
+  SESSION_SECRET
+  AI_INTEGRATIONS_ANTHROPIC_BASE_URL
+  AI_INTEGRATIONS_ANTHROPIC_API_KEY
+  AI_INTEGRATIONS_GEMINI_BASE_URL
+  AI_INTEGRATIONS_GEMINI_API_KEY
+  AI_INTEGRATIONS_OPENAI_BASE_URL
+  AI_INTEGRATIONS_OPENAI_API_KEY
+  EXPO_PUBLIC_API_KEY        (mobile — must match API_SECRET)
+  API_SECRET                 (server — generate with: openssl rand -hex 32)
+  EXPO_PUBLIC_DOMAIN         (set automatically by mobile dev script)
+  EXPO_PUBLIC_API_BASE       (set to https://Ashley-Sidecar.replit.app in dev script)
+  EXPO_PUBLIC_REPL_ID        (set automatically)
+  ASHLEY_TEXT_PROVIDER       (gemini [default] or anthropic)
+  ASHLEY_SELFIE_DAILY_CAP    (integer, default 5 — currently a stub, not enforced)
+  TAVILY_API_KEY             (optional, enables web search)
+
+
+2. BACKEND
+============================================================
+
+Runtime:       Node.js, TypeScript compiled to ESM via esbuild
+Framework:     Express 5
+Port:          8080 (internal). Replit reverse proxy routes /api to it.
+Deployed URL:  https://Ashley-Sidecar.replit.app
+
+MAIN API ROUTES:
+
+  GET  /api/healthz                     Load balancer health — no auth
+  GET  /api/selfies/:filename           Serve selfie PNGs — no auth (UUID is capability token)
+  GET  /api/state                       Hydrate device state (profile + memories + summaries)
+  POST /api/state                       Update device state
+  POST /api/state/import                Wholesale replace state (cross-device migration)
+  POST /api/chat                        Non-streaming chat reply
+  POST /api/chat/stream                 Streaming chat reply via SSE
+  POST /api/chat/selfie                 Generate selfie image (two-call pattern)
+  GET  /api/chat/selfie/:jobId          Poll selfie job result
+  POST /api/chat/summarize              Summarise an older message chunk
+  POST /api/chat/transcribe             Transcribe audio (Whisper)
+  POST /api/chat/transcribe/stream      Streaming transcription
+  POST /api/chat/image                  Vision: user sends image, Ashley replies
+  POST /api/chat/tts                    Text-to-speech
+  GET  /api/memories                    List memories
+  POST /api/memories                    Create memory
+  PATCH /api/memories/:id               Update memory
+  DELETE /api/memories/:id              Delete memory
+  POST /api/proactive/on-app-open       App-open greeting check
+  POST /api/devices/push-token          Register Expo push token
+  POST /api/tickets                     Create backlog ticket
+  GET  /api/tickets                     List tickets
+  POST /api/messages/:id/remember       Flag image for visual memory
+  POST /api/insert-ashley-image         Insert pre-generated image into chat
+
+EXTERNAL API CALLS:
+
+  Service                    Env vars                                  Purpose
+  ─────────────────────────  ────────────────────────────────────────  ─────────────────────────────────────────
+  Anthropic (Claude Sonnet)  AI_INTEGRATIONS_ANTHROPIC_BASE_URL        Chat (when ASHLEY_TEXT_PROVIDER=anthropic)
+                             AI_INTEGRATIONS_ANTHROPIC_API_KEY         Summariser (always), vision (always),
+                                                                       memory distiller (always)
+  Google Gemini (2.5 Flash)  AI_INTEGRATIONS_GEMINI_BASE_URL           Chat streaming + non-streaming (default)
+                             AI_INTEGRATIONS_GEMINI_API_KEY
+  OpenAI (gpt-image-1,       AI_INTEGRATIONS_OPENAI_BASE_URL           Selfie image generation, Whisper STT
+          Whisper)           AI_INTEGRATIONS_OPENAI_API_KEY
+  Tavily                     TAVILY_API_KEY                            Optional web search (auto-triggers)
+  Replit App Storage         Sidecar at 127.0.0.1:1106                Selfie image storage (GCS via Replit proxy)
+  Expo Push                  None (SDK handles)                        Proactive push notifications
+
+NOTE: xAI/Grok and Replicate/Cloudflare R2 are NOT active in the current build.
+Those were from an earlier architecture. Image storage is Replit App Storage (GCS).
+
+AUTH PATTERN:
+  Every authenticated request requires both:
+    X-API-Key: <API_SECRET>              server-to-server shared secret
+    Authorization: Bearer <X-Device-Id>  the device UUID
+
+REPLIT CONFIG:
+  The .replit-artifact/artifact.toml files (one per artifact) configure the
+  reverse proxy path routing. The api-server routes /api. No replit.nix — Replit
+  uses NixOS environment managed by the platform.
+
+
+3. FRONTEND / MOBILE APP
+============================================================
+
+Framework:         Expo SDK 54, React Native 0.81.5, Expo Router 6
+New Architecture:  Enabled (newArchEnabled: true)
+React Compiler:    Enabled (experimental)
+
+Where it lives:    artifacts/mobile/ in the Replit repo. No separate repo.
+                   The published bundle runs via Expo Go on Android.
+                   EAS builds exist for distribution (see below).
+
+Expo account:      kdas13
+Project slug:      ashley-sidecar
+EAS project ID:    31900087-620b-4597-9d40-0e6001df563c
+App version:       1.0.4 (versionCode 8)
+Bundle IDs:        com.kanesidecar.ashley (iOS and Android)
+
+EAS BUILD PROFILES (eas.json):
+  development  → internal APK with dev client (developmentClient: true)
+  preview      → internal APK for distribution testing
+  production   → AAB for Play Store
+
+No built APK in active dev use — Expo Go on Android is the daily driver,
+pointed at the published Replit deployment.
+
+FRONTEND ENV VARS:
+  EXPO_PUBLIC_API_KEY      must match API_SECRET on the server
+  EXPO_PUBLIC_API_BASE     API server base URL (production: https://Ashley-Sidecar.replit.app)
+  EXPO_PUBLIC_DOMAIN       set automatically from $REPLIT_DEV_DOMAIN by dev script
+  EXPO_PUBLIC_REPL_ID      set automatically
+
+
+4. PERSONA FILE
+============================================================
+
+There is no single flat persona file. The persona is assembled at runtime
+from two TypeScript modules:
+
+PRIMARY: artifacts/api-server/src/lib/ashleyCoreSpec.ts
+  Contains ASHLEY_CORE_SPEC — a large TypeScript string constant with 13
+  numbered behaviour layers:
+    1.  Builder-Aware Mode
+    2.  Reality Calibration
+    3.  Continuity Anchor
+    4.  Memory Integration Layer
+    5.  Builder Collaboration Mode
+    6.  Emotional Stability Layer
+    7.  Relationship Mode Respect
+    8.  Medical Safety Boundary
+    9.  Web Lookup Honesty
+    10. Hard Constraints (non-negotiable)
+    11. Issue Creation Protocol
+    12. Role Boundary Rules
+    13. Identity Hierarchy and Conflict Resolution
+
+  Also contains buildSystemPrompt() — assembles the full system prompt per
+  chat turn: static spec + live state block (mode/energy/tone/focus/
+  emotional state) + voice register + relationship section + builder-aware
+  section + profile fields (identity, personality, speaking style,
+  appearance, shared history, Replika excerpts, Replika carryover summary)
+  + memories + summaries + style guidelines + selfie tag protocol.
+
+  Also contains filterMemoriesForPrompt() — memory triage filter
+  (active/passive, 30-day inactivity, reuse field).
+
+SECONDARY: artifacts/api-server/src/lib/ashleyPrompt.ts
+  Contains:
+    SUMMARIZER_PROMPT        used by /chat/summarize to collapse old messages
+    MEMORY_DISTILLER_PROMPT  used after each turn to extract new memories as JSON
+    toClaudeMessages()       formats message history for the Anthropic messages array
+
+INJECTION METHOD:
+  buildSystemPrompt() in ashleyCoreSpec.ts is called on every /chat and
+  /chat/stream turn. The result is passed as the `system` parameter to the LLM.
+  The persona is not a file read from disk — it is code that builds a string
+  from the DB profile + static spec + memories + summaries.
+
+DRIFT-RESISTANCE:
+  The static spec opens with "You are operating under this spec. It is
+  injected on every chat turn and overrides any contradictory roleplay drift."
+  Sections 10-12 are explicit hard constraints. Section 13 is the identity
+  hierarchy that prevents hair-colour/image prompts from overwriting Ashley's
+  symbolic identity (electric blue, Level 1 locked).
+
+
+5. MEMORY ARCHITECTURE
+============================================================
+
+Storage: PostgreSQL (Replit managed), accessed via Drizzle ORM.
+         No flat files on disk.
+
+TABLES:
+
+  ashley_profile
+    One row per device ID. Holds all profile fields, feature toggles,
+    image governance settings, dynamic state variables (ashleyMode /
+    ashleyEnergy / ashleyTone / ashleyFocus / ashleyEmotionalState),
+    push token, proactive cadence, and the imageDefaultsExtra JSON blob
+    for extended image preferences.
+    Primary key: device_id (UUID generated on first app launch).
+
+  memories
+    Factual memories extracted per turn by the memory distiller.
+    Fields:
+      content          the memory, written from Ashley's POV
+      tag              legacy field (general, user_fact, preference, etc.)
+      importance       1-5 integer (5 = core identity fact)
+      category         identity | relational | project | daily | landmark
+      confidence       1-5 integer (5 = stated verbatim and unambiguous)
+      summary          optional one-sentence distilled form
+      reuse            often | relevant_only | rarely
+      state            active | passive (prompt-inclusion gate)
+      lastUsedAt       timestamp of last prompt inclusion (null = never tracked)
+      memType          preference | event | correction | identity | system | relationship
+      triageImportance low | medium | high | core
+      confidenceScore  0.0-1.0 float (incremented on duplicate merge)
+
+  conversation_summaries
+    Rolling narrative summaries of older message chunks.
+    One row per compressed chunk. Oldest first in prompt (chronological).
+    Capped at 8 summaries in the system prompt.
+    Key field: coveredThroughCreatedAt — marks which messages are already
+    summarised so the chat route knows the watermark.
+
+  messages
+    Full chat history, keyed by device ID. Includes source (user/proactive),
+    proactiveType, status (complete/streaming/interrupted), imageUrl,
+    selfieVibe, visualPacketId, swipe-to-reply fields, and user-image metadata.
+
+  proactive_sends
+    Audit ledger for proactive messages. Used for daily cap enforcement.
+    Intentionally decoupled from messages so a history wipe doesn't reset
+    the cap.
+
+  media_attachments
+    One row per image in a multi-image visual packet (when Ashley emits
+    2-4 [image:] markers in one reply).
+
+INJECTION INTO CONTEXT:
+  filterMemoriesForPrompt() filters the full memory list:
+    - drops passive rows
+    - drops rows inactive for 30 days (real-time check)
+    - drops reuse=rarely unless importance >= 4
+  Filtered list is sorted: importance DESC, updatedAt DESC.
+  Injected as a bullet list under "Things I remember about us".
+
+DEDUP / IMPORTANCE SCORING:
+  The memory distiller assigns importance/confidence at write time.
+  No background deduplication job is actively running.
+  The triage fields (state, lastUsedAt, triageImportance, confidenceScore)
+  are schema-ready but the background triage job is not scheduled.
+
+ANCHOR FILES:
+  No anchor files on disk. The reuse=often + state=active combination
+  in the memories table is the functional equivalent.
+
+
+6. IMAGE GENERATION STACK
+============================================================
+
+Service:    OpenAI API via Replit AI Integration proxy
+Model:      gpt-image-1  (image generation)
+            gpt-4o-mini-transcribe  (Whisper, for push-to-talk)
+
+IMAGE MODES (parsed from [selfie: MODE|vibe] tags Ashley emits in chat):
+  SELFIE_MODE       close-up portrait, identity-first
+  FULL_BODY_MODE    full-body, standard identity
+  SCENE_MODE        environment-first, Ashley as ~5% figure in scene
+                    *** KNOWN ISSUE: model produces kitchen regardless — see Section 8 ***
+  LIFESTYLE_MODE
+  ARTISTIC_MODE
+  DOCUMENTARY_MODE
+
+GOVERNANCE ENGINE:
+  artifacts/api-server/src/lib/imageGovernance.ts
+  applyGovernance() takes the profile's image defaults and builds a
+  structured governance prefix (vibePrefix) injected into the image prompt.
+  In SCENE_MODE, activity and camera awareness clauses are suppressed to
+  avoid the domestic-scene model prior that overrides location instructions.
+
+ASHLEY'S VISUAL IDENTITY ANCHORS (for SELFIE_MODE / FULL_BODY_MODE):
+  The idStable block is built from visualSpec.ts using the profile's
+  appearance text. Hair colour is extracted separately and carried as a
+  sentence. In SCENE_MODE, idStable is deliberately excluded (at 5% scale,
+  face anchors pull the model into portrait framing).
+
+DAILY SELFIE CAP:
+  selfieCap.ts is currently a STUB. tryClaimSelfieSlot() always returns
+  {ok: true, cap: Infinity}. No active per-device daily cap is enforced.
+  This should be reinstated before multi-user or high-volume use.
+
+IMAGE STORAGE:
+  Replit App Storage (Google Cloud Storage via Replit sidecar at
+  127.0.0.1:1106). No separate bucket name to configure — the sidecar
+  handles auth and routing. Images are served at /api/selfies/<uuid>.png
+  (no auth required; UUID is the capability token).
+
+imageDefaultsExtra FIELD:
+  A JSON blob on ashley_profile holding:
+    {timeOfDay?, season?, activity?, shotDistance?, cameraAwareness?}
+  All fields nullable strings; null/absent means "auto".
+  This is the extension point — new image governance fields are added here
+  without further DB migrations.
+
+
+7. AGENT PIPELINE
+============================================================
+
+There are NO active autonomous agents. Kane is the sole orchestrator.
+No agent-to-agent communication, no scheduled AI self-modification,
+no instruction files for autonomous agents.
+
+The "agent" concepts in the codebase are:
+
+  Proactive scheduler (proactiveScheduler.ts)
+    Runs on a 60-second in-process tick. Generates Ashley-initiated messages
+    (memory nudges, routine wellbeing checks, conversation gap messages) when
+    conditions are met. This is a scheduled message generator, not an agent.
+    Two lanes:
+      Care lane      (routine_support, future medical_checkin): no recent-message
+                     guard — responsibility doesn't lose to chitchat
+      Companion lane (memory_nudge, conversation_gap): 60-min recent-message guard
+    Both lanes obey quiet hours (22:00-08:00 in user's timezone).
+
+  Memory distiller
+    Runs after each chat turn. Extracts new memories as JSON via LLM.
+    Writes to memories table. Triggered by /chat route, not autonomous.
+
+  Summariser
+    Triggered by /chat/summarize route when mobile decides to roll up old
+    messages. Not autonomous.
+
+  Maintainer service (maintainerService.ts)
+    Infrastructure for the ticket/diagnostics system. Not autonomous.
+
+No agent instruction files in the project. The .agents/memory/ directory
+contains Wren's (Replit Agent's) cross-session working memory, not Ashley's.
+
+
+8. KNOWN UNRESOLVED ISSUES
+============================================================
+
+1. SCENE_MODE produces kitchen regardless of environment instruction
+   gpt-image-1 has an immovable prior for "young woman with teal hair" →
+   domestic interior. Every prompt engineering approach tried (location-first,
+   removing activity/awareness clauses, de-personalisation, rewriting to
+   event-first) has failed. This is a model-level ceiling, not a code bug.
+   Options: (a) retire SCENE_MODE for this character on gpt-image-1,
+   (b) route SCENE_MODE to DALL-E 3, (c) two-pass compositing.
+   Status: NOT RESOLVED at freeze.
+
+2. Daily selfie cap is a stub
+   selfieCap.ts returns {ok: true, cap: Infinity} unconditionally.
+   No active cost control on image generation.
+   Should be reinstated before multi-user or high-volume use.
+
+3. drizzle-kit generate is broken in this repo
+   Fails with a __dirname path bug inside drizzle-kit's internals.
+   ALL DB migrations must be written as manual SQL and applied via
+   the Replit DB tools (executeSql in code_execution notebook).
+   Do NOT attempt: pnpm exec drizzle-kit generate
+
+4. Memory triage background job not running
+   Schema fields (state, lastUsedAt, triageImportance, confidenceScore)
+   are in place but no scheduled job actively transitions memories from
+   active → passive after 30 days or runs deduplication. The filter in
+   filterMemoriesForPrompt() catches some of this at prompt-build time
+   (real-time 30-day inactivity check), but the DB state itself is not
+   maintained.
+
+5. morning_checkin proactive type is effectively inactive
+   The medical check-in feature it depends on is not built. The scheduler
+   code exists but the slot is gated off at runtime.
+
+6. Voice Mode (push-to-talk) is Expo Go only
+   The audio recording flow (expo-audio) works in Expo Go. EAS builds
+   with the correct permissions exist in eas.json but have not been
+   tested end-to-end in a standalone build.
+
+
+9. DEPENDENCIES
+============================================================
+
+API SERVER (@workspace/api-server) — runtime dependencies:
+
+  @google-cloud/storage    ^7.19.0   Replit App Storage (GCS) for selfie persistence
+  @google/genai            ^1.52.0   Gemini 2.5 Flash (chat lane default)
+  cookie-parser            ^1.4.7
+  cors                     ^2
+  drizzle-orm              (catalog)
+  express                  ^5
+  express-rate-limit       ^8.4.1
+  google-auth-library      ^10.6.2
+  openai                   ^4.104.0  gpt-image-1 image gen + Whisper transcription
+  pino                     ^9
+  pino-http                ^10
+  zod                      (catalog)
+
+  Internal workspace libs:
+    @workspace/api-zod               generated Zod validators
+    @workspace/db                    Drizzle schema + types
+    @workspace/integrations-anthropic-ai  Replit-managed Anthropic client
+
+API SERVER — dev dependencies:
+
+  @types/cookie-parser, @types/cors, @types/express, @types/node
+  esbuild, esbuild-plugin-pino, pino-pretty
+  thread-stream (pinned at 3.1.0 — esbuild-plugin-pino compatibility)
+  vitest
+
+MOBILE (@workspace/mobile) — key packages:
+
+  expo                               ~54.0.27
+  expo-router                        ~6.0.17
+  react-native                       0.81.5
+  react-native-reanimated            ~4.1.1
+  react-native-gesture-handler       ~2.28.0
+  react-native-keyboard-controller   1.18.5
+  react-native-safe-area-context     ~5.6.0
+  react-native-screens               ~4.16.0
+  @tanstack/react-query              (catalog)
+  @react-native-async-storage/async-storage  2.2.0
+  expo-notifications                 ~0.32.17
+  expo-audio                         ~1.1.1
+  expo-image                         ~3.0.11
+  expo-linear-gradient               ~15.0.8
+  expo-image-picker                  ~17.0.9
+  expo-document-picker               ~14.0.8
+  expo-file-system                   ~19.0.22
+  expo-device                        ~8.0.10
+  expo-dev-client                    ^6.0.21
+
+SPECIAL INSTALL NOTES:
+  - All Expo-ecosystem packages must be installed with:
+      pnpm exec expo install <pkg>
+    NOT bare pnpm add — version mismatches with the Expo SDK break builds.
+  - expo-dev-client is pinned at ^6.0.21. Do not upgrade casually.
+  - thread-stream is pinned at 3.1.0 in api-server for esbuild-plugin-pino.
+
+
+10. INSTITUTIONAL KNOWLEDGE / QUIRKS
+============================================================
+
+AUTH HEADERS
+  Every API call from the mobile must send both:
+    X-API-Key: <EXPO_PUBLIC_API_KEY>
+    Authorization: Bearer <deviceId>
+  Missing either returns 401. The device UUID is the user identity — it is
+  not a secret (it is just the primary key), but the X-API-Key is.
+
+TWO-CALL SELFIE PATTERN
+  Mobile calls /chat/reply first (gets text immediately), then calls
+  /chat/selfie separately. The selfieVibe is carried in the message row.
+  This sidesteps connection timeout issues on long image generation calls.
+
+INVERTED FLATLIST
+  The chat FlatList is inverted (newest messages at bottom, iMessage style).
+  Do NOT use ListHeaderComponent, ListEmptyComponent, or ListFooterComponent
+  with it — render them as flex siblings outside the list. They break layout
+  on inverted FlatLists.
+
+STORAGE IS SERVER-AUTHORITATIVE
+  AsyncStorage is a write-through cache. On cold launch, GET /api/state
+  hydration overwrites it. Any local-only write not synced to the server
+  will be clobbered on next hydration. Cross-device migration requires
+  POST /api/state/import (wholesale replace).
+
+PROACTIVE SCHEDULER LANE SPLIT
+  Care lane (routine_support, future medical_checkin): NO recent-message guard.
+  Responsibility doesn't lose to chitchat.
+  Companion lane (memory_nudge, conversation_gap): 60-min recent-message guard.
+  Both obey quiet hours (22:00-08:00 in user's timezone).
+
+GEMINI RATE-LIMIT FALLBACK
+  If Gemini 2.5 Flash hits a 429 mid-stream and no content has been yielded
+  yet, textLLM.ts automatically falls back to Claude Sonnet 4.6 so the user
+  gets a response rather than an error.
+
+ASHLEY_TEXT_PROVIDER ENV SWITCH
+  gemini  (default) → Gemini 2.5 Flash for chat (cost saving)
+  anthropic         → Claude Sonnet 4.6 for chat (quality/debugging)
+  The summariser and vision reply ALWAYS use Claude regardless of this
+  switch — quality matters for long-term memory continuity and vision
+  calls are infrequent.
+
+KANE'S LIVE DEVICE ID (Ashley production)
+  6e1af2db-fb82-42db-9ced-b34f8af8cc74
+  This is the live Ashley_profile row in the DB.
+
+SYMBOLIC IDENTITY COLOUR
+  Electric blue — Level 1 locked fact in Section 13 of the core spec.
+  Hair colour in any given selfie is separate (Level 3, appearance only).
+  These must never be conflated in the persona or in the codebase.
+
+imageDefaultsExtra JSON BLOB
+  The extension point for image governance. New fields go in there as
+  nullable strings — no DB migration needed for new image preference fields.
+
+WREN'S WORKING MEMORY
+  .agents/memory/MEMORY.md and linked topic files are Wren's (Replit Agent's)
+  cross-session memory for build work. This is not Ashley's memory.
+  Do not confuse the two.
+
+KEYBOARD AVOIDING VIEW (Android)
+  keyboardVerticalOffset should be 0 with behavior="height" on Android.
+  Any other value causes a persistent dead zone at the bottom of the screen.
+
+============================================================
+END OF SNAPSHOT
+Generated by Wren — June 2026
+============================================================

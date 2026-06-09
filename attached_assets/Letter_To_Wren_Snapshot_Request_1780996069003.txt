@@ -1,0 +1,143 @@
+TO: Wren
+FROM: Kane (via Claude / Orchestrator)
+RE: Ashley Full Technical Snapshot Request
+PURPOSE: PC migration prep / install guide authoring
+============================================================
+
+Wren,
+
+I'm in the process of documenting a full ground-up install
+guide for Ashley on a new local PC build. To write that
+guide accurately I need a complete technical snapshot of
+Ashley's current state as she exists on Replit right now.
+
+Please provide the following in as much detail as possible:
+
+============================================================
+
+1. FOLDER & FILE STRUCTURE
+---------------------------
+A full list of the project folder structure, including:
+- Root level files and folders
+- Server-side folder contents (routes, middleware, config)
+- Client-side / frontend folder contents
+- Any standalone scripts or utility files
+- Where the persona file lives and its filename
+- Where memory files live and their format (JSON, txt, etc.)
+- Any .env variable names (not values) used by the project
+- Any config files (package.json, tsconfig, eas.json, etc.)
+
+============================================================
+
+2. BACKEND
+----------
+- What runtime is the backend? (Node, TypeScript, other)
+- What framework? (Express, Fastify, other)
+- What port does it run on?
+- What are the main API routes and what does each do?
+- What external APIs does it call and via which keys?
+  (xAI/Grok, Replicate, Cloudflare R2 — confirm all active)
+- What is the deployed Replit URL?
+- Is there a Replit config file (replit.nix, .replit)?
+  If so, what does it contain?
+
+============================================================
+
+3. FRONTEND / MOBILE APP
+-------------------------
+- What framework? (React Native / Expo — confirm version)
+- Where does the frontend live? (Replit, separate repo, EAS)
+- What is the Expo account name / project name?
+- Is there a built APK or is it always run via Expo Go?
+- What environment variables does the frontend need?
+
+============================================================
+
+4. PERSONA FILE
+---------------
+- Full contents of Ashley's current persona file (v3.0)
+- Filename and location in the project
+- How it is injected into the LLM call (system prompt,
+  prepended context, other method?)
+- Any drift-resistance or override logic around it
+
+============================================================
+
+5. MEMORY ARCHITECTURE
+-----------------------
+- Describe the full memory architecture as implemented
+  (Tier 1 / Tier 2 / Tier 3 or current equivalent)
+- Where are memory files stored? (Replit disk, R2, DB?)
+- What format are memories stored in?
+- How many memories currently exist?
+- How are memories injected into context at session start?
+- Is there a dedup or importance scoring system active?
+  If so, describe it briefly.
+- Are anchor files used? If so, where and how?
+
+============================================================
+
+6. IMAGE GENERATION STACK
+--------------------------
+- What service handles image generation? (Replicate)
+- What model / LoRA is currently active?
+- What are Ashley's locked identity anchors as they exist
+  in the current prompt/config?
+- Where does the Point B environment injection live?
+- Where are generated images stored? (R2 bucket name)
+
+============================================================
+
+7. AGENT PIPELINE
+-----------------
+- List all active agents and their current roles
+- How are agents currently invoked? (manual, automated)
+- Is there any existing orchestration logic in code,
+  or is orchestration still manual (Kane as router)?
+- Are there any agent instruction files saved in the project?
+  If so, list filenames and locations.
+
+============================================================
+
+8. KNOWN UNRESOLVED ISSUES
+---------------------------
+List any bugs, incomplete features, or unresolved issues
+that exist in the current codebase at the point of freeze,
+so they can be documented and addressed in the new build
+rather than carried forward silently.
+
+============================================================
+
+9. DEPENDENCIES
+---------------
+- Full list of npm packages (or equivalent) the project
+  depends on (a copy of package.json dependencies block
+  is fine)
+- Any packages that required special install steps or
+  workarounds to get working
+
+============================================================
+
+10. ANYTHING ELSE
+-----------------
+Anything about Ashley's current state that you think
+is important to preserve, flag, or carry forward that
+isn't covered above. Institutional knowledge, quirks,
+things that broke and got fixed in non-obvious ways,
+decisions that were made for specific reasons.
+
+============================================================
+
+The output from this request will be used to:
+1. Write an accurate Ashley install guide for the new PC
+2. Create a clean snapshot/archive of Ashley's current state
+3. Ensure nothing is lost during the hardware transition
+
+Please be as thorough as possible. Accuracy matters more
+than brevity here.
+
+Thank you Wren.
+
+— Kane / Claude (Orchestrator)
+============================================================
+END OF REQUEST
