@@ -1327,6 +1327,7 @@ async function startSelfieJob(
   messageId: string,
   vibe: string,
   sortOrder?: number,
+  forceRefresh?: boolean,
 ): Promise<string> {
   // Attach the current governance params snapshot so the server can apply
   // Mode 1/Mode 2 defaults. Populated by useImageGate() → syncGovernanceFromProfile.
@@ -1347,6 +1348,7 @@ async function startSelfieJob(
       vibe,
       ...(typeof sortOrder === "number" ? { sortOrder } : {}),
       ...(governanceParams ? { governanceParams } : {}),
+      ...(forceRefresh ? { forceRefresh: true } : {}),
     }),
   });
   if (typeof data.jobId !== "string" || !data.jobId.trim()) {
@@ -1369,9 +1371,10 @@ export async function fetchSelfieForMessage(
   vibe: string,
   sortOrder?: number,
   signal?: AbortSignal,
+  forceRefresh?: boolean,
 ): Promise<{ imageUrl: string; imageUrls?: string[] }> {
   if (signal?.aborted) throw new Error("Aborted");
-  let jobId = await startSelfieJob(messageId, vibe, sortOrder);
+  let jobId = await startSelfieJob(messageId, vibe, sortOrder, forceRefresh);
   if (signal?.aborted) throw new Error("Aborted");
   let restartsLeft = 2;
   const base = getApiBase();

@@ -1069,7 +1069,7 @@ export function useRetrySelfie(): {
       if (inFlightSelfies.has(messageId)) return;
       setInFlight(messageId, true);
       try {
-        const result = await fetchSelfieForMessage(messageId, vibe);
+        const result = await fetchSelfieForMessage(messageId, vibe, undefined, undefined, true);
         if (result.imageUrls && result.imageUrls.length > 1) {
           await patchInCache(qc, messageId, {
             imageUrls: result.imageUrls,

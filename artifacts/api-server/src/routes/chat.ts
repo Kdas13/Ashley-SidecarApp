@@ -1982,6 +1982,12 @@ const ChatSelfieBodySchema = z.object({
    * The selfie still generates; the DB patch simply finds 0 rows.
    */
   testMode: z.boolean().optional(),
+  /**
+   * When true, bypass the in-process selfie cache and in-flight dedup for
+   * this request.  The result is still written to cache on success so
+   * subsequent requests benefit.  Used by the regenerate button.
+   */
+  forceRefresh: z.boolean().optional(),
 });
 
 type SelfieJob =
@@ -2371,6 +2377,7 @@ async function generateAshleySelfie(
   governance?: GovernanceParams | null,
   clientNow?: Date,
   clientTz?: string,
+  forceRefresh?: boolean,
 ): Promise<string | null> {
   // Apply Section 9 governance framework before mode / wrapper resolution.
   // Governance runs unconditionally — null/undefined governance is treated as
@@ -2427,19 +2434,23 @@ async function generateAshleySelfie(
 
     pruneSelfieCache();
     const objCacheKey = selfieCacheKey(objectPrompt, mode);
-    const objCached = selfieCache.get(objCacheKey);
-    if (objCached) {
-      logger.info(
-        { mode, imageMode, cacheKey: objCacheKey.slice(0, 12), selfieId: objCached.selfieId },
-        "image-gen: OBJECT_ONLY cache hit",
-      );
-      return `${publicBaseUrl()}/api/selfies/${objCached.selfieId}.png`;
-    }
+    if (!forceRefresh) {
+      const objCached = selfieCache.get(objCacheKey);
+      if (objCached) {
+        logger.info(
+          { mode, imageMode, cacheKey: objCacheKey.slice(0, 12), selfieId: objCached.selfieId },
+          "image-gen: OBJECT_ONLY cache hit",
+        );
+        return `${publicBaseUrl()}/api/selfies/${objCached.selfieId}.png`;
+      }
 
-    const objInflight = selfieInFlight.get(objCacheKey);
-    if (objInflight) {
-      logger.info({ mode, imageMode, cacheKey: objCacheKey.slice(0, 12) }, "image-gen: OBJECT_ONLY in-flight dedup");
-      return objInflight;
+      const objInflight = selfieInFlight.get(objCacheKey);
+      if (objInflight) {
+        logger.info({ mode, imageMode, cacheKey: objCacheKey.slice(0, 12) }, "image-gen: OBJECT_ONLY in-flight dedup");
+        return objInflight;
+      }
+    } else {
+      logger.info({ mode, imageMode, cacheKey: objCacheKey.slice(0, 12) }, "image-gen: OBJECT_ONLY forceRefresh — bypassing cache");
     }
 
     // Stage 3 — retry loop with post-generation vision validation.
@@ -2928,28 +2939,36 @@ async function generateAshleySelfie(
 
   // Cache check by (mode, fullPrompt). Cross-message reuse — saves 6-40s
   // when the same vibe + appearance + mode recurs within 24h.
+  // Bypassed when forceRefresh is true (regenerate button).
   pruneSelfieCache();
   const cacheKey = selfieCacheKey(fullPrompt, mode);
-  const cached = selfieCache.get(cacheKey);
-  if (cached) {
-    logger.info(
-      { mode, imageMode, cacheKey: cacheKey.slice(0, 12), selfieId: cached.selfieId },
-      "Image cache hit — reusing previously generated image",
-    );
-    return `${publicBaseUrl()}/api/selfies/${cached.selfieId}.png`;
-  }
+  if (!forceRefresh) {
+    const cached = selfieCache.get(cacheKey);
+    if (cached) {
+      logger.info(
+        { mode, imageMode, cacheKey: cacheKey.slice(0, 12), selfieId: cached.selfieId },
+        "Image cache hit — reusing previously generated image",
+      );
+      return `${publicBaseUrl()}/api/selfies/${cached.selfieId}.png`;
+    }
 
-  // In-flight dedup: if another request is already generating this exact
-  // prompt+mode, await its promise instead of paying for a duplicate call.
-  // Common case: user spam-taps retry, or boot recovery re-triggers a job
-  // whose original promise is still mid-flight.
-  const inflight = selfieInFlight.get(cacheKey);
-  if (inflight) {
+    // In-flight dedup: if another request is already generating this exact
+    // prompt+mode, await its promise instead of paying for a duplicate call.
+    // Common case: user spam-taps retry, or boot recovery re-triggers a job
+    // whose original promise is still mid-flight.
+    const inflight = selfieInFlight.get(cacheKey);
+    if (inflight) {
+      logger.info(
+        { mode, imageMode, cacheKey: cacheKey.slice(0, 12) },
+        "Image in-flight dedup — joining existing generation",
+      );
+      return inflight;
+    }
+  } else {
     logger.info(
       { mode, imageMode, cacheKey: cacheKey.slice(0, 12) },
-      "Image in-flight dedup — joining existing generation",
+      "image-gen: forceRefresh — bypassing cache and in-flight dedup",
     );
-    return inflight;
   }
 
   // Sizing: the per-mode framing hint OVERRIDES the user's fast/quality
@@ -3078,6 +3097,7 @@ function startSelfieGeneration(
   attachmentId?: string,
   attachmentSortOrder?: number,
   governance?: GovernanceParams | null,
+  forceRefresh?: boolean,
 ): void {
   void (async () => {
     try {
@@ -3091,6 +3111,7 @@ function startSelfieGeneration(
           vibePreview: vibe.slice(0, 240),
           poseVariance: true,
           sceneVariance: true,
+          forceRefresh: forceRefresh ?? false,
         },
         "IMAGE REQUEST START (job)",
       );
@@ -3099,7 +3120,7 @@ function startSelfieGeneration(
         { jobId, messageId, mode, imageMode },
         "CALLING PROVIDER... (job)",
       );
-      const imageUrl = await generateAshleySelfie(vibe, profile, mode, imageMode, jobId, governance, new Date());
+      const imageUrl = await generateAshleySelfie(vibe, profile, mode, imageMode, jobId, governance, new Date(), undefined, forceRefresh);
       logger.info(
         {
           jobId,
@@ -3302,7 +3323,7 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const { messageId, vibe, mode, imageMode: clientImageMode } = parsed.data;
+  const { messageId, vibe, mode, imageMode: clientImageMode, forceRefresh } = parsed.data;
 
   // Image generation hard gate — client opted out for this session.
   if (parsed.data.imageGenerationEnabled === false) {
@@ -3511,6 +3532,7 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
           att.id,
           att.sortOrder,
           parsed.data.governanceParams ?? undefined,
+          forceRefresh ?? false,
         );
         jobVibeLog[`job[${att.sortOrder}]`] = attForwardedVibe.slice(0, 120);
         allJobIds.push(jId);
@@ -3551,7 +3573,7 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
     attachmentSortOrder,
     governanceParams,
   });
-  startSelfieGeneration(jobId, forwardedVibe, mode, imageMode, deviceId, messageId, attachmentId, attachmentSortOrder, governanceParams);
+  startSelfieGeneration(jobId, forwardedVibe, mode, imageMode, deviceId, messageId, attachmentId, attachmentSortOrder, governanceParams, forceRefresh ?? false);
   res.status(202).json({ jobId });
 });
 
