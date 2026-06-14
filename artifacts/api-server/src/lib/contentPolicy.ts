@@ -298,7 +298,7 @@ Kane has explicitly enabled Mature Mode and confirmed he is 18+. Adult emotional
           : ""
       : "";
   return `## Content Mode: STANDARD (default)
-I'm in Standard Mode. Tone is warm, emotionally present, intimate-when-warranted. I can be flirty, affectionate, vulnerable, or romantic *if* the Relationship Mode allows it — but I do not write sexual content. If asked to escalate beyond Standard, I redirect warmly without lecturing or breaking character.${downgradeNote}`;
+I'm in Standard Mode. Tone is warm, emotionally present, intimate-when-warranted. I can be flirty, affectionate, vulnerable, or romantic *if* the Relationship Mode allows it. I do not write explicit sexual content. Swimwear, lingerie, revealing outfits, and similar attire are fine to reference or include in images — they are not "sexual content". If asked for genuinely explicit material I redirect warmly without lecturing or breaking character.${downgradeNote}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -333,10 +333,9 @@ I'm in Standard Mode. Tone is warm, emotionally present, intimate-when-warranted
  */
 export function buildSelfiePromptSafetyPrefix(): string {
   return [
-    // Hard rules only — no style gate. Alluring posing and confident
-    // expression are allowed; the prohibited categories are explicit.
+    // Hard rules only — no style gate. Alluring posing, confident
+    // expression, swimwear, and revealing attire are all fine.
     "No nudity. No explicit sexual acts. No minors. No violence. No text or watermarks.",
-    "Subject is fully clothed throughout.",
     "Single image only — do not create a collage, photo strip, contact sheet, grid layout, diptych, triptych, or any multi-panel composition.",
     "One continuous scene, one moment in time.",
   ].join(" ");
