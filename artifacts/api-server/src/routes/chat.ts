@@ -3323,7 +3323,8 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const { messageId, vibe, mode, imageMode: clientImageMode, forceRefresh } = parsed.data;
+  const { messageId, vibe, mode, imageMode: clientImageMode } = parsed.data;
+  let forceRefresh = parsed.data.forceRefresh ?? false;
 
   // Image generation hard gate — client opted out for this session.
   if (parsed.data.imageGenerationEnabled === false) {
@@ -3334,10 +3335,11 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
   // testMode skips ownership — the profile "Generate test image" button has
   // no real chat message. The DB patch later finds 0 rows and is a no-op.
   if (!parsed.data.testMode) {
-    // Confirm the message belongs to this device — prevents using another
-    // device's id with our own deviceId via header.
+    // Confirm the message belongs to this device and fetch imageUrl in the
+    // same query — if the row already has an image this is a regenerate call,
+    // so we auto-set forceRefresh regardless of what the client sent.
     const owns = await db
-      .select({ id: messagesTable.id })
+      .select({ id: messagesTable.id, imageUrl: messagesTable.imageUrl })
       .from(messagesTable)
       .where(
         and(
@@ -3349,6 +3351,10 @@ router.post("/chat/selfie", async (req, res): Promise<void> => {
     if (owns.length === 0) {
       res.status(404).json({ error: "Message not found" });
       return;
+    }
+    if (owns[0]?.imageUrl) {
+      forceRefresh = true;
+      req.log.info({ messageId }, "image: message already has imageUrl — auto forceRefresh");
     }
   }
 
