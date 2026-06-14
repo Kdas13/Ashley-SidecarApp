@@ -63,6 +63,7 @@ externalPort = 4200
 [userenv.shared]
 EXPO_PUBLIC_API_KEY = "fe9a7925f7760de79e4bd40df25122f80ad4a8bb5d0ba7613ffa85c38f664226"
 API_AUTH_KEY = "fe9a7925f7760de79e4bd40df25122f80ad4a8bb5d0ba7613ffa85c38f664226"
+ASHLEY_IMAGE_PROVIDER = "pollo"
 
 [userenv.development]
 ASHLEY_MATURE_MODE_AVAILABLE = "true"

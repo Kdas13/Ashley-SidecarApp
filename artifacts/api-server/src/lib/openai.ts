@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { generateImageWithPollo } from "./pollo.js";
 
 if (!process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"]) {
   throw new Error(
@@ -261,6 +262,9 @@ export async function generateImageBase64(
   size: "1024x1024" | "1024x1536" | "1536x1024" = "1024x1024",
   quality: "low" | "medium" | "high" = "low",
 ): Promise<string> {
+  if (process.env["ASHLEY_IMAGE_PROVIDER"] === "pollo") {
+    return generateImageWithPollo(prompt, size, quality);
+  }
   // gpt-image-1 quality knob is the biggest speed lever:
   //   low    ≈ 6–10s   (fast mode default)
   //   medium ≈ 15–20s  (the implicit "auto" default)
