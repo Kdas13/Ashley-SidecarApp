@@ -352,7 +352,7 @@ export default function ChatScreen(): React.JSX.Element {
   // renders. The setVoicePartial call is just for UI redraw.
   const voicePartialRef = useRef("");
 
-  const handleMicPressIn = useCallback(async () => {
+  const handleMicStart = useCallback(async () => {
     setVoiceError(null);
     setVoicePartial("");
     voicePartialRef.current = "";
@@ -374,7 +374,7 @@ export default function ChatScreen(): React.JSX.Element {
     }
   }, [voice, tts]);
 
-  const handleMicPressOut = useCallback(async () => {
+  const handleMicStop = useCallback(async () => {
     let audio;
     try {
       audio = await voice.stop();
@@ -383,7 +383,6 @@ export default function ChatScreen(): React.JSX.Element {
       return;
     }
     if (!audio) {
-      // Tap (not hold) or empty clip — nothing to do.
       return;
     }
     try {
@@ -417,13 +416,22 @@ export default function ChatScreen(): React.JSX.Element {
     }
   }, [voice, transcribeMutation]);
 
+  // Tap-to-talk toggle: first tap starts recording, second tap stops and sends.
+  const handleMicToggle = useCallback(async () => {
+    if (voice.state === "recording") {
+      await handleMicStop();
+    } else {
+      await handleMicStart();
+    }
+  }, [voice.state, handleMicStart, handleMicStop]);
+
   // Auto-stop recording at the hard ceiling so the user can't accidentally
-  // leave the mic open. We just call the same handler the press-out path uses.
+  // leave the mic open.
   useEffect(() => {
     if (voice.state !== "recording") return;
     if (voice.elapsedMs < VOICE_MAX_DURATION_MS) return;
-    void handleMicPressOut();
-  }, [voice.state, voice.elapsedMs, handleMicPressOut]);
+    void handleMicStop();
+  }, [voice.state, voice.elapsedMs, handleMicStop]);
 
   // Stable references for the presence-loop dispatch + watchdog hooks
   // so we don't churn the streamHooks memo every keystroke.
@@ -1222,8 +1230,7 @@ export default function ChatScreen(): React.JSX.Element {
             blurOnSubmit={false}
           />
           <Pressable
-            onPressIn={handleMicPressIn}
-            onPressOut={handleMicPressOut}
+            onPress={handleMicToggle}
             disabled={
               streamMutation.isPending ||
               sendImageMutation.isPending ||
@@ -1239,8 +1246,8 @@ export default function ChatScreen(): React.JSX.Element {
             ]}
             accessibilityLabel={
               voice.state === "recording"
-                ? "Recording — release to send"
-                : "Hold to dictate"
+                ? "Recording — tap to send"
+                : "Tap to dictate"
             }
             hitSlop={6}
           >
