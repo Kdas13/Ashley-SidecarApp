@@ -2395,13 +2395,19 @@ async function generateAshleySelfie(
   // pool, etc.) and the profile hasn't pinned an environment, inject it so that
   // "beach pics" renders on a beach instead of the time-based default.
   let governanceToApply = governance ?? {};
-  if (
-    imageMode === "SCENE_MODE" &&
-    (governanceToApply.imageEnvironmentDefault ?? "auto") === "auto"
-  ) {
+  // Scene environment detection runs for all modes, not just SCENE_MODE.
+  // When the vibe contains a location keyword (beach, park, pool…) we:
+  //   1. Override the time-based environment default so the scene renders there.
+  //   2. Clear activityDefault to "auto" so governance doesn't inject a
+  //      conflicting activity (e.g. "playing football" into a beach shot).
+  if ((governanceToApply.imageEnvironmentDefault ?? "auto") === "auto") {
     const detectedEnv = detectSceneEnvironment(vibe);
     if (detectedEnv) {
-      governanceToApply = { ...governanceToApply, imageEnvironmentDefault: detectedEnv };
+      governanceToApply = {
+        ...governanceToApply,
+        imageEnvironmentDefault: detectedEnv,
+        activityDefault: "auto",
+      };
     }
   }
   const {
