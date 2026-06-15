@@ -153,6 +153,18 @@ function mimeFromUri(uri: string, fallback: string | undefined): string {
   return "image/jpeg";
 }
 
+// Android's ImagePicker silently re-encodes to JPEG when quality < 1 but
+// still reports the original file's mimeType (e.g. image/png for a PNG
+// source). Detect the real format from base64 magic bytes so the server
+// and Claude always receive a matching mime+data pair.
+function detectActualMime(base64: string, reported: string): string {
+  if (base64.startsWith("/9j/")) return "image/jpeg";     // FF D8 FF
+  if (base64.startsWith("iVBOR")) return "image/png";     // 89 50 4E 47
+  if (base64.startsWith("UklGR")) return "image/webp";    // 52 49 46 46
+  if (base64.startsWith("R0lG")) return "image/gif";      // 47 49 46 38
+  return reported;
+}
+
 // PNG files (and very large images) ignore the picker quality param and come
 // through raw/lossless, easily exceeding the 15 MB base64 server cap.
 // This helper compresses anything over 4 MB to JPEG at q=0.85 before sending,
@@ -843,7 +855,14 @@ export default function ChatScreen(): React.JSX.Element {
         Alert.alert("Couldn't read image", "Try again with a different photo.");
         return;
       }
-      const rawMimeType = mimeFromUri(primaryAsset.uri, primaryAsset.mimeType ?? undefined);
+      // mimeFromUri uses the picker-reported type first, then falls back to
+      // the file extension. detectActualMime then cross-checks the base64
+      // magic bytes — Android silently re-encodes PNGs to JPEG at quality<1
+      // but still reports "image/png", which causes Claude to reject the data.
+      const rawMimeType = detectActualMime(
+        primaryAsset.base64,
+        mimeFromUri(primaryAsset.uri, primaryAsset.mimeType ?? undefined),
+      );
       // Block HEIC at the picker — Claude vision can't read it. iOS users
       // can usually pick a JPEG version of the same photo.
       if (rawMimeType === "image/heic") {
@@ -879,17 +898,20 @@ export default function ChatScreen(): React.JSX.Element {
       // Filter out HEIC and assets without base64, then compress each.
       const extras = await Promise.all(
         extraAssets
-          .filter(
-            (a) =>
-              a.base64 &&
-              mimeFromUri(a.uri, a.mimeType ?? undefined) !== "image/heic",
-          )
+          .filter((a) => {
+            if (!a.base64) return false;
+            const m = detectActualMime(
+              a.base64,
+              mimeFromUri(a.uri, a.mimeType ?? undefined),
+            );
+            return m !== "image/heic";
+          })
           .map(async (a) => {
-            const compressed = await compressForSend(
-              a.uri,
+            const actualMime = detectActualMime(
               a.base64!,
               mimeFromUri(a.uri, a.mimeType ?? undefined),
             );
+            const compressed = await compressForSend(a.uri, a.base64!, actualMime);
             return compressed;
           }),
       );
