@@ -2406,7 +2406,10 @@ async function generateAshleySelfie(
       governanceToApply = {
         ...governanceToApply,
         imageEnvironmentDefault: detectedEnv,
-        activityDefault: "auto",
+        imageDefaultsExtra: {
+          ...governanceToApply.imageDefaultsExtra,
+          activity: "auto",
+        },
       };
     }
   }
