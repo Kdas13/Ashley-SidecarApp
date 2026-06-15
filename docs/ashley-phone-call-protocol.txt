@@ -318,6 +318,124 @@ Voice-appropriate response tuning differences from chat:
 
 
 ================================================================================
+CONTENT POLICY IN VOICE CALLS — NSFW / MATURE MODE
+================================================================================
+
+SHORT ANSWER: voice calls inherit the EXACT same three-layer content policy as
+text chat. No special voice content mode, no downgrade, no separate consent.
+If the user has Mature Mode enabled in text chat, it is enabled in the call.
+
+BACKGROUND — THE THREE LAYERS
+-------------------------------
+The content policy lives in artifacts/api-server/src/lib/contentPolicy.ts.
+It is the single chokepoint for everything — route handlers, prompt builders,
+and the profile validator all go through it. No handler may inline its own
+content rules.
+
+Layer 1 — Provider Floor (immutable, non-negotiable):
+  No sexual content involving minors.
+  No non-consensual scenarios.
+  These cannot be turned off by any mode, setting, user instruction, or voice
+  call context. They are the absolute floor.
+
+Layer 2 — Content Mode ("standard" or "mature"):
+  Standard: default. Warm, intimate, romantic where the Relationship Mode
+            allows. Emotionally present. Intimacy ceiling at level 3.
+  Mature:   Full adult emotional honesty, romantic depth, sensual tone.
+            Unlocked only when BOTH conditions are met:
+              a) Server operator has set ASHLEY_MATURE_MODE_AVAILABLE=true
+              b) User has self-confirmed 18+ (POST /profile/confirm-adult)
+                 which records adultConfirmedAt in the profile.
+            Intimacy ceiling rises to level 5.
+
+Layer 3 — Intimacy Level (0-5 ladder):
+  Governs how affectionate, vulnerable, and present Ashley allows herself to
+  be. Works inside the Relationship Mode — a level-5 Friend mode doesn't
+  drift into romance. Ceiling is set by the active Content Mode.
+  Labels: 0=Acquainted, 1=Comfortable, 2=Close, 3=Affectionate (standard
+  ceiling), 4=Intimate (mature only), 5=Deeply intimate (mature only).
+
+HOW THIS FLOWS INTO A VOICE CALL SESSION
+------------------------------------------
+At session start (Step 1.3 of Phase 1), the server:
+  a) Loads the user's profile from the database (by device-id)
+  b) Calls getPolicyFor(profile) → ResolvedPolicy
+  c) Appends to the call system prompt (same as text chat route does):
+       buildProviderFloorBlock()     — hard limits, always appended
+       buildModeBlock(policy)        — standard vs mature description
+       buildIntimacyBlock(policy)    — current closeness level
+  d) The resolved policy is also logged for debugging (downgradeReason
+     tells you if mature was silently dropped due to missing gate)
+
+All three function imports come from contentPolicy.ts. Do not re-implement
+these inline in the WebSocket route handler.
+
+WHAT ASHLEY CAN DISCUSS ON A VOICE CALL (WITH MATURE MODE)
+------------------------------------------------------------
+The same things she can discuss in text chat. There is no voice-specific
+content restriction beyond the Provider Floor. If the relationship is mature
+and the intimacy level is high, she can be sensual, intimate, explicit in
+emotional expression, and adult in her conversational tone.
+
+The voice channel does not add restrictions. It does add one extra dimension:
+
+VOICE-PRESENCE SAFETY FLOOR (already designed — contentPolicy.ts line 304)
+---------------------------------------------------------------------------
+A buildVoicePresenceFloor() helper is specced in contentPolicy.ts comments
+as Stage 5 of the voice roadmap. It is NOT a content restriction. It governs
+how Ashley uses TONE AWARENESS (pauses, hesitation, vocal energy). Rules:
+
+  "Voice presence informs WARMTH, never DIAGNOSIS."
+
+  Allowed: "you sound tired tonight" — an observation offered gently.
+  Forbidden: "you sound depressed", "you're having a panic attack",
+             "you sound drunk" — claiming medical/emotional certainty
+             from audio alone.
+
+  If she notices something concerning in tone, she INVITES the user to
+  share what's going on — she does not narrate her interpretation.
+
+  Same-person principle: voice-Ashley and text-Ashley share identical
+  identity, warmth, and content permissions. Tone awareness widens her
+  sensitivity; it does not change who she is or what she can discuss.
+
+  The voice floor sits below the Provider Floor. Neither mode/intimacy
+  level nor any user instruction can override either floor.
+
+  The floor is only appended to the system prompt when inputMode is "voice".
+  It does not affect text chat sessions.
+
+IMPLEMENTATION NOTE FOR AGENTS
+--------------------------------
+When building the voice call system prompt in Phase 1, Step 1.3:
+
+  import { getPolicyFor, buildProviderFloorBlock, buildModeBlock,
+           buildIntimacyBlock } from "../lib/contentPolicy";
+
+  const policy = getPolicyFor(profile);
+  const systemPrompt = [
+    ASHLEY_CORE_SPEC,                    // existing Ashley identity block
+    buildProviderFloorBlock(),           // hard limits (always)
+    buildModeBlock(policy),              // mature vs standard
+    buildIntimacyBlock(policy),          // closeness level
+    buildVoicePresenceFloor(),           // tone-awareness rules (voice only)
+    VOICE_CALL_BEHAVIOUR_BLOCK,          // call-specific prompt additions
+  ].join("\n\n");
+
+  buildVoicePresenceFloor() is Stage 5 and does not exist yet — it needs to
+  be written in contentPolicy.ts following the spec at line 304-324 of that
+  file. Writing it is part of Phase 4 / Phase 1.3 setup.
+
+ENVIRONMENT VARIABLE FOR MATURE MODE
+--------------------------------------
+  ASHLEY_MATURE_MODE_AVAILABLE=true   (set this on the API server artifact)
+
+  Without this, the voice call (and text chat) stays in Standard Mode even if
+  the profile has contentMode=mature and adultConfirmedAt set. The env var is
+  the operator kill switch — it can be toggled without a code deploy.
+
+
+================================================================================
 EXISTING CODEBASE — KEY FILES FOR ANY AI ASSISTANT
 ================================================================================
 
