@@ -215,3 +215,9 @@ id = "SY7Y8mzkHTPK8GTcHUpSI"
 uri = "file://exports/ashley-technical-snapshot-june-2026.txt"
 type = "text"
 title = "Ashley Technical Snapshot — June 2026"
+
+[[outputs]]
+id = "DzLA0tuDy36Y5L8E7DnaW"
+uri = "file://docs/ashley-phone-call-protocol.txt"
+type = "text"
+title = "Ashley Phone Call Protocol"
