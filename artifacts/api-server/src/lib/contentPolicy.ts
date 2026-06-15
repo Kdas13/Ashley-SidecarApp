@@ -330,10 +330,14 @@ I'm in Standard Mode. Tone is warm, emotionally present, intimate-when-warranted
  * categories are nudity, explicit acts, minors, and violence.
  */
 export function buildSelfiePromptSafetyPrefix(): string {
+  // When using a permissive provider (FAL with safety_tolerance=6), omit the
+  // nudity/explicit-acts clause so the model will honour those requests.
+  // The hard floor — no minors, no violence, no watermarks — is non-negotiable
+  // regardless of provider.
+  const nsfwProvider = process.env["ASHLEY_IMAGE_PROVIDER"] === "fal";
   return [
-    // Hard rules only — no style gate. Alluring posing, confident
-    // expression, swimwear, and revealing attire are all fine.
-    "No nudity. No explicit sexual acts. No minors. No violence. No text or watermarks.",
+    ...(nsfwProvider ? [] : ["No nudity. No explicit sexual acts."]),
+    "No minors. No violence. No text or watermarks.",
     "Single image only — do not create a collage, photo strip, contact sheet, grid layout, diptych, triptych, or any multi-panel composition.",
     "One continuous scene, one moment in time.",
   ].join(" ");

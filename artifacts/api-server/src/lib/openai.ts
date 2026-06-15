@@ -263,21 +263,15 @@ export async function generateImageBase64(
   size: "1024x1024" | "1024x1536" | "1536x1024" = "1024x1024",
   quality: "low" | "medium" | "high" = "low",
 ): Promise<string> {
+  // When an explicit provider is configured it is the sole image pipeline.
+  // There must be NO silent fallback to OpenAI/gpt-image-1 from these paths —
+  // OpenAI has its own content moderation layer that will suppress anything
+  // borderline regardless of what the primary provider allows.
   if (process.env["ASHLEY_IMAGE_PROVIDER"] === "fal") {
-    try {
-      return await generateImageWithFal(prompt, size, quality);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[generateImageBase64] FAL failed (${msg}); falling back to gpt-image-1`);
-    }
+    return generateImageWithFal(prompt, size, quality);
   }
   if (process.env["ASHLEY_IMAGE_PROVIDER"] === "pollo") {
-    try {
-      return await generateImageWithPollo(prompt, size, quality);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[generateImageBase64] Pollo failed (${msg}); falling back to gpt-image-1`);
-    }
+    return generateImageWithPollo(prompt, size, quality);
   }
   // gpt-image-1 quality knob is the biggest speed lever:
   //   low    ≈ 6–10s   (fast mode default)
