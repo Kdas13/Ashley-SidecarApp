@@ -45,6 +45,7 @@ import {
   detectPhantomImageDelivery,
   PHANTOM_IMAGE_DIAGNOSTIC,
   synthesizeImageActionReply,
+  isSwimwearImageRequest,
   synthesizeImageActionReplyFromSpec,
   shortCaptionFor,
   type HistoryTurn as FollowUpHistoryTurn,
@@ -1005,8 +1006,14 @@ router.post("/chat", async (req, res): Promise<void> => {
   // imageRouteAllowed gates every downstream image path — when false, ALL
   // image detection, pipeline, and fallback code is unconditionally skipped.
   const routeIntent = classifyRouteIntent(userContent);
-  const imageRouteAllowed =
+  let imageRouteAllowed =
     imageGenerationEnabled && routeIntent.actionDetected && !routeIntent.isQuestion;
+  // Swimwear override: "bikini" / "swimsuit" / etc. are clothing requests, not
+  // questions — classifyRouteIntent may not mark them as actionDetected, so we
+  // force the gate open here before any image-path code runs.
+  if (!imageRouteAllowed && imageGenerationEnabled && isSwimwearImageRequest(userContent)) {
+    imageRouteAllowed = true;
+  }
   req.log.info(
     {
       intentType: routeIntent.intentType,
@@ -4661,6 +4668,11 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
     routeIntentStream = classifyRouteIntent(userContent);
     imageRouteAllowed =
       imageGenerationEnabled && routeIntentStream.actionDetected && !routeIntentStream.isQuestion;
+    // Swimwear override: mirrors the /chat route fix — force gate open so
+    // resolveImageFollowUp's swimwear hard-gate is actually reached.
+    if (!imageRouteAllowed && imageGenerationEnabled && isSwimwearImageRequest(userContent)) {
+      imageRouteAllowed = true;
+    }
     req.log.info(
       {
         intentType: routeIntentStream.intentType,
