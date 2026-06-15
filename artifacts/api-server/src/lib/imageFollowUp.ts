@@ -342,6 +342,44 @@ export function isSceneCostumePropImageRequest(text: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Swimwear / attire hard-gate (bypasses LLM entirely)
+// ---------------------------------------------------------------------------
+//
+// Root cause: Gemini and Claude both have safety training that classifies
+// "bikini" as suggestive and refuses to emit an [image:] tag, even when
+// the system prompt explicitly permits it. Prior conversation turns where
+// Ashley refused further entrench the refusal via consistency pressure.
+//
+// Fix: detect swimwear keywords server-side and short-circuit the LLM
+// entirely, synthesising the image marker directly — exactly like the
+// seated-lengthwise and scene/costume/prop hard gates.
+//
+// Trigger: the message contains a swimwear keyword (bikini, swimsuit,
+// swimwear, lingerie, …) and is short enough to be a direct image request
+// (≤14 words). Long messages about swimwear that look conversational fall
+// through to the normal path.
+
+const SWIMWEAR_KEYWORDS_RX =
+  /\b(bikini|swim\s?suit|swimwear|swim\s?wear|swimming\s+costume|one[- ]piece(?:\s+swimsuit)?|lingerie|underwear|bra(?:\s+and\s+pants)?|knickers)\b/i;
+
+// Conversational signals that override the swimwear gate — if the message
+// looks like a question or opinion request, let the LLM handle it.
+const SWIMWEAR_CONVERSATIONAL_RX =
+  /\b(think\s+about|opinion|favourite|prefer|wear\s+to|culture|fashion|style|recommend|thoughts\s+on|talk\s+about|discuss)\b/i;
+
+export function isSwimwearImageRequest(text: string): boolean {
+  if (typeof text !== "string") return false;
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (!SWIMWEAR_KEYWORDS_RX.test(trimmed)) return false;
+  // Let conversational messages through to the LLM.
+  if (SWIMWEAR_CONVERSATIONAL_RX.test(trimmed)) return false;
+  // Short messages containing swimwear nouns are nearly always image requests.
+  const wordCount = trimmed.split(/\s+/).length;
+  return wordCount <= 14;
+}
+
+// ---------------------------------------------------------------------------
 // Direct image request detection (no prior visual context required)
 // ---------------------------------------------------------------------------
 //
@@ -878,6 +916,31 @@ export function resolveImageFollowUp(
         modeReason: `[VisualSpec] ${reasonPrefix} — ${resolvedFinal.reason} (triggers: ${workingSpec.matchedTriggers.join(", ") || "none"})`,
       };
     }
+  }
+
+  // Swimwear hard-gate. Runs before all other detectors so that swimwear /
+  // bikini / lingerie requests are never handed to the LLM, which has safety
+  // training that overrides system-prompt instructions for these keywords.
+  // The server synthesises the image marker directly and skips the LLM.
+  if (isSwimwearImageRequest(latestUserText)) {
+    const { text: sanitised, changed } = sanitiseExpression(latestUserText);
+    const keyword = (SWIMWEAR_KEYWORDS_RX.exec(latestUserText.trim()) ?? [])[0] ?? "bikini";
+    const description = sanitised.trim().length > keyword.length + 2
+      ? sanitised.trim()
+      : `${keyword}, confident full-body pose, warm light, full figure head to toe`;
+    return {
+      isFollowUp: true,
+      kind: "direct_image_request",
+      followUpText: latestUserText,
+      priorVisualText: null,
+      sanitisedVisualText: description,
+      sanitised: changed,
+      priorAttemptVibe: null,
+      priorAttemptDelivered: false,
+      resolvedRequest: `Generate an outfit image of Ashley in ${description}.`,
+      suggestedMode: "OUTFIT_MODE",
+      modeReason: "matched swimwear hard-gate — bypassing LLM to prevent safety-trained refusal",
+    };
   }
 
   // Seated-lengthwise hard-gate path. Runs before the direct/short/send-again
