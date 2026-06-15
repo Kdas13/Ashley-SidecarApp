@@ -49,20 +49,32 @@ export async function generateImageWithFal(
     "fal: submitting image generation",
   );
 
+  // Build request body. Flux Pro/Dev models accept safety_tolerance and
+  // enable_safety_checker; SD-based models (realistic-vision, etc.) ignore or
+  // reject those fields, so we only include them for flux models.
+  const isFlux = model.includes("flux");
+  const requestBody: Record<string, unknown> = {
+    prompt,
+    image_size: { width, height },
+    num_images: 1,
+    output_format: "jpeg",
+  };
+  if (isFlux) {
+    requestBody["safety_tolerance"] = "6";
+    requestBody["enable_safety_checker"] = false;
+  } else {
+    // For non-Flux models (SD-based fine-tunes), disable the safety checker
+    // where the parameter name differs from Flux's convention.
+    requestBody["enable_safety_checker"] = false;
+  }
+
   const submitRes = await fetch(`${FAL_QUEUE_BASE}/${model}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Key ${apiKey}`,
     },
-    body: JSON.stringify({
-      prompt,
-      image_size: { width, height },
-      num_images: 1,
-      safety_tolerance: "6",
-      enable_safety_checker: false,
-      output_format: "jpeg",
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!submitRes.ok) {
