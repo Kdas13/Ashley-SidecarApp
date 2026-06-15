@@ -23,6 +23,7 @@ import * as Clipboard from "expo-clipboard";
 import * as FileSystem from "expo-file-system/legacy";
 import * as MediaLibrary from "expo-media-library";
 import * as ImagePicker from "expo-image-picker";
+import * as ImageManipulator from "expo-image-manipulator";
 import * as DocumentPicker from "expo-document-picker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -150,6 +151,43 @@ function mimeFromUri(uri: string, fallback: string | undefined): string {
   if (lower.endsWith(".gif")) return "image/gif";
   if (lower.endsWith(".heic")) return "image/heic";
   return "image/jpeg";
+}
+
+// PNG files (and very large images) ignore the picker quality param and come
+// through raw/lossless, easily exceeding the 15 MB base64 server cap.
+// This helper compresses anything over 4 MB to JPEG at q=0.85 before sending,
+// with a second pass (resize → 2048px wide, q=0.65) if the first pass is
+// still too large.
+const COMPRESS_THRESHOLD = 4 * 1024 * 1024;   // 4 MB — skip compression below this
+const MAX_SEND_B64 = 14 * 1024 * 1024;         // 14 MB — 1 MB below server cap
+
+async function compressForSend(
+  uri: string,
+  base64: string,
+  mimeType: string,
+): Promise<{ uri: string; base64: string; mimeType: string }> {
+  if (base64.length <= COMPRESS_THRESHOLD) {
+    return { uri, base64, mimeType };
+  }
+  const first = await ImageManipulator.manipulateAsync(
+    uri,
+    [],
+    { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG, base64: true },
+  );
+  if ((first.base64?.length ?? 0) <= MAX_SEND_B64) {
+    return { uri: first.uri, base64: first.base64!, mimeType: "image/jpeg" };
+  }
+  // Still over cap — resize to max 2048 px wide and compress harder.
+  const second = await ImageManipulator.manipulateAsync(
+    first.uri,
+    [{ resize: { width: 2048 } }],
+    { compress: 0.65, format: ImageManipulator.SaveFormat.JPEG, base64: true },
+  );
+  return {
+    uri: second.uri,
+    base64: second.base64 ?? base64,
+    mimeType: "image/jpeg",
+  };
 }
 
 function buildReplyPreview(message: Message): ReplyToRef {
@@ -805,45 +843,56 @@ export default function ChatScreen(): React.JSX.Element {
         Alert.alert("Couldn't read image", "Try again with a different photo.");
         return;
       }
-      // Base64 size cap — at q=0.85 a photo runs ~9 MB. Cap at 15 MB to
-      // give headroom without risking a 413 on a single large-sensor image.
-      if (primaryAsset.base64.length > 15 * 1024 * 1024) {
-        Alert.alert(
-          "Photo too large",
-          "That image exceeds the size limit. Try a smaller one or take a new photo.",
-        );
-        return;
-      }
-      const mimeType = mimeFromUri(primaryAsset.uri, primaryAsset.mimeType ?? undefined);
+      const rawMimeType = mimeFromUri(primaryAsset.uri, primaryAsset.mimeType ?? undefined);
       // Block HEIC at the picker — Claude vision can't read it. iOS users
       // can usually pick a JPEG version of the same photo.
-      if (mimeType === "image/heic") {
+      if (rawMimeType === "image/heic") {
         Alert.alert(
           "HEIC not supported",
           "iPhone HEIC photos can't be analysed yet. Try sharing the photo as JPEG.",
         );
         return;
       }
+      // Compress to JPEG if the image is large (PNG files bypass the picker's
+      // quality setting and arrive raw/lossless — easily > 15 MB base64).
+      const primary = await compressForSend(
+        primaryAsset.uri,
+        primaryAsset.base64,
+        rawMimeType,
+      );
+      // Final hard cap after compression (catches extreme edge cases).
+      if (primary.base64.length > MAX_SEND_B64) {
+        Alert.alert(
+          "Photo too large",
+          "That image is too large to send even after compression. Try a smaller one.",
+        );
+        return;
+      }
       setPickedImage({
-        uri: primaryAsset.uri,
-        base64: primaryAsset.base64,
-        mimeType,
+        uri: primary.uri,
+        base64: primary.base64,
+        mimeType: primary.mimeType,
         width: primaryAsset.width,
         height: primaryAsset.height,
       });
       // Collect any additional images the user selected (beyond the first).
-      // Filter out HEIC and assets without base64 silently.
-      const extras = extraAssets
-        .filter(
-          (a) =>
-            a.base64 &&
-            mimeFromUri(a.uri, a.mimeType ?? undefined) !== "image/heic",
-        )
-        .map((a) => ({
-          base64: a.base64!,
-          mimeType: mimeFromUri(a.uri, a.mimeType ?? undefined),
-          uri: a.uri,
-        }));
+      // Filter out HEIC and assets without base64, then compress each.
+      const extras = await Promise.all(
+        extraAssets
+          .filter(
+            (a) =>
+              a.base64 &&
+              mimeFromUri(a.uri, a.mimeType ?? undefined) !== "image/heic",
+          )
+          .map(async (a) => {
+            const compressed = await compressForSend(
+              a.uri,
+              a.base64!,
+              mimeFromUri(a.uri, a.mimeType ?? undefined),
+            );
+            return compressed;
+          }),
+      );
       setPickedExtraImages(extras);
       setImageCategory("other");
       setImageMode("quick");
