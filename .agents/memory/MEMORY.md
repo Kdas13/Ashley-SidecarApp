@@ -3,3 +3,4 @@
 - [Pollo AI image provider](pollo-provider.md) — Pollo is wired as an async REST provider in lib/pollo.ts; routed via ASHLEY_IMAGE_PROVIDER=pollo env var; model overrideable via POLLO_MODEL; secret is Project_ashley. API currently 404s on all POST endpoints.
 - [FAL.ai image provider](fal-provider.md) — FAL.ai is the current image provider; lib/fal.ts; ASHLEY_IMAGE_PROVIDER=fal; secret FAL_KEY; model fal-ai/flux-pro/v1.1 with safety_tolerance=6; no OpenAI fallback allowed.
 - [Image provider isolation rule](image-provider-isolation.md) — FAL/Pollo must be sole pipeline; no silent OpenAI fallback; OpenAI image gen has its own moderation that defeats the point of using a permissive provider.
+- [ElevenLabs TTS provider](elevenlabs-tts.md) — ElevenLabs is the TTS provider when ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID secrets are set; falls back to OpenAI tts-1. Auto-speak fires on stream completion. 600-char cap removed.
