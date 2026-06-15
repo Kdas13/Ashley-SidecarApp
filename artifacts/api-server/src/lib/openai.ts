@@ -263,7 +263,14 @@ export async function generateImageBase64(
   quality: "low" | "medium" | "high" = "low",
 ): Promise<string> {
   if (process.env["ASHLEY_IMAGE_PROVIDER"] === "pollo") {
-    return generateImageWithPollo(prompt, size, quality);
+    try {
+      return await generateImageWithPollo(prompt, size, quality);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Pollo is down or the model endpoint changed — fall back to gpt-image-1
+      // so images still generate rather than silently failing.
+      console.error(`[generateImageBase64] Pollo failed (${msg}); falling back to gpt-image-1`);
+    }
   }
   // gpt-image-1 quality knob is the biggest speed lever:
   //   low    ≈ 6–10s   (fast mode default)

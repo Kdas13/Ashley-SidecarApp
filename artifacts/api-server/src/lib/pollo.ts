@@ -63,8 +63,13 @@ export async function generateImageWithPollo(
   const { width, height } = sizeToWidthHeight(size);
   const steps = qualityToSteps(quality);
 
+  // Kling V3 rejects prompts over ~2500 characters — truncate cleanly.
+  const MAX_PROMPT = 2500;
+  const trimmedPrompt =
+    prompt.length > MAX_PROMPT ? prompt.slice(0, MAX_PROMPT) : prompt;
+
   logger.info(
-    { model, size, quality, steps, promptLength: prompt.length },
+    { model, size, quality, steps, promptLength: prompt.length, trimmedLength: trimmedPrompt.length },
     "pollo: submitting image generation",
   );
 
@@ -75,7 +80,7 @@ export async function generateImageWithPollo(
       "x-api-key": apiKey,
     },
     body: JSON.stringify({
-      input: { prompt, width, height, steps },
+      input: { prompt: trimmedPrompt, width, height, steps },
     }),
   });
 

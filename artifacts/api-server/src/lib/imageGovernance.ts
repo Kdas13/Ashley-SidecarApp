@@ -342,7 +342,10 @@ export function applyGovernance(
   // clause triggers a strong model prior for domestic/home scenes (person in
   // kit doing kick-ups in a kitchen) that overrides every location instruction.
   // For non-SCENE_MODE, activity and awareness remain in the prompt.
-  if (!isSceneMode && activity !== "auto" && activity) {
+  // OUTFIT_MODE is also excluded: the user has explicitly requested a specific
+  // outfit — injecting a sports-kit activity would override that request.
+  const isOutfitMode = resolvedImageMode === "OUTFIT_MODE";
+  if (!isSceneMode && !isOutfitMode && activity !== "auto" && activity) {
     parts.push(`Activity: ${activity}.`);
     if (activity === "playing football") {
       parts.push("Ashley is wearing a football jersey and shorts in colours matching one of the teams visible on the pitch. She is dressed as a player, not a spectator.");
