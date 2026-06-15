@@ -382,3 +382,23 @@ export function applyGovernance(
     vibePrefix: parts.join(" "),
   };
 }
+
+/**
+ * Scan vibe text for location keywords and return the matching environment key
+ * from the ENVIRONMENTS catalogue. Returns null when no keyword is found.
+ * Used by generateAshleySelfie to override the time-based auto-selection for
+ * SCENE_MODE requests — so "beach pics" actually renders on a beach.
+ */
+export function detectSceneEnvironment(vibe: string): string | null {
+  const v = vibe.toLowerCase();
+  if (/beach|seaside|sea side|at the sea\b|coastal|shoreline/.test(v)) return "beach-holiday";
+  if (/\bpool\b|swimming pool|by the pool/.test(v)) return "pool";
+  if (/\bpark\b|in the park|at the park/.test(v)) return "park";
+  if (/\bgarden\b/.test(v)) return "garden";
+  if (/outdoor|outside\b|in the sun|sunbathing/.test(v)) return "outdoors-nature";
+  if (/city|street|urban|town centre|town center/.test(v)) return "outdoors-urban";
+  if (/café|cafe|coffee shop/.test(v)) return "cafe";
+  if (/restaurant|dining out/.test(v)) return "restaurant";
+  if (/\bpub\b|\bbar\b/.test(v)) return "pub";
+  return null;
+}

@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { generateImageWithPollo } from "./pollo.js";
+import { generateImageWithFal } from "./fal.js";
 
 if (!process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"]) {
   throw new Error(
@@ -262,13 +263,19 @@ export async function generateImageBase64(
   size: "1024x1024" | "1024x1536" | "1536x1024" = "1024x1024",
   quality: "low" | "medium" | "high" = "low",
 ): Promise<string> {
+  if (process.env["ASHLEY_IMAGE_PROVIDER"] === "fal") {
+    try {
+      return await generateImageWithFal(prompt, size, quality);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[generateImageBase64] FAL failed (${msg}); falling back to gpt-image-1`);
+    }
+  }
   if (process.env["ASHLEY_IMAGE_PROVIDER"] === "pollo") {
     try {
       return await generateImageWithPollo(prompt, size, quality);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // Pollo is down or the model endpoint changed — fall back to gpt-image-1
-      // so images still generate rather than silently failing.
       console.error(`[generateImageBase64] Pollo failed (${msg}); falling back to gpt-image-1`);
     }
   }

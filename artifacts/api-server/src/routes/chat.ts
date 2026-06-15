@@ -38,7 +38,7 @@ import {
   encodeStoredVibe,
   decodeStoredVibe,
 } from "../lib/imageIntent";
-import { applyGovernance, type GovernanceParams } from "../lib/imageGovernance.js";
+import { applyGovernance, detectSceneEnvironment, type GovernanceParams } from "../lib/imageGovernance.js";
 import {
   resolveImageFollowUp,
   buildFollowUpTurnHint,
@@ -2390,11 +2390,25 @@ async function generateAshleySelfie(
   // Governance runs unconditionally — null/undefined governance is treated as
   // all-auto, which applies product defaults (environment-centric, wide-room,
   // with-kane-and-cats) rather than leaving imageMode as portrait.
+  //
+  // SCENE_MODE override: if the vibe contains a location keyword (beach, park,
+  // pool, etc.) and the profile hasn't pinned an environment, inject it so that
+  // "beach pics" renders on a beach instead of the time-based default.
+  let governanceToApply = governance ?? {};
+  if (
+    imageMode === "SCENE_MODE" &&
+    (governanceToApply.imageEnvironmentDefault ?? "auto") === "auto"
+  ) {
+    const detectedEnv = detectSceneEnvironment(vibe);
+    if (detectedEnv) {
+      governanceToApply = { ...governanceToApply, imageEnvironmentDefault: detectedEnv };
+    }
+  }
   const {
     imageMode: governedImageMode,
     vibePrefix: governedVibePrefix,
   } = applyGovernance(
-    governance ?? {},
+    governanceToApply,
     imageMode,
     clientNow ?? new Date(),
     clientTz ?? "UTC",
