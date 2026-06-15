@@ -825,6 +825,32 @@ export function resolveImageFollowUp(
     // (or the caller) decide what to do with the message.
   }
 
+  // Swimwear hard-gate — runs BEFORE the VisualSpec extractor so that
+  // "bikini", "swimsuit", etc. are never handed to extractVisualSpecCompound,
+  // which would return imageIntent=true via its clothing-item vocab and route
+  // through VisualSpec (SCENE_MODE) before this gate is reached.
+  // The server synthesises the OUTFIT_MODE marker directly and skips the LLM.
+  if (isSwimwearImageRequest(latestUserText)) {
+    const { text: sanitised, changed } = sanitiseExpression(latestUserText);
+    const keyword = (SWIMWEAR_KEYWORDS_RX.exec(latestUserText.trim()) ?? [])[0] ?? "bikini";
+    const description = sanitised.trim().length > keyword.length + 2
+      ? sanitised.trim()
+      : `${keyword}, confident full-body pose, warm light, full figure head to toe`;
+    return {
+      isFollowUp: true,
+      kind: "direct_image_request",
+      followUpText: latestUserText,
+      priorVisualText: null,
+      sanitisedVisualText: description,
+      sanitised: changed,
+      priorAttemptVibe: null,
+      priorAttemptDelivered: false,
+      resolvedRequest: `Generate an outfit image of Ashley in ${description}.`,
+      suggestedMode: "OUTFIT_MODE",
+      modeReason: "matched swimwear hard-gate — bypassing LLM to prevent safety-trained refusal",
+    };
+  }
+
   // ---------------------------------------------------------------------
   // PRIMARY decision path — VisualSpec category extractor.
   // ---------------------------------------------------------------------
@@ -916,31 +942,6 @@ export function resolveImageFollowUp(
         modeReason: `[VisualSpec] ${reasonPrefix} — ${resolvedFinal.reason} (triggers: ${workingSpec.matchedTriggers.join(", ") || "none"})`,
       };
     }
-  }
-
-  // Swimwear hard-gate. Runs before all other detectors so that swimwear /
-  // bikini / lingerie requests are never handed to the LLM, which has safety
-  // training that overrides system-prompt instructions for these keywords.
-  // The server synthesises the image marker directly and skips the LLM.
-  if (isSwimwearImageRequest(latestUserText)) {
-    const { text: sanitised, changed } = sanitiseExpression(latestUserText);
-    const keyword = (SWIMWEAR_KEYWORDS_RX.exec(latestUserText.trim()) ?? [])[0] ?? "bikini";
-    const description = sanitised.trim().length > keyword.length + 2
-      ? sanitised.trim()
-      : `${keyword}, confident full-body pose, warm light, full figure head to toe`;
-    return {
-      isFollowUp: true,
-      kind: "direct_image_request",
-      followUpText: latestUserText,
-      priorVisualText: null,
-      sanitisedVisualText: description,
-      sanitised: changed,
-      priorAttemptVibe: null,
-      priorAttemptDelivered: false,
-      resolvedRequest: `Generate an outfit image of Ashley in ${description}.`,
-      suggestedMode: "OUTFIT_MODE",
-      modeReason: "matched swimwear hard-gate — bypassing LLM to prevent safety-trained refusal",
-    };
   }
 
   // Seated-lengthwise hard-gate path. Runs before the direct/short/send-again
