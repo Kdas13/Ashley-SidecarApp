@@ -174,6 +174,8 @@ export default function ChatScreen(): React.JSX.Element {
   const [replyingTo, setReplyingTo] = useState<ReplyToRef | null>(null);
   const inputRef = useRef<TextInput>(null);
   const listRef = useRef<FlatList<Message>>(null);
+  const micPulse1 = useRef(new Animated.Value(1)).current;
+  const micPulse2 = useRef(new Animated.Value(1)).current;
 
   // Messages typed while a stream is in-flight are pushed here rather than
   // dropped. The drain effect below processes them in FIFO order as each
@@ -355,6 +357,38 @@ export default function ChatScreen(): React.JSX.Element {
   // once per call below) can accumulate without going stale between
   // renders. The setVoicePartial call is just for UI redraw.
   const voicePartialRef = useRef("");
+
+  // Mic button pulse rings while recording.
+  useEffect(() => {
+    if (voice.state !== "recording") {
+      micPulse1.stopAnimation();
+      micPulse2.stopAnimation();
+      micPulse1.setValue(1);
+      micPulse2.setValue(1);
+      return;
+    }
+    const a1 = Animated.loop(
+      Animated.sequence([
+        Animated.timing(micPulse1, { toValue: 1.7, duration: 900, useNativeDriver: true }),
+        Animated.timing(micPulse1, { toValue: 1, duration: 900, useNativeDriver: true }),
+      ]),
+    );
+    const a2 = Animated.loop(
+      Animated.sequence([
+        Animated.delay(450),
+        Animated.timing(micPulse2, { toValue: 1.5, duration: 900, useNativeDriver: true }),
+        Animated.timing(micPulse2, { toValue: 1, duration: 900, useNativeDriver: true }),
+      ]),
+    );
+    a1.start();
+    a2.start();
+    return () => {
+      a1.stop();
+      a2.stop();
+      micPulse1.setValue(1);
+      micPulse2.setValue(1);
+    };
+  }, [voice.state, micPulse1, micPulse2]);
 
   const handleMicStart = useCallback(async () => {
     setVoiceError(null);
@@ -1239,45 +1273,63 @@ export default function ChatScreen(): React.JSX.Element {
             onSubmitEditing={send}
             blurOnSubmit={false}
           />
-          <Pressable
-            onPress={handleMicToggle}
-            disabled={
-              streamMutation.isPending ||
-              sendImageMutation.isPending ||
-              transcribeMutation.isPending
-            }
-            style={({ pressed }) => [
-              styles.micBtn,
-              voice.state === "recording" && styles.micBtnRecording,
-              (streamMutation.isPending ||
+          <View style={styles.micWrapper}>
+            <Animated.View
+              style={[
+                styles.micPulseRing,
+                { transform: [{ scale: micPulse1 }] },
+                voice.state !== "recording" && { opacity: 0 },
+              ]}
+              pointerEvents="none"
+            />
+            <Animated.View
+              style={[
+                styles.micPulseRing,
+                { transform: [{ scale: micPulse2 }] },
+                voice.state !== "recording" && { opacity: 0 },
+              ]}
+              pointerEvents="none"
+            />
+            <Pressable
+              onPress={handleMicToggle}
+              disabled={
+                streamMutation.isPending ||
                 sendImageMutation.isPending ||
-                transcribeMutation.isPending) && { opacity: 0.4 },
-              pressed && { transform: [{ scale: 0.95 }] },
-            ]}
-            accessibilityLabel={
-              voice.state === "recording"
-                ? "Recording — tap to send"
-                : "Tap to dictate"
-            }
-            hitSlop={6}
-          >
-            {transcribeMutation.isPending ? (
-              <ActivityIndicator
-                size="small"
-                color={colors.light.mutedForeground}
-              />
-            ) : (
-              <Feather
-                name="mic"
-                size={20}
-                color={
-                  voice.state === "recording"
-                    ? colors.light.destructiveForeground
-                    : colors.light.mutedForeground
-                }
-              />
-            )}
-          </Pressable>
+                transcribeMutation.isPending
+              }
+              style={({ pressed }) => [
+                styles.micBtn,
+                voice.state === "recording" && styles.micBtnRecording,
+                (streamMutation.isPending ||
+                  sendImageMutation.isPending ||
+                  transcribeMutation.isPending) && { opacity: 0.4 },
+                pressed && { transform: [{ scale: 0.95 }] },
+              ]}
+              accessibilityLabel={
+                voice.state === "recording"
+                  ? "Recording — tap to send"
+                  : "Tap to dictate"
+              }
+              hitSlop={6}
+            >
+              {transcribeMutation.isPending ? (
+                <ActivityIndicator
+                  size="small"
+                  color={colors.light.primary}
+                />
+              ) : (
+                <Feather
+                  name="mic"
+                  size={20}
+                  color={
+                    voice.state === "recording"
+                      ? "#FFFFFF"
+                      : colors.light.primary
+                  }
+                />
+              )}
+            </Pressable>
+          </View>
           {activeStream != null ||
           presence.state === "thinking" ||
           presence.state === "speaking" ? (
@@ -2521,8 +2573,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingHorizontal: 12,
     paddingVertical: 10,
+    backgroundColor: colors.light.background,
     borderBottomWidth: 1,
-    borderBottomColor: colors.light.border,
+    borderBottomColor: "rgba(0, 185, 255, 0.12)",
   },
   headerCenter: { flex: 1, alignItems: "center" },
   headerSubtitleRow: { flexDirection: "row", alignItems: "center", marginTop: 1 },
@@ -2618,9 +2671,10 @@ const styles = StyleSheet.create({
     textDecorationLine: "underline",
   },
   headerTitle: {
-    color: colors.light.text,
+    color: colors.light.primary,
     fontFamily: "Inter_600SemiBold",
     fontSize: 17,
+    letterSpacing: 0.3,
   },
   headerSubtitle: {
     color: colors.light.mutedForeground,
@@ -2661,6 +2715,13 @@ const styles = StyleSheet.create({
   bubbleUser: {
     backgroundColor: colors.light.bubbleUser,
     borderBottomRightRadius: 6,
+    borderWidth: 1,
+    borderColor: "rgba(0, 185, 255, 0.45)",
+    shadowColor: "#00B9FF",
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.28,
+    shadowRadius: 10,
+    elevation: 6,
   },
   bubbleAshley: {
     backgroundColor: colors.light.bubbleAshley,
@@ -2880,9 +2941,9 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingHorizontal: 14,
     paddingVertical: 8,
-    backgroundColor: "rgba(122, 92, 255, 0.12)",
+    backgroundColor: "rgba(0, 185, 255, 0.07)",
     borderTopWidth: 1,
-    borderTopColor: colors.light.border,
+    borderTopColor: "rgba(0, 185, 255, 0.15)",
   },
   replyAccent: {
     width: 3,
@@ -2918,30 +2979,30 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   quotedHeaderUser: {
-    backgroundColor: "rgba(0,0,0,0.18)",
+    backgroundColor: "rgba(232, 237, 242, 0.05)",
   },
   quotedHeaderAshley: {
-    backgroundColor: "rgba(122, 92, 255, 0.18)",
+    backgroundColor: "rgba(0, 185, 255, 0.10)",
   },
   quotedAccent: {
     width: 2,
     alignSelf: "stretch",
     borderRadius: 1,
   },
-  quotedAccentUser: { backgroundColor: "rgba(26,19,37,0.6)" },
+  quotedAccentUser: { backgroundColor: "rgba(232, 237, 242, 0.3)" },
   quotedAccentAshley: { backgroundColor: colors.light.accent },
   quotedTextWrap: { flex: 1, gap: 2 },
   quotedAuthor: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 11,
   },
-  quotedAuthorUser: { color: "rgba(26,19,37,0.85)" },
+  quotedAuthorUser: { color: "#E8EDF2" },
   quotedAuthorAshley: { color: colors.light.accent },
   quotedBody: {
     fontFamily: "Inter_400Regular",
     fontSize: 12,
   },
-  quotedBodyUser: { color: "rgba(26,19,37,0.75)" },
+  quotedBodyUser: { color: "rgba(232, 237, 242, 0.7)" },
   quotedBodyAshley: { color: "rgba(245,232,216,0.85)" },
   emptyWrap: {
     flex: 1,
@@ -3118,17 +3179,40 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginBottom: 2,
   },
-  micBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.light.muted,
+  micWrapper: {
+    position: "relative",
     alignItems: "center",
     justifyContent: "center",
+    width: 52,
+    height: 52,
     marginBottom: 2,
   },
+  micPulseRing: {
+    position: "absolute",
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    borderWidth: 2,
+    borderColor: "rgba(0, 185, 255, 0.45)",
+  },
+  micBtn: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: "rgba(0, 185, 255, 0.15)",
+    borderWidth: 1,
+    borderColor: "rgba(0, 185, 255, 0.5)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   micBtnRecording: {
-    backgroundColor: colors.light.destructive,
+    backgroundColor: "#00B9FF",
+    borderColor: "#00B9FF",
+    shadowColor: "#00B9FF",
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.6,
+    shadowRadius: 14,
+    elevation: 8,
   },
   voiceStatus: {
     flexDirection: "row",
@@ -3142,7 +3226,7 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: colors.light.destructive,
+    backgroundColor: colors.light.primary,
   },
   voiceStatusText: {
     color: colors.light.mutedForeground,
@@ -3282,7 +3366,7 @@ const styles = StyleSheet.create({
     color: colors.light.accent,
     fontFamily: "Inter_500Medium",
     fontSize: 12,
-    backgroundColor: "rgba(122, 92, 255, 0.10)",
+    backgroundColor: "rgba(0, 185, 255, 0.08)",
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 8,
@@ -3315,8 +3399,8 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "rgba(122, 92, 255, 0.35)",
-    backgroundColor: "rgba(122, 92, 255, 0.08)",
+    borderColor: "rgba(0, 185, 255, 0.3)",
+    backgroundColor: "rgba(0, 185, 255, 0.06)",
     gap: 10,
   },
   rememberHeader: {

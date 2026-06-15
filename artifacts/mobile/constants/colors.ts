@@ -1,36 +1,36 @@
 const colors = {
   light: {
-    text: "#f5e8d8",
-    tint: "#d97757",
+    text: "#E8EDF2",
+    tint: "#00B9FF",
 
-    background: "#1a1325",
-    foreground: "#f5e8d8",
+    background: "#0B0F18",
+    foreground: "#E8EDF2",
 
-    card: "rgba(40, 28, 56, 0.8)",
-    cardForeground: "#f5e8d8",
+    card: "#14181F",
+    cardForeground: "#E8EDF2",
 
-    primary: "#d97757",
-    primaryForeground: "#1a1325",
+    primary: "#00B9FF",
+    primaryForeground: "#0B0F18",
 
-    secondary: "rgba(122, 92, 255, 0.18)",
-    secondaryForeground: "#f5e8d8",
+    secondary: "rgba(0, 185, 255, 0.12)",
+    secondaryForeground: "#E8EDF2",
 
-    muted: "rgba(245, 232, 216, 0.12)",
-    mutedForeground: "rgba(245, 232, 216, 0.6)",
+    muted: "rgba(232, 237, 242, 0.08)",
+    mutedForeground: "rgba(232, 237, 242, 0.45)",
 
-    accent: "#7a5cff",
-    accentForeground: "#f5e8d8",
+    accent: "#00B9FF",
+    accentForeground: "#0B0F18",
 
     destructive: "#ef4444",
     destructiveForeground: "#ffffff",
 
-    border: "rgba(245, 232, 216, 0.15)",
-    input: "rgba(245, 232, 216, 0.1)",
+    border: "rgba(0, 185, 255, 0.15)",
+    input: "rgba(232, 237, 242, 0.08)",
 
-    bubbleUser: "#d97757",
-    bubbleUserText: "#1a1325",
-    bubbleAshley: "rgba(245, 232, 216, 0.12)",
-    bubbleAshleyText: "#f5e8d8",
+    bubbleUser: "#14181F",
+    bubbleUserText: "#E8EDF2",
+    bubbleAshley: "#2A2F36",
+    bubbleAshleyText: "#E8EDF2",
   },
 
   radius: 18,
