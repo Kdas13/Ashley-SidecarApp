@@ -221,3 +221,9 @@ id = "DzLA0tuDy36Y5L8E7DnaW"
 uri = "file://docs/ashley-phone-call-protocol.txt"
 type = "text"
 title = "Ashley Phone Call Protocol (updated)"
+
+[[outputs]]
+id = "TZjkuy_-8ISNd6aGZ8r5r"
+uri = "file://docs/ashley-voice-call-phase-0.5-confirmation.txt"
+type = "text"
+title = "Phase 0.5 Codebase Confirmation Report"
