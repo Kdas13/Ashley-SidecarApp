@@ -1,0 +1,255 @@
+ASHLEY VOICE CALL — PHASE 0.5 CODEBASE CONFIRMATION
+Date: 2026-06-15
+For: All agents (Atlas, Coda, Replit Agent, Gemini, Grok)
+================================================================================
+
+PURPOSE
+-------
+Before any code is written for the Ashley Voice Call (Stage 4) system,
+the current state of the v1 codebase must be confirmed.
+
+IMPORTANT CONTEXT: v1 (Ashley Sidecar) has recently received the best
+components from v2 during a migration pass. File locations, schema fields,
+and integration patterns referenced in the original protocol document
+(ashley-phone-call-protocol.txt) may have shifted during this migration.
+
+Do not assume any file reference in the protocol document is still accurate.
+Confirm everything against the live v1 codebase before Phase 1 begins.
+
+This document is a confirmation checklist only.
+No code changes. No installations. No modifications.
+Report findings only.
+
+================================================================================
+
+CONFIRMATION 1 — API SERVER ENTRYPOINT
+---------------------------------------
+Find the main API server entrypoint file.
+
+Confirm:
+  a) Which file is the entrypoint? (expected: artifacts/api-server/src/app.ts
+     but confirm — it may have changed during v2 migration)
+  b) Does app.listen(...) return or expose an http.Server object?
+  c) Is the http.Server instance accessible for ws.Server attachment?
+  d) Report the exact pattern used (e.g. const server = app.listen(...))
+
+Why this matters:
+  WebSocket server must attach to the same http.Server instance.
+  If app.ts does not expose it, refactoring will be needed before Phase 1.
+
+================================================================================
+
+CONFIRMATION 2 — AUTHENTICATION PATTERN
+-----------------------------------------
+Find how existing HTTP routes authenticate requests.
+
+Confirm:
+  a) What headers are used? (expected: X-API-Key + Authorization: Bearer device-id)
+  b) Which file contains the auth middleware or helper?
+  c) Has this pattern changed since the v2 migration?
+  d) Report the exact file path and function name
+
+Why this matters:
+  The WebSocket handshake must replicate this exact pattern.
+  Do not invent a new auth pattern.
+
+================================================================================
+
+CONFIRMATION 3 — ANTHROPIC/CLAUDE INTEGRATION
+-----------------------------------------------
+Find how Claude is currently called in v1.
+
+Confirm:
+  a) Which file contains the Anthropic client? (expected: lib/textLLM.ts
+     but confirm)
+  b) What is the exact current Claude model string being used?
+     (The voice call lane must mirror this exactly — do not hardcode a
+     different model string)
+  c) What environment variables are used for Anthropic?
+     (expected: AI_INTEGRATIONS_ANTHROPIC_BASE_URL +
+     AI_INTEGRATIONS_ANTHROPIC_API_KEY)
+  d) Does the Anthropic client support streaming responses?
+  e) What is the timeout behaviour on long requests?
+  f) Report the exact function signature used for Claude calls
+
+Why this matters:
+  LOCKED DECISION: The voice call text lane always uses Claude/Anthropic.
+  This cannot be changed. Gemini must not be used for voice calls.
+  The model string must be mirrored from the vision lane, not hardcoded.
+
+================================================================================
+
+CONFIRMATION 4 — DEEPGRAM INTEGRATION
+---------------------------------------
+Find the existing Deepgram integration.
+
+Confirm:
+  a) File location (expected: artifacts/api-server/src/lib/deepgram.ts)
+  b) Is it currently batch mode (POST) or streaming (WebSocket)?
+  c) What Deepgram model is being used? (expected: Nova-3)
+  d) What API key environment variable is used?
+  e) Has anything changed in this file since the v2 migration?
+
+Why this matters:
+  The voice call needs a NEW streaming Deepgram adapter alongside the
+  existing batch one. Must not overload or break the existing push-to-talk.
+
+================================================================================
+
+CONFIRMATION 5 — ELEVENLABS INTEGRATION
+-----------------------------------------
+Find the existing ElevenLabs integration.
+
+Confirm:
+  a) File location (expected: artifacts/api-server/src/lib/elevenlabs.ts)
+  b) Is Daisy's voice ID still configured? What is it?
+  c) What environment variable holds the voice ID?
+  d) Is streaming TTS currently implemented or batch only?
+  e) Has anything changed in this file since the v2 migration?
+
+Why this matters:
+  LOCKED DECISION: ElevenLabs Daisy remains the voice for all calls.
+  Must not be replaced with any other voice or provider.
+
+================================================================================
+
+CONFIRMATION 6 — DATABASE / MESSAGE SCHEMA
+--------------------------------------------
+Find the messages table schema.
+
+Confirm:
+  a) What ORM is being used? (expected: Drizzle)
+  b) Does the messages table have a 'source' column?
+  c) If yes: what type is it and what values does it currently accept?
+  d) If no: is there a metadata/jsonb column that could store source?
+  e) Report the exact schema definition file path
+
+Why this matters:
+  Voice call transcripts must be saved with source='voice_call'.
+  Do not fake this in the content text field.
+  If the column does not exist, a migration is needed — flag this clearly.
+
+================================================================================
+
+CONFIRMATION 7 — EXPO AUDIO CAPABILITIES
+------------------------------------------
+Check what audio APIs are currently available in the mobile app.
+
+Confirm:
+  a) What Expo SDK version is installed?
+     (expected: SDK 54 but confirm — may have changed during migration)
+  b) Is expo-audio installed and which version?
+  c) Is there any existing PCM streaming capability or is recording
+     currently file-based?
+  d) Are there any existing audio permission configurations in
+     app.json / app.config.js?
+  e) Report any existing audio-related files in artifacts/mobile/lib/
+
+Why this matters:
+  Android PCM streaming is the highest-risk part of this build.
+  If expo-audio cannot stream raw PCM chunks on the S24 Ultra,
+  a fallback strategy (500ms segmented blobs) must be planned from
+  the start.
+
+================================================================================
+
+CONFIRMATION 8 — FOREGROUND SERVICE FEASIBILITY
+-------------------------------------------------
+Check whether the current Expo setup can support an Android foreground
+service without ejecting to bare workflow.
+
+Confirm:
+  a) Is the app currently Expo managed workflow or bare/dev build?
+  b) Is expo-task-manager or expo-background-fetch installed?
+  c) Are there any existing background task configurations?
+  d) What is Kane's current build setup?
+     (EAS build? Local expo start? Expo Go?)
+
+Why this matters:
+  Screen-off car mode requires foreground service behaviour.
+  If this requires a dev build or bare workflow, that affects the
+  build sequence. This must not block Phase 1-8 but must be planned.
+
+================================================================================
+
+CONFIRMATION 9 — EXISTING VOICE PIPELINE FILES
+------------------------------------------------
+Confirm the current location of voice-related files after the v2 migration.
+
+Check each of the following and report whether they exist, where they are,
+and whether they appear to have been modified from the original v1 versions:
+
+  artifacts/api-server/src/routes/chat.ts
+    - Do STT routes still exist around lines 4142-4310?
+    - Do TTS routes still exist around lines 6432-6546?
+    - Or have these moved?
+
+  artifacts/mobile/lib/voiceOutput.ts
+    - Does this file exist?
+    - Is useTtsPlayback hook present?
+
+  artifacts/mobile/lib/aiClient.ts
+    - Does this file exist?
+    - Is the Stage 4 comment still present around line 428?
+
+  artifacts/mobile/app/chat.tsx
+    - Does this file exist?
+    - Is the mic button still around line 1216?
+
+Why this matters:
+  The protocol document was written against the original v1 structure.
+  After the v2 migration, file locations may have shifted.
+  The agent must not build against stale file references.
+
+================================================================================
+
+CONFIRMATION 10 — ENVIRONMENT VARIABLES
+-----------------------------------------
+Confirm which of the following environment variables are currently set
+in the live v1 Replit environment:
+
+  DEEPGRAM_API_KEY
+  ELEVENLABS_API_KEY
+  ELEVENLABS_VOICE_ID
+  AI_INTEGRATIONS_ANTHROPIC_BASE_URL
+  AI_INTEGRATIONS_ANTHROPIC_API_KEY
+  AI_INTEGRATIONS_GEMINI_BASE_URL
+  AI_INTEGRATIONS_GEMINI_API_KEY
+  API_SECRET
+  DATABASE_URL
+  ASHLEY_MATURE_MODE_AVAILABLE
+  ASHLEY_TEXT_PROVIDER
+
+Report which are present (do not report values).
+Flag any that are missing and required for Phase 1.
+
+================================================================================
+
+OUTPUT FORMAT
+-------------
+Return a numbered confirmation report matching each section above.
+
+For each confirmation:
+  STATUS: CONFIRMED / PARTIAL / NOT FOUND / CHANGED
+  DETAILS: [what was found]
+  FLAG: [anything that needs a decision before Phase 1 starts]
+
+Do not write any code.
+Do not make any changes.
+Report only.
+
+================================================================================
+
+WHAT HAPPENS AFTER THIS
+------------------------
+This report will be circulated to:
+  - Atlas (architecture owner)
+  - Coda (technical reviewer)
+  - Kane (final approval)
+
+Phase 1 does not start until this report has been reviewed and
+all FLAGs have been resolved or accepted.
+
+================================================================================
+END OF PHASE 0.5 DOCUMENT
+================================================================================
