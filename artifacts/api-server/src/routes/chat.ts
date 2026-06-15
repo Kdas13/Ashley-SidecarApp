@@ -71,6 +71,7 @@ import {
   stripForTts,
 } from "../lib/openai";
 import { synthesizeSpeechElevenLabs } from "../lib/elevenlabs.js";
+import { transcribeWithDeepgram } from "../lib/deepgram.js";
 import {
   saveSelfie,
   saveUserImage,
@@ -4137,6 +4138,25 @@ async function maybeRollUpOlderMessages(deviceId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// transcribeAudio — routes to Deepgram nova-3 when DEEPGRAM_API_KEY is set
+// (typically < 500ms), falls back to OpenAI gpt-4o-mini-transcribe otherwise.
+// Both paths return the same plain-text transcript string.
+// ---------------------------------------------------------------------------
+async function transcribeAudio(
+  audioBase64: string,
+  mimeType: string,
+): Promise<string> {
+  if (process.env["DEEPGRAM_API_KEY"]) {
+    return transcribeWithDeepgram(audioBase64, mimeType);
+  }
+  return transcribeAudioBase64(
+    audioBase64,
+    audioFilenameFor(mimeType),
+    mimeType,
+  );
+}
+
 // POST /chat/transcribe — Stage 1 of the staged voice plan.
 //
 // Push-to-talk audio arrives as base64 in JSON. We forward to OpenAI
@@ -4187,14 +4207,10 @@ router.post("/chat/transcribe", async (req, res): Promise<void> => {
   }
   const { audioBase64, mimeType } = parsed.data;
   try {
-    const transcript = await transcribeAudioBase64(
-      audioBase64,
-      audioFilenameFor(mimeType),
-      mimeType,
-    );
+    const transcript = await transcribeAudio(audioBase64, mimeType);
     res.json({ transcript });
   } catch (err) {
-    req.log.error({ err }, "Whisper transcription failed");
+    req.log.error({ err }, "Transcription failed");
     res.status(502).json({
       error: "Couldn't transcribe that — try again or just type it.",
     });
@@ -4265,29 +4281,36 @@ router.post("/chat/transcribe/stream", async (req, res): Promise<void> => {
   });
 
   try {
-    let finalTranscript = "";
-    for await (const ev of transcribeAudioBase64Stream(
-      audioBase64,
-      audioFilenameFor(mimeType),
-      mimeType,
-    )) {
-      if (aborted) return;
-      if (ev.kind === "delta") {
-        writeEvent("delta", { text: ev.text });
-      } else {
-        finalTranscript = ev.text;
-        writeEvent("done", { transcript: ev.text });
+    if (process.env["DEEPGRAM_API_KEY"]) {
+      // Deepgram returns the full transcript in a single fast call (<500ms).
+      // Emit it as a single delta + done so the SSE contract is unchanged.
+      const transcript = await transcribeAudio(audioBase64, mimeType);
+      if (!aborted) {
+        writeEvent("delta", { text: transcript });
+        writeEvent("done", { transcript });
+      }
+    } else {
+      // OpenAI path — streams partial chunks as they arrive.
+      let finalTranscript = "";
+      for await (const ev of transcribeAudioBase64Stream(
+        audioBase64,
+        audioFilenameFor(mimeType),
+        mimeType,
+      )) {
+        if (aborted) return;
+        if (ev.kind === "delta") {
+          writeEvent("delta", { text: ev.text });
+        } else {
+          finalTranscript = ev.text;
+          writeEvent("done", { transcript: ev.text });
+        }
+      }
+      if (!aborted && !res.writableEnded) {
+        writeEvent("done", { transcript: finalTranscript });
       }
     }
-    // Defensive — if the upstream loop exited without emitting "done"
-    // (the SDK should always close with one, but belt-and-braces) push
-    // a done with whatever we accumulated so the client commits a
-    // transcript instead of timing out.
-    if (!aborted && !res.writableEnded) {
-      writeEvent("done", { transcript: finalTranscript });
-    }
   } catch (err) {
-    req.log.error({ err }, "Whisper streaming transcription failed");
+    req.log.error({ err }, "Transcription failed");
     if (!aborted && !res.writableEnded) {
       writeEvent("error", {
         error: "Couldn't transcribe that — try again or just type it.",

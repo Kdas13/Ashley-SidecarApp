@@ -4,3 +4,5 @@
 - [FAL.ai image provider](fal-provider.md) — FAL.ai is the current image provider; lib/fal.ts; ASHLEY_IMAGE_PROVIDER=fal; secret FAL_KEY; model fal-ai/flux-pro/v1.1 with safety_tolerance=6; no OpenAI fallback allowed.
 - [Image provider isolation rule](image-provider-isolation.md) — FAL/Pollo must be sole pipeline; no silent OpenAI fallback; OpenAI image gen has its own moderation that defeats the point of using a permissive provider.
 - [ElevenLabs TTS provider](elevenlabs-tts.md) — ElevenLabs is the TTS provider when ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID secrets are set; falls back to OpenAI tts-1. Auto-speak fires on stream completion. 600-char cap removed.
+- [Deepgram STT provider](deepgram-stt.md) — Deepgram nova-3 is the STT provider when DEEPGRAM_API_KEY is set; falls back to OpenAI Whisper. Routes via transcribeAudio() helper in chat.ts. Both transcribe routes updated.
+- [Replicate LoRA image provider](replicate-provider.md) — Replicate LoRA wired in lib/replicate.ts; activate with ASHLEY_IMAGE_PROVIDER=replicate. REPLICATE_LORA_MODEL can be model-name (prepends REPLICATE_USERNAME) or owner/model or owner/model:version.
