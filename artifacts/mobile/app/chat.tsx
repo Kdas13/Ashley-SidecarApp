@@ -347,6 +347,10 @@ export default function ChatScreen(): React.JSX.Element {
 
   const tts = useTtsPlayback();
   const { speakMessage, getSpeakStatus } = useSpeakMessage(tts);
+  // Stable ref so handleStreamOutcome can call speakMessage without needing
+  // it as a dep (which would re-create the callback on every render).
+  const speakMessageRef = useRef(speakMessage);
+  speakMessageRef.current = speakMessage;
   // Buffer the partial text in a ref too so the onDelta callback (created
   // once per call below) can accumulate without going stale between
   // renders. The setVoicePartial call is just for UI redraw.
@@ -465,6 +469,12 @@ export default function ChatScreen(): React.JSX.Element {
         type: "STREAM_END",
         replyLength: result.ashley?.content?.length ?? 0,
       });
+      // Auto-speak: play the completed reply immediately without requiring
+      // the user to tap the Speak button. Uses the ref so this callback
+      // stays stable (speakMessage not added as a dep).
+      if (result.ashley?.id && result.ashley?.content) {
+        speakMessageRef.current(result.ashley.id, result.ashley.content);
+      }
     },
     [presenceDispatch],
   );

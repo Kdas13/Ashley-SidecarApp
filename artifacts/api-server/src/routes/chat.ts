@@ -68,7 +68,9 @@ import {
   transcribeAudioBase64,
   transcribeAudioBase64Stream,
   synthesizeSpeech,
+  stripForTts,
 } from "../lib/openai";
+import { synthesizeSpeechElevenLabs } from "../lib/elevenlabs.js";
 import {
   saveSelfie,
   saveUserImage,
@@ -6403,6 +6405,22 @@ router.post("/messages/:id/remember", async (req, res): Promise<void> => {
 });
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// synthesizeTts — routes to ElevenLabs when the key is present, falls back
+// to OpenAI tts-1 otherwise. ElevenLabs eleven_turbo_v2_5 is ~300ms to
+// first byte; the OpenAI path can be 30s+ when the Replit proxy forces the
+// gpt-audio fallback.
+// ---------------------------------------------------------------------------
+async function synthesizeTts(text: string): Promise<Buffer> {
+  if (
+    process.env["ELEVENLABS_API_KEY"] &&
+    process.env["ELEVENLABS_VOICE_ID"]
+  ) {
+    return synthesizeSpeechElevenLabs(text);
+  }
+  return synthesizeSpeech(text);
+}
+
 // POST /chat/tts — Stage 3 of the staged voice plan.
 //
 // Speaks one of Ashley's replies aloud. The mobile client opt-ins via a
@@ -6435,11 +6453,13 @@ router.post("/messages/:id/remember", async (req, res): Promise<void> => {
 //     distress, etc — see contentPolicy.ts).
 // ---------------------------------------------------------------------------
 
+// 5 000 chars matches ElevenLabs per-request limit; OpenAI tts-1 supports
+// 4 096 but synthesizeTts() routes to ElevenLabs when the key is present.
 const TtsBodySchema = z.object({
   text: z
     .string()
     .min(1, "text is required")
-    .max(4096, "text exceeds 4096-char TTS cap"),
+    .max(5000, "text exceeds 5000-char TTS cap"),
 });
 
 router.post("/chat/tts", async (req, res): Promise<void> => {
@@ -6456,38 +6476,10 @@ router.post("/chat/tts", async (req, res): Promise<void> => {
     return;
   }
   try {
-    // Strip asterisk markup before synthesis. The TTS engine silently skips
-    // text wrapped in asterisks (*like this*), cutting words from the audio.
-    // We keep the inner words so nothing is lost — e.g. "*smiles softly*"
-    // becomes "smiles softly" rather than disappearing entirely. Any lone
-    // stray asterisks are removed. Leading/trailing whitespace is trimmed.
-    const stripped = parsed.data.text
-      .replace(/\*([^*]*)\*/g, "$1")
-      .replace(/\*/g, "")
-      .replace(/\s{2,}/g, " ")
-      .trim();
-    // Cap the text sent to the model. gpt-audio generates the full audio
-    // buffer before returning, so longer text = longer API wait before the
-    // client hears anything. 600 chars ≈ 40-50s of speech at natural pace.
-    // Cut at the last sentence boundary so the clip ends cleanly.
-    const TTS_CHAR_CAP = 600;
-    let ttsText = stripped;
-    if (stripped.length > TTS_CHAR_CAP) {
-      const window = stripped.slice(0, TTS_CHAR_CAP);
-      const lastBoundary = Math.max(
-        window.lastIndexOf(". "),
-        window.lastIndexOf("! "),
-        window.lastIndexOf("? "),
-        window.lastIndexOf(".\n"),
-        window.lastIndexOf("!\n"),
-        window.lastIndexOf("?\n"),
-      );
-      ttsText =
-        lastBoundary > TTS_CHAR_CAP / 2
-          ? window.slice(0, lastBoundary + 1).trimEnd()
-          : window.trimEnd();
-    }
-    const buf = await synthesizeSpeech(ttsText);
+    // Strip markdown / stage-direction markup so the TTS engine doesn't
+    // read asterisks, brackets, or action descriptions aloud.
+    const ttsText = stripForTts(parsed.data.text);
+    const buf = await synthesizeTts(ttsText);
     res.json({
       audioBase64: buf.toString("base64"),
       mimeType: "audio/mpeg",
@@ -6517,29 +6509,8 @@ router.post("/messages/:messageId/speech", async (req, res): Promise<void> => {
     return;
   }
   try {
-    const stripped = parsed.data.text
-      .replace(/\*([^*]*)\*/g, "$1")
-      .replace(/\*/g, "")
-      .replace(/\s{2,}/g, " ")
-      .trim();
-    const TTS_CHAR_CAP = 600;
-    let ttsText = stripped;
-    if (stripped.length > TTS_CHAR_CAP) {
-      const window = stripped.slice(0, TTS_CHAR_CAP);
-      const lastBoundary = Math.max(
-        window.lastIndexOf(". "),
-        window.lastIndexOf("! "),
-        window.lastIndexOf("? "),
-        window.lastIndexOf(".\n"),
-        window.lastIndexOf("!\n"),
-        window.lastIndexOf("?\n"),
-      );
-      ttsText =
-        lastBoundary > TTS_CHAR_CAP / 2
-          ? window.slice(0, lastBoundary + 1).trimEnd()
-          : window.trimEnd();
-    }
-    const buf = await synthesizeSpeech(ttsText);
+    const ttsText = stripForTts(parsed.data.text);
+    const buf = await synthesizeTts(ttsText);
     res.json({ audioBase64: buf.toString("base64"), mimeType: "audio/mpeg" });
   } catch (err) {
     req.log.error(
