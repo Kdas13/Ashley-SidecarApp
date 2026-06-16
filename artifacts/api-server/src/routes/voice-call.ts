@@ -41,6 +41,12 @@ const VOICE_MAX_TOKENS = 1024;
 /** Claude is aborted after this many ms with a spoken fallback. */
 const CLAUDE_TIMEOUT_MS = 30_000;
 
+// Silence lifecycle thresholds (1I)
+const SILENCE_POLL_MS   =  5_000; // check every 5 seconds
+const SILENCE_WARN_MS   = 30_000; // speak "still there?" after 30s
+const SILENCE_END_MS    = 60_000; // farewell + finalise after 60s
+const SILENCE_FORCE_MS  = 90_000; // failsafe force-close (no TTS)
+
 // ---------------------------------------------------------------------------
 // Voice mode addendum — appended to every voice turn system prompt.
 // ---------------------------------------------------------------------------
@@ -178,6 +184,117 @@ async function speakFallback(
   }
 
   session.currentSpeechId = null;
+}
+
+// ---------------------------------------------------------------------------
+// speakFarewell — spoken goodbye + call_ended frame + session finalise.
+// Called by the silence monitor on the 60s timeout.
+// ---------------------------------------------------------------------------
+async function speakFarewell(session: VoiceSession): Promise<void> {
+  await speakFallback(
+    session,
+    "I'll let you go — call me back when you're ready.",
+  );
+  try {
+    session.ws?.send(
+      JSON.stringify({ type: "call_ended", reason: "silence_timeout" }),
+    );
+  } catch {}
+  registry.finalise(session.sessionId, "silence_timeout");
+}
+
+// ---------------------------------------------------------------------------
+// startSilenceMonitor — starts a recurring 5-second poll that enforces the
+// silence lifecycle:
+//
+//   0–30s  listening, no audio  →  nothing
+//   30s                         →  "still there?" (once only)
+//   60s  (warning already sent) →  farewell TTS + call_ended + finalise
+//   90s  (failsafe)             →  force-close without TTS
+//
+// The poll pauses automatically when state ≠ "listening" (the tick fires but
+// does not measure silence while Claude or TTS is active). The timer is
+// cancelled by registry.finalise() when the session closes.
+//
+// Must be called once per session from index.ts after call_connected is sent.
+// ---------------------------------------------------------------------------
+export function startSilenceMonitor(session: VoiceSession): void {
+  // Clear any existing monitor (shouldn't happen, but safe).
+  if (session.silenceTimer !== null) {
+    clearTimeout(session.silenceTimer);
+    session.silenceTimer = null;
+  }
+
+  function tick(): void {
+    // Clear the handle so finalise() can tell the tick has started.
+    // At the end of tick we check for null to decide whether to reschedule.
+    session.silenceTimer = null;
+
+    // Stop if the session is already gone.
+    if (
+      session.state === "closed" ||
+      session.state === "failed" ||
+      session.state === "closing"
+    ) {
+      return;
+    }
+
+    if (session.state === "listening" || session.state === "active") {
+      // Reference: last real audio, or call start if no audio yet.
+      const ref = session.lastAudioReceivedAt ?? session.callStartTime;
+      const silenceMs = Date.now() - ref.getTime();
+
+      if (silenceMs >= SILENCE_FORCE_MS) {
+        // 90s failsafe — force close without TTS.
+        logger.warn(
+          { deviceId: session.deviceId, silenceMs },
+          "voice: silence failsafe (90s) — force closing session",
+        );
+        try {
+          session.ws?.send(
+            JSON.stringify({ type: "call_ended", reason: "silence_timeout" }),
+          );
+        } catch {}
+        session.silenceTimer = null;
+        registry.finalise(session.sessionId, "silence_timeout_failsafe");
+        return;
+      }
+
+      if (silenceMs >= SILENCE_END_MS && session.silenceWarningSent) {
+        // 60s total silence after warning already sent — speak farewell.
+        logger.info(
+          { deviceId: session.deviceId, silenceMs },
+          "voice: silence 60s — speaking farewell and ending call",
+        );
+        session.silenceTimer = null;
+        void speakFarewell(session).catch((err) => {
+          logger.error({ err, deviceId: session.deviceId }, "voice: speakFarewell failed");
+          registry.finalise(session.sessionId, "silence_timeout");
+        });
+        return;
+      }
+
+      if (silenceMs >= SILENCE_WARN_MS && !session.silenceWarningSent) {
+        // 30s silence — speak the "still there?" warning once.
+        logger.info(
+          { deviceId: session.deviceId, silenceMs },
+          "voice: silence 30s — speaking warning",
+        );
+        session.silenceWarningSent = true;
+        void speakFallback(session, "Still there?").catch((err) => {
+          logger.error({ err, deviceId: session.deviceId }, "voice: silence warning TTS failed");
+        });
+      }
+    }
+
+    // All early-return paths above (force-close, farewell) already return before
+    // reaching here, so unconditional reschedule is correct. The top of the next
+    // tick catches any terminal state that arises between polls.
+    session.silenceTimer = setTimeout(tick, SILENCE_POLL_MS);
+  }
+
+  session.silenceTimer = setTimeout(tick, SILENCE_POLL_MS);
+  logger.info({ deviceId: session.deviceId }, "voice: silence monitor started");
 }
 
 // ---------------------------------------------------------------------------

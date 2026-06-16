@@ -64,6 +64,9 @@ export interface VoiceSession {
   // Recovery (F11)
   recoveryTimer: NodeJS.Timeout | null;
 
+  // Silence lifecycle (1I)
+  silenceTimer: NodeJS.Timeout | null;
+
   // Lifecycle logs
   log: Array<{ event: string; ts: Date; detail?: string }>;
 }
@@ -125,6 +128,7 @@ export function create(deviceId: string, ws: WsLike): VoiceSession {
     consecutiveContextFailures: 0,
 
     recoveryTimer: null,
+    silenceTimer: null,
 
     log: [],
   };
@@ -236,6 +240,11 @@ export function finalise(sessionId: string, reason: string): void {
   if (session.recoveryTimer !== null) {
     clearTimeout(session.recoveryTimer);
     session.recoveryTimer = null;
+  }
+
+  if (session.silenceTimer !== null) {
+    clearTimeout(session.silenceTimer);
+    session.silenceTimer = null;
   }
 
   sessionsBySessionId.delete(sessionId);

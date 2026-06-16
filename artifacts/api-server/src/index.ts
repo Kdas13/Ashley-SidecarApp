@@ -7,7 +7,7 @@ import { timingSafeEqual } from "node:crypto";
 // @ts-ignore – ws ships no bundled types; @types/ws not yet installed
 import { WebSocketServer } from "ws";
 import * as registry from "./lib/VoiceSessionRegistry";
-import { handleVoiceTurn } from "./routes/voice-call";
+import { handleVoiceTurn, startSilenceMonitor } from "./routes/voice-call";
 
 const rawPort = process.env["PORT"];
 
@@ -224,6 +224,9 @@ wss.on("connection", (ws: any, _req: any, deviceId: string) => {
       reconnected: session.connectionGeneration > 1,
     }),
   );
+
+  // 1I: Start (or restart on reconnect) the silence lifecycle monitor.
+  startSilenceMonitor(session);
 
   const sessionId = session.sessionId; // capture for closure safety
 
