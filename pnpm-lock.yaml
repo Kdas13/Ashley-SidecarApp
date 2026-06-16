@@ -201,13 +201,16 @@ importers:
         version: 10.6.2
       openai:
         specifier: ^4.104.0
-        version: 4.104.0(ws@8.20.0)(zod@3.25.76)
+        version: 4.104.0(ws@8.21.0)(zod@3.25.76)
       pino:
         specifier: ^9
         version: 9.14.0
       pino-http:
         specifier: ^10
         version: 10.5.0
+      ws:
+        specifier: ^8.21.0
+        version: 8.21.0
       zod:
         specifier: 'catalog:'
         version: 3.25.76
@@ -224,6 +227,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 25.3.5
+      '@types/ws':
+        specifier: ^8
+        version: 8.18.1
       esbuild:
         specifier: 0.27.3
         version: 0.27.3
@@ -258,8 +264,8 @@ importers:
         specifier: ~19.0.22
         version: 19.0.22(expo@54.0.34)(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))
       expo-image-manipulator:
-        specifier: ^56.0.18
-        version: 56.0.18(expo@54.0.34)
+        specifier: ~14.0.8
+        version: 14.0.8(expo@54.0.34)
       expo-media-library:
         specifier: ~18.2.1
         version: 18.2.1(expo@54.0.34)(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))
@@ -641,7 +647,7 @@ importers:
         version: 8.0.7
       openai:
         specifier: ^4.104.0
-        version: 4.104.0(ws@8.20.0)(zod@3.25.76)
+        version: 4.104.0(ws@8.21.0)(zod@3.25.76)
       pdf-lib:
         specifier: ^1.17.1
         version: 1.17.1
@@ -2996,6 +3002,9 @@ packages:
   '@types/web-push@3.6.4':
     resolution: {integrity: sha512-GnJmSr40H3RAnj0s34FNTcJi1hmWFV5KXugE0mYWnYhgTAHLJ/dJKAwDmvPJYMke0RplY2XE9LnM4hqSqKIjhQ==}
 
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
+
   '@types/yargs-parser@21.0.3':
     resolution: {integrity: sha512-I4q9QU9MQv4oEOz4tAHJtNz1cwuLxn2F3xcc2iV5WdqLPpUnj30aUuxt1mAxYTG+oe8CZMV/+6rU4S4gRDzqtQ==}
 
@@ -4273,18 +4282,13 @@ packages:
     peerDependencies:
       expo: '*'
 
-  expo-image-loader@56.0.3:
-    resolution: {integrity: sha512-JgUo4fUeU1ZC+z8iBFj8v7yoGQnZrLbOVPyNE+DWVrld55F2F6R1ck+rmdm/8TNWLz1LhNQfD7c3XYP1ZikxXA==}
-    peerDependencies:
-      expo: '*'
-
   expo-image-loader@6.0.0:
     resolution: {integrity: sha512-nKs/xnOGw6ACb4g26xceBD57FKLFkSwEUTDXEDF3Gtcu3MqF3ZIYd3YM+sSb1/z9AKV1dYT7rMSGVNgsveXLIQ==}
     peerDependencies:
       expo: '*'
 
-  expo-image-manipulator@56.0.18:
-    resolution: {integrity: sha512-UM0e6JVRoShf2t3fXJ4F6AyUB5129O1iGEotZk6cCyBbyIBKKq5EGPYlQ0pZGemQIJVagtofXZDOmpqOj98MMA==}
+  expo-image-manipulator@14.0.8:
+    resolution: {integrity: sha512-sXsXjm7rIxLWZe0j2A41J/Ph53PpFJRdyzJ3EQ/qetxLUvS2m3K1sP5xy37px43qCf0l79N/i6XgFgenFV36/Q==}
     peerDependencies:
       expo: '*'
 
@@ -7466,6 +7470,18 @@ packages:
       utf-8-validate:
         optional: true
 
+  ws@8.21.0:
+    resolution: {integrity: sha512-Vsp28b7DRcimFQvrqu2Wek3z1iYxDCWqHYB8Qsnk/S4RfaCQzPGPyBNuVjJV3cd6UiKtUtp6sNM77gWvzcCH+g==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
   xcode@3.0.1:
     resolution: {integrity: sha512-kCz5k7J7XbJtjABOvkc5lJmkiDh8VhjVCGNiqdKCscmVpdVUpEAyXv1xmCLkQJ5dsHqx3IPO4XW+NTDhU/fatA==}
     engines: {node: '>=10.0.0'}
@@ -8999,7 +9015,7 @@ snapshots:
       google-auth-library: 10.6.2
       p-retry: 4.6.2
       protobufjs: 7.5.6
-      ws: 8.20.0
+      ws: 8.21.0
     transitivePeerDependencies:
       - bufferutil
       - supports-color
@@ -10841,6 +10857,10 @@ snapshots:
     dependencies:
       '@types/node': 25.3.5
 
+  '@types/ws@8.18.1':
+    dependencies:
+      '@types/node': 25.3.5
+
   '@types/yargs-parser@21.0.3': {}
 
   '@types/yargs@17.0.35':
@@ -12145,18 +12165,14 @@ snapshots:
     dependencies:
       expo: 54.0.34(@babel/core@7.29.0)(@expo/metro-runtime@6.1.2)(expo-router@6.0.23)(graphql@16.8.1)(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3)
 
-  expo-image-loader@56.0.3(expo@54.0.34):
-    dependencies:
-      expo: 54.0.34(@babel/core@7.29.0)(@expo/metro-runtime@6.1.2)(expo-router@6.0.23)(graphql@16.8.1)(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3)
-
   expo-image-loader@6.0.0(expo@54.0.34):
     dependencies:
       expo: 54.0.34(@babel/core@7.29.0)(@expo/metro-runtime@6.1.2)(expo-router@6.0.23)(graphql@16.8.1)(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3)
 
-  expo-image-manipulator@56.0.18(expo@54.0.34):
+  expo-image-manipulator@14.0.8(expo@54.0.34):
     dependencies:
       expo: 54.0.34(@babel/core@7.29.0)(@expo/metro-runtime@6.1.2)(expo-router@6.0.23)(graphql@16.8.1)(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3)
-      expo-image-loader: 56.0.3(expo@54.0.34)
+      expo-image-loader: 6.0.0(expo@54.0.34)
 
   expo-image-picker@17.0.11(expo@54.0.34):
     dependencies:
@@ -14016,7 +14032,7 @@ snapshots:
       is-docker: 2.2.1
       is-wsl: 2.2.0
 
-  openai@4.104.0(ws@8.20.0)(zod@3.25.76):
+  openai@4.104.0(ws@8.21.0)(zod@3.25.76):
     dependencies:
       '@types/node': 18.19.130
       '@types/node-fetch': 2.6.13
@@ -14026,7 +14042,7 @@ snapshots:
       formdata-node: 4.4.1
       node-fetch: 2.7.0
     optionalDependencies:
-      ws: 8.20.0
+      ws: 8.21.0
       zod: 3.25.76
     transitivePeerDependencies:
       - encoding
@@ -15720,6 +15736,8 @@ snapshots:
   ws@7.5.10: {}
 
   ws@8.20.0: {}
+
+  ws@8.21.0: {}
 
   xcode@3.0.1:
     dependencies:
