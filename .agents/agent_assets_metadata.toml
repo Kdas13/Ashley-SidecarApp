@@ -233,3 +233,9 @@ id = "w4fBjixbb3a_YywrwBSB_"
 uri = "file://docs/ashley-image-pipeline-investigation.txt"
 type = "text"
 title = "Ashley Image Pipeline — Investigation Findings"
+
+[[outputs]]
+id = "FVgbnbpCB2VNmyXaIGe-R"
+uri = "file://ashley-voice-call-phase1.txt"
+type = "text"
+title = "Ashley Voice Call — Phase 1 complete (1A–1I)"

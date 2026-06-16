@@ -1,0 +1,1715 @@
+================================================================================
+ASHLEY SIDECAR — VOICE CALL PROTOCOL PHASE 1
+Checkpoints 1A through 1I  |  Complete as of 2026-06-16
+================================================================================
+
+Five files ship Phase 1. Dependency order:
+
+  1. lib/VoiceSessionRegistry.ts   — all session state (1A, 1B, 1H, 1I)
+  2. lib/deepgramStream.ts         — streaming STT adapter (1C)
+  3. lib/elevenlabsStream.ts       — streaming TTS adapter (1E)
+  4. routes/voice-call.ts          — turn pipeline (1D, 1E, 1F, 1G, 1I)
+  5. index.ts                      — WS upgrade + connection handler (1A, 1G, 1H, 1I)
+
+Checkpoint summary
+──────────────────
+1A  WebSocket upgrade, API-key auth, device-id validation
+1B  VoiceSessionRegistry — full session lifecycle
+1C  Deepgram streaming STT adapter (createDeepgramStream)
+1D  Context load + Claude streaming call (handleVoiceTurn)
+1E  ElevenLabs streaming TTS with binary frame ownership protocol
+1F  Per-turn DB write — user row on speech_final, assistant row after TTS
+1G  Interrupt handling — cancelCurrentTurn + interrupt_ack, session-state guard
+1H  Reconnect recovery — 60s window, generation increment, >15 rejection
+1I  Silence lifecycle — 30s "still there?", 60s farewell, 90s failsafe
+
+================================================================================
+FILE 1 — artifacts/api-server/src/lib/VoiceSessionRegistry.ts
+================================================================================
+
+// ---------------------------------------------------------------------------
+// VoiceSessionRegistry — Phase 1 voice call session state manager.
+//
+// All voice session state lives here. Nothing lives in route closures.
+// This file has NO Express or WS imports so it can be unit-tested in
+// isolation. The ws socket is typed as WsLike (a minimal duck-type).
+//
+// Lifecycle log events (append-only per session):
+//   CALL_CREATED, CALL_RECOVERING, CALL_RECONNECTED, TRANSCRIPT_FINAL,
+//   CONTEXT_LOADED, CLAUDE_STARTED, CLAUDE_FINISHED, TTS_STARTED,
+//   TTS_FINISHED, CALL_ENDED
+// ---------------------------------------------------------------------------
+
+// Minimal duck-type for the WebSocket — avoids importing 'ws' here so the
+// file stays testable without Express/WS in scope.
+export interface WsLike {
+  send(data: string | Buffer): void;
+  close(): void;
+}
+
+export type VoiceSessionState =
+  | "active"
+  | "listening"
+  | "llm_pending"
+  | "tts_streaming"
+  | "interrupted_cleanup"
+  | "recovering"
+  | "closing"
+  | "closed"
+  | "failed";
+
+export interface VoiceSession {
+  // Identity
+  sessionId: string;
+  deviceId: string;
+  connectionGeneration: number;
+  sequenceNumber: number;
+
+  // State
+  state: VoiceSessionState;
+  ws: WsLike | null;
+
+  // Ownership tracking (F12, F13, F14, F15)
+  currentSpeechId: string | null;
+  currentTurnId: string | null;
+  currentResponseId: string | null;
+  currentAbortController: AbortController | null;
+  processedUtteranceIds: Set<string>;
+  completedTurnIds: Set<string>; // idempotency protection
+
+  // Timing
+  callStartTime: Date;
+  lastAudioReceivedAt: Date | null;
+  silenceWarningSent: boolean; // reset only on real user audio
+
+  // Cost tracking (F19)
+  totalTokensUsed: number;
+  totalTtsChars: number;
+  reconnectAttempts: number;
+
+  // Context failure tracking (Checkpoint 1D)
+  consecutiveContextFailures: number;
+
+  // Recovery (F11)
+  recoveryTimer: NodeJS.Timeout | null;
+
+  // Silence lifecycle (1I)
+  silenceTimer: NodeJS.Timeout | null;
+
+  // Lifecycle logs
+  log: Array<{ event: string; ts: Date; detail?: string }>;
+}
+
+// ---------------------------------------------------------------------------
+// Storage — module-level maps (singleton per process).
+// ---------------------------------------------------------------------------
+const sessionsBySessionId = new Map<string, VoiceSession>();
+const sessionIdByDeviceId = new Map<string, string>();
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function generateSessionId(): string {
+  return crypto.randomUUID();
+}
+
+function appendLog(
+  session: VoiceSession,
+  event: string,
+  detail?: string,
+): void {
+  session.log.push({ event, ts: new Date(), detail });
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a new session for a freshly connected device. Stores in both maps.
+ * Logs CALL_CREATED.
+ */
+export function create(deviceId: string, ws: WsLike): VoiceSession {
+  const session: VoiceSession = {
+    sessionId: generateSessionId(),
+    deviceId,
+    connectionGeneration: 1,
+    sequenceNumber: 0,
+
+    state: "active",
+    ws,
+
+    currentSpeechId: null,
+    currentTurnId: null,
+    currentResponseId: null,
+    currentAbortController: null,
+    processedUtteranceIds: new Set(),
+    completedTurnIds: new Set(),
+
+    callStartTime: new Date(),
+    lastAudioReceivedAt: null,
+    silenceWarningSent: false,
+
+    totalTokensUsed: 0,
+    totalTtsChars: 0,
+    reconnectAttempts: 0,
+    consecutiveContextFailures: 0,
+
+    recoveryTimer: null,
+    silenceTimer: null,
+
+    log: [],
+  };
+
+  sessionsBySessionId.set(session.sessionId, session);
+  sessionIdByDeviceId.set(deviceId, session.sessionId);
+
+  appendLog(session, "CALL_CREATED", `deviceId=${deviceId}`);
+  return session;
+}
+
+/**
+ * Look up a session by deviceId. Returns null if none exists.
+ */
+export function findByDeviceId(deviceId: string): VoiceSession | null {
+  const sessionId = sessionIdByDeviceId.get(deviceId);
+  if (!sessionId) return null;
+  return sessionsBySessionId.get(sessionId) ?? null;
+}
+
+/**
+ * Look up a session by sessionId. Returns null if none exists.
+ */
+export function findBySessionId(sessionId: string): VoiceSession | null {
+  return sessionsBySessionId.get(sessionId) ?? null;
+}
+
+/**
+ * Attempt to reclaim a recovering session for a reconnecting device.
+ * Returns the reclaimed session, or null if no recovering session found.
+ *
+ * ATOMIC: clears recovery timer, increments connectionGeneration, sets
+ * state to "active", and attaches the new WS — all before returning.
+ * Logs CALL_RECONNECTED.
+ */
+export function reclaimSession(
+  deviceId: string,
+  ws: WsLike,
+): VoiceSession | null {
+  const session = findByDeviceId(deviceId);
+  if (!session || session.state !== "recovering") return null;
+
+  // Atomically clear timer + increment generation + attach new ws.
+  if (session.recoveryTimer !== null) {
+    clearTimeout(session.recoveryTimer);
+    session.recoveryTimer = null;
+  }
+  session.connectionGeneration += 1;
+  session.state = "active";
+  session.ws = ws;
+  session.reconnectAttempts += 1;
+
+  appendLog(
+    session,
+    "CALL_RECONNECTED",
+    `gen=${session.connectionGeneration} reconnects=${session.reconnectAttempts}`,
+  );
+  return session;
+}
+
+/**
+ * Mark a session as recovering after a WebSocket disconnect.
+ * Starts a 60-second timer that calls finalise() if no reconnect arrives.
+ * The timer re-checks state AND connectionGeneration before finalising
+ * so a concurrent reclaimSession() wins the race cleanly.
+ * Logs CALL_RECOVERING.
+ */
+export function markRecovering(sessionId: string): void {
+  const session = sessionsBySessionId.get(sessionId);
+  if (!session) return;
+
+  session.state = "recovering";
+  session.ws = null;
+
+  // Snapshot the generation at the time we start the timer.
+  const generationAtStart = session.connectionGeneration;
+
+  if (session.recoveryTimer !== null) {
+    clearTimeout(session.recoveryTimer);
+  }
+
+  session.recoveryTimer = setTimeout(() => {
+    const current = sessionsBySessionId.get(sessionId);
+    if (!current) return;
+    // Only finalise if state is still "recovering" AND generation hasn't
+    // changed (i.e. reclaimSession() hasn't already run).
+    if (
+      current.state === "recovering" &&
+      current.connectionGeneration === generationAtStart
+    ) {
+      finalise(sessionId, "recovery_timeout");
+    }
+  }, 60_000);
+
+  appendLog(session, "CALL_RECOVERING", `gen=${session.connectionGeneration}`);
+}
+
+/**
+ * Permanently close and remove a session.
+ * Clears the recovery timer, removes from both maps, and logs CALL_ENDED.
+ * Safe to call multiple times (idempotent via map removal).
+ */
+export function finalise(sessionId: string, reason: string): void {
+  const session = sessionsBySessionId.get(sessionId);
+  if (!session) return;
+
+  session.state = "closed";
+
+  if (session.recoveryTimer !== null) {
+    clearTimeout(session.recoveryTimer);
+    session.recoveryTimer = null;
+  }
+
+  if (session.silenceTimer !== null) {
+    clearTimeout(session.silenceTimer);
+    session.silenceTimer = null;
+  }
+
+  sessionsBySessionId.delete(sessionId);
+  sessionIdByDeviceId.delete(session.deviceId);
+
+  appendLog(session, "CALL_ENDED", `reason=${reason}`);
+}
+
+/**
+ * Increment and return the session's sequence number.
+ */
+export function incrementSequence(session: VoiceSession): number {
+  session.sequenceNumber += 1;
+  return session.sequenceNumber;
+}
+
+/**
+ * Validate that an incoming message belongs to the current session
+ * generation. Returns false (and logs) for stale messages without throwing.
+ */
+export function validateMessage(
+  session: VoiceSession,
+  msg: { sessionId: string; connectionGeneration: number },
+): boolean {
+  if (msg.sessionId !== session.sessionId) {
+    appendLog(
+      session,
+      "VALIDATE_FAIL",
+      `sessionId mismatch: got=${msg.sessionId}`,
+    );
+    return false;
+  }
+  if (msg.connectionGeneration < session.connectionGeneration) {
+    appendLog(
+      session,
+      "VALIDATE_STALE",
+      `gen: got=${msg.connectionGeneration} current=${session.connectionGeneration}`,
+    );
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Cancel the current in-flight turn atomically and idempotently.
+ * Safe to call multiple times — clears ownership fields and aborts the
+ * AbortController if one is set. Never throws.
+ */
+export function cancelCurrentTurn(
+  session: VoiceSession,
+  reason: string,
+): void {
+  const hadTurn = session.currentTurnId !== null;
+
+  // Clear ownership fields first so any concurrent callbacks that check
+  // them see null before the AbortController fires.
+  session.currentSpeechId = null;
+  session.currentTurnId = null;
+  session.currentResponseId = null;
+
+  // Abort any active controller. AbortController.abort() is safe to call
+  // multiple times; the second call is a no-op.
+  if (session.currentAbortController !== null) {
+    try {
+      session.currentAbortController.abort();
+    } catch {
+      // abort() never throws in practice, but guard anyway.
+    }
+    session.currentAbortController = null;
+  }
+
+  if (hadTurn) {
+    appendLog(session, "TURN_CANCELLED", `reason=${reason}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Convenience: export the registry as a namespace-style object so callers
+// can do: import * as registry from "./VoiceSessionRegistry"
+// ---------------------------------------------------------------------------
+export const registry = {
+  create,
+  findByDeviceId,
+  findBySessionId,
+  reclaimSession,
+  markRecovering,
+  finalise,
+  incrementSequence,
+  validateMessage,
+  cancelCurrentTurn,
+};
+
+================================================================================
+FILE 2 — artifacts/api-server/src/lib/deepgramStream.ts
+================================================================================
+
+// ---------------------------------------------------------------------------
+// deepgramStream.ts — Streaming Deepgram STT adapter for voice calls.
+//
+// EXISTING deepgram.ts IS FROZEN. Do NOT modify it.
+// This file is the NEW streaming-only adapter used by the voice-call route.
+//
+// Connects to wss://api.deepgram.com/v1/listen and forwards binary audio
+// frames from the client. Fires callbacks for partial and final transcripts.
+//
+// Reconnect policy: one automatic reconnect on error. If the reconnect also
+// fails, onFatalError fires and the call must end gracefully.
+//
+// Required env var: DEEPGRAM_API_KEY
+// ---------------------------------------------------------------------------
+
+import { logger } from "./logger.js";
+// @ts-ignore – ws has no bundled types; @types/ws not yet installed
+import WsConstructor from "ws";
+
+// ---------------------------------------------------------------------------
+// Minimal inline types for the ws WebSocket CLIENT (not the server-side WS).
+// We only need the subset of the API we actually call.
+// ---------------------------------------------------------------------------
+interface WsClient {
+  readyState: number;
+  on(event: "open", cb: () => void): this;
+  on(event: "message", cb: (data: Buffer | string) => void): this;
+  on(event: "close", cb: (code: number, reason: Buffer) => void): this;
+  on(event: "error", cb: (err: Error) => void): this;
+  send(data: Buffer | string): void;
+  close(code?: number): void;
+  removeAllListeners(): this;
+}
+
+const WS_OPEN = 1; // ws.readyState value for an open connection
+
+const DEEPGRAM_STREAM_URL = "wss://api.deepgram.com/v1/listen";
+const DEEPGRAM_PARAMS =
+  "model=nova-3&smart_format=true&punctuate=true&interim_results=true";
+
+// Max audio frames to queue while the WS is connecting/reconnecting.
+// Prevents unbounded memory growth if the caller sends audio before open.
+const MAX_QUEUE_LENGTH = 200;
+
+// ---------------------------------------------------------------------------
+// Deepgram streaming response shape — only the fields we use.
+// ---------------------------------------------------------------------------
+interface DgResult {
+  type?: string;
+  is_final?: boolean;
+  speech_final?: boolean;
+  channel?: {
+    alternatives?: Array<{
+      transcript?: string;
+      words?: Array<unknown>;
+    }>;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Public type
+// ---------------------------------------------------------------------------
+export interface DeepgramStream {
+  sendAudio(chunk: Buffer): void;
+  close(): void;
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+export function createDeepgramStream(
+  onFinal: (text: string, utteranceId: string) => void,
+  onPartial: (text: string) => void,
+  onError: (err: Error) => void,
+  onFatalError: (err: Error) => void,
+): DeepgramStream {
+  const apiKey = process.env["DEEPGRAM_API_KEY"];
+  if (!apiKey) {
+    // Defer so caller can attach handlers before this fires.
+    setTimeout(
+      () => onFatalError(new Error("DEEPGRAM_API_KEY not configured")),
+      0,
+    );
+    return { sendAudio: () => {}, close: () => {} };
+  }
+
+  let ws: WsClient | null = null;
+  let audioQueue: Buffer[] = [];
+  let closing = false;
+
+  // ---------------------------------------------------------------------------
+  // Internal: open a new WebSocket connection to Deepgram.
+  // isReconnect=false  → first attempt; calls onError then tries again.
+  // isReconnect=true   → reconnect attempt; calls onFatalError on failure.
+  // ---------------------------------------------------------------------------
+  function connect(isReconnect: boolean): WsClient {
+    const url = `${DEEPGRAM_STREAM_URL}?${DEEPGRAM_PARAMS}`;
+    const sock = new (WsConstructor as new (
+      url: string,
+      opts: object,
+    ) => WsClient)(url, {
+      headers: { Authorization: `Token ${apiKey}` },
+    });
+
+    sock.on("open", () => {
+      logger.info(
+        { isReconnect },
+        "deepgramStream: connected to Deepgram streaming endpoint",
+      );
+      // Flush any audio frames that arrived while connecting.
+      const queued = audioQueue;
+      audioQueue = [];
+      for (const chunk of queued) {
+        try {
+          sock.send(chunk);
+        } catch (sendErr) {
+          logger.warn({ err: sendErr }, "deepgramStream: failed to flush queued frame");
+        }
+      }
+    });
+
+    sock.on("message", (raw: Buffer | string) => {
+      let data: DgResult;
+      try {
+        data = JSON.parse(
+          Buffer.isBuffer(raw) ? raw.toString("utf8") : raw,
+        ) as DgResult;
+      } catch {
+        return; // binary keepalive / non-JSON frame — ignore
+      }
+
+      if (data.type !== "Results") return;
+
+      const alt = data.channel?.alternatives?.[0];
+      const transcript = (alt?.transcript ?? "").trim();
+      const words = alt?.words ?? [];
+      const isFinal = data.is_final === true;
+      const speechFinal = data.speech_final === true;
+
+      if (speechFinal) {
+        logger.info(
+          { transcriptPreview: transcript.slice(0, 80), wordCount: words.length },
+          "deepgramStream: speech_final received",
+        );
+        // Ignore empty / whitespace finals.
+        if (!transcript) return;
+        // Ignore very short noise (< 1 word).
+        if (words.length === 0) return;
+        const utteranceId = crypto.randomUUID();
+        onFinal(transcript, utteranceId);
+      } else if (isFinal) {
+        if (!transcript) return;
+        logger.info(
+          { transcriptPreview: transcript.slice(0, 80) },
+          "deepgramStream: is_final (interim) received",
+        );
+        onPartial(transcript);
+      }
+    });
+
+    sock.on("close", (code: number, reason: Buffer) => {
+      const reasonStr = reason.toString();
+      logger.info({ code, reason: reasonStr }, "deepgramStream: ws closed");
+      // Unexpected close (caller didn't call close()) — treat as error.
+      if (!closing) {
+        const err = new Error(
+          `Deepgram WS closed unexpectedly: code=${code} reason=${reasonStr}`,
+        );
+        if (!isReconnect) {
+          onError(err);
+          // Attempt one reconnect.
+          logger.info("deepgramStream: attempting reconnect after unexpected close");
+          ws = connect(true);
+        } else {
+          onFatalError(err);
+        }
+      }
+    });
+
+    sock.on("error", (err: Error) => {
+      logger.error(
+        { err, isReconnect },
+        "deepgramStream: ws error",
+      );
+      if (closing) return;
+
+      if (!isReconnect) {
+        onError(err);
+        logger.info("deepgramStream: attempting reconnect after error");
+        ws = connect(true);
+      } else {
+        onFatalError(err);
+      }
+    });
+
+    return sock;
+  }
+
+  ws = connect(false);
+
+  // ---------------------------------------------------------------------------
+  // Public interface
+  // ---------------------------------------------------------------------------
+  return {
+    sendAudio(chunk: Buffer): void {
+      if (closing) return;
+      logger.debug({ bytes: chunk.byteLength }, "deepgramStream: sendAudio");
+      if (ws && ws.readyState === WS_OPEN) {
+        try {
+          ws.send(chunk);
+        } catch (err) {
+          logger.warn({ err }, "deepgramStream: send failed, queuing frame");
+          if (audioQueue.length < MAX_QUEUE_LENGTH) {
+            audioQueue.push(chunk);
+          }
+        }
+      } else {
+        // Queue while connecting or reconnecting.
+        if (audioQueue.length < MAX_QUEUE_LENGTH) {
+          audioQueue.push(chunk);
+        } else {
+          logger.warn("deepgramStream: audio queue full, dropping frame");
+        }
+      }
+    },
+
+    close(): void {
+      closing = true;
+      audioQueue = [];
+      if (ws) {
+        try {
+          ws.removeAllListeners();
+          ws.close(1000);
+        } catch {
+          // ignore close errors
+        }
+        ws = null;
+      }
+      logger.info("deepgramStream: closed by caller");
+    },
+  };
+}
+
+================================================================================
+FILE 3 — artifacts/api-server/src/lib/elevenlabsStream.ts
+================================================================================
+
+// ---------------------------------------------------------------------------
+// elevenlabsStream.ts — Streaming ElevenLabs TTS adapter for voice calls.
+//
+// EXISTING elevenlabs.ts IS FROZEN. Do NOT modify it.
+// This file is the NEW streaming-only adapter used by the voice-call route.
+//
+// Streams MP3 audio chunks from the ElevenLabs /stream endpoint using the
+// same model and voice as the existing batch function.
+//
+// The binary frame ownership protocol (speech_start / tts_done / speechId
+// per-chunk check) lives in routes/voice-call.ts, not here — this file is
+// a pure HTTP-streaming adapter.
+//
+// Required env vars: ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
+// ---------------------------------------------------------------------------
+
+import { logger } from "./logger.js";
+
+const ELEVENLABS_API = "https://api.elevenlabs.io/v1";
+
+/**
+ * Stream MP3 audio chunks for the given text using ElevenLabs turbo model.
+ *
+ * Yields Buffer chunks as they arrive from the HTTP response body.
+ * Throws if the API returns a non-2xx status or the response body is null.
+ * Respects the optional AbortSignal — the for-await caller will see an
+ * AbortError if the signal fires mid-stream.
+ */
+export async function* streamSpeechElevenLabs(
+  text: string,
+  signal?: AbortSignal,
+): AsyncGenerator<Buffer, void, void> {
+  const apiKey = process.env["ELEVENLABS_API_KEY"];
+  const voiceId = process.env["ELEVENLABS_VOICE_ID"];
+  if (!apiKey || !voiceId) {
+    throw new Error(
+      "ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID must both be set as secrets",
+    );
+  }
+
+  const url = `${ELEVENLABS_API}/text-to-speech/${voiceId}/stream`;
+
+  logger.debug(
+    { textLen: text.length, voiceId },
+    "elevenlabsStream: starting request",
+  );
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "xi-api-key": apiKey,
+      "Content-Type": "application/json",
+      Accept: "audio/mpeg",
+    },
+    body: JSON.stringify({
+      text,
+      model_id: "eleven_turbo_v2_5",
+      output_format: "mp3_44100_128",
+    }),
+    signal,
+  });
+
+  if (!response.ok) {
+    const msg = await response.text().catch(() => response.statusText);
+    throw new Error(`ElevenLabs stream error ${response.status}: ${msg}`);
+  }
+
+  if (!response.body) {
+    throw new Error("ElevenLabs stream: response body is null");
+  }
+
+  const reader = response.body.getReader();
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value && value.length > 0) {
+        totalBytes += value.length;
+        yield Buffer.from(value);
+      }
+    }
+    logger.debug(
+      { totalBytes },
+      "elevenlabsStream: stream complete",
+    );
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+================================================================================
+FILE 4 — artifacts/api-server/src/routes/voice-call.ts
+================================================================================
+
+// ---------------------------------------------------------------------------
+// voice-call.ts — Phase 1 voice call turn pipeline.
+//
+// Owns: loadVoiceContext, VOICE_MODE_ADDENDUM, stripMarkdown, handleVoiceTurn.
+//
+// Checkpoint coverage:
+//   1D — context reload + Claude call (this file)
+//   1E — ElevenLabs streaming (wired into handleVoiceTurn in 1E)
+//   1F — per-turn DB write (wired in 1F)
+//   1G — interrupt handling (wired in 1G)
+//
+// TRAP 2: no session state in route closures — all state in VoiceSessionRegistry.
+// TRAP 4: ANTHROPIC_CHAT_MODEL is never hardcoded — forceProvider resolves it.
+// ---------------------------------------------------------------------------
+
+import { db } from "@workspace/db";
+import {
+  messagesTable,
+  memoriesTable,
+  conversationSummariesTable,
+} from "@workspace/db";
+import { eq, desc } from "drizzle-orm";
+import { getOrCreateProfileFor } from "../lib/profile";
+import { buildSystemPrompt } from "../lib/ashleyCoreSpec";
+import { streamChatText, type LLMMessage } from "../lib/textLLM";
+import { streamSpeechElevenLabs } from "../lib/elevenlabsStream";
+import * as registry from "../lib/VoiceSessionRegistry";
+import type { VoiceSession } from "../lib/VoiceSessionRegistry";
+import { logger } from "../lib/logger";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Mirrors HISTORY_WINDOW from chat.ts — must stay in sync. */
+const HISTORY_WINDOW = 80;
+
+/** Max tokens for a voice reply. Intentionally small — voice turns are brief. */
+const VOICE_MAX_TOKENS = 1024;
+
+/** Claude is aborted after this many ms with a spoken fallback. */
+const CLAUDE_TIMEOUT_MS = 30_000;
+
+// Silence lifecycle thresholds (1I)
+const SILENCE_POLL_MS   =  5_000; // check every 5 seconds
+const SILENCE_WARN_MS   = 30_000; // speak "still there?" after 30s
+const SILENCE_END_MS    = 60_000; // farewell + finalise after 60s
+const SILENCE_FORCE_MS  = 90_000; // failsafe force-close (no TTS)
+
+// ---------------------------------------------------------------------------
+// Voice mode addendum — appended to every voice turn system prompt.
+// ---------------------------------------------------------------------------
+export const VOICE_MODE_ADDENDUM = `
+## Voice Call Mode
+This is a live voice call. The user is speaking; you speak back via
+text-to-speech.
+- Keep each reply to 1-3 sentences unless the question requires more.
+- No markdown. No bullet points. No asterisks. No numbered lists.
+- Do not narrate actions in asterisks (*smiles*, *laughs*).
+- Speak naturally — full sentences, not fragments.
+- Do not mention you are an AI or that this is a voice call unless the
+  user raises it.
+`.trim();
+
+// ---------------------------------------------------------------------------
+// loadVoiceContext — replicates the exact Promise.all pattern from chat.ts.
+// Context is loaded fresh on EVERY turn — never cached at call start.
+// ---------------------------------------------------------------------------
+export async function loadVoiceContext(deviceId: string) {
+  const profile = await getOrCreateProfileFor(deviceId);
+
+  const [memories, summaries, history] = await Promise.all([
+    db
+      .select()
+      .from(memoriesTable)
+      .where(eq(memoriesTable.deviceId, deviceId)),
+    db
+      .select()
+      .from(conversationSummariesTable)
+      .where(eq(conversationSummariesTable.deviceId, deviceId)),
+    // Most-recent HISTORY_WINDOW messages; reversed below to chronological order.
+    db
+      .select()
+      .from(messagesTable)
+      .where(eq(messagesTable.deviceId, deviceId))
+      .orderBy(desc(messagesTable.createdAt))
+      .limit(HISTORY_WINDOW),
+  ]);
+
+  history.reverse(); // newest-last for the Claude prompt
+  return { profile, memories, summaries, history };
+}
+
+// ---------------------------------------------------------------------------
+// stripMarkdown — removes markdown syntax before sending text to TTS.
+// ---------------------------------------------------------------------------
+export function stripMarkdown(text: string): string {
+  return (
+    text
+      // Stage directions: *smiles*, _nods_, etc.
+      .replace(/\*[^*\n]+\*/g, "")
+      .replace(/_[^_\n]+_/g, "")
+      // Heading pound signs
+      .replace(/^#{1,6}\s+/gm, "")
+      // Bullet list hyphens / dashes at line start
+      .replace(/^[-–•]\s+/gm, "")
+      // Numbered lists
+      .replace(/^\d+\.\s+/gm, "")
+      // Remaining stray asterisks (bold/italic remnants)
+      .replace(/\*+/g, "")
+      // Collapse excess blank lines
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+  );
+}
+
+// ---------------------------------------------------------------------------
+// speakFallback — send a short spoken fallback to the client using the TTS
+// ownership protocol. Used for Claude timeout, Claude error, and context
+// load failure. Safe to call after cancelCurrentTurn (currentSpeechId is
+// null at that point — we assign our own speechId for the fallback).
+// ---------------------------------------------------------------------------
+async function speakFallback(
+  session: VoiceSession,
+  text: string,
+): Promise<void> {
+  if (
+    session.state === "closed" ||
+    session.state === "failed" ||
+    session.state === "closing"
+  )
+    return;
+  if (!session.ws) return;
+
+  const speechId = crypto.randomUUID();
+  session.currentSpeechId = speechId;
+
+  const seqStart = registry.incrementSequence(session);
+  try {
+    session.ws.send(
+      JSON.stringify({
+        type: "speech_start",
+        speechId,
+        sessionId: session.sessionId,
+        connectionGeneration: session.connectionGeneration,
+        sequenceNumber: seqStart,
+        timestamp: Date.now(),
+      }),
+    );
+  } catch {
+    session.currentSpeechId = null;
+    return;
+  }
+
+  let sentChunks = 0;
+  try {
+    for await (const chunk of streamSpeechElevenLabs(text)) {
+      if (session.currentSpeechId !== speechId) break;
+      try {
+        session.ws.send(chunk);
+        sentChunks++;
+      } catch {
+        break;
+      }
+    }
+  } catch {
+    // ignore TTS errors for fallback messages
+  }
+
+  if (sentChunks > 0 && session.currentSpeechId === speechId) {
+    const seqDone = registry.incrementSequence(session);
+    try {
+      session.ws.send(
+        JSON.stringify({
+          type: "tts_done",
+          speechId,
+          sessionId: session.sessionId,
+          connectionGeneration: session.connectionGeneration,
+          sequenceNumber: seqDone,
+          timestamp: Date.now(),
+        }),
+      );
+    } catch {}
+  }
+
+  session.currentSpeechId = null;
+}
+
+// ---------------------------------------------------------------------------
+// speakFarewell — spoken goodbye + call_ended frame + session finalise.
+// Called by the silence monitor on the 60s timeout.
+// ---------------------------------------------------------------------------
+async function speakFarewell(session: VoiceSession): Promise<void> {
+  await speakFallback(
+    session,
+    "I'll let you go — call me back when you're ready.",
+  );
+  try {
+    session.ws?.send(
+      JSON.stringify({ type: "call_ended", reason: "silence_timeout" }),
+    );
+  } catch {}
+  registry.finalise(session.sessionId, "silence_timeout");
+}
+
+// ---------------------------------------------------------------------------
+// startSilenceMonitor — starts a recurring 5-second poll that enforces the
+// silence lifecycle:
+//
+//   0–30s  listening, no audio  →  nothing
+//   30s                         →  "still there?" (once only)
+//   60s  (warning already sent) →  farewell TTS + call_ended + finalise
+//   90s  (failsafe)             →  force-close without TTS
+//
+// The poll pauses automatically when state ≠ "listening" (the tick fires but
+// does not measure silence while Claude or TTS is active). The timer is
+// cancelled by registry.finalise() when the session closes.
+//
+// Must be called once per session from index.ts after call_connected is sent.
+// ---------------------------------------------------------------------------
+export function startSilenceMonitor(session: VoiceSession): void {
+  // Clear any existing monitor (shouldn't happen, but safe).
+  if (session.silenceTimer !== null) {
+    clearTimeout(session.silenceTimer);
+    session.silenceTimer = null;
+  }
+
+  function tick(): void {
+    // Clear the handle so finalise() can tell the tick has started.
+    // At the end of tick we check for null to decide whether to reschedule.
+    session.silenceTimer = null;
+
+    // Stop if the session is already gone.
+    if (
+      session.state === "closed" ||
+      session.state === "failed" ||
+      session.state === "closing"
+    ) {
+      return;
+    }
+
+    if (session.state === "listening" || session.state === "active") {
+      // Reference: last real audio, or call start if no audio yet.
+      const ref = session.lastAudioReceivedAt ?? session.callStartTime;
+      const silenceMs = Date.now() - ref.getTime();
+
+      if (silenceMs >= SILENCE_FORCE_MS) {
+        // 90s failsafe — force close without TTS.
+        logger.warn(
+          { deviceId: session.deviceId, silenceMs },
+          "voice: silence failsafe (90s) — force closing session",
+        );
+        try {
+          session.ws?.send(
+            JSON.stringify({ type: "call_ended", reason: "silence_timeout" }),
+          );
+        } catch {}
+        session.silenceTimer = null;
+        registry.finalise(session.sessionId, "silence_timeout_failsafe");
+        return;
+      }
+
+      if (silenceMs >= SILENCE_END_MS && session.silenceWarningSent) {
+        // 60s total silence after warning already sent — speak farewell.
+        logger.info(
+          { deviceId: session.deviceId, silenceMs },
+          "voice: silence 60s — speaking farewell and ending call",
+        );
+        session.silenceTimer = null;
+        void speakFarewell(session).catch((err) => {
+          logger.error({ err, deviceId: session.deviceId }, "voice: speakFarewell failed");
+          registry.finalise(session.sessionId, "silence_timeout");
+        });
+        return;
+      }
+
+      if (silenceMs >= SILENCE_WARN_MS && !session.silenceWarningSent) {
+        // 30s silence — speak the "still there?" warning once.
+        logger.info(
+          { deviceId: session.deviceId, silenceMs },
+          "voice: silence 30s — speaking warning",
+        );
+        session.silenceWarningSent = true;
+        void speakFallback(session, "Still there?").catch((err) => {
+          logger.error({ err, deviceId: session.deviceId }, "voice: silence warning TTS failed");
+        });
+      }
+    }
+
+    // All early-return paths above (force-close, farewell) already return before
+    // reaching here, so unconditional reschedule is correct. The top of the next
+    // tick catches any terminal state that arises between polls.
+    session.silenceTimer = setTimeout(tick, SILENCE_POLL_MS);
+  }
+
+  session.silenceTimer = setTimeout(tick, SILENCE_POLL_MS);
+  logger.info({ deviceId: session.deviceId }, "voice: silence monitor started");
+}
+
+// ---------------------------------------------------------------------------
+// handleVoiceTurn — the speech_final → context → Claude → TTS pipeline.
+//
+// Returns { claudeText, stripped, turnId } on success, or null if the turn
+// was cancelled / failed / produced empty output.
+//
+// Side effects:
+//   - Mutates session.state, session.currentTurnId, etc.
+//   - Logs timing milestones to session.log and server logger.
+//   - Tracks consecutiveContextFailures; closes session at 2 failures.
+//   - TTS wired in 1E; DB write wired in 1F.
+// ---------------------------------------------------------------------------
+export async function handleVoiceTurn(
+  session: VoiceSession,
+  transcript: string,
+  utteranceId: string,
+): Promise<{ claudeText: string; stripped: string; turnId: string } | null> {
+  const turnId = crypto.randomUUID();
+  const responseId = crypto.randomUUID();
+  const turnStart = Date.now();
+
+  // Assign ownership fields before any await so concurrent cancellation sees them.
+  session.currentTurnId = turnId;
+  session.currentResponseId = responseId;
+  session.state = "llm_pending";
+
+  // ── 0. Persist user row immediately on speech_final acceptance ─────────────
+  const utteranceTimestamp = new Date();
+  void (async () => {
+    try {
+      await db.insert(messagesTable).values({
+        id: crypto.randomUUID(),
+        deviceId: session.deviceId,
+        role: "user",
+        content: transcript,
+        status: "complete",
+        source: "voice_call",
+        createdAt: utteranceTimestamp,
+      });
+      logger.info(
+        { deviceId: session.deviceId, turnId, utteranceId },
+        "voice: user row persisted",
+      );
+    } catch (err) {
+      logger.error({ err, deviceId: session.deviceId, turnId }, "voice: user row DB write failed — call continues");
+    }
+  })();
+
+  // ── 1. Load context ────────────────────────────────────────────────────────
+  const contextStart = Date.now();
+  let contextResult: Awaited<ReturnType<typeof loadVoiceContext>>;
+
+  try {
+    contextResult = await loadVoiceContext(session.deviceId);
+    session.consecutiveContextFailures = 0;
+    const contextLoadMs = Date.now() - contextStart;
+    session.log.push({
+      event: "CONTEXT_LOADED",
+      ts: new Date(),
+      detail: `contextLoadMs=${contextLoadMs}`,
+    });
+    logger.info(
+      { deviceId: session.deviceId, turnId, contextLoadMs },
+      "voice: context loaded",
+    );
+  } catch (err) {
+    session.consecutiveContextFailures += 1;
+    logger.error(
+      {
+        err,
+        deviceId: session.deviceId,
+        turnId,
+        consecutiveContextFailures: session.consecutiveContextFailures,
+      },
+      "voice: loadVoiceContext failed",
+    );
+    if (session.consecutiveContextFailures >= 2) {
+      logger.warn(
+        { deviceId: session.deviceId },
+        "voice: 2 consecutive context failures — ending call",
+      );
+      try {
+        session.ws?.send(
+          JSON.stringify({ type: "call_ended", reason: "context_load_failed" }),
+        );
+      } catch {}
+      registry.finalise(session.sessionId, "context_load_failed");
+    } else {
+      session.state = "listening";
+    }
+    return null;
+  }
+
+  // ── 2. Build system prompt ─────────────────────────────────────────────────
+  const { profile, memories, summaries, history } = contextResult;
+  const voiceProfile = { ...profile, voiceMode: true };
+  const systemPrompt = [
+    buildSystemPrompt(voiceProfile, memories, summaries, {
+      imageGenerationEnabled: false,
+    }),
+    VOICE_MODE_ADDENDUM,
+  ].join("\n\n");
+
+  // ── 3. Build Claude message array ─────────────────────────────────────────
+  const claudeMessages: LLMMessage[] = [
+    ...history.map((m) => ({
+      role: (m.role === "user" ? "user" : "assistant") as "user" | "assistant",
+      content: m.content,
+    })),
+    { role: "user" as const, content: transcript },
+  ];
+
+  logger.info(
+    {
+      deviceId: session.deviceId,
+      turnId,
+      utteranceId,
+      historyLen: history.length,
+      forceProvider: "anthropic",
+    },
+    "voice: CLAUDE_STARTED",
+  );
+  session.log.push({
+    event: "CLAUDE_STARTED",
+    ts: new Date(),
+    detail: `turnId=${turnId} historyLen=${history.length}`,
+  });
+
+  // ── 4. Call Claude with 30-second AbortController ─────────────────────────
+  const controller = new AbortController();
+  session.currentAbortController = controller;
+
+  const timeoutHandle = setTimeout(() => {
+    if (session.currentAbortController === controller) {
+      registry.cancelCurrentTurn(session, "claude_timeout");
+      logger.warn(
+        { deviceId: session.deviceId, turnId },
+        "voice: Claude timed out — cancelling turn",
+      );
+      void speakFallback(
+        session,
+        "Sorry, I'm having trouble thinking right now. Try asking me again.",
+      ).catch(() => {});
+      session.state = "listening";
+    }
+  }, CLAUDE_TIMEOUT_MS);
+
+  let claudeText = "";
+  const claudeStart = Date.now();
+
+  try {
+    const stream = streamChatText({
+      system: systemPrompt,
+      messages: claudeMessages,
+      maxTokens: VOICE_MAX_TOKENS,
+      forceProvider: "anthropic",
+      signal: controller.signal,
+    });
+
+    for await (const chunk of stream) {
+      if (session.currentTurnId !== turnId) {
+        logger.info(
+          { deviceId: session.deviceId, turnId },
+          "voice: Claude stream abandoned — turn was cancelled",
+        );
+        return null;
+      }
+      claudeText += chunk;
+    }
+  } catch (err: unknown) {
+    const isAbort = err instanceof Error && err.name === "AbortError";
+    if (!isAbort) {
+      logger.error({ err, deviceId: session.deviceId, turnId }, "voice: Claude error");
+      void speakFallback(
+        session,
+        "Sorry, I'm having trouble thinking right now. Try asking me again.",
+      ).catch(() => {});
+    }
+    session.state = "listening";
+    return null;
+  } finally {
+    clearTimeout(timeoutHandle);
+    if (session.currentAbortController === controller) {
+      session.currentAbortController = null;
+    }
+  }
+
+  const claudeMs = Date.now() - claudeStart;
+  session.log.push({
+    event: "CLAUDE_FINISHED",
+    ts: new Date(),
+    detail: `ms=${claudeMs} chars=${claudeText.length}`,
+  });
+  logger.info(
+    { deviceId: session.deviceId, turnId, claudeMs, claudeChars: claudeText.length },
+    "voice: CLAUDE_FINISHED",
+  );
+
+  // ── 5. Guard: empty Claude output must not reach ElevenLabs ───────────────
+  if (!claudeText.trim()) {
+    logger.warn(
+      { deviceId: session.deviceId, turnId },
+      "voice: empty Claude output — skipping TTS",
+    );
+    session.state = "listening";
+    return null;
+  }
+
+  // ── 6. Strip markdown before TTS ──────────────────────────────────────────
+  const stripped = stripMarkdown(claudeText);
+
+  // ── 7. ElevenLabs streaming with binary frame ownership protocol ───────────
+  const speechId = crypto.randomUUID();
+  session.currentSpeechId = speechId;
+  session.state = "tts_streaming";
+  session.totalTtsChars += stripped.length;
+
+  const ttsController = new AbortController();
+  session.currentAbortController = ttsController;
+
+  const seqStart = registry.incrementSequence(session);
+  const speechStartFrame = JSON.stringify({
+    type: "speech_start",
+    speechId,
+    sessionId: session.sessionId,
+    connectionGeneration: session.connectionGeneration,
+    sequenceNumber: seqStart,
+    timestamp: Date.now(),
+  });
+
+  session.log.push({ event: "TTS_STARTED", ts: new Date(), detail: `speechId=${speechId} chars=${stripped.length}` });
+  logger.info(
+    { deviceId: session.deviceId, turnId, speechId, strippedChars: stripped.length },
+    "voice: TTS_STARTED",
+  );
+
+  try {
+    session.ws?.send(speechStartFrame);
+  } catch (err) {
+    logger.warn({ err, deviceId: session.deviceId }, "voice: failed to send speech_start");
+    session.state = "listening";
+    session.currentSpeechId = null;
+    session.currentAbortController = null;
+    return null;
+  }
+
+  let sentChunks = 0;
+  let ttsFirstChunkMs: number | null = null;
+  const ttsStart = Date.now();
+
+  try {
+    for await (const chunk of streamSpeechElevenLabs(stripped, ttsController.signal)) {
+      if (session.currentSpeechId !== speechId) {
+        logger.info(
+          { deviceId: session.deviceId, turnId, speechId },
+          "voice: stale TTS chunk discarded — speechId mismatch",
+        );
+        break;
+      }
+
+      if (ttsFirstChunkMs === null) {
+        ttsFirstChunkMs = Date.now() - ttsStart;
+        logger.info(
+          { deviceId: session.deviceId, turnId, speechId, ttsFirstChunkMs },
+          "voice: ttsFirstChunkMs",
+        );
+      }
+
+      try {
+        session.ws?.send(chunk);
+        sentChunks++;
+      } catch (sendErr) {
+        logger.warn({ err: sendErr, deviceId: session.deviceId }, "voice: TTS chunk send failed");
+        break;
+      }
+    }
+  } catch (err: unknown) {
+    const isAbort = err instanceof Error && err.name === "AbortError";
+    if (!isAbort) {
+      logger.error({ err, deviceId: session.deviceId, turnId, speechId }, "voice: ElevenLabs stream error");
+    } else {
+      logger.info({ deviceId: session.deviceId, turnId, speechId }, "voice: TTS stream aborted");
+    }
+  } finally {
+    if (session.currentAbortController === ttsController) {
+      session.currentAbortController = null;
+    }
+  }
+
+  const ttsTotalMs = Date.now() - ttsStart;
+  session.log.push({
+    event: "TTS_FINISHED",
+    ts: new Date(),
+    detail: `speechId=${speechId} chunks=${sentChunks} ms=${ttsTotalMs}`,
+  });
+  logger.info(
+    { deviceId: session.deviceId, turnId, speechId, sentChunks, ttsTotalMs },
+    "voice: TTS_FINISHED",
+  );
+
+  if (sentChunks === 0) {
+    logger.warn({ deviceId: session.deviceId, speechId }, "voice: tts_failed_no_audio");
+    try {
+      session.ws?.send(JSON.stringify({ type: "tts_failed_no_audio", speechId }));
+    } catch {}
+    session.state = "listening";
+    session.currentSpeechId = null;
+    return null;
+  }
+
+  // Send tts_done only if speechId is still ours.
+  if (session.currentSpeechId === speechId) {
+    const seqDone = registry.incrementSequence(session);
+    try {
+      session.ws?.send(
+        JSON.stringify({
+          type: "tts_done",
+          speechId,
+          sessionId: session.sessionId,
+          connectionGeneration: session.connectionGeneration,
+          sequenceNumber: seqDone,
+          timestamp: Date.now(),
+        }),
+      );
+    } catch (err) {
+      logger.warn({ err, deviceId: session.deviceId }, "voice: failed to send tts_done");
+    }
+    session.currentSpeechId = null;
+  }
+
+  session.state = "listening";
+
+  // ── 8. Persist assistant row after TTS confirmed sent ─────────────────────
+  if (sentChunks > 0 && !session.completedTurnIds.has(turnId)) {
+    const assistantText = claudeText;
+    void (async () => {
+      try {
+        await db.insert(messagesTable).values({
+          id: crypto.randomUUID(),
+          deviceId: session.deviceId,
+          role: "ashley",
+          content: assistantText,
+          status: "complete",
+          source: "voice_call",
+          createdAt: new Date(),
+        });
+        session.completedTurnIds.add(turnId);
+        logger.info(
+          { deviceId: session.deviceId, turnId },
+          "voice: assistant row persisted",
+        );
+      } catch (err) {
+        logger.error({ err, deviceId: session.deviceId, turnId }, "voice: assistant row DB write failed — call continues");
+      }
+    })();
+  }
+
+  const totalTurnMs = Date.now() - turnStart;
+  logger.info(
+    {
+      deviceId: session.deviceId,
+      turnId,
+      totalTurnMs,
+      ttsFirstChunkMs,
+      sentChunks,
+    },
+    "voice: turn complete",
+  );
+
+  return { claudeText, stripped, turnId };
+}
+
+================================================================================
+FILE 5 — artifacts/api-server/src/index.ts
+================================================================================
+
+import app from "./app";
+import { logger } from "./lib/logger";
+import { db, messagesTable } from "@workspace/db";
+import { eq } from "drizzle-orm";
+import { tickProactive } from "./lib/proactiveScheduler";
+import { timingSafeEqual } from "node:crypto";
+// @ts-ignore – ws ships no bundled types; @types/ws not yet installed
+import { WebSocketServer } from "ws";
+import * as registry from "./lib/VoiceSessionRegistry";
+import { handleVoiceTurn, startSilenceMonitor } from "./routes/voice-call";
+
+const rawPort = process.env["PORT"];
+
+if (!rawPort) {
+  throw new Error(
+    "PORT environment variable is required but was not provided.",
+  );
+}
+
+const port = Number(rawPort);
+
+if (Number.isNaN(port) || port <= 0) {
+  throw new Error(`Invalid PORT value: "${rawPort}"`);
+}
+
+const server = app.listen(port, (err: unknown) => {
+  if (err) {
+    logger.error({ err }, "Error listening on port");
+    process.exit(1);
+  }
+
+  logger.info({ port }, "Server listening");
+
+  // Boot recovery: orphan streaming rows → interrupted.
+  void (async () => {
+    try {
+      const updated = await db
+        .update(messagesTable)
+        .set({ status: "interrupted" })
+        .where(eq(messagesTable.status, "streaming"))
+        .returning({ id: messagesTable.id });
+      if (updated.length > 0) {
+        logger.warn(
+          { count: updated.length, ids: updated.map((r) => r.id) },
+          "Recovered orphan streaming messages → interrupted",
+        );
+      } else {
+        logger.info("No orphan streaming messages to recover");
+      }
+    } catch (recoverErr) {
+      logger.error(
+        { err: recoverErr },
+        "Failed to recover orphan streaming messages on boot",
+      );
+    }
+  })();
+
+  // Keepalive: hit our own public proxy URL every 60s.
+  const publicDomain = process.env["REPLIT_DEV_DOMAIN"];
+  const keepaliveUrl = publicDomain
+    ? `https://${publicDomain}/api/healthz`
+    : `http://127.0.0.1:${port}/api/healthz`;
+  const intervalMs = 60_000;
+  const tick = async (): Promise<void> => {
+    try {
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), 10_000);
+      const res = await fetch(keepaliveUrl, { signal: ac.signal });
+      clearTimeout(t);
+      if (!res.ok) {
+        logger.warn(
+          { status: res.status, url: keepaliveUrl },
+          "Keepalive ping returned non-2xx",
+        );
+      }
+    } catch (err) {
+      logger.warn({ err, url: keepaliveUrl }, "Keepalive ping failed");
+    }
+  };
+  setInterval(() => void tick(), intervalMs).unref();
+  setTimeout(() => void tick(), 5_000).unref();
+
+  // Proactive scheduler — ticks every 5 min, first run 30s after boot.
+  const proactiveIntervalMs = 5 * 60 * 1000;
+  const runProactiveTick = (): void => {
+    void tickProactive().catch((err) => {
+      logger.error({ err }, "Proactive tick threw (caught at boundary)");
+    });
+  };
+  setInterval(runProactiveTick, proactiveIntervalMs).unref();
+  setTimeout(runProactiveTick, 30_000).unref();
+});
+
+// ── Voice-call WebSocket ──────────────────────────────────────────────────────
+//
+// Path:   ws[s]://<host>/api/voice/call
+// Auth:   Authorization: Bearer <API_AUTH_KEY>
+//         X-Device-Id: <uuid>
+//
+// noServer: true — we own the HTTP upgrade event so Express keeps handling
+// every normal request; only the specific path is handed to the WS server.
+
+function safeEqualBuf(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
+const VOICE_WS_PATH = "/api/voice/call";
+const DEVICE_ID_RE = /^[a-zA-Z0-9_-]{8,128}$/;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const wss: any = new WebSocketServer({ noServer: true });
+
+server.on("upgrade", (req, socket, head) => {
+  const raw = req.url ?? "/";
+  let pathname: string;
+  try {
+    pathname = new URL(raw, `http://localhost:${port}`).pathname;
+  } catch {
+    socket.destroy();
+    return;
+  }
+
+  if (pathname !== VOICE_WS_PATH) {
+    socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
+  const expected = (process.env["API_AUTH_KEY"] ?? "").trim();
+  if (!expected) {
+    logger.error("Voice-call WS: API_AUTH_KEY not configured");
+    socket.write("HTTP/1.1 500 Server Config Error\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
+  const authHeader = (
+    (req.headers["authorization"] as string | undefined) ?? ""
+  ).trim();
+  const match = /^Bearer\s+(.+)$/i.exec(authHeader);
+  const token = (match?.[1] ?? "").trim();
+  if (!token || !safeEqualBuf(token, expected)) {
+    logger.warn("Voice-call WS: rejected — bad auth token");
+    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
+  const deviceId = (
+    (req.headers["x-device-id"] as string | undefined) ?? ""
+  ).trim();
+  if (!deviceId || !DEVICE_ID_RE.test(deviceId)) {
+    logger.warn("Voice-call WS: rejected — missing/invalid X-Device-Id");
+    socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  wss.handleUpgrade(req, socket, head, (ws: any) => {
+    wss.emit("connection", ws, req, deviceId);
+  });
+});
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+wss.on("connection", (ws: any, _req: any, deviceId: string) => {
+  // Try to reclaim a recovering session (reconnect within 60s window),
+  // otherwise create a fresh session. TRAP 2: all state in registry.
+  let session = registry.reclaimSession(deviceId, ws as registry.WsLike);
+  if (session) {
+    // 1H: Reject pathological reconnect loops (> 15 attempts).
+    if (session.reconnectAttempts > 15) {
+      logger.warn(
+        { deviceId, sessionId: session.sessionId, reconnectAttempts: session.reconnectAttempts },
+        "Voice-call WS: reconnect attempts exceeded — ending call",
+      );
+      try {
+        ws.send(JSON.stringify({ type: "call_ended", reason: "too_many_reconnects" }));
+      } catch {}
+      registry.finalise(session.sessionId, "too_many_reconnects");
+      ws.close(1008, "too_many_reconnects");
+      return;
+    }
+    logger.info(
+      { deviceId, sessionId: session.sessionId, gen: session.connectionGeneration, reconnectAttempts: session.reconnectAttempts },
+      "Voice-call WS: session reclaimed",
+    );
+  } else {
+    session = registry.create(deviceId, ws as registry.WsLike);
+    logger.info(
+      { deviceId, sessionId: session.sessionId },
+      "Voice-call WS: new session created",
+    );
+  }
+
+  // Send call_connected with sessionId and reconnect flag.
+  ws.send(
+    JSON.stringify({
+      type: "call_connected",
+      sessionId: session.sessionId,
+      connectionGeneration: session.connectionGeneration,
+      reconnected: session.connectionGeneration > 1,
+    }),
+  );
+
+  // 1I: Start (or restart on reconnect) the silence lifecycle monitor.
+  startSilenceMonitor(session);
+
+  const sessionId = session.sessionId; // capture for closure safety
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ws.on("message", async (data: any, isBinary: boolean) => {
+    const currentSession = registry.findBySessionId(sessionId);
+    if (!currentSession) return;
+
+    // Binary frame = audio chunk from the client microphone.
+    if (isBinary) {
+      currentSession.lastAudioReceivedAt = new Date();
+      currentSession.silenceWarningSent = false;
+      // Audio forwarding to Deepgram wired in 1G.
+      return;
+    }
+
+    // Text frame — JSON control message.
+    let msg: Record<string, unknown>;
+    try {
+      msg = JSON.parse(
+        Buffer.isBuffer(data) ? data.toString("utf8") : String(data),
+      ) as Record<string, unknown>;
+    } catch {
+      logger.warn({ deviceId }, "Voice-call WS: non-JSON text message ignored");
+      return;
+    }
+
+    const msgSessionId = msg["sessionId"] as string | undefined;
+    const msgGen = msg["connectionGeneration"] as number | undefined;
+
+    if (
+      msgSessionId !== undefined &&
+      msgGen !== undefined &&
+      !registry.validateMessage(currentSession, {
+        sessionId: msgSessionId,
+        connectionGeneration: msgGen,
+      })
+    ) {
+      return;
+    }
+
+    if (msg["type"] === "speech_final") {
+      const transcript = (msg["transcript"] as string | undefined)?.trim() ?? "";
+      const utteranceId = (msg["utteranceId"] as string | undefined) ?? crypto.randomUUID();
+
+      if (!transcript) return;
+
+      // RACE 4: ignore finals while session is closing.
+      if (
+        currentSession.state === "closing" ||
+        currentSession.state === "closed" ||
+        currentSession.state === "failed"
+      ) {
+        logger.info(
+          { deviceId, state: currentSession.state },
+          "voice: speech_final ignored — session is closing",
+        );
+        return;
+      }
+
+      // Idempotency: ignore duplicate utteranceIds.
+      if (currentSession.processedUtteranceIds.has(utteranceId)) {
+        logger.info({ deviceId, utteranceId }, "voice: duplicate utteranceId ignored");
+        return;
+      }
+      currentSession.processedUtteranceIds.add(utteranceId);
+
+      logger.info({ deviceId, utteranceId, transcriptPreview: transcript.slice(0, 80) }, "voice: speech_final accepted");
+      await handleVoiceTurn(currentSession, transcript, utteranceId);
+    }
+
+    if (msg["type"] === "interrupt") {
+      // 1G: cancelCurrentTurn BEFORE interrupt_ack.
+      registry.cancelCurrentTurn(currentSession, "user_interrupt");
+      currentSession.state = "listening";
+
+      const seq = registry.incrementSequence(currentSession);
+      try {
+        ws.send(
+          JSON.stringify({
+            type: "interrupt_ack",
+            sessionId: currentSession.sessionId,
+            connectionGeneration: currentSession.connectionGeneration,
+            sequenceNumber: seq,
+            timestamp: Date.now(),
+          }),
+        );
+      } catch (err) {
+        logger.warn({ err, deviceId }, "voice: failed to send interrupt_ack");
+      }
+      logger.info(
+        { deviceId, sessionId: currentSession.sessionId },
+        "voice: interrupt handled",
+      );
+    }
+  });
+
+  ws.on("close", (code: number, reason: Buffer) => {
+    logger.info(
+      { deviceId, sessionId, code, reason: reason.toString() },
+      "Voice-call WS: closed — marking recovering",
+    );
+    const closingSession = registry.findBySessionId(sessionId);
+    if (closingSession) {
+      registry.markRecovering(sessionId);
+    }
+  });
+
+  ws.on("error", (err: Error) => {
+    logger.error({ err, deviceId, sessionId }, "Voice-call WS: error");
+  });
+});
+
+================================================================================
+END OF PHASE 1 ARCHIVE
+================================================================================
