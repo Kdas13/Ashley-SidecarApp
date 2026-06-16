@@ -1576,16 +1576,14 @@ router.post("/chat", async (req, res): Promise<void> => {
       }
     }
     // Image turns: always emit a placeholder so captionless photos are never
-    // silently dropped from context. Use the stored visual description when
-    // available; fall back to the user's caption text.
+    // silently dropped from context. Include BOTH caption and visual description
+    // so Ashley retains what Kane said about the photo AND what she saw in it.
     if (m.imageUrl && m.role === "user") {
       const cat = m.imageCategory ? ` (${m.imageCategory})` : "";
-      const desc = m.imageDescription
-        ? `: ${m.imageDescription}`
-        : text
-          ? `: "${text}"`
-          : "";
-      text = `[shared a photo${cat}${desc}]`;
+      const captionPart = text ? `"${text}"` : null;
+      const descPart = m.imageDescription ?? null;
+      const parts = [captionPart, descPart].filter(Boolean).join(" — ");
+      text = `[shared a photo${cat}${parts ? `: ${parts}` : ""}]`;
     }
     if (!text) continue;
     claudeMessages.push({ role, content: text });
@@ -5135,16 +5133,14 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
       }
     }
     // Image turns: always emit a placeholder so captionless photos are never
-    // silently dropped from context. Use the stored visual description when
-    // available; fall back to the user's caption text.
+    // silently dropped from context. Include BOTH caption and visual description
+    // so Ashley retains what Kane said about the photo AND what she saw in it.
     if (m.imageUrl && m.role === "user") {
       const cat = m.imageCategory ? ` (${m.imageCategory})` : "";
-      const desc = m.imageDescription
-        ? `: ${m.imageDescription}`
-        : text
-          ? `: "${text}"`
-          : "";
-      text = `[shared a photo${cat}${desc}]`;
+      const captionPart = text ? `"${text}"` : null;
+      const descPart = m.imageDescription ?? null;
+      const parts = [captionPart, descPart].filter(Boolean).join(" — ");
+      text = `[shared a photo${cat}${parts ? `: ${parts}` : ""}]`;
     }
     if (!text) continue;
     claudeMessages.push({ role, content: text });
@@ -6227,12 +6223,10 @@ router.post("/chat/image", async (req, res): Promise<void> => {
     let text = (m.content ?? "").trim();
     if (m.imageUrl && m.role === "user") {
       const cat = m.imageCategory ? ` (${m.imageCategory})` : "";
-      const desc = m.imageDescription
-        ? `: ${m.imageDescription}`
-        : text
-          ? `: "${text}"`
-          : "";
-      text = `[shared a photo${cat}${desc}]`;
+      const captionPart = text ? `"${text}"` : null;
+      const descPart = m.imageDescription ?? null;
+      const parts = [captionPart, descPart].filter(Boolean).join(" — ");
+      text = `[shared a photo${cat}${parts ? `: ${parts}` : ""}]`;
     }
     if (m.imageUrl && m.role === "ashley" && !text) {
       text = "[sent a selfie]";
