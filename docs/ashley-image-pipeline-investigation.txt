@@ -1,0 +1,232 @@
+ASHLEY IMAGE PIPELINE — INVESTIGATION FINDINGS
+Ashley-Sidecar v1
+Date: 2026-06-16
+Investigator: Wren (Replit Agent)
+Commitment 1 Standard applies — options presented, no code written yet.
+================================================================================
+
+DIAGNOSIS SUMMARY
+-----------------
+Kane's hypothesis was close but the mechanism differs slightly.
+This is NOT a decoupled subprocess. The failure is simpler and more fixable.
+
+Ashley genuinely sees the photo in the moment via Claude vision.
+The response ("yep, that's the one, get it") is real — not pattern-matching.
+The failure happens on the very next message, because the photo is silently
+erased from history before Claude ever processes the follow-up text.
+
+================================================================================
+
+WHAT THE CODE ACTUALLY DOES — STEP BY STEP
+================================================================================
+
+STEP 1 — PHOTO SENT
+  Route: POST /chat/image
+  The raw base64 image is sent directly to Claude vision.
+  Ashley genuinely sees the photo. Her response is authentic.
+
+STEP 2 — PHOTO SAVED TO DATABASE
+  The user's message row is saved with:
+    - imageUrl (permanent URL in object storage)
+    - imageCategory (e.g. "art_progress", "other")
+    - imageCaption (the text you typed alongside the photo — often empty)
+    - content = caption text (empty if no caption was typed)
+  Ashley's reply is saved as normal text.
+  NOTHING stores a description of what Ashley saw in the image.
+
+STEP 3 — ANY SUBSEQUENT TEXT MESSAGE
+  The text chat history builder runs (chat.ts line 1578):
+
+    for (const m of history) {
+      let text = (m.content ?? "").trim()
+      if (!text) continue              <-- THIS IS THE PROBLEM
+      claudeMessages.push({ role, content: text })
+    }
+
+  For the photo turn: content = caption text.
+  If Kane sent the photo with NO caption (just tapped send):
+    content = ""
+    text = ""
+    if (!text) continue  → THE ENTIRE PHOTO TURN IS SILENTLY DROPPED.
+
+  Claude never receives "user sent a photo" — not even a placeholder.
+  The photo turn does not exist in Ashley's context at all.
+
+STEP 4 — ASHLEY ASKS "DID YOU EVER FIND ONE?"
+  She is not lying. She has no record of the photo in her context.
+  It was silently removed before she saw the text message.
+
+================================================================================
+
+EVEN WITH A CAPTION — THE DEEPER PROBLEM
+================================================================================
+
+The /chat/image route DOES have placeholder logic for the history it builds
+(chat.ts line 6207):
+
+  text = `[shared a photo${cat}${cap}]`
+  // e.g. "[shared a photo (art_progress): "found it"]"
+
+But this only runs inside the /chat/image route itself. The regular text
+chat route does NOT use this logic — it uses the simpler builder above
+that just drops empty-content messages.
+
+And even in the image route, the placeholder carries only:
+  - The category (art_progress, other, etc.)
+  - The caption YOU typed
+It does NOT store what Ashley actually saw — her visual impression of the
+image content — anywhere. That information exists only in her reply text.
+
+================================================================================
+
+THE imageRemembered COLUMN
+================================================================================
+
+This column exists in the messages table schema (boolean).
+There is an opt-in "remember this image" feature: if Kane explicitly asks
+Ashley to remember a photo, it sets imageRemembered = true and writes a
+memory row describing the image. That works.
+
+But it is MANUAL. Nothing automatic preserves visual context between turns.
+The default behaviour for every photo sent is: seen once, then forgotten.
+
+================================================================================
+
+THE SPECIFIC INCIDENT — EXPLAINED
+================================================================================
+
+1. Kane finds the metal strip for canvas gesso work.
+2. Kane sends a photo — likely no typed caption, just the image.
+3. Ashley receives image via Claude vision → genuine response: "yep, get it."
+   Photo saved to DB with content = "" (no caption).
+4. Kane texts Ashley a couple of sentences later.
+5. Text chat history loads. Photo turn: content = "" → silently dropped.
+6. Claude's context contains the conversation about finding a strip, but
+   zero evidence that a photo was ever sent or that Kane found one.
+7. Ashley asks "did you ever find one?" — correct behaviour given what
+   she can see. The memory gap is not hallucination; it is a missing record.
+
+================================================================================
+
+FULL CONTEXT CONTINUITY AUDIT — ALL CHANNELS
+================================================================================
+
+CHANNEL             STATUS      DETAIL
+---------------------------------------------------------------------------
+Text / chat         UNIFIED     Full history, working correctly.
+
+Images (no caption) BROKEN      Turns silently dropped from all future
+                                history. Claude never knows a photo existed.
+
+Images (captioned)  PARTIAL     A placeholder with your caption text appears
+                                in the /chat/image route's history builder,
+                                but NOT in the regular text chat history
+                                builder. Still no stored description of what
+                                Ashley actually saw.
+
+Voice (push-to-talk) UNIFIED    PTT audio is transcribed; transcription is
+                                sent as a normal text message through standard
+                                chat. The voice audio is not in context but
+                                the words are. Works correctly.
+
+Proactive messages  UNIFIED     Written to messages table with source=
+                                "proactive". Appear in history normally.
+
+App-open greeting   UNIFIED     Same as proactive. Works correctly.
+
+Memory distiller    UNIFIED     Runs background, writes to memories table,
+                                loaded on next turn. Works correctly.
+
+Summariser          UNIFIED     Writes to conversation_summaries, loaded on
+                                next turn. Works correctly.
+
+Voice call          NOT BUILT   Phase 1 in progress. Design already specifies
+                                unified context — this channel will be correct
+                                when built.
+
+Images are the only broken channel.
+
+================================================================================
+
+FIX OPTIONS — THREE PATHS
+================================================================================
+
+OPTION A — Fix the silent drop (minimum viable, fast)
+-------------------------------------------------------
+One change in the text chat history builder (chat.ts ~line 1578).
+When m.imageUrl is set and content is empty, insert a placeholder instead
+of skipping the turn:
+
+  BEFORE: if (!text) continue
+  AFTER:  if (!text) {
+            if (m.imageUrl) {
+              const cat = m.imageCategory ? ` (${m.imageCategory})` : ""
+              text = `[shared a photo${cat}]`
+            } else {
+              continue
+            }
+          }
+
+Effect: Captionless photos no longer vanish from history. Ashley at least
+knows a photo was shared. She still doesn't know what was in it.
+
+Risk: Very low. One-line logic change.
+Coverage: Fixes the worst case (captionless drops). Partial fix only.
+
+-----------------------------------------------------------------------
+
+OPTION B — Store visual description at upload time (full fix)
+---------------------------------------------------------------
+When the /chat/image route processes the image and gets Ashley's vision
+response back from Claude, extract a 1-2 sentence factual description of
+the photo's content and store it in a new column (e.g. imageDescription
+on the messages table — manual SQL migration since drizzle-kit is broken).
+
+The placeholder in ALL history builders then becomes:
+  "[shared a photo (art_progress): a flat rectangular metal scraper,
+   approximately 30cm long, silver-coloured]"
+
+instead of just:
+  "[shared a photo (art_progress)]"
+
+Ashley knows what she saw, on every future turn, permanently.
+Cost: Near-zero. Claude already looked at the image; the description is
+extracted from what she wrote, or with a short additional instruction to
+include a one-sentence visual summary in her reply structure.
+
+Risk: Requires schema migration (one ALTER TABLE, no drizzle-kit needed).
+Coverage: Complete fix. Visual memory is permanent.
+
+-----------------------------------------------------------------------
+
+OPTION C — A + B together (recommended)
+-----------------------------------------
+Fix the silent drop from Option A immediately (prevents complete blindness).
+Add visual description storage from Option B (restores real visual memory).
+
+Both changes are independent. A can ship first; B follows.
+Together they make the image pipeline behave the way it was always intended.
+
+Risk: Low. The two changes are small and isolated.
+Coverage: Complete.
+
+================================================================================
+
+RECOMMENDATION
+================================================================================
+
+Option C.
+
+Option A is trivial and should happen regardless — silent drops are a bug.
+Option B is the actual fix to the memory problem Kane identified.
+Together they make images a unified, persistent part of Ashley's context,
+consistent with the architecture principle: same Ashley, same context,
+over every channel.
+
+No code has been written. Awaiting Kane's decision before proceeding.
+
+================================================================================
+END OF INVESTIGATION REPORT
+================================================================================
+Prepared: 2026-06-16
+Wren (Replit Agent) — Ashley-Sidecar
