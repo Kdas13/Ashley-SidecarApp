@@ -1,15 +1,17 @@
-// Web search tool — Stage 1 (simplest working version per Kane's directive).
+// Web search tool — Stage 2 (LLM-driven intent classification).
 //
 // Calls Tavily Search API server-side and returns trimmed results suitable
 // for both the public POST /api/tools/web-search route and direct injection
 // into Ashley's system prompt in /api/chat/stream.
 //
-// No native tool-use, no LLM classifier, no orchestration. A small
-// keyword regex decides whether to search before each chat call; results
-// are formatted as a "=== WEB RESULTS ===" block prepended to the system
-// prompt so Ashley can use them naturally without leaking that a tool
-// was invoked.
+// Stage 2 change: the keyword regex trigger is replaced by a fast LLM
+// classifier that understands intent from the full conversational context —
+// purchase intent, price comparison, "have a look" requests, proactive
+// price spotting — and generates an optimised search query rather than
+// passing the raw user message to Tavily. The classifier is Gemini Flash
+// (cheap, fast) with a 3s hard timeout; failure falls back to no search.
 
+import { generateChatText, type LLMMessage } from "./textLLM";
 import { logger } from "./logger";
 
 export type WebSearchResult = {
@@ -29,24 +31,105 @@ const MAX_RESULTS = 5;
 // system prompt token count.
 const MAX_SNIPPET_LEN = 320;
 
-// Trigger keywords/phrases per Kane's Stage 1 spec. Case-insensitive,
-// word-boundary anchored where it matters so "today" doesn't fire on
-// "todayish" and "what is" doesn't fire on "whatever".
-//
-// Coverage notes:
-//   - Single-word triggers fire on common "fresh info" topics: news,
-//     latest, today, weather, forecast, prices, stocks, scores,
-//     currently, happening.
-//   - Multi-word phrases catch the natural-question shapes: "what is",
-//     "what's" / "whats" (contractions), "current info", "right now".
-//   - We accept some false positives (e.g. "what's for dinner" fires a
-//     useless lookup) — they're cheap and Ashley is instructed to
-//     answer honestly if the results don't fit.
-const TRIGGER_REGEX =
-  /\b(latest|today|news|prices?|weather|forecast|currently|happening|stocks?|scores?)\b|\bcurrent\s+info\b|\bwhat\s+is\b|\bwhat'?s\b|\bright\s+now\b/i;
+// Hard cap on the classifier LLM call — below the Tavily timeout so the
+// whole search path stays within budget even if both calls are slow.
+const CLASSIFIER_TIMEOUT_MS = 3000;
 
-export function shouldTriggerWebSearch(userMessage: string): boolean {
-  return TRIGGER_REGEX.test(userMessage);
+// How many prior turns to give the classifier for context. Enough to spot
+// proactive price comparison without blowing up the prompt.
+const CLASSIFIER_HISTORY_TURNS = 4;
+
+const CLASSIFIER_SYSTEM = `You are a search-intent classifier for a personal AI companion called Ashley. Given a short conversation excerpt and the user's latest message, decide whether a live web search would help answer this turn.
+
+Search when:
+- User is asking where to buy something, how much something costs, or for the best/cheapest option
+- User mentions a price they paid and context suggests comparison shopping (even if they didn't ask — proactive is fine)
+- User wants current facts: news, live scores, weather, stock prices, exchange rates
+- User explicitly asks to look something up, check, find, search, or "have a look"
+- User asks about availability, reviews, ratings, or product comparisons
+- User is planning a purchase and the answer depends on current pricing or stock
+
+Do NOT search when:
+- Personal conversation, emotional support, feelings, or relationship talk
+- Creative, hypothetical, or fictional questions
+- General knowledge that doesn't change (history, definitions, how things work)
+- Math, scheduling, planning, or reasoning tasks
+- The question is clearly answered by memory or prior conversation
+
+If searching, produce a concise UK-focused query (5–10 words) — NOT the user's raw message. Extract only the searchable noun phrase and intent.
+
+Reply ONLY with valid JSON. No explanation, no markdown fences.
+If searching: {"search": true, "query": "<optimal search query>"}
+If not: {"search": false}`;
+
+/**
+ * LLM-based search-intent classifier. Takes the user's latest message and
+ * up to CLASSIFIER_HISTORY_TURNS recent turns for context. Returns the
+ * classifier decision or null on any failure (safe fallback = no search).
+ */
+export async function classifySearchIntent(
+  userMessage: string,
+  recentHistory: LLMMessage[],
+): Promise<{ search: true; query: string } | { search: false } | null> {
+  const contextTurns = recentHistory.slice(-CLASSIFIER_HISTORY_TURNS);
+
+  // Build the messages array: recent history as context, then user message.
+  const messages: LLMMessage[] = [
+    ...contextTurns,
+    { role: "user", content: userMessage },
+  ];
+
+  let raw: string;
+  try {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), CLASSIFIER_TIMEOUT_MS);
+    try {
+      raw = await generateChatText({
+        system: CLASSIFIER_SYSTEM,
+        messages,
+        maxTokens: 60,
+        forceProvider: "gemini",
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (err) {
+    logger.warn(
+      { err },
+      "Search intent classifier failed — skipping web lookup this turn",
+    );
+    return null;
+  }
+
+  // Strip markdown fences if the model wrapped the JSON anyway.
+  const cleaned = raw.trim().replace(/^```(?:json)?|```$/gi, "").trim();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    logger.warn(
+      { raw: raw.slice(0, 120) },
+      "Search intent classifier returned non-JSON — skipping web lookup",
+    );
+    return null;
+  }
+
+  if (!parsed || typeof parsed !== "object") return null;
+  const obj = parsed as Record<string, unknown>;
+
+  if (obj["search"] === true && typeof obj["query"] === "string" && obj["query"].trim()) {
+    return { search: true, query: obj["query"].trim().slice(0, MAX_QUERY_LEN) };
+  }
+  if (obj["search"] === false) {
+    return { search: false };
+  }
+
+  logger.warn(
+    { parsed },
+    "Search intent classifier returned unexpected shape — skipping web lookup",
+  );
+  return null;
 }
 
 export class WebSearchUnavailableError extends Error {
@@ -270,8 +353,9 @@ export function formatWebStatusBlock(
  * a `block` ready to inject into the system prompt. The chat path treats
  * them uniformly: if `maybeRunWebLookup` returns non-null, append `block`.
  *
- * `null` is reserved for the "trigger did not fire" case — section 9 of
- * the Core Spec tells Ashley what to do then (don't fabricate fresh facts).
+ * `null` is reserved for the "classifier decided not to search" case —
+ * section 9 of the Core Spec tells Ashley what to do then (don't fabricate
+ * fresh facts).
  */
 export type WebLookupOutcome =
   | { kind: "success"; block: string; results: WebSearchResult[]; query: string }
@@ -280,22 +364,32 @@ export type WebLookupOutcome =
   | { kind: "unavailable"; block: string; query: string };
 
 /**
- * Convenience wrapper: shouldTriggerWebSearch + tavilySearch +
- * formatWebResultsBlock / formatWebStatusBlock with full failure-safety.
+ * Stage 2: LLM classifier + tavilySearch + block formatting with full
+ * failure-safety.
  *
  * Returns a discriminated outcome (success/empty/failed/unavailable) when
- * the trigger heuristic fires, or null when it doesn't. Logs but NEVER
+ * the classifier decides to search, or null when it doesn't. Logs but NEVER
  * throws — web search is enrichment, never a hard dependency for the chat
  * path. The non-success outcomes still produce a block so Ashley always
- * knows what happened (the fix for the "silent failure" problem).
+ * knows what happened.
+ *
+ * @param userMessage   The user's current message text.
+ * @param recentHistory Up to CLASSIFIER_HISTORY_TURNS prior turns for context.
+ * @param builderAware  Whether Builder-Aware Mode is on (affects Ashley's voice).
  */
 export async function maybeRunWebLookup(
   userMessage: string,
+  recentHistory: LLMMessage[],
   builderAware: boolean,
 ): Promise<WebLookupOutcome | null> {
-  if (!shouldTriggerWebSearch(userMessage)) return null;
-  const query = userMessage.trim().slice(0, MAX_QUERY_LEN);
-  if (!query) return null;
+  const classification = await classifySearchIntent(userMessage, recentHistory);
+
+  // null = classifier failed (timeout / parse error) — skip search safely.
+  // {search: false} = classifier decided not to search.
+  if (!classification || !classification.search) return null;
+
+  const query = classification.query;
+
   try {
     const results = await tavilySearch(query);
     if (results.length === 0) {
@@ -314,7 +408,7 @@ export async function maybeRunWebLookup(
   } catch (err) {
     if (err instanceof WebSearchUnavailableError) {
       logger.warn(
-        "Web search trigger matched but TAVILY_API_KEY is not set; injecting unavailable block",
+        "Classifier triggered search but TAVILY_API_KEY is not set; injecting unavailable block",
       );
       return {
         kind: "unavailable",

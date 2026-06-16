@@ -18,7 +18,7 @@ import {
   type Message,
 } from "@workspace/db";
 import { anthropic } from "@workspace/integrations-anthropic-ai";
-import { generateChatText, streamChatText } from "../lib/textLLM";
+import { generateChatText, streamChatText, type LLMMessage } from "../lib/textLLM";
 import { isDiagnosticsCommand } from "../lib/diagnosticCommand";
 import { tryClaimSelfieSlot } from "../lib/selfieCap";
 
@@ -4888,7 +4888,13 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
 
   if (!isContinue && userRow) {
     const builderAware = profile.builderAwareMode !== false;
-    const lookup = await maybeRunWebLookup(userRow.content, builderAware);
+    const classifierHistory: LLMMessage[] = history
+      .slice(-4)
+      .map((m) => ({
+        role: m.role as "user" | "assistant",
+        content: typeof m.content === "string" ? m.content : "",
+      }));
+    const lookup = await maybeRunWebLookup(userRow.content, classifierHistory, builderAware);
     if (lookup) {
       req.log.info(
         {
