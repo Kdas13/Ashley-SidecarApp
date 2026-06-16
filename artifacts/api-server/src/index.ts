@@ -6,6 +6,8 @@ import { tickProactive } from "./lib/proactiveScheduler";
 import { timingSafeEqual } from "node:crypto";
 // @ts-ignore – ws ships no bundled types; @types/ws not yet installed
 import { WebSocketServer } from "ws";
+import * as registry from "./lib/VoiceSessionRegistry";
+import { handleVoiceTurn } from "./routes/voice-call";
 
 const rawPort = process.env["PORT"];
 
@@ -184,28 +186,116 @@ server.on("upgrade", (req, socket, head) => {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 wss.on("connection", (ws: any, _req: any, deviceId: string) => {
-  logger.info({ deviceId }, "Voice-call WS: connected");
+  // Try to reclaim a recovering session (reconnect within 60s window),
+  // otherwise create a fresh session. TRAP 2: all state in registry.
+  let session = registry.reclaimSession(deviceId, ws as registry.WsLike);
+  if (session) {
+    logger.info(
+      { deviceId, sessionId: session.sessionId, gen: session.connectionGeneration },
+      "Voice-call WS: session reclaimed",
+    );
+  } else {
+    session = registry.create(deviceId, ws as registry.WsLike);
+    logger.info(
+      { deviceId, sessionId: session.sessionId },
+      "Voice-call WS: new session created",
+    );
+  }
 
-  ws.send(JSON.stringify({ type: "connected", deviceId }));
+  // Checkpoint 1A DoD item 4: send call_connected with sessionId.
+  ws.send(
+    JSON.stringify({
+      type: "call_connected",
+      sessionId: session.sessionId,
+      connectionGeneration: session.connectionGeneration,
+      reconnected: session.connectionGeneration > 1,
+    }),
+  );
+
+  const sessionId = session.sessionId; // capture for closure safety
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ws.on("message", (data: any) => {
-    const text = Buffer.isBuffer(data) ? data.toString("utf8") : String(data);
-    logger.info(
-      { deviceId, len: text.length },
-      "Voice-call WS: message received (echo)",
-    );
-    ws.send(`[echo] ${text}`);
+  ws.on("message", async (data: any, isBinary: boolean) => {
+    const currentSession = registry.findBySessionId(sessionId);
+    if (!currentSession) return;
+
+    // In ws v8+, all frames arrive as Buffer. Use the isBinary flag to
+    // distinguish binary audio frames from text JSON control messages.
+    if (isBinary) {
+      // Binary frame = audio chunk from the client microphone.
+      // Update silence tracking when real audio arrives (1I).
+      currentSession.lastAudioReceivedAt = new Date();
+      currentSession.silenceWarningSent = false;
+      // Audio forwarding to Deepgram wired in 1G.
+      return;
+    }
+
+    // Text frame — JSON control message.
+    let msg: Record<string, unknown>;
+    try {
+      msg = JSON.parse(
+        Buffer.isBuffer(data) ? data.toString("utf8") : String(data),
+      ) as Record<string, unknown>;
+    } catch {
+      logger.warn({ deviceId }, "Voice-call WS: non-JSON text message ignored");
+      return;
+    }
+
+    const msgSessionId = msg["sessionId"] as string | undefined;
+    const msgGen = msg["connectionGeneration"] as number | undefined;
+
+    if (
+      msgSessionId !== undefined &&
+      msgGen !== undefined &&
+      !registry.validateMessage(currentSession, {
+        sessionId: msgSessionId,
+        connectionGeneration: msgGen,
+      })
+    ) {
+      return; // stale message — already logged by validateMessage
+    }
+
+    if (msg["type"] === "speech_final") {
+      const transcript = (msg["transcript"] as string | undefined)?.trim() ?? "";
+      const utteranceId = (msg["utteranceId"] as string | undefined) ?? crypto.randomUUID();
+
+      if (!transcript) return;
+
+      // Idempotency: ignore duplicate utteranceIds.
+      if (currentSession.processedUtteranceIds.has(utteranceId)) {
+        logger.info({ deviceId, utteranceId }, "voice: duplicate utteranceId ignored");
+        return;
+      }
+      currentSession.processedUtteranceIds.add(utteranceId);
+
+      logger.info({ deviceId, utteranceId, transcriptPreview: transcript.slice(0, 80) }, "voice: speech_final accepted");
+
+      const result = await handleVoiceTurn(currentSession, transcript, utteranceId);
+      if (result) {
+        // ElevenLabs TTS wired in Checkpoint 1E.
+        // For now: confirm the text is ready and set state back to listening.
+        logger.info(
+          { deviceId, turnId: result.turnId, strippedPreview: result.stripped.slice(0, 80) },
+          "voice: ready for TTS (Checkpoint 1E pending)",
+        );
+        const sess = registry.findBySessionId(sessionId);
+        if (sess) sess.state = "listening";
+      }
+    }
   });
 
   ws.on("close", (code: number, reason: Buffer) => {
     logger.info(
-      { deviceId, code, reason: reason.toString() },
-      "Voice-call WS: closed",
+      { deviceId, sessionId, code, reason: reason.toString() },
+      "Voice-call WS: closed — marking recovering",
     );
+    const closingSession = registry.findBySessionId(sessionId);
+    if (closingSession) {
+      registry.markRecovering(sessionId);
+    }
   });
 
   ws.on("error", (err: Error) => {
-    logger.error({ err, deviceId }, "Voice-call WS: error");
+    logger.error({ err, deviceId, sessionId }, "Voice-call WS: error");
   });
 });

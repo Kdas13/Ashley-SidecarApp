@@ -58,6 +58,9 @@ export interface VoiceSession {
   totalTtsChars: number;
   reconnectAttempts: number;
 
+  // Context failure tracking (Checkpoint 1D)
+  consecutiveContextFailures: number;
+
   // Recovery (F11)
   recoveryTimer: NodeJS.Timeout | null;
 
@@ -119,6 +122,7 @@ export function create(deviceId: string, ws: WsLike): VoiceSession {
     totalTokensUsed: 0,
     totalTtsChars: 0,
     reconnectAttempts: 0,
+    consecutiveContextFailures: 0,
 
     recoveryTimer: null,
 
