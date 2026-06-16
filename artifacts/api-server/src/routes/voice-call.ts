@@ -206,6 +206,30 @@ export async function handleVoiceTurn(
   session.currentResponseId = responseId;
   session.state = "llm_pending";
 
+  // ── 0. Persist user row immediately on speech_final acceptance ─────────────
+  // Captured before the first await so the timestamp is accurate even if
+  // Claude takes many seconds to reply. Source="voice_call" on all rows.
+  const utteranceTimestamp = new Date();
+  void (async () => {
+    try {
+      await db.insert(messagesTable).values({
+        id: crypto.randomUUID(),
+        deviceId: session.deviceId,
+        role: "user",
+        content: transcript,
+        status: "complete",
+        source: "voice_call",
+        createdAt: utteranceTimestamp,
+      });
+      logger.info(
+        { deviceId: session.deviceId, turnId, utteranceId },
+        "voice: user row persisted",
+      );
+    } catch (err) {
+      logger.error({ err, deviceId: session.deviceId, turnId }, "voice: user row DB write failed — call continues");
+    }
+  })();
+
   // ── 1. Load context ────────────────────────────────────────────────────────
   const contextStart = Date.now();
   let contextResult: Awaited<ReturnType<typeof loadVoiceContext>>;
@@ -509,6 +533,33 @@ export async function handleVoiceTurn(
   }
 
   session.state = "listening";
+
+  // ── 8. Persist assistant row after TTS audio confirmed sent ───────────────
+  // Idempotency: completedTurnIds prevents a duplicate write if this code
+  // path is somehow reached twice for the same turnId.
+  if (sentChunks > 0 && !session.completedTurnIds.has(turnId)) {
+    const assistantText = claudeText; // capture in closure
+    void (async () => {
+      try {
+        await db.insert(messagesTable).values({
+          id: crypto.randomUUID(),
+          deviceId: session.deviceId,
+          role: "ashley",
+          content: assistantText,
+          status: "complete",
+          source: "voice_call",
+          createdAt: new Date(),
+        });
+        session.completedTurnIds.add(turnId);
+        logger.info(
+          { deviceId: session.deviceId, turnId },
+          "voice: assistant row persisted",
+        );
+      } catch (err) {
+        logger.error({ err, deviceId: session.deviceId, turnId }, "voice: assistant row DB write failed — call continues");
+      }
+    })();
+  }
 
   const totalTurnMs = Date.now() - turnStart;
   logger.info(
