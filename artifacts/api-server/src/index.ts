@@ -3,6 +3,9 @@ import { logger } from "./lib/logger";
 import { db, messagesTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { tickProactive } from "./lib/proactiveScheduler";
+import { timingSafeEqual } from "node:crypto";
+// @ts-ignore – ws ships no bundled types; @types/ws not yet installed
+import { WebSocketServer } from "ws";
 
 const rawPort = process.env["PORT"];
 
@@ -18,7 +21,7 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-app.listen(port, (err) => {
+const server = app.listen(port, (err: unknown) => {
   if (err) {
     logger.error({ err }, "Error listening on port");
     process.exit(1);
@@ -99,4 +102,110 @@ app.listen(port, (err) => {
   };
   setInterval(runProactiveTick, proactiveIntervalMs).unref();
   setTimeout(runProactiveTick, 30_000).unref();
+});
+
+// ── Voice-call WebSocket (Phase 1: echo spike) ───────────────────────────────
+//
+// Path:   ws[s]://<host>/api/voice/call
+// Auth:   Authorization: Bearer <API_AUTH_KEY>   (same key as HTTP routes)
+//         X-Device-Id: <uuid>                    (same header as HTTP routes)
+//
+// noServer: true — we own the HTTP upgrade event so Express keeps handling
+// every normal request; only the specific path is handed to the WS server.
+//
+// Phase 1 behaviour: acknowledge connection with a JSON `connected` frame,
+// then echo every incoming message back prefixed with "[echo] ". No STT /
+// LLM / TTS yet — this proves the socket plumbing end-to-end.
+
+function safeEqualBuf(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
+const VOICE_WS_PATH = "/api/voice/call";
+const DEVICE_ID_RE = /^[a-zA-Z0-9_-]{8,128}$/;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const wss: any = new WebSocketServer({ noServer: true });
+
+server.on("upgrade", (req, socket, head) => {
+  const raw = req.url ?? "/";
+  let pathname: string;
+  try {
+    pathname = new URL(raw, `http://localhost:${port}`).pathname;
+  } catch {
+    socket.destroy();
+    return;
+  }
+
+  if (pathname !== VOICE_WS_PATH) {
+    socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
+  const expected = (process.env["API_AUTH_KEY"] ?? "").trim();
+  if (!expected) {
+    logger.error("Voice-call WS: API_AUTH_KEY not configured");
+    socket.write("HTTP/1.1 500 Server Config Error\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
+  const authHeader = (
+    (req.headers["authorization"] as string | undefined) ?? ""
+  ).trim();
+  const match = /^Bearer\s+(.+)$/i.exec(authHeader);
+  const token = (match?.[1] ?? "").trim();
+  if (!token || !safeEqualBuf(token, expected)) {
+    logger.warn("Voice-call WS: rejected — bad auth token");
+    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
+  const deviceId = (
+    (req.headers["x-device-id"] as string | undefined) ?? ""
+  ).trim();
+  if (!deviceId || !DEVICE_ID_RE.test(deviceId)) {
+    logger.warn("Voice-call WS: rejected — missing/invalid X-Device-Id");
+    socket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  wss.handleUpgrade(req, socket, head, (ws: any) => {
+    wss.emit("connection", ws, req, deviceId);
+  });
+});
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+wss.on("connection", (ws: any, _req: any, deviceId: string) => {
+  logger.info({ deviceId }, "Voice-call WS: connected");
+
+  ws.send(JSON.stringify({ type: "connected", deviceId }));
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ws.on("message", (data: any) => {
+    const text = Buffer.isBuffer(data) ? data.toString("utf8") : String(data);
+    logger.info(
+      { deviceId, len: text.length },
+      "Voice-call WS: message received (echo)",
+    );
+    ws.send(`[echo] ${text}`);
+  });
+
+  ws.on("close", (code: number, reason: Buffer) => {
+    logger.info(
+      { deviceId, code, reason: reason.toString() },
+      "Voice-call WS: closed",
+    );
+  });
+
+  ws.on("error", (err: Error) => {
+    logger.error({ err, deviceId }, "Voice-call WS: error");
+  });
 });
