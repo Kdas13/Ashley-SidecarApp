@@ -261,6 +261,19 @@ wss.on("connection", (ws: any, _req: any, deviceId: string) => {
 
       if (!transcript) return;
 
+      // RACE 4: Deepgram finals must not be processed while the session is closing.
+      if (
+        currentSession.state === "closing" ||
+        currentSession.state === "closed" ||
+        currentSession.state === "failed"
+      ) {
+        logger.info(
+          { deviceId, state: currentSession.state },
+          "voice: speech_final ignored — session is closing",
+        );
+        return;
+      }
+
       // Idempotency: ignore duplicate utteranceIds.
       if (currentSession.processedUtteranceIds.has(utteranceId)) {
         logger.info({ deviceId, utteranceId }, "voice: duplicate utteranceId ignored");
@@ -270,17 +283,36 @@ wss.on("connection", (ws: any, _req: any, deviceId: string) => {
 
       logger.info({ deviceId, utteranceId, transcriptPreview: transcript.slice(0, 80) }, "voice: speech_final accepted");
 
-      const result = await handleVoiceTurn(currentSession, transcript, utteranceId);
-      if (result) {
-        // ElevenLabs TTS wired in Checkpoint 1E.
-        // For now: confirm the text is ready and set state back to listening.
-        logger.info(
-          { deviceId, turnId: result.turnId, strippedPreview: result.stripped.slice(0, 80) },
-          "voice: ready for TTS (Checkpoint 1E pending)",
+      // handleVoiceTurn runs the full pipeline: context → Claude → TTS.
+      // TTS, DB writes, and state reset happen inside the function.
+      await handleVoiceTurn(currentSession, transcript, utteranceId);
+    }
+
+    if (msg["type"] === "interrupt") {
+      // 1G: User interrupts Ashley mid-speech.
+      // cancelCurrentTurn is called BEFORE sending interrupt_ack so that
+      // any in-flight TTS chunk send sees the cleared speechId first.
+      registry.cancelCurrentTurn(currentSession, "user_interrupt");
+      currentSession.state = "listening";
+
+      const seq = registry.incrementSequence(currentSession);
+      try {
+        ws.send(
+          JSON.stringify({
+            type: "interrupt_ack",
+            sessionId: currentSession.sessionId,
+            connectionGeneration: currentSession.connectionGeneration,
+            sequenceNumber: seq,
+            timestamp: Date.now(),
+          }),
         );
-        const sess = registry.findBySessionId(sessionId);
-        if (sess) sess.state = "listening";
+      } catch (err) {
+        logger.warn({ err, deviceId }, "voice: failed to send interrupt_ack");
       }
+      logger.info(
+        { deviceId, sessionId: currentSession.sessionId },
+        "voice: interrupt handled",
+      );
     }
   });
 
