@@ -190,8 +190,21 @@ wss.on("connection", (ws: any, _req: any, deviceId: string) => {
   // otherwise create a fresh session. TRAP 2: all state in registry.
   let session = registry.reclaimSession(deviceId, ws as registry.WsLike);
   if (session) {
+    // 1H: Reject pathological reconnect loops (> 15 attempts = 16+ connections).
+    if (session.reconnectAttempts > 15) {
+      logger.warn(
+        { deviceId, sessionId: session.sessionId, reconnectAttempts: session.reconnectAttempts },
+        "Voice-call WS: reconnect attempts exceeded — ending call",
+      );
+      try {
+        ws.send(JSON.stringify({ type: "call_ended", reason: "too_many_reconnects" }));
+      } catch {}
+      registry.finalise(session.sessionId, "too_many_reconnects");
+      ws.close(1008, "too_many_reconnects");
+      return;
+    }
     logger.info(
-      { deviceId, sessionId: session.sessionId, gen: session.connectionGeneration },
+      { deviceId, sessionId: session.sessionId, gen: session.connectionGeneration, reconnectAttempts: session.reconnectAttempts },
       "Voice-call WS: session reclaimed",
     );
   } else {
@@ -202,7 +215,7 @@ wss.on("connection", (ws: any, _req: any, deviceId: string) => {
     );
   }
 
-  // Checkpoint 1A DoD item 4: send call_connected with sessionId.
+  // Send call_connected with sessionId and reconnect flag (1A DoD item 4).
   ws.send(
     JSON.stringify({
       type: "call_connected",
