@@ -609,10 +609,14 @@ export default function ChatScreen(): React.JSX.Element {
     const requestId = generateRequestId();
     // isSendingRef is a synchronous lock that catches two taps in the same
     // render cycle before React re-renders with isPending=true. Combined with
-    // the isPending check it prevents concurrent mutateAsync calls entirely.
-    if (isSendingRef.current || streamMutation.isPending) {
-      // A stream is already in flight (or starting) — queue rather than drop.
-      // The drain effect fires as soon as isPending flips to false.
+    // isPending and hasUnansweredTail it prevents concurrent mutateAsync calls
+    // entirely. hasUnansweredTail covers the gap between a stream settling
+    // (isPending → false) and Ashley's reply being acknowledged — without it,
+    // a quick follow-up message fires immediately and collides with the server
+    // still processing or recovering the previous turn.
+    if (isSendingRef.current || streamMutation.isPending || hasUnansweredTail) {
+      // A stream is in flight, starting, or recovering — queue rather than drop.
+      // The drain effect fires once isPending is false AND hasUnansweredTail clears.
       messageQueue.current.push({ content, replyTo: replyToSnapshot, requestId });
       setQueueSize(messageQueue.current.length);
       return;
@@ -638,6 +642,7 @@ export default function ChatScreen(): React.JSX.Element {
       });
   }, [
     draft,
+    hasUnansweredTail,
     streamMutation,
     replyingTo,
     tts,
