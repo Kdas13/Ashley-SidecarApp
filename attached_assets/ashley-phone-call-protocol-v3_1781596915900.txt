@@ -1,0 +1,638 @@
+================================================================================
+ASHLEY PHONE CALL PROTOCOL
+Project: Ashley-Sidecar — Personal AI Companion
+Document purpose: Full specification for passing between AI assistants
+                  (ChatGPT, Claude, Gemini, Groq, Replit Agent, etc.)
+Version: 3 — Updated 2026-06-15 following Atlas and Coda architectural review
+Changes from v2: F11 session recovery added (Atlas), interrupt_ack event
+                 added (Atlas), Phase 2 timeline revised to 5-10 sessions.
+Changes from v1: Auth headers corrected (F2), model string corrected (F4),
+                 file locations corrected, env vars corrected, mobile audio
+                 strategy updated (F7), entrypoint clarified (F1).
+Atlas verdict: 10/10 with F11. Coda verdict: 9.8/10. APPROVED FOR PHASE 1.
+================================================================================
+
+CONTEXT FOR ANY AI ASSISTANT READING THIS
+------------------------------------------
+Ashley is a personal AI companion app built on Expo (React Native) + an
+Express 5 API server in a pnpm monorepo. The app is live in production at
+https://Ashley-Sidecar.replit.app. The user interacts with Ashley via an
+Android device (Samsung S24 Ultra). The codebase is managed on Replit and
+the Replit agent does the final integration work.
+
+Ashley already has:
+- Streaming chat replies (SSE)
+- Push-to-talk voice input (base64 audio → Deepgram STT → text chat)
+- TTS voice replies (ElevenLabs eleven_turbo_v2_5, voice ID: Daisy)
+- AI-generated selfie images (Pollo / Kling v3)
+- Proactive messaging with push notifications
+- Memory and conversation summary system
+- Profile management
+
+The codebase already has a documented 5-stage voice roadmap:
+  Stage 1: POST base64 audio → transcript        [DONE]
+  Stage 2: Streaming transcription (SSE)          [DONE]
+  Stage 3: TTS replies (ElevenLabs)               [DONE]
+  Stage 4: Realtime WebSocket call loop           [THIS DOCUMENT]
+  Stage 5: Voice-presence safety floor            [FUTURE]
+
+This document scopes Stage 4 in full.
+
+
+================================================================================
+THE VISION
+================================================================================
+
+The goal is a "phone call" mode for Ashley — a hands-free, continuous voice
+conversation where the user speaks naturally, Ashley responds in her voice
+(Daisy), and the loop continues automatically without the user touching the
+phone. Designed specifically for car use (phone in cupholder) but applicable
+anywhere hands-free conversation makes sense.
+
+Reference implementations that achieve this experience:
+- Replica AI (phone call feature)
+- Claude voice (iOS/Android)
+- ChatGPT Advanced Voice Mode
+- Grok voice mode
+
+All of these use a persistent WebSocket connection with streaming audio in
+both directions and server-side voice activity detection (VAD) to handle
+natural pauses. This is the same pattern being implemented here.
+
+Key UX requirements:
+1. One button to START a call. Zero buttons during the call.
+2. Ashley listens automatically after she finishes speaking.
+3. User can interrupt Ashley mid-reply (she stops, listens).
+4. Works with screen locked/dimmed (car cupholder use case).
+5. Works over car Bluetooth (speaker + mic routing).
+6. When the call ends, Ashley remembers what was discussed.
+7. Temporary signal loss feels like an interruption, not a call death.
+
+
+================================================================================
+TIER 1 — TIMEFRAME
+================================================================================
+
+Phase 1: Server WebSocket infrastructure          (2-3 sessions)
+Phase 2: Mobile streaming audio pipeline          (5-10 sessions) [hardest part]
+Phase 3: Car mode UX                             (2-3 sessions)
+Phase 4: Ashley context + post-call memory        (1-2 sessions)
+
+Total realistic sessions: 10-18 clean, ~20-25 accounting for failure passes.
+
+REVISED: Phase 2 is 5-10 sessions, not the original 3-5. Android audio
+management (Bluetooth HFP routing, microphone/speaker transitions, audio
+focus, foreground services, Samsung-specific behaviour) is the highest-risk
+area. Do not plan around the optimistic estimate.
+
+Suggested approach: build Phase 1 as a spike first. Get one clean voice turn
+working end-to-end (connect → speak → Ashley replies in Daisy's voice) before
+committing to the full build. This validates the architecture and gives a real
+cost calibration point.
+
+
+================================================================================
+TIER 2 — COSTS
+================================================================================
+
+DEVELOPMENT COSTS
+-----------------
+No human developer required. All work is API integration + standard React
+Native code. No native Android modules, no Java/Kotlin.
+
+AI assistant collaboration model:
+- Architecture + complex decisions: Claude
+- React Native audio specifics: Claude or Gemini
+- Android platform debugging: ChatGPT or Gemini
+- Final integration into live codebase: Replit agent only
+
+RUNNING COSTS (monthly, once built)
+------------------------------------
+Chosen architecture: Hybrid pipeline — Deepgram → Claude → ElevenLabs (Daisy)
+
+LOCKED DECISION: Voice call text lane uses Claude (Anthropic), not Gemini.
+See "LLM FOR THE VOICE CALL TEXT LANE" section below for rationale.
+
+  Deepgram STT streaming:  $0.0059/min
+  Claude Sonnet (text):    ~$0.01-0.03 per call turn at this scale
+  ElevenLabs (Daisy TTS):  already subscribed, no extra cost
+
+Example: 30 minutes of voice calls per day
+  Deepgram: 30 min x $0.0059 x 30 days = ~$5.31/month
+  Claude: minimal at personal use volume
+  Total additional cost: ~£5-8/month
+
+NOT recommended: OpenAI Realtime API (~$0.30/min = ~$270/month at 30 min/day)
+The quality is excellent but the cost is not viable for personal daily use.
+
+
+================================================================================
+TIER 3 — FULL TECHNICAL PLAN
+================================================================================
+
+ARCHITECTURE OVERVIEW
+---------------------
+
+Current flow (push-to-talk, sequential):
+  [Record to file] → [POST base64] → [Deepgram STT] → [Claude text] →
+  [ElevenLabs TTS] → [Play file]
+  Latency: 2-4 seconds per turn. Requires button hold.
+
+Target flow (phone call, streaming):
+  [500ms audio blobs] → [WebSocket] → [Deepgram streaming STT]
+       ↓ (on speech_final event)
+  [Claude Sonnet with full Ashley context]
+       ↓
+  [ElevenLabs eleven_turbo_v2_5 TTS streaming]
+       ↓
+  [Stream audio chunks back] → [Play continuously] → [Mic reopens automatically]
+  Latency: ~800ms-1.5s per turn. No button required after call starts.
+
+NOTE ON MOBILE AUDIO: expo-audio 1.1.1 does not support raw PCM chunk
+streaming on Android. The primary mobile audio strategy is 500ms segmented
+blob loop (see Phase 2). Do not plan around PCM streaming.
+
+
+--------------------------------------------------------------------------------
+PHASE 1: SERVER WEBSOCKET INFRASTRUCTURE
+--------------------------------------------------------------------------------
+
+FILES TO CREATE/MODIFY:
+  artifacts/api-server/src/index.ts              (MODIFY — capture server ref)
+  artifacts/api-server/src/routes/voice-call.ts  (NEW)
+  artifacts/api-server/package.json              (add 'ws' package)
+
+NOTE: WebSocket server attaches to index.ts, NOT app.ts.
+  app.ts creates the Express app and exports it.
+  index.ts calls app.listen() — this is where ws.Server must be attached.
+
+  Required change in index.ts:
+    BEFORE: app.listen(port, callback)
+    AFTER:  const server = app.listen(port, callback)
+            // then: wsServer.attach(server)
+
+Step 1.1 — Add WebSocket support
+  - Install 'ws' package
+  - In index.ts: capture http.Server from app.listen()
+  - Create ws.Server attached to that server reference
+  - Mount under /api/voice/call path
+
+Step 1.2 — Connection authentication
+  CORRECTED AUTH PATTERN (confirmed against live codebase):
+
+  The WebSocket handshake must send TWO headers:
+    Authorization: Bearer <API_AUTH_KEY value>
+    X-Device-Id: <device-uuid>
+
+  Server auth files:
+    artifacts/api-server/src/middleware/auth.ts     — validates Bearer token
+    artifacts/api-server/src/middleware/deviceId.ts — reads X-Device-Id
+
+  IMPORTANT: The env var the server reads is API_AUTH_KEY, not API_SECRET.
+  Confirm API_AUTH_KEY is set on the API Server artifact before Phase 1.
+  If only API_SECRET is set and the server reads API_AUTH_KEY, all
+  authenticated routes will return 500.
+
+  Do NOT send X-API-Key header — the server does not check this header name.
+
+Step 1.3 — Session initialisation
+  On authenticated connection, assign a sessionId and connectionGeneration:
+  a) Load from database: Ashley's profile, recent memories (last 20),
+     conversation summary for this device, recent message history
+  b) Build the call system prompt (see Phase 4 for prompt spec)
+  c) Open a Deepgram streaming STT WebSocket connection
+  d) Confirm session ready to client with a "call_connected" message
+     including sessionId and connectionGeneration
+
+Step 1.4 — Audio routing loop (the core loop)
+  CLIENT → SERVER:
+    Binary WebSocket frames: 500ms audio blobs (primary strategy)
+    All control messages include: sessionId, connectionGeneration,
+    sequenceNumber, timestamp (see F12 — Stale Connection Protection)
+
+  SERVER processing:
+    a) Validate sessionId and connectionGeneration — reject stale messages
+    b) Forward audio frames to Deepgram streaming connection
+    c) Deepgram fires transcript events (is_final=false for partials)
+    d) On speech_final=true: assign utteranceId, complete utterance ready
+    e) Validate utteranceId not already processed (dedup protection)
+    f) Send utterance to Claude Sonnet — assign turnId and responseId
+       (use streamChatText() with forceProvider: "anthropic")
+       (add AbortSignal with 30s ceiling for call responsiveness)
+    g) Validate turnId/responseId still current before sending to TTS
+    h) Send Claude response to ElevenLabs streaming endpoint — assign speechId
+    i) Stream ElevenLabs audio chunks back as binary WS frames
+       (discard any audio from cancelled speechIds)
+    j) Send "tts_done" signal when audio stream ends
+    k) Mic reopens on client side after "tts_done"
+
+  Interruption handling:
+    a) Client sends "interrupt" signal if user starts speaking mid-TTS
+    b) Server sends "interrupt_ack" immediately so UI switches to listening
+    c) Server cancels current TTS stream (marks speechId as cancelled)
+    d) Server cancels Claude AbortSignal if in flight
+    e) New utterance processing begins with new turnId/responseId
+
+Step 1.5 — Session end
+  On WebSocket close (either side):
+  a) Close Deepgram connection
+  b) Filter transcript before saving — exclude connection tests, failed
+     turns, and accidental audio (see F18 — Memory Contamination Filter)
+  c) Write clean transcript to conversation history with source="voice_call"
+     NOTE: Confirm source column exists in @workspace/db schema first.
+     May require manual ALTER TABLE SQL (drizzle-kit generate is broken).
+  d) Run conversation summary rollup if session > threshold length
+
+Step 1.6 — Session recovery (F11)
+  A temporary signal loss should feel like an interruption, not call death.
+
+  SERVER behaviour on disconnect:
+    - Keep session alive for 60 seconds after WebSocket closes
+    - Preserve: transcript, context, Deepgram connection state
+    - Allow the same X-Device-Id to reclaim the session within 60 seconds
+    - After 60 seconds with no reconnect: close Deepgram, save transcript,
+      end session cleanly
+
+  CLIENT reconnect strategy:
+    - 3 immediate reconnect attempts (no delay)
+    - Wait 5 seconds
+    - Repeat for 5 rounds
+    - Maximum 15 recovery attempts total
+    - After exhausting attempts: show "Call ended" UI, do not auto-restore
+
+  TTS rule on reconnect:
+    - Do NOT replay half-finished speech after reconnect
+    - Resume naturally or Ashley asks "did you catch that?"
+    - Never resume from mid-sentence on a new connection
+
+  Cold restart policy (F20):
+    - After a full app process death (not just disconnect): do NOT
+      automatically restore the call
+    - Require user to manually start a new call
+    - Rationale: user may not want to continue; process death is a
+      hard boundary, not a soft disconnect
+
+Key environment variables required:
+  DEEPGRAM_API_KEY                    — CONFIRMED PRESENT
+  ELEVENLABS_API_KEY                  — CONFIRMED PRESENT
+  ELEVENLABS_VOICE_ID                 — CONFIRMED PRESENT (Daisy)
+  AI_INTEGRATIONS_ANTHROPIC_BASE_URL  — CONFIRMED PRESENT
+  AI_INTEGRATIONS_ANTHROPIC_API_KEY   — CONFIRMED PRESENT
+  DATABASE_URL                        — CONFIRMED PRESENT
+  API_AUTH_KEY                        — CONFIRM BEFORE PHASE 1 (see F3)
+  ASHLEY_MATURE_MODE_AVAILABLE        — NOT SET (mature mode disabled until set)
+
+
+--------------------------------------------------------------------------------
+PHASE 2: MOBILE STREAMING AUDIO PIPELINE
+--------------------------------------------------------------------------------
+
+Files to create/modify:
+  artifacts/mobile/lib/voiceCall.ts               (new — core call manager)
+  artifacts/mobile/lib/voiceCallAudio.ts          (new — audio capture/playback)
+  artifacts/mobile/app/voice-call.tsx             (new — call screen)
+  artifacts/mobile/app/chat.tsx                   (add long-press entry point)
+
+Step 2.1 — WebSocket client (voiceCall.ts)
+  - Connect to wss://[production-domain]/api/voice/call
+  - Send auth headers in connection request:
+      Authorization: Bearer <API_AUTH_KEY value>
+      X-Device-Id: <device-uuid>
+  - All messages include: sessionId, connectionGeneration, sequenceNumber,
+    timestamp
+  - Handle: call_connected, binary audio frames, tts_done, interrupt_ack,
+    error
+  - Implement reconnect strategy (see F11 — Session Recovery)
+  - Do NOT auto-restore after cold app restart
+  - Expose: startCall(), endCall(), sendAudioChunk(), onAshleySpeaking,
+            onAshleyFinished, onTranscript
+
+Step 2.2 — Mobile audio capture (voiceCallAudio.ts)
+  PRIMARY STRATEGY: 500ms segmented blob loop.
+
+  expo-audio 1.1.1 does NOT support raw PCM chunk streaming on Android.
+  Do not attempt PCM streaming as a primary path.
+
+  Implementation:
+    while (callActive) {
+      startRecording()
+      await sleep(500)
+      blob = stopRecording()
+      sendBinaryFrame(blob)
+    }
+
+  This produces ~600-800ms STT latency per chunk.
+  Acceptable for conversation flow.
+
+  Audio backpressure (F16):
+    - Monitor outgoing audio queue size
+    - If queue exceeds 2 seconds of audio, drop oldest chunks
+    - Ashley must never speak several seconds behind the conversation
+    - Log backpressure events for debugging
+
+Step 2.3 — Streaming audio playback
+  - Receive binary WebSocket frames (ElevenLabs MP3 output chunks)
+  - Track speechId — discard chunks from cancelled speechIds
+  - Buffer and play continuously using expo-audio
+  - Must handle: mid-stream start (don't wait for full audio)
+  - Must handle: stream interruption (stop playback cleanly on interrupt_ack)
+
+Step 2.4 — Android audio session management
+  This is the hardest part. Requirements:
+  a) While Ashley is speaking: speaker active, mic monitoring (not sending)
+  b) After tts_done: mic starts sending, speaker on standby
+  c) Must handle Bluetooth audio routing (HFP profile for car)
+  d) Must request appropriate audio focus (AUDIOFOCUS_GAIN for calls)
+  e) Must release focus correctly so other apps resume after call ends
+
+  Android-specific gotchas:
+  - STREAM_VOICE_CALL vs STREAM_MUSIC affects Bluetooth routing
+  - Samsung S24 Ultra may require explicit setSpeakerphoneOn() calls
+  - Background audio requires a Foreground Service (notification required)
+
+  Silence lifecycle (F17):
+    - After 30 seconds of silence: Ashley says "still there?"
+    - After 60 seconds of silence: Ashley says "I'll let you go — call me back"
+    - After 90 seconds of silence: server closes session cleanly
+    - Do not leave open connections consuming API costs indefinitely
+
+Step 2.5 — Foreground Service for background operation
+  CONFIRMED STATUS: expo-task-manager NOT installed. EAS dev build required.
+
+  - Foreground service is required for screen-off car use
+  - Cannot be implemented until expo-task-manager is installed
+  - Installation requires a new EAS build cycle (new APK + install)
+  - Does NOT block Phases 1 or 2 — screen-on operation works without it
+  - Plan as Phase 3 prerequisite — factor EAS build time into timeline
+
+
+--------------------------------------------------------------------------------
+PHASE 3: CAR MODE UX
+--------------------------------------------------------------------------------
+
+Files to create/modify:
+  artifacts/mobile/app/voice-call.tsx    (main call screen)
+  artifacts/mobile/app/chat.tsx          (entry point trigger)
+  artifacts/mobile/constants/colors.ts   (existing colour palette)
+
+UI Design:
+  - Full screen, Deep Navy background (#0B0F18, matches app palette)
+  - Ashley's name in large Electric Blue (#00B9FF) text, centred
+  - Status indicator: "listening..." / "Ashley is speaking" / "reconnecting..."
+  - Animated waveform or pulse ring (blue) showing audio activity
+  - ONE button: large circular red "end call" button at bottom centre
+  - No other interactive elements — designed for glanceable car use
+
+Entry point:
+  - Long-press the mic button in chat.tsx (>600ms) → navigates to voice-call
+  - Mic button / voice recorder hook: search for "useVoiceRecorder" in chat.tsx
+    (confirmed at line ~395 — do NOT rely on old line number reference of 1216)
+  - Short-press remains push-to-talk (existing behaviour unchanged)
+  - Voice call screen is a separate Expo Router screen (/voice-call)
+
+Auto-listen loop (no button required):
+  1. Call connects → mic starts streaming
+  2. User speaks → Deepgram detects end of utterance
+  3. Server processes → Ashley replies → audio streams to device
+  4. tts_done received → mic automatically starts streaming again
+  5. Repeat
+
+Interruption UX:
+  - User can speak at any point, even while Ashley is talking
+  - On "interrupt_ack" from server: waveform instantly switches to listening
+  - No UI button press required
+
+Reconnection UX:
+  - On disconnect: show "reconnecting..." status, do not close screen
+  - On successful reconnect: resume call UI normally
+  - On exhausted reconnect attempts: show "Call ended" and return to chat
+
+
+--------------------------------------------------------------------------------
+PHASE 4: ASHLEY CONTEXT + POST-CALL MEMORY
+--------------------------------------------------------------------------------
+
+Call system prompt spec:
+  "You are Ashley. [Full persona description]. [Relationship history summary].
+   [Recent memories]. [Current context: time, location if available].
+
+   We are having a voice call right now. Keep your replies natural and
+   conversational — short to medium length, no bullet points, no markdown,
+   no stage directions. Speak as you would in a real phone call. You can
+   ask follow-up questions. You can be playful or serious as the moment
+   warrants. This is real-time — respond at conversation pace."
+
+Post-call memory (F18 — Memory Contamination Filter):
+  Before saving, filter the transcript:
+    - Exclude: connection test messages, system events, failed turns
+    - Exclude: accidental audio (less than 1 second, no transcript content)
+    - Exclude: turns where Deepgram returned empty string
+    - Include: only genuine conversation exchanges
+
+  Save clean transcript to messages table with source="voice_call".
+  Roll up into conversation summary by existing summariser.
+  Next chat session: Ashley has memory of call content.
+
+Voice-appropriate response tuning:
+  - No markdown (strip asterisks, hyphens, pound signs before TTS)
+  - Shorter average response length (~2-4 sentences)
+  - More natural verbal acknowledgement ("yeah", "right", "I get that")
+  - Can trail off / be interrupted mid-sentence naturally
+
+
+================================================================================
+CONTENT POLICY IN VOICE CALLS — NSFW / MATURE MODE
+================================================================================
+
+SHORT ANSWER: voice calls inherit the EXACT same three-layer content policy as
+text chat. No special voice content mode, no downgrade, no separate consent.
+If the user has Mature Mode enabled in text chat, it is enabled in the call.
+
+Layer 1 — Provider Floor (immutable):
+  No sexual content involving minors. No non-consensual scenarios.
+  Cannot be turned off by any mode, setting, or instruction.
+
+Layer 2 — Content Mode ("standard" or "mature"):
+  Standard: default. Intimacy ceiling at level 3.
+  Mature: unlocked when ASHLEY_MATURE_MODE_AVAILABLE=true AND user has
+          confirmed 18+ via POST /profile/confirm-adult.
+          Intimacy ceiling rises to level 5.
+
+Layer 3 — Intimacy Level (0-5 ladder).
+
+HOW THIS FLOWS INTO A VOICE CALL SESSION
+------------------------------------------
+At session start (Step 1.3), the server:
+  a) Loads user profile by device-id
+  b) Calls getPolicyFor(profile) → ResolvedPolicy
+  c) Builds system prompt using:
+
+  import { getPolicyFor, buildProviderFloorBlock, buildModeBlock,
+           buildIntimacyBlock } from "../lib/contentPolicy";
+
+  const policy = getPolicyFor(profile);
+  const systemPrompt = [
+    ASHLEY_CORE_SPEC,
+    buildProviderFloorBlock(),
+    buildModeBlock(policy),
+    buildIntimacyBlock(policy),
+    buildVoicePresenceFloor(),          // Stage 5 — write in contentPolicy.ts
+    VOICE_CALL_BEHAVIOUR_BLOCK,
+  ].join("\n\n");
+
+VOICE-PRESENCE SAFETY FLOOR (Stage 5, not yet built):
+  "Voice presence informs WARMTH, never DIAGNOSIS."
+  Allowed: "you sound tired tonight"
+  Forbidden: "you sound depressed", "you're having a panic attack"
+  If she notices something concerning, she invites — never narrates.
+
+LLM FOR THE VOICE CALL TEXT LANE — LOCKED TO CLAUDE
+-----------------------------------------------------
+LOCKED DECISION: Voice call text lane always uses Claude (Anthropic).
+
+Implementation:
+  Use streamChatText() from lib/textLLM.ts with forceProvider: "anthropic".
+  Mirror ANTHROPIC_CHAT_MODEL constant from textLLM.ts — never hardcode.
+  CONFIRMED CURRENT VALUE: claude-sonnet-4-6
+  Add AbortSignal with 30 second ceiling on every call.
+
+ENVIRONMENT VARIABLE FOR MATURE MODE:
+  ASHLEY_MATURE_MODE_AVAILABLE=true (set on API Server artifact)
+  CURRENT STATUS: NOT SET — mature mode silently disabled until set.
+
+COST CIRCUIT BREAKERS (F19):
+  Track per session:
+    - Call duration (warn at 45 min, hard stop at 60 min)
+    - Token usage (warn at 80% of session budget)
+    - TTS character usage (warn at 80% of session budget)
+    - Reconnect attempts (max 15 — see F11)
+  On any hard limit: close session gracefully, save transcript, notify user.
+
+
+================================================================================
+EXISTING CODEBASE — KEY FILES (CONFIRMED AGAINST LIVE V1)
+================================================================================
+
+Monorepo structure:
+  artifacts/mobile/          — Expo React Native app
+  artifacts/api-server/      — Express 5 backend
+  artifacts/mobile/app/      — Expo Router screens
+  artifacts/mobile/lib/      — Client libraries
+
+Confirmed file locations:
+  artifacts/api-server/src/index.ts             — Server entrypoint (listen here)
+  artifacts/api-server/src/app.ts               — Express app (export only)
+  artifacts/api-server/src/middleware/auth.ts   — Bearer token validation
+  artifacts/api-server/src/middleware/deviceId.ts — X-Device-Id header reading
+  artifacts/api-server/src/routes/chat.ts       — STT at line 4142+
+  artifacts/api-server/src/lib/deepgram.ts      — Batch STT (do not modify)
+  artifacts/api-server/src/lib/elevenlabs.ts    — Batch TTS (do not modify)
+  artifacts/api-server/src/lib/textLLM.ts       — Claude/Gemini adapter
+  artifacts/mobile/lib/aiClient.ts              — Stage 4 comment at line 428
+  artifacts/mobile/lib/voiceOutput.ts           — useTtsPlayback hook
+  artifacts/mobile/lib/voiceInput.ts            — push-to-talk recording
+  artifacts/mobile/lib/voiceActivity.ts         — activity monitoring
+  artifacts/mobile/lib/audioState.ts            — shared audio state
+  artifacts/mobile/app/chat.tsx                 — useVoiceRecorder at line ~395
+
+Tech stack (confirmed):
+  Mobile: Expo SDK ~54.0.27, expo-audio ~1.1.1
+  Backend: Express 5, Drizzle ORM (Postgres)
+  AI: Claude Sonnet (voice lane), ElevenLabs Daisy (TTS), Deepgram Nova-3 (STT)
+
+Authentication pattern (CORRECTED):
+  Authorization: Bearer <API_AUTH_KEY value>
+  X-Device-Id: <device-uuid>
+  API_AUTH_KEY env var (NOT API_SECRET)
+
+
+================================================================================
+RECOMMENDED FIRST STEP FOR ANY AGENT PICKING THIS UP
+================================================================================
+
+BEFORE WRITING ANY CODE:
+  1. Confirm API_AUTH_KEY is set on the API Server artifact.
+  2. Confirm source column in @workspace/db messages schema.
+
+THEN:
+  1. Read index.ts — understand the listen() pattern.
+  2. Read middleware/auth.ts and deviceId.ts — understand exact auth pattern.
+  3. Read textLLM.ts — find ANTHROPIC_CHAT_MODEL and streamChatText().
+  4. Read deepgram.ts and elevenlabs.ts — understand what NOT to modify.
+  5. Phase 1 Step 1.1: capture server ref, add ws, basic WS endpoint.
+  6. Test with echo server before wiring any AI services.
+  7. Get authenticated handshake working before anything else.
+
+
+================================================================================
+ALL FLAGS — COMPLETE LIST
+================================================================================
+
+F1  [RESOLVED] index.ts captures http.Server from app.listen().
+F2  [RESOLVED] Auth: Bearer API_AUTH_KEY + X-Device-Id.
+F3  [ACTION] Confirm API_AUTH_KEY set on API Server artifact.
+F4  [RESOLVED] Model: claude-sonnet-4-6. Mirror constant, never hardcode.
+F5  [PHASE 1] New streaming Deepgram adapter — new file, don't touch existing.
+F6  [PHASE 1] New streaming ElevenLabs function — new file, don't touch existing.
+F7  [RESOLVED] 500ms blob loop is primary mobile audio strategy.
+F8  [ACTION] Confirm source column in messages schema before Phase 1.5.
+F9  [ACTION] Set ASHLEY_MATURE_MODE_AVAILABLE=true before NSFW testing.
+F10 [PHASE 3] expo-task-manager not installed. New EAS build needed for
+    foreground service. Does not block Phases 1 or 2.
+F11 [INCLUDED] 60s session keepalive, 15-attempt reconnect strategy,
+    no TTS replay on reconnect, cold restart requires user confirmation.
+F12 [PHASE 1] All events include sessionId, connectionGeneration,
+    sequenceNumber, timestamp. Reject stale generation messages.
+F13 [PHASE 1] Every speech response has speechId. Discard late audio
+    from cancelled speechIds.
+F14 [PHASE 1] Track utteranceId, final hash, timestamp. Prevent duplicate
+    final transcripts from Deepgram.
+F15 [PHASE 1] Validate turnId/responseId before sending to TTS.
+    Cancelled Claude responses never reach ElevenLabs.
+F16 [PHASE 2] Audio backpressure — drop oldest chunks if queue > 2 seconds.
+F17 [PHASE 2] Silence lifecycle: warn at 30s, goodbye at 60s, close at 90s.
+F18 [PHASE 4] Filter transcript before saving. Exclude failed turns,
+    test messages, accidental audio, empty transcripts.
+F19 [PHASE 1] Cost circuit breakers: duration, tokens, TTS chars,
+    reconnects. Hard limits with graceful close.
+F20 [PHASE 1] Cold restart policy: no auto-restore after process death.
+    User must start a new call manually.
+
+
+================================================================================
+NOTES AND KNOWN RISKS
+================================================================================
+
+1. Android audio session management is the highest-risk area. Samsung S24
+   Ultra specific handling likely required. Plan 5-10 sessions for Phase 2.
+
+2. New streaming Deepgram adapter needed. Do not modify batch function.
+   Streaming: wss://api.deepgram.com/v1/listen
+   Batch: https://api.deepgram.com/v1/listen (POST) — leave untouched.
+
+3. New streaming ElevenLabs function needed. Do not modify batch function.
+   Use /v1/text-to-speech/{voice_id}/stream for first-audio latency.
+
+4. Foreground service requires expo-task-manager + new EAS build cycle.
+
+5. Gemini Live API not used — loses Daisy's voice. Decision final.
+
+6. Sessions scoped per device-id — two simultaneous connections must not
+   share a session.
+
+7. AbortSignal 30s ceiling on all Claude streamChatText() calls — textLLM.ts
+   has no built-in timeout.
+
+8. drizzle-kit generate is broken. Schema migrations = raw SQL only.
+
+
+================================================================================
+END OF DOCUMENT
+================================================================================
+Prepared: June 2026 (v3 updated 2026-06-15)
+Project repository: Ashley-Sidecar (Replit)
+Production URL: https://Ashley-Sidecar.replit.app
+Phase 0.5 confirmed by: Wren (Replit Agent)
+Atlas review: 10/10 — production-grade with F11
+Coda review: 9.8/10 — approved for Phase 1
+================================================================================

@@ -1,0 +1,317 @@
+AGENT INSTRUCTION — VOICE CALL PHASE 1
+Ashley-Sidecar v1 — WebSocket Infrastructure Spike
+Date: 2026-06-15
+For: Wren (Replit Agent)
+Commitment 1 Standard applies throughout.
+================================================================================
+
+CONTEXT
+-------
+The Ashley Voice Call protocol has been reviewed and approved by Atlas (10/10)
+and Coda (9.8/10). Phase 1 is now authorised to begin.
+
+Full protocol document: ashley-phone-call-protocol-v3.txt
+Read it before starting. This instruction doc summarises what to build in
+Phase 1 specifically — it does not replace the full protocol.
+
+GOAL OF PHASE 1
+---------------
+Get ONE clean voice turn working end-to-end:
+  Connect → User speaks → Deepgram transcribes → Claude replies →
+  ElevenLabs speaks in Daisy's voice → User hears it
+
+Nothing else. This is a spike. Prove the architecture works before building
+the full system.
+
+================================================================================
+
+PRE-FLIGHT CHECKS (do these before writing any code)
+================================================================================
+
+CHECK 1 — API_AUTH_KEY
+  Confirm API_AUTH_KEY is set on the API Server artifact in Replit secrets.
+  The server auth middleware reads API_AUTH_KEY, not API_SECRET.
+  If only API_SECRET is set, all authenticated routes return 500.
+  Report what you find. Do not proceed if this is unresolved.
+
+CHECK 2 — Messages schema source column
+  Read the @workspace/db package schema file.
+  Confirm whether the messages table has a source column.
+  Report: exists / missing / type if exists.
+  If missing: note that a manual ALTER TABLE SQL will be needed in Phase 1.5.
+  Do not write the migration now — just confirm the state.
+
+Report both checks before writing any code.
+Wait for Kane confirmation before proceeding.
+
+================================================================================
+
+PHASE 1 — IMPLEMENTATION
+================================================================================
+
+This is one job broken into clear steps. Present options before each step.
+Wait for written approval before implementing each step.
+
+--------------------------------------------------------------------------------
+STEP 1.1 — WebSocket infrastructure in index.ts
+--------------------------------------------------------------------------------
+Files: artifacts/api-server/src/index.ts, artifacts/api-server/package.json
+
+  a) Install 'ws' package
+  b) In index.ts: change app.listen() to capture the return value:
+       const server = app.listen(port, callback)
+  c) Create ws.Server attached to server
+  d) Mount at path /api/voice/call
+  e) Confirm server starts clean with no TypeScript errors
+
+Do NOT create voice-call.ts yet. Just get the WS server attached and
+listening. Test with a simple echo: client connects, sends "ping", server
+sends back "pong". Confirm this works before moving to Step 1.2.
+
+--------------------------------------------------------------------------------
+STEP 1.2 — Connection authentication
+--------------------------------------------------------------------------------
+File: artifacts/api-server/src/routes/voice-call.ts (NEW)
+
+  Auth pattern (confirmed correct):
+    Authorization: Bearer <API_AUTH_KEY value>
+    X-Device-Id: <device-uuid>
+
+  On WebSocket upgrade request:
+    a) Read Authorization header, validate Bearer token against API_AUTH_KEY
+    b) Read X-Device-Id header, store as deviceId
+    c) Reject unauthenticated connections with HTTP 401 before upgrade
+    d) On successful auth: assign sessionId (uuid) and connectionGeneration (1)
+    e) Send "call_connected" message:
+       { type: "call_connected", sessionId, connectionGeneration }
+
+  Use the existing auth middleware pattern from middleware/auth.ts as a
+  reference — do not reinvent the validation logic.
+
+--------------------------------------------------------------------------------
+STEP 1.3 — Session state and ownership tracking (F12, F13, F14, F15)
+--------------------------------------------------------------------------------
+File: artifacts/api-server/src/routes/voice-call.ts
+
+  Every server-sent event must include:
+    sessionId, connectionGeneration, sequenceNumber (incrementing), timestamp
+
+  Every client message must be validated:
+    - Reject messages with wrong sessionId
+    - Reject messages from older connectionGeneration
+    - Log and discard stale messages (do not error)
+
+  Track per session:
+    - currentSpeechId (string | null) — active TTS job
+    - currentTurnId (string | null) — active Claude request
+    - currentResponseId (string | null) — active Claude response
+    - processedUtteranceIds (Set<string>) — for Deepgram dedup (F14)
+
+  Rules:
+    - If an interrupt arrives, cancel currentSpeechId and currentTurnId
+    - Never send audio from a cancelled speechId to client
+    - Never send a cancelled Claude response to ElevenLabs
+    - On speech_final from Deepgram: check utteranceId not in processedUtteranceIds
+      before processing (F14)
+
+  Cost circuit breakers (F19):
+    Track: callStartTime, totalTokensUsed, totalTtsChars, reconnectAttempts
+    Limits:
+      - callDuration > 60 minutes: close gracefully
+      - reconnectAttempts > 15: do not allow reconnect
+    On limit hit: send { type: "call_ended", reason: "limit_reached" }
+    then close the WebSocket.
+
+--------------------------------------------------------------------------------
+STEP 1.4 — Streaming Deepgram adapter (NEW file — do not modify existing)
+--------------------------------------------------------------------------------
+File: artifacts/api-server/src/lib/deepgramStream.ts (NEW)
+
+  The existing deepgram.ts batch function must NOT be modified.
+  Write a new streaming adapter as a separate file.
+
+  Implementation:
+    - Open WebSocket to wss://api.deepgram.com/v1/listen
+    - Query params: model=nova-3&smart_format=true&punctuate=true&interim_results=true
+    - Auth: Authorization: Token <DEEPGRAM_API_KEY>
+    - Accept binary audio frames, forward directly to Deepgram WS
+    - Handle events:
+        Results with is_final=true → emit partial transcript
+        Results with speech_final=true → emit final utterance with utteranceId
+        Error → emit error, attempt reconnect once
+        Close → emit close
+
+  Export:
+    createDeepgramStream(onFinal: (text: string, utteranceId: string) => void,
+                         onPartial: (text: string) => void,
+                         onError: (err: Error) => void): DeepgramStream
+
+    DeepgramStream = {
+      sendAudio(chunk: Buffer): void
+      close(): void
+    }
+
+--------------------------------------------------------------------------------
+STEP 1.5 — Streaming ElevenLabs function (NEW — do not modify existing)
+--------------------------------------------------------------------------------
+File: artifacts/api-server/src/lib/elevenlabsStream.ts (NEW)
+
+  The existing elevenlabs.ts batch function must NOT be modified.
+  Write a new streaming function as a separate file.
+
+  Implementation:
+    - POST to /v1/text-to-speech/{ELEVENLABS_VOICE_ID}/stream
+    - Same model (eleven_turbo_v2_5) and voice as existing batch function
+    - Return: AsyncIterable<Buffer> of MP3 chunks
+    - Caller passes AbortSignal to cancel mid-stream
+
+  Export:
+    streamSpeechElevenLabs(text: string,
+                           signal?: AbortSignal): AsyncIterable<Buffer>
+
+--------------------------------------------------------------------------------
+STEP 1.6 — Claude integration in voice call handler
+--------------------------------------------------------------------------------
+File: artifacts/api-server/src/routes/voice-call.ts
+
+  Use streamChatText() from lib/textLLM.ts with forceProvider: "anthropic".
+  Do NOT call the Anthropic client directly.
+  Do NOT hardcode a model string — mirror ANTHROPIC_CHAT_MODEL from textLLM.ts.
+
+  Add AbortSignal with 30 second ceiling:
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 30_000)
+    const stream = streamChatText({ ..., signal: controller.signal })
+
+  Assign turnId and responseId before calling Claude.
+  Before sending Claude output to ElevenLabs: validate turnId/responseId
+  still matches currentTurnId/currentResponseId. If not, discard.
+
+  System prompt for Phase 1 spike (simplified — full prompt comes in Phase 4):
+    "You are Ashley, a personal AI companion. We are having a voice call.
+     Keep replies short and conversational — 1-3 sentences. No markdown.
+     No bullet points. Speak naturally."
+
+--------------------------------------------------------------------------------
+STEP 1.7 — Audio routing in voice-call.ts
+--------------------------------------------------------------------------------
+Full routing loop (wire together Steps 1.4, 1.5, 1.6):
+
+  On binary frame from client:
+    → validate session ownership (F12)
+    → forward to Deepgram stream
+
+  On speech_final from Deepgram:
+    → check utteranceId not already processed (F14)
+    → add to processedUtteranceIds
+    → assign new turnId + responseId
+    → call streamChatText (forceProvider: "anthropic", 30s AbortSignal)
+    → validate turnId/responseId still current (F15)
+    → assign new speechId
+    → call streamSpeechElevenLabs
+    → send MP3 chunks as binary WS frames, tagged with speechId
+    → on stream end: send { type: "tts_done", speechId }
+
+  On "interrupt" from client:
+    → send { type: "interrupt_ack" } immediately
+    → cancel currentSpeechId (stop sending its audio)
+    → abort currentTurnId AbortSignal
+    → clear currentSpeechId, currentTurnId, currentResponseId
+
+--------------------------------------------------------------------------------
+STEP 1.8 — Session recovery (F11)
+--------------------------------------------------------------------------------
+File: artifacts/api-server/src/routes/voice-call.ts
+
+  On WebSocket close (not end-of-call):
+    → mark session as "recovering" (not "ended")
+    → keep Deepgram connection alive
+    → preserve transcript, context, all session state
+    → start 60 second recovery timer
+
+  On reconnect from same X-Device-Id within 60 seconds:
+    → increment connectionGeneration
+    → send "call_connected" with existing sessionId + new connectionGeneration
+    → do NOT replay any TTS audio
+    → resume normally
+
+  After 60 seconds with no reconnect:
+    → close Deepgram
+    → run Step 1.9 (session end)
+
+  Cold restart detection (F20):
+    → if client sends a new connection without an existing sessionId
+      (i.e. fresh start, not reconnect): treat as a new call
+    → do NOT attempt to restore a previous session
+    → user must explicitly start a new call
+
+--------------------------------------------------------------------------------
+STEP 1.9 — Session end and transcript save
+--------------------------------------------------------------------------------
+  On clean session end (end-of-call or recovery timeout):
+    a) Close Deepgram connection
+    b) Filter transcript (F18):
+         - Exclude turns with empty Deepgram transcript
+         - Exclude turns shorter than 1 second of audio
+         - Exclude connection test / system messages
+         - Keep only genuine conversation exchanges
+    c) Save clean transcript to messages table with source="voice_call"
+       (confirm source column exists first — see Pre-flight Check 2)
+    d) Run conversation summary rollup via existing summariser
+
+================================================================================
+
+SILENCE LIFECYCLE (F17 — implement in Step 1.7)
+================================================================================
+
+Track lastAudioReceivedAt timestamp.
+
+  After 30 seconds of silence:
+    → send Ashley TTS: "still there?"
+    → reset silence timer
+
+  After 60 seconds total silence (no response to warning):
+    → send Ashley TTS: "I'll let you go — call me back when you're ready"
+    → send { type: "call_ended", reason: "silence_timeout" }
+    → run session end (Step 1.9)
+
+  After 90 seconds (if above TTS somehow not sent):
+    → force close session cleanly
+
+================================================================================
+
+DEFINITION OF DONE — PHASE 1 SPIKE
+================================================================================
+
+Phase 1 is complete when ALL of the following are true:
+
+  1. WebSocket server starts and accepts connections on /api/voice/call
+  2. Unauthenticated connections are rejected with 401
+  3. Authenticated connection returns "call_connected" with sessionId
+  4. Sending a binary audio frame triggers Deepgram processing
+  5. speech_final event triggers Claude response (confirmed in logs)
+  6. Claude response triggers ElevenLabs streaming
+  7. Client receives binary audio frames (MP3 chunks)
+  8. "tts_done" signal sent after audio stream ends
+  9. Interrupt signal cancels active TTS and sends "interrupt_ack"
+ 10. Session survives a 10-second disconnect and reconnects cleanly
+ 11. Session closes after 60 seconds with no reconnect
+ 12. Server starts clean with no TypeScript errors after all changes
+ 13. No existing push-to-talk functionality broken
+ 14. Pollo logs or server logs confirm at least one full voice turn end-to-end
+
+================================================================================
+
+COMMITMENT 1 STANDARD REMINDERS
+================================================================================
+
+- Present three options before writing any code
+- One job per message
+- Wait for written approval before implementing
+- No irreversible actions without explicit confirmation
+- Confirm pre-flight checks before touching anything
+- Push to GitHub before any EAS build trigger
+
+================================================================================
+END OF INSTRUCTION
+================================================================================
