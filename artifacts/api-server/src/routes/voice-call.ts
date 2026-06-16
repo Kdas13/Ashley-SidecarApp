@@ -23,6 +23,7 @@ import { eq, desc } from "drizzle-orm";
 import { getOrCreateProfileFor } from "../lib/profile";
 import { buildSystemPrompt } from "../lib/ashleyCoreSpec";
 import { streamChatText, type LLMMessage } from "../lib/textLLM";
+import { streamSpeechElevenLabs } from "../lib/elevenlabsStream";
 import * as registry from "../lib/VoiceSessionRegistry";
 import type { VoiceSession } from "../lib/VoiceSessionRegistry";
 import { logger } from "../lib/logger";
@@ -108,7 +109,79 @@ export function stripMarkdown(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// handleVoiceTurn — the speech_final → context → Claude pipeline for one turn.
+// speakFallback — send a short spoken fallback to the client using the TTS
+// ownership protocol. Used for Claude timeout, Claude error, and context
+// load failure. Safe to call after cancelCurrentTurn (currentSpeechId is
+// null at that point — we assign our own speechId for the fallback).
+// ---------------------------------------------------------------------------
+async function speakFallback(
+  session: VoiceSession,
+  text: string,
+): Promise<void> {
+  if (
+    session.state === "closed" ||
+    session.state === "failed" ||
+    session.state === "closing"
+  )
+    return;
+  if (!session.ws) return;
+
+  const speechId = crypto.randomUUID();
+  session.currentSpeechId = speechId;
+
+  const seqStart = registry.incrementSequence(session);
+  try {
+    session.ws.send(
+      JSON.stringify({
+        type: "speech_start",
+        speechId,
+        sessionId: session.sessionId,
+        connectionGeneration: session.connectionGeneration,
+        sequenceNumber: seqStart,
+        timestamp: Date.now(),
+      }),
+    );
+  } catch {
+    session.currentSpeechId = null;
+    return;
+  }
+
+  let sentChunks = 0;
+  try {
+    for await (const chunk of streamSpeechElevenLabs(text)) {
+      if (session.currentSpeechId !== speechId) break;
+      try {
+        session.ws.send(chunk);
+        sentChunks++;
+      } catch {
+        break;
+      }
+    }
+  } catch {
+    // ignore TTS errors for fallback messages
+  }
+
+  if (sentChunks > 0 && session.currentSpeechId === speechId) {
+    const seqDone = registry.incrementSequence(session);
+    try {
+      session.ws.send(
+        JSON.stringify({
+          type: "tts_done",
+          speechId,
+          sessionId: session.sessionId,
+          connectionGeneration: session.connectionGeneration,
+          sequenceNumber: seqDone,
+          timestamp: Date.now(),
+        }),
+      );
+    } catch {}
+  }
+
+  session.currentSpeechId = null;
+}
+
+// ---------------------------------------------------------------------------
+// handleVoiceTurn — the speech_final → context → Claude → TTS pipeline.
 //
 // Returns { claudeText, stripped } on success, or null if the turn was
 // cancelled / failed / produced empty output.
@@ -234,10 +307,11 @@ export async function handleVoiceTurn(
         { deviceId: session.deviceId, turnId },
         "voice: Claude timed out — cancelling turn",
       );
-      // Spoken fallback (TTS wired in 1E — log only for now).
-      logger.info(
-        "voice: [TTS fallback] 'Sorry, I'm having trouble thinking right now. Try asking me again.'",
-      );
+      void speakFallback(
+        session,
+        "Sorry, I'm having trouble thinking right now. Try asking me again.",
+      ).catch(() => {});
+      session.state = "listening";
     }
   }, CLAUDE_TIMEOUT_MS);
 
@@ -265,15 +339,13 @@ export async function handleVoiceTurn(
       claudeText += chunk;
     }
   } catch (err: unknown) {
-    const isAbort =
-      err instanceof Error &&
-      (err.name === "AbortError" || err.name === "AbortError");
+    const isAbort = err instanceof Error && err.name === "AbortError";
     if (!isAbort) {
       logger.error({ err, deviceId: session.deviceId, turnId }, "voice: Claude error");
-      // Spoken fallback (TTS wired in 1E — log only for now).
-      logger.info(
-        "voice: [TTS fallback] 'Sorry, I'm having trouble thinking right now. Try asking me again.'",
-      );
+      void speakFallback(
+        session,
+        "Sorry, I'm having trouble thinking right now. Try asking me again.",
+      ).catch(() => {});
     }
     session.state = "listening";
     return null;
@@ -306,13 +378,148 @@ export async function handleVoiceTurn(
     return null;
   }
 
-  // ── 6. Strip markdown before any TTS call ─────────────────────────────────
+  // ── 6. Strip markdown before TTS ──────────────────────────────────────────
   const stripped = stripMarkdown(claudeText);
+
+  // ── 7. ElevenLabs streaming with binary frame ownership protocol ───────────
+  //
+  // speechId uniquely identifies this audio stream so the client can match
+  // binary frames to the correct "speech bubble". Per-chunk check discards
+  // stale audio if cancelCurrentTurn fires mid-stream.
+
+  const speechId = crypto.randomUUID();
+  session.currentSpeechId = speechId;
+  session.state = "tts_streaming";
+  session.totalTtsChars += stripped.length;
+
+  // New AbortController for TTS — stored so cancelCurrentTurn can abort it.
+  const ttsController = new AbortController();
+  session.currentAbortController = ttsController;
+
+  const seqStart = registry.incrementSequence(session);
+  const speechStartFrame = JSON.stringify({
+    type: "speech_start",
+    speechId,
+    sessionId: session.sessionId,
+    connectionGeneration: session.connectionGeneration,
+    sequenceNumber: seqStart,
+    timestamp: Date.now(),
+  });
+
+  session.log.push({ event: "TTS_STARTED", ts: new Date(), detail: `speechId=${speechId} chars=${stripped.length}` });
+  logger.info(
+    { deviceId: session.deviceId, turnId, speechId, strippedChars: stripped.length },
+    "voice: TTS_STARTED",
+  );
+
+  try {
+    session.ws?.send(speechStartFrame);
+  } catch (err) {
+    logger.warn({ err, deviceId: session.deviceId }, "voice: failed to send speech_start");
+    session.state = "listening";
+    session.currentSpeechId = null;
+    session.currentAbortController = null;
+    return null;
+  }
+
+  let sentChunks = 0;
+  let ttsFirstChunkMs: number | null = null;
+  const ttsStart = Date.now();
+
+  try {
+    for await (const chunk of streamSpeechElevenLabs(stripped, ttsController.signal)) {
+      // Per-chunk ownership check — discard if turn was cancelled mid-stream.
+      if (session.currentSpeechId !== speechId) {
+        logger.info(
+          { deviceId: session.deviceId, turnId, speechId },
+          "voice: stale TTS chunk discarded — speechId mismatch",
+        );
+        break;
+      }
+
+      if (ttsFirstChunkMs === null) {
+        ttsFirstChunkMs = Date.now() - ttsStart;
+        logger.info(
+          { deviceId: session.deviceId, turnId, speechId, ttsFirstChunkMs },
+          "voice: ttsFirstChunkMs",
+        );
+      }
+
+      try {
+        session.ws?.send(chunk);
+        sentChunks++;
+      } catch (sendErr) {
+        logger.warn({ err: sendErr, deviceId: session.deviceId }, "voice: TTS chunk send failed");
+        break;
+      }
+    }
+  } catch (err: unknown) {
+    const isAbort = err instanceof Error && err.name === "AbortError";
+    if (!isAbort) {
+      logger.error({ err, deviceId: session.deviceId, turnId, speechId }, "voice: ElevenLabs stream error");
+    } else {
+      logger.info({ deviceId: session.deviceId, turnId, speechId }, "voice: TTS stream aborted");
+    }
+  } finally {
+    if (session.currentAbortController === ttsController) {
+      session.currentAbortController = null;
+    }
+  }
+
+  const ttsTotalMs = Date.now() - ttsStart;
+  session.log.push({
+    event: "TTS_FINISHED",
+    ts: new Date(),
+    detail: `speechId=${speechId} chunks=${sentChunks} ms=${ttsTotalMs}`,
+  });
+  logger.info(
+    { deviceId: session.deviceId, turnId, speechId, sentChunks, ttsTotalMs },
+    "voice: TTS_FINISHED",
+  );
+
+  if (sentChunks === 0) {
+    // Zero chunks — ElevenLabs returned nothing or was immediately aborted.
+    logger.warn({ deviceId: session.deviceId, speechId }, "voice: tts_failed_no_audio");
+    try {
+      session.ws?.send(JSON.stringify({ type: "tts_failed_no_audio", speechId }));
+    } catch {}
+    session.state = "listening";
+    session.currentSpeechId = null;
+    return null;
+  }
+
+  // Send tts_done only if speechId is still ours (not cancelled mid-stream).
+  if (session.currentSpeechId === speechId) {
+    const seqDone = registry.incrementSequence(session);
+    try {
+      session.ws?.send(
+        JSON.stringify({
+          type: "tts_done",
+          speechId,
+          sessionId: session.sessionId,
+          connectionGeneration: session.connectionGeneration,
+          sequenceNumber: seqDone,
+          timestamp: Date.now(),
+        }),
+      );
+    } catch (err) {
+      logger.warn({ err, deviceId: session.deviceId }, "voice: failed to send tts_done");
+    }
+    session.currentSpeechId = null;
+  }
+
+  session.state = "listening";
 
   const totalTurnMs = Date.now() - turnStart;
   logger.info(
-    { deviceId: session.deviceId, turnId, totalTurnMs, strippedPreview: stripped.slice(0, 80) },
-    "voice: turn pipeline complete — TTS pending (Checkpoint 1E)",
+    {
+      deviceId: session.deviceId,
+      turnId,
+      totalTurnMs,
+      ttsFirstChunkMs,
+      sentChunks,
+    },
+    "voice: turn complete",
   );
 
   return { claudeText, stripped, turnId };
