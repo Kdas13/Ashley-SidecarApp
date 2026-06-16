@@ -1,0 +1,895 @@
+AGENT INSTRUCTION — VOICE CALL PHASE 1 (v3)
+Ashley-Sidecar v1 — WebSocket Infrastructure
+Date: 2026-06-16
+For: Wren (Replit Agent)
+Reviewed by: Atlas (9.9/10), Coda (9.7/10) — APPROVED AFTER AMENDMENTS
+Commitment 1 Standard applies throughout.
+
+Changes from v2:
+  - Phase 1 split into sub-checkpoints 1A through 1I (Coda Blocker 3)
+  - Manual WebSocket upgrade authentication specified (Atlas/Coda Blocker 1)
+  - VoiceSessionRegistry explicitly defined (Atlas/Coda Blocker 2)
+  - speechId binary frame ownership defined (Coda Blocker 4)
+  - Interrupted turn DB write policy defined (Coda Blocker 5)
+  - loadVoiceContext failure behaviour defined (Coda Blocker 6)
+  - completedTurnIds idempotency protection added (Coda Blocker 7)
+  - Silence timer restricted to listening state only
+  - 7 Wren implementation traps listed as hard rejections
+  - Definition of Done expanded to 30 items
+================================================================================
+
+CONTEXT
+-------
+The Ashley Voice Call protocol has been reviewed and approved through the
+full pipeline:
+  Protocol v3:  Atlas 10/10, Coda 9.8/10
+  Phase 1 v2:   Atlas 9.9/10, Coda 9.7/10 — approved after amendments
+  Kane:         Context design decision ratified 2026-06-16
+
+This is v3 of the Phase 1 instruction doc incorporating all amendments.
+It supersedes all previous versions. Do not refer to v1 or v2.
+
+Reference documents:
+  ashley-phone-call-protocol-v3.txt
+  DESIGN_DECISION_VOICE_CALL_CONTEXT_2026-06-16.txt
+
+GOAL OF PHASE 1
+---------------
+Get ONE clean voice turn working end-to-end:
+  Connect → User speaks → Deepgram transcribes → Claude replies (with full
+  Ashley context) → ElevenLabs speaks in Daisy's voice → User hears it
+
+Phase 1 is structured as 9 gated sub-checkpoints (1A through 1I).
+Each checkpoint has its own Definition of Done.
+Wren stops after each checkpoint, reports to Kane, and waits for approval
+before proceeding to the next. No exceptions.
+
+================================================================================
+HARD REJECTIONS — READ BEFORE STARTING
+================================================================================
+
+These are known implementation traps. If Wren proposes any of the following,
+Kane must reject it and redirect:
+
+TRAP 1: Authenticating after WebSocket connection is established.
+  Correct: Manual upgrade handler rejects before upgrade. See Checkpoint 1A.
+
+TRAP 2: Storing session variables inside the route callback closure.
+  Correct: All session state lives in VoiceSessionRegistry. See Checkpoint 1B.
+
+TRAP 3: Modifying existing deepgram.ts or elevenlabs.ts.
+  Correct: New streaming files only. deepgram.ts and elevenlabs.ts are frozen.
+
+TRAP 4: Hardcoding "claude-sonnet-4-6" or any model string.
+  Correct: Mirror ANTHROPIC_CHAT_MODEL constant from textLLM.ts.
+
+TRAP 5: Marking Phase 1 complete after one happy-path voice turn.
+  Correct: All 30 Definition of Done items must pass. Not negotiable.
+
+TRAP 6: Writing voice transcript rows at end-of-call.
+  Correct: Per-turn write after every completed TTS stream. See Checkpoint 1F.
+
+TRAP 7: Running silence timer globally or while Ashley is speaking.
+  Correct: Silence timer only runs in listening state. See Checkpoint 1I.
+
+================================================================================
+PRE-FLIGHT CHECKS (do before writing any code)
+================================================================================
+
+CHECK 1 — API_AUTH_KEY
+  Confirm API_AUTH_KEY is set on the API Server artifact in Replit secrets.
+  Auth middleware reads API_AUTH_KEY, not API_SECRET.
+  If only API_SECRET is set, all authenticated routes return 500.
+  Report. Do not proceed if unresolved.
+
+CHECK 2 — Messages schema source column
+  Read the @workspace/db package schema file.
+  Confirm whether the messages table has a source column.
+  Report: exists / missing / type if exists.
+  If missing: write manual ALTER TABLE SQL:
+    ALTER TABLE messages ADD COLUMN source TEXT DEFAULT 'text';
+  drizzle-kit generate is broken — raw SQL only.
+  Apply and confirm before proceeding.
+
+CHECK 3 — buildSystemPrompt location and signature
+  Find lib/ashleyCoreSpec.ts (or equivalent).
+  Confirm buildSystemPrompt() exists.
+  Report exact function signature including opts parameter.
+  Confirm opts accepts voiceMode boolean flag.
+
+CHECK 4 — History loading pattern in text chat route
+  Read artifacts/api-server/src/routes/chat.ts.
+  Find where text route loads: profile, memories, summaries, history.
+  Note exact Promise.all() pattern and HISTORY_WINDOW constant (expected: 80).
+  Voice call must replicate this pattern exactly.
+  Report exact lines and function calls used.
+
+Report all four checks. Wait for Kane confirmation before Checkpoint 1A.
+
+================================================================================
+CHECKPOINT 1A — MANUAL WEBSOCKET UPGRADE AUTHENTICATION
+================================================================================
+
+Files:
+  artifacts/api-server/src/index.ts      (MODIFY)
+  artifacts/api-server/package.json      (add 'ws' package)
+
+Goal: WebSocket server attached to http.Server. Unauthenticated connections
+rejected with HTTP 401 BEFORE the WebSocket upgrade completes.
+
+Step 1: Install 'ws' package.
+
+Step 2: In index.ts, capture server from app.listen():
+  BEFORE: app.listen(port, callback)
+  AFTER:  const server = app.listen(port, callback)
+
+Step 3: Create wss = new ws.Server({ noServer: true })
+  noServer: true is required — manual upgrade handling.
+
+Step 4: Implement manual upgrade handler:
+
+  server.on("upgrade", (request, socket, head) => {
+    // Only handle /api/voice/call path
+    if (request.url !== "/api/voice/call") {
+      socket.destroy()
+      return
+    }
+
+    // Validate Authorization header
+    const authHeader = request.headers["authorization"] ?? ""
+    const token = authHeader.startsWith("Bearer ")
+      ? authHeader.slice(7)
+      : null
+
+    if (!token || token !== process.env["API_AUTH_KEY"]) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n")
+      socket.destroy()
+      return
+    }
+
+    // Extract device ID
+    const deviceId = request.headers["x-device-id"]
+    if (!deviceId || typeof deviceId !== "string") {
+      socket.write("HTTP/1.1 400 Bad Request\r\n\r\n")
+      socket.destroy()
+      return
+    }
+
+    // Authentication passed — complete upgrade
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit("connection", ws, request, { deviceId })
+    })
+  })
+
+Step 5: Confirm server starts clean with no TypeScript errors.
+
+CHECKPOINT 1A DEFINITION OF DONE:
+  [ ] ws package installed
+  [ ] http.Server captured from app.listen()
+  [ ] wss created with noServer: true
+  [ ] Manual upgrade handler in place
+  [ ] Request to /api/voice/call with no auth header → socket destroyed, 401
+  [ ] Request with wrong token → socket destroyed, 401
+  [ ] Request with missing X-Device-Id → socket destroyed, 400
+  [ ] Request with valid token + deviceId → upgrade completes, connection open
+  [ ] Server starts clean, no TypeScript errors
+  [ ] No existing routes broken
+
+STOP. Report results. Wait for Kane approval before Checkpoint 1B.
+
+================================================================================
+CHECKPOINT 1B — VOICE SESSION REGISTRY
+================================================================================
+
+File: artifacts/api-server/src/lib/VoiceSessionRegistry.ts (NEW)
+
+Goal: All voice session state lives in an explicit in-memory registry.
+No session variables inside route callbacks. No exceptions.
+
+Note: Persistence across API restarts is OUT OF SCOPE for Phase 1.
+Sessions are lost on restart. This is acceptable for Phase 1.
+
+VoiceSession type definition:
+
+  type VoiceSessionState =
+    | "active"
+    | "listening"
+    | "llm_pending"
+    | "tts_streaming"
+    | "interrupted_cleanup"
+    | "recovering"
+    | "closing"
+    | "closed"
+    | "failed"
+
+  interface VoiceSession {
+    // Identity
+    sessionId: string
+    deviceId: string
+    connectionGeneration: number
+    sequenceNumber: number
+
+    // State
+    state: VoiceSessionState
+    ws: WebSocket | null
+
+    // Ownership tracking (F12, F13, F14, F15)
+    currentSpeechId: string | null
+    currentTurnId: string | null
+    currentResponseId: string | null
+    processedUtteranceIds: Set<string>
+    completedTurnIds: Set<string>         // idempotency protection
+
+    // Timing
+    callStartTime: Date
+    lastAudioReceivedAt: Date | null
+    silenceWarningSent: boolean           // reset only on real user audio
+
+    // Cost tracking (F19)
+    totalTokensUsed: number
+    totalTtsChars: number
+    reconnectAttempts: number
+
+    // Recovery (F11)
+    recoveryTimer: NodeJS.Timeout | null
+
+    // Lifecycle logs
+    log: Array<{ event: string; ts: Date; detail?: string }>
+  }
+
+VoiceSessionRegistry methods (implement all of these):
+
+  create(deviceId: string, ws: WebSocket): VoiceSession
+    - Generate sessionId (uuid)
+    - Set connectionGeneration to 1
+    - Set state to "active"
+    - Store in sessionsBySessionId and sessionIdByDeviceId
+    - Log CALL_CREATED
+
+  findByDeviceId(deviceId: string): VoiceSession | null
+    - Look up in sessionIdByDeviceId → sessionsBySessionId
+
+  findBySessionId(sessionId: string): VoiceSession | null
+
+  reclaimSession(deviceId: string, ws: WebSocket): VoiceSession | null
+    - Find existing session by deviceId
+    - If not found or state is not "recovering": return null
+    - ATOMICALLY:
+        clear recovery timer
+        increment connectionGeneration
+        set state to "active"
+        attach new ws
+    - Log CALL_RECONNECTED
+    - Return reclaimed session
+
+  markRecovering(sessionId: string): void
+    - Set state to "recovering"
+    - Start 60-second recovery timer
+    - On timer fire: check state is still "recovering" AND
+      connectionGeneration unchanged before finalising
+    - If still recovering: call finalise(sessionId, "recovery_timeout")
+    - Log CALL_RECOVERING
+
+  finalise(sessionId: string, reason: string): void
+    - Set state to "closed"
+    - Clear recovery timer
+    - Remove from both maps
+    - Log CALL_ENDED with reason
+
+  incrementSequence(session: VoiceSession): number
+    - Increment sequenceNumber, return new value
+
+  validateMessage(session: VoiceSession, msg: { sessionId: string,
+                  connectionGeneration: number }): boolean
+    - Return false if sessionId mismatch
+    - Return false if connectionGeneration < session.connectionGeneration
+    - Log and return false for stale messages (do not throw)
+
+  cancelCurrentTurn(session: VoiceSession, reason: string): void
+    - IDEMPOTENT helper (safe to call multiple times)
+    - Immediately clear: currentSpeechId, currentTurnId, currentResponseId
+    - Abort any active AbortController for this turn
+    - Log with reason
+    - This is the single cancellation function — use it everywhere
+
+Storage:
+  const sessionsBySessionId = new Map<string, VoiceSession>()
+  const sessionIdByDeviceId = new Map<string, string>()
+
+Lifecycle logging — every session change must log one of:
+  CALL_CREATED, CALL_RECOVERING, CALL_RECONNECTED, TRANSCRIPT_FINAL,
+  CONTEXT_LOADED, CLAUDE_STARTED, CLAUDE_FINISHED, TTS_STARTED,
+  TTS_FINISHED, CALL_ENDED
+
+CHECKPOINT 1B DEFINITION OF DONE:
+  [ ] VoiceSessionRegistry.ts created
+  [ ] All methods implemented
+  [ ] cancelCurrentTurn is idempotent (safe to call twice, no error)
+  [ ] reclaimSession atomically clears timer + increments generation
+  [ ] Recovery timer re-checks state before finalising (race protection)
+  [ ] Lifecycle log populated on every state change
+  [ ] TypeScript compiles clean
+  [ ] Unit-testable in isolation (no Express/WS dependencies in the file)
+
+STOP. Report results. Wait for Kane approval before Checkpoint 1C.
+
+================================================================================
+CHECKPOINT 1C — DEEPGRAM STREAMING ADAPTER
+================================================================================
+
+File: artifacts/api-server/src/lib/deepgramStream.ts (NEW)
+
+EXISTING deepgram.ts MUST NOT BE MODIFIED. It is frozen.
+
+Goal: New streaming Deepgram adapter as a standalone file.
+
+Implementation:
+  - Open WebSocket to wss://api.deepgram.com/v1/listen
+  - Params: model=nova-3&smart_format=true&punctuate=true&interim_results=true
+  - Auth: Authorization: Token <DEEPGRAM_API_KEY>
+  - Accept binary audio frames, forward directly to Deepgram WS
+  - Handle events:
+      Results with is_final=true and speech_final=false → emit partial
+      Results with speech_final=true → emit final with utteranceId
+      Empty or whitespace finals → ignore (do not emit)
+      Very short noise (< 1 word) → ignore
+      Error → emit error, attempt reconnect once
+      If reconnect fails → emit fatal error (call must end gracefully)
+      Close → emit close
+
+  Log: audio frame byte lengths, Deepgram event milestones.
+  Do NOT log raw audio content.
+
+Export:
+  createDeepgramStream(
+    onFinal: (text: string, utteranceId: string) => void,
+    onPartial: (text: string) => void,
+    onError: (err: Error) => void,
+    onFatalError: (err: Error) => void
+  ): DeepgramStream
+
+  DeepgramStream = {
+    sendAudio(chunk: Buffer): void
+    close(): void
+  }
+
+CHECKPOINT 1C DEFINITION OF DONE:
+  [ ] deepgramStream.ts created, existing deepgram.ts untouched
+  [ ] Connects to Deepgram streaming endpoint
+  [ ] Audio frames forwarded correctly
+  [ ] speech_final event fires onFinal callback with utteranceId
+  [ ] Empty/whitespace finals ignored (not emitted)
+  [ ] Single reconnect attempt on error
+  [ ] onFatalError fires if reconnect fails
+  [ ] TypeScript compiles clean
+
+STOP. Report results. Wait for Kane approval before Checkpoint 1D.
+
+================================================================================
+CHECKPOINT 1D — CONTEXT RELOAD AND CLAUDE INTEGRATION
+================================================================================
+
+File: artifacts/api-server/src/routes/voice-call.ts (NEW sections)
+
+Goal: On speech_final, load full Ashley context and call Claude.
+Context is loaded FRESH ON EVERY TURN — not cached at call start.
+
+loadVoiceContext(deviceId) function:
+
+  async function loadVoiceContext(deviceId: string) {
+    const [profile, memories, summaries, history] = await Promise.all([
+      // Replicate EXACTLY from text chat route (confirmed in Pre-flight Check 4)
+      db.query.ashleyProfiles.findFirst({ where: eq(..., deviceId) }),
+      db.query.memories.findMany({ where: eq(..., deviceId) }),
+      db.query.conversationSummaries.findMany({ where: eq(..., deviceId) }),
+      db.query.messages.findMany({
+        where: eq(..., deviceId),
+        orderBy: desc(messages.createdAt),
+        limit: HISTORY_WINDOW   // same constant as text chat — import it
+      })
+    ])
+    return { profile, memories, summaries, history }
+  }
+
+loadVoiceContext failure behaviour:
+  If loadVoiceContext throws:
+    1. Log error
+    2. If TTS available: speak fallback:
+       "Sorry, I lost my thread for a second. Try that again?"
+    3. Do NOT write any partial memory rows
+    4. Keep call open
+    5. Track consecutiveContextFailures counter on session
+    6. If consecutiveContextFailures >= 2:
+       send { type: "call_ended", reason: "context_load_failed" }
+       finalise session
+
+Building system prompt:
+
+  const VOICE_MODE_ADDENDUM = `
+## Voice Call Mode
+This is a live voice call. The user is speaking; you speak back via
+text-to-speech.
+- Keep each reply to 1-3 sentences unless the question requires more.
+- No markdown. No bullet points. No asterisks. No numbered lists.
+- Do not narrate actions in asterisks (*smiles*, *laughs*).
+- Speak naturally — full sentences, not fragments.
+- Do not mention you are an AI or that this is a voice call unless the
+  user raises it.
+`
+
+  const voiceProfile = { ...profile, voiceMode: true }
+  const systemPrompt = [
+    buildSystemPrompt(voiceProfile, memories, summaries, { voiceMode: true }),
+    VOICE_MODE_ADDENDUM
+  ].join("\n\n")
+
+Claude call:
+  Use streamChatText() from lib/textLLM.ts.
+  forceProvider: "anthropic" — LOCKED. Never Gemini. Never changes.
+  Mirror ANTHROPIC_CHAT_MODEL — NEVER hardcode model string.
+
+  const controller = new AbortController()
+  const timeout = setTimeout(() => {
+    registry.cancelCurrentTurn(session, "claude_timeout")
+  }, 30_000)
+
+  try {
+    const stream = streamChatText({
+      systemPrompt,
+      history,          // from loadVoiceContext
+      userMessage: transcript,
+      forceProvider: "anthropic",
+      signal: controller.signal
+    })
+    // ... stream processing
+  } finally {
+    clearTimeout(timeout)
+  }
+
+Claude timeout behaviour:
+  On AbortController abort (timeout or interrupt):
+    If reason is "claude_timeout":
+      Speak fallback TTS: "Sorry, I'm having trouble thinking right now.
+      Try asking me again."
+    Call continues. Do not close session on timeout.
+
+Claude edge cases:
+  - Empty Claude output → do not send to ElevenLabs, do not write rows
+  - Claude unavailable → spoken fallback, call continues
+  - Never silently switch to Gemini under any circumstances
+
+Strip before TTS:
+  Remove all markdown: asterisks, hyphens as bullets, pound signs, numbered
+  lists, stage directions (*smiles*, *laughs* etc.)
+
+Timing logs (add to session.log):
+  - contextLoadMs (time to complete loadVoiceContext)
+  - claudeMs (time from streamChatText start to first token)
+  - totalTurnMs (full turn start to tts_done)
+
+CHECKPOINT 1D DEFINITION OF DONE:
+  [ ] loadVoiceContext replicates exact text chat pattern
+  [ ] voiceMode: true set on profile before buildSystemPrompt
+  [ ] VOICE_MODE_ADDENDUM appended
+  [ ] history array passed to Claude (confirmed in logs)
+  [ ] forceProvider: "anthropic" confirmed in logs
+  [ ] ANTHROPIC_CHAT_MODEL mirrored, not hardcoded (confirmed in code)
+  [ ] 30s AbortController with cancelCurrentTurn on timeout
+  [ ] Claude timeout produces spoken fallback, call stays open
+  [ ] Empty Claude output does not reach ElevenLabs
+  [ ] Markdown stripped before any TTS call
+  [ ] contextLoadMs logged per turn
+  [ ] consecutiveContextFailures tracked, call closes at 2 failures
+
+STOP. Report results. Wait for Kane approval before Checkpoint 1E.
+
+================================================================================
+CHECKPOINT 1E — ELEVENLABS STREAMING
+================================================================================
+
+File: artifacts/api-server/src/lib/elevenlabsStream.ts (NEW)
+
+EXISTING elevenlabs.ts MUST NOT BE MODIFIED. It is frozen.
+
+Goal: New streaming ElevenLabs function. Binary audio frames to client
+with speech ownership tracking.
+
+Implementation:
+  - POST to /v1/text-to-speech/{ELEVENLABS_VOICE_ID}/stream
+  - Same model (eleven_turbo_v2_5) and voice as existing batch function
+  - Return: AsyncIterable<Buffer> of MP3 chunks
+  - Caller passes AbortSignal to cancel mid-stream
+
+Export:
+  streamSpeechElevenLabs(
+    text: string,
+    signal?: AbortSignal
+  ): AsyncIterable<Buffer>
+
+Binary frame ownership protocol (Coda Blocker 4):
+  Before sending binary chunks, send JSON:
+    { type: "speech_start", speechId, sessionId, connectionGeneration,
+      sequenceNumber, timestamp }
+
+  Then send binary frames (MP3 chunks) for that speechId.
+
+  After last chunk, send:
+    { type: "tts_done", speechId, sessionId, connectionGeneration,
+      sequenceNumber, timestamp }
+
+  Before sending EVERY binary chunk:
+    if speechId !== session.currentSpeechId:
+      discard chunk, do not send
+
+ElevenLabs edge cases:
+  - Zero chunks returned → send { type: "tts_failed_no_audio", speechId }
+    Keep call open, return to listening state.
+  - Error halfway through stream → clean up, return to listening state.
+  - tts_done means server finished sending chunks for this speechId.
+
+Timing log:
+  ttsFirstChunkMs (time from streamSpeechElevenLabs call to first chunk sent)
+
+CHECKPOINT 1E DEFINITION OF DONE:
+  [ ] elevenlabsStream.ts created, existing elevenlabs.ts untouched
+  [ ] speech_start JSON sent before first binary frame
+  [ ] Binary frames sent correctly
+  [ ] tts_done sent after last frame
+  [ ] Per-chunk speechId check — stale chunks discarded
+  [ ] Zero-chunk failure sends tts_failed_no_audio, call stays open
+  [ ] AbortSignal cancels stream cleanly
+  [ ] ttsFirstChunkMs logged
+
+STOP. Report results. Wait for Kane approval before Checkpoint 1F.
+
+================================================================================
+CHECKPOINT 1F — PER-TURN DATABASE WRITE
+================================================================================
+
+File: artifacts/api-server/src/routes/voice-call.ts
+
+Goal: Every completed turn writes two rows to messages immediately.
+Not at end-of-call. Immediately after TTS stream ends.
+
+Write policy:
+
+  On tts_done (TTS stream completed for a speechId):
+
+  Check completedTurnIds first (idempotency):
+    if session.completedTurnIds.has(turnId):
+      skip write (already persisted)
+      return
+
+  Write in a database transaction:
+    BEGIN TRANSACTION
+      INSERT INTO messages (deviceId, role, content, source, createdAt)
+      VALUES (deviceId, "user", transcript, "voice_call", utteranceTimestamp)
+
+      INSERT INTO messages (deviceId, role, content, source, createdAt)
+      VALUES (deviceId, "assistant", claudeText, "voice_call", NOW())
+    COMMIT
+
+  On success: session.completedTurnIds.add(turnId)
+  On failure: log error, do not retry, do not crash call
+
+Interrupted turn policy (Coda Blocker 5):
+  - Write user row as soon as speech_final is accepted (not after TTS)
+  - Write assistant row ONLY if at least one TTS audio chunk was sent
+  - If interrupted before any audio sent: skip assistant row
+  - completedTurnIds tracks whether both rows were written
+
+CHECKPOINT 1F DEFINITION OF DONE:
+  [ ] User row written on speech_final acceptance
+  [ ] Assistant row written only if TTS chunks were sent
+  [ ] Both writes in a single transaction
+  [ ] completedTurnIds prevents duplicate writes for same turnId
+  [ ] On DB failure: error logged, call continues
+  [ ] source="voice_call" on all rows
+  [ ] Second voice turn history includes first voice turn (confirm in logs)
+
+STOP. Report results. Wait for Kane approval before Checkpoint 1G.
+
+================================================================================
+CHECKPOINT 1G — INTERRUPT HANDLING
+================================================================================
+
+File: artifacts/api-server/src/routes/voice-call.ts
+
+Goal: User can interrupt Ashley mid-speech. Clean cancellation with no
+stale audio leaking.
+
+On "interrupt" message from client:
+  1. Validate session ownership (sessionId + connectionGeneration)
+  2. Call registry.cancelCurrentTurn(session, "user_interrupt") IMMEDIATELY
+     - This clears currentSpeechId, currentTurnId, currentResponseId atomically
+     - Aborts any active AbortController
+  3. Send { type: "interrupt_ack", sessionId, connectionGeneration,
+            sequenceNumber, timestamp } immediately
+  4. Set session.state to "listening"
+
+Race condition protections (Coda):
+  RACE 2 — Interrupt and TTS chunk in same tick:
+    cancelCurrentTurn clears currentSpeechId BEFORE aborting stream.
+    Per-chunk check (speechId !== currentSpeechId) catches the leak.
+
+  RACE 3 — Claude timeout and user interrupt both firing:
+    cancelCurrentTurn is idempotent — safe to call from both.
+    AbortController.abort() called twice is safe.
+
+  RACE 4 — Deepgram final after call closing:
+    Every Deepgram callback checks:
+      if (session.state === "closing" || session.state === "closed" ||
+          session.state === "failed") return
+
+CHECKPOINT 1G DEFINITION OF DONE:
+  [ ] Interrupt message handled
+  [ ] interrupt_ack sent immediately
+  [ ] cancelCurrentTurn called before sending interrupt_ack
+  [ ] No stale audio chunks sent after interrupt (speechId check confirmed)
+  [ ] cancelCurrentTurn is idempotent (call twice = no error)
+  [ ] Deepgram callbacks check session state before processing
+
+STOP. Report results. Wait for Kane approval before Checkpoint 1H.
+
+================================================================================
+CHECKPOINT 1H — SESSION RECOVERY (F11)
+================================================================================
+
+File: artifacts/api-server/src/routes/voice-call.ts
+File: artifacts/api-server/src/lib/VoiceSessionRegistry.ts (update)
+
+Goal: Temporary disconnects feel like interruptions, not call deaths.
+
+On WebSocket close (not deliberate end-of-call):
+  1. Call registry.markRecovering(sessionId)
+     - Sets state to "recovering"
+     - Keeps Deepgram connection alive
+     - Starts 60-second recovery timer
+     - Timer re-checks state + connectionGeneration before finalising
+  2. Log CALL_RECOVERING
+
+On new connection from same X-Device-Id:
+  1. Check registry.findByDeviceId(deviceId)
+  2. If session found in "recovering" state:
+     a. Call registry.reclaimSession(deviceId, newWs) — atomic operation
+     b. Increment reconnectAttempts counter
+     c. If reconnectAttempts > 15: reject with call_ended reason
+     d. Send "call_connected" with existing sessionId + new connectionGeneration
+     e. Do NOT replay any TTS audio
+     f. Resume normally
+  3. If no recovering session: treat as new call
+
+Race condition protection (Coda RACE 1):
+  reclaimSession atomically:
+    - clears recovery timer
+    - increments connectionGeneration
+    - sets state to "active"
+    - attaches new ws
+  Recovery timer re-checks generation before finalising.
+
+Cold restart policy (F20):
+  Fresh connection (no recovering session found for deviceId) = new call.
+  Never auto-restore after app process death.
+  User must explicitly start a new call.
+
+CHECKPOINT 1H DEFINITION OF DONE:
+  [ ] 10-second deliberate disconnect: session marked recovering
+  [ ] Reconnect within 60 seconds: session reclaimed, call resumes
+  [ ] connectionGeneration incremented on reclaim
+  [ ] No TTS audio replayed on reconnect
+  [ ] Recovery timer fires after 60 seconds if no reconnect
+  [ ] Timer re-checks state before finalising (race protection)
+  [ ] reconnectAttempts > 15: reconnect rejected
+  [ ] New connection with no recovering session: treated as fresh call
+  [ ] CALL_RECOVERING and CALL_RECONNECTED logged correctly
+
+STOP. Report results. Wait for Kane approval before Checkpoint 1I.
+
+================================================================================
+CHECKPOINT 1I — SILENCE LIFECYCLE
+================================================================================
+
+File: artifacts/api-server/src/routes/voice-call.ts
+
+Goal: Open calls with no user audio close gracefully.
+Silence timer only runs in listening state.
+
+Rules:
+  Track lastAudioReceivedAt on session.
+  Track silenceWarningSent (boolean, reset only on real user audio received).
+
+  Silence timer ONLY runs when session.state === "listening".
+  Pause silence timer when state is any of:
+    llm_pending, tts_streaming, interrupted_cleanup, recovering
+
+  After 30 seconds in listening state with no audio:
+    If silenceWarningSent is false:
+      Generate TTS: "still there?"
+      Send to client
+      Set silenceWarningSent = true
+      Reset silence timer
+    (Do not repeat warning if already sent this silence period)
+
+  After 60 seconds total silence (warning was sent, no response):
+    Generate TTS: "I'll let you go — call me back when you're ready"
+    Send to client
+    Send { type: "call_ended", reason: "silence_timeout" }
+    Finalise session
+
+  After 90 seconds (failsafe — if TTS generation fails):
+    Force close session without TTS
+
+  On real user audio received:
+    Reset lastAudioReceivedAt
+    Reset silenceWarningSent = false
+    Restart silence timer
+
+CHECKPOINT 1I DEFINITION OF DONE:
+  [ ] Silence timer only runs in listening state
+  [ ] Silence timer paused during llm_pending, tts_streaming, recovering
+  [ ] "still there?" fires once after 30s silence (not repeatedly)
+  [ ] silenceWarningSent reset only on real user audio
+  [ ] Call closes gracefully after 60s total silence
+  [ ] 90s failsafe closes without TTS
+  [ ] Silence timer resets correctly when user speaks
+
+STOP. Report results. Wait for Kane approval before Phase 2 planning.
+
+================================================================================
+FULL ROUTING LOOP (how checkpoints wire together)
+================================================================================
+
+For reference — this shows the complete flow once all checkpoints pass:
+
+  On binary frame from client:
+    → validate session ownership (sessionId + connectionGeneration)
+    → update lastAudioReceivedAt, reset silenceWarningSent
+    → check session.state not closing/closed/failed
+    → forward to Deepgram stream
+
+  On speech_final from Deepgram:
+    → check session.state not closing/closed/failed (RACE 4)
+    → check utteranceId not in processedUtteranceIds (F14)
+    → add to processedUtteranceIds
+    → write user row to DB immediately (Checkpoint 1F)
+    → set session.state = "llm_pending"
+    → await loadVoiceContext(deviceId) (Checkpoint 1D)
+    → build systemPrompt + VOICE_MODE_ADDENDUM
+    → assign new turnId + responseId
+    → log CLAUDE_STARTED
+    → call streamChatText (forceProvider: "anthropic", 30s AbortSignal)
+    → validate turnId/responseId still current (F15)
+    → assign new speechId
+    → set session.state = "tts_streaming"
+    → send speech_start JSON
+    → log TTS_STARTED
+    → stream ElevenLabs chunks (per-chunk speechId check)
+    → on stream end:
+        → log TTS_FINISHED
+        → write assistant row to DB (if any chunks sent)
+        → add turnId to completedTurnIds
+        → send tts_done
+        → set session.state = "listening"
+
+  On "interrupt" from client:
+    → registry.cancelCurrentTurn(session, "user_interrupt")
+    → send interrupt_ack
+    → set session.state = "listening"
+
+  On WebSocket close:
+    → registry.markRecovering(sessionId)
+
+  On silence timeout:
+    → speak "still there?" (once only)
+    → on second timeout: speak farewell, finalise session
+
+================================================================================
+COST CIRCUIT BREAKERS (F19 — track throughout)
+================================================================================
+
+Track on VoiceSession:
+  callStartTime, totalTokensUsed, totalTtsChars, reconnectAttempts
+
+Hard limits:
+  callDuration > 60 minutes: close gracefully
+  reconnectAttempts > 15: reject reconnect
+
+On any limit hit:
+  Send { type: "call_ended", reason: "limit_reached" }
+  Finalise session
+
+Future: warn at 80% of limits before hard stop.
+
+================================================================================
+SESSION END AND SUMMARY (on finalise)
+================================================================================
+
+On registry.finalise():
+  1. Close Deepgram connection
+  2. Memory contamination filter before summary:
+       Do NOT summarise if:
+         - fewer than 2 valid user utterances
+         - total call duration under 30 seconds
+         - reason is auth_failed, setup_failed, transcription_failed, or test
+  3. If call passes filter: run conversation summary rollup via existing
+     summariser
+  4. If WebSocket still open: send { type: "call_ended", reason }
+
+================================================================================
+DEFINITION OF DONE — COMPLETE PHASE 1
+================================================================================
+
+Phase 1 is complete when ALL 30 of the following are true.
+All sub-checkpoint Definitions of Done must also pass.
+
+Core infrastructure:
+  1.  WebSocket server starts and accepts connections on /api/voice/call
+  2.  Unauthenticated connections rejected with HTTP 401 BEFORE upgrade
+  3.  Missing X-Device-Id rejected with HTTP 400 BEFORE upgrade
+  4.  Authenticated connection returns "call_connected" with sessionId
+  5.  All session state lives in VoiceSessionRegistry (not route closures)
+
+Audio and STT:
+  6.  Binary audio frame triggers Deepgram processing
+  7.  Empty/whitespace Deepgram finals ignored
+  8.  speech_final triggers loadVoiceContext (confirmed in logs)
+
+Context and Claude:
+  9.  buildSystemPrompt called with voiceMode: true (confirmed in logs)
+  10. History array of up to 80 messages passed to Claude (confirmed in logs)
+  11. forceProvider: "anthropic" confirmed in logs
+  12. ANTHROPIC_CHAT_MODEL mirrored, not hardcoded (confirmed in code)
+  13. Claude timeout produces spoken fallback, call stays open
+  14. Empty Claude output does not reach ElevenLabs
+
+TTS and audio output:
+  15. speech_start JSON sent before first binary frame
+  16. Client receives binary audio frames (MP3 chunks)
+  17. tts_done signal sent after audio stream ends
+  18. Stale TTS chunks discarded after interrupt (speechId check)
+
+Database:
+  19. User row written on speech_final acceptance
+  20. Assistant row written only if TTS chunks were sent
+  21. User and assistant rows not duplicated for same turnId
+  22. Second voice turn history includes first voice turn (confirmed in logs)
+  23. source="voice_call" on all rows
+
+Interrupt:
+  24. Interrupt signal sends interrupt_ack immediately
+  25. No stale audio chunks after interrupt
+
+Recovery:
+  26. Session survives 10-second disconnect and reconnects cleanly
+  27. Reconnect at recovery boundary does not double-cleanup
+  28. Session closes after 60 seconds with no reconnect
+
+Silence:
+  29. Silence warning fires only once per silence period
+  30. Silence timer does not fire while Ashley is speaking
+
+Additional:
+  [ ] No existing push-to-talk functionality broken
+  [ ] Server starts clean with no TypeScript errors after all changes
+  [ ] VoiceSessionRegistry logs session create/reclaim/cleanup
+  [ ] contextLoadMs, claudeMs, ttsFirstChunkMs, totalTurnMs logged per turn
+
+================================================================================
+COMMITMENT 1 STANDARD REMINDERS
+================================================================================
+
+- Present three options before writing any code
+- One job per message
+- Wait for written approval before implementing each sub-checkpoint
+- No irreversible actions without explicit confirmation
+- Confirm all pre-flight checks before Checkpoint 1A
+- Push to GitHub before any EAS build trigger
+- Do not mark any checkpoint complete without reporting to Kane first
+
+================================================================================
+END OF INSTRUCTION
+================================================================================
+Prepared: 2026-06-16 — Final version for Wren implementation
+Reviewed by: Atlas (9.9/10), Coda (9.7/10)
+Ratified by: Kane
+================================================================================
