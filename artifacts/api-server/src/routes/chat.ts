@@ -6488,13 +6488,25 @@ router.post("/messages/:id/remember", async (req, res): Promise<void> => {
 // to OpenAI tts-1 otherwise. ElevenLabs eleven_turbo_v2_5 is ~300ms to
 // first byte; the OpenAI path can be 30s+ when the Replit proxy forces the
 // gpt-audio fallback.
+//
+// ElevenLabs errors (quota exhaustion, 5xx, etc.) are caught and logged;
+// the call falls through to OpenAI so TTS keeps working even when the
+// ElevenLabs monthly quota is spent.
 // ---------------------------------------------------------------------------
 async function synthesizeTts(text: string): Promise<Buffer> {
   if (
     process.env["ELEVENLABS_API_KEY"] &&
     process.env["ELEVENLABS_VOICE_ID"]
   ) {
-    return synthesizeSpeechElevenLabs(text);
+    try {
+      return await synthesizeSpeechElevenLabs(text);
+    } catch (err) {
+      logger.warn(
+        { err },
+        "ElevenLabs TTS failed — falling back to OpenAI tts-1",
+      );
+      // Fall through to OpenAI below.
+    }
   }
   return synthesizeSpeech(text);
 }
