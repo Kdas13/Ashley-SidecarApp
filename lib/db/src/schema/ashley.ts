@@ -214,6 +214,10 @@ export const messagesTable = pgTable(
     imageCategory: text("image_category"),
     imageCaption: text("image_caption"),
     imageAnalysisMode: text("image_analysis_mode"),
+    // Factual one-sentence description of what Ashley saw in the image, extracted
+    // from her vision reply at upload time. Injected into history placeholders so
+    // Ashley retains visual memory across all subsequent turns.
+    imageDescription: text("image_description"),
     // Tri-state for the "should I remember this image?" card:
     //   null  → user hasn't decided yet, card is shown after Ashley's reply
     //   true  → user said "remember key details" or "visual reference"

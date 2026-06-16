@@ -1575,6 +1575,18 @@ router.post("/chat", async (req, res): Promise<void> => {
         text = `> Replying to ${refersTo}: "${previewClean}"\n\n${text}`;
       }
     }
+    // Image turns: always emit a placeholder so captionless photos are never
+    // silently dropped from context. Use the stored visual description when
+    // available; fall back to the user's caption text.
+    if (m.imageUrl && m.role === "user") {
+      const cat = m.imageCategory ? ` (${m.imageCategory})` : "";
+      const desc = m.imageDescription
+        ? `: ${m.imageDescription}`
+        : text
+          ? `: "${text}"`
+          : "";
+      text = `[shared a photo${cat}${desc}]`;
+    }
     if (!text) continue;
     claudeMessages.push({ role, content: text });
   }
@@ -5122,6 +5134,18 @@ router.post("/chat/stream", async (req, res): Promise<void> => {
         text = `> Replying to ${refersTo}: "${previewClean}"\n\n${text}`;
       }
     }
+    // Image turns: always emit a placeholder so captionless photos are never
+    // silently dropped from context. Use the stored visual description when
+    // available; fall back to the user's caption text.
+    if (m.imageUrl && m.role === "user") {
+      const cat = m.imageCategory ? ` (${m.imageCategory})` : "";
+      const desc = m.imageDescription
+        ? `: ${m.imageDescription}`
+        : text
+          ? `: "${text}"`
+          : "";
+      text = `[shared a photo${cat}${desc}]`;
+    }
     if (!text) continue;
     claudeMessages.push({ role, content: text });
   }
@@ -6203,8 +6227,12 @@ router.post("/chat/image", async (req, res): Promise<void> => {
     let text = (m.content ?? "").trim();
     if (m.imageUrl && m.role === "user") {
       const cat = m.imageCategory ? ` (${m.imageCategory})` : "";
-      const cap = text ? `: "${text}"` : "";
-      text = `[shared a photo${cat}${cap}]`;
+      const desc = m.imageDescription
+        ? `: ${m.imageDescription}`
+        : text
+          ? `: "${text}"`
+          : "";
+      text = `[shared a photo${cat}${desc}]`;
     }
     if (m.imageUrl && m.role === "ashley" && !text) {
       text = "[sent a selfie]";
@@ -6215,7 +6243,7 @@ router.post("/chat/image", async (req, res): Promise<void> => {
   // Final turn: all images + caption + mode hint as a tiny nudge.
   const captionForModel = caption.length > 0 ? caption : "(no caption)";
   const countHint = allImages.length > 1 ? ` (${allImages.length} photos)` : "";
-  const modelHint = `[Photo attached${countHint}. Category: ${category}. Mode: ${mode}. Caption: ${captionForModel}]`;
+  const modelHint = `[Photo attached${countHint}. Category: ${category}. Mode: ${mode}. Caption: ${captionForModel}]\n\nImportant: begin your reply with exactly one line in this exact format — [VISUAL: one-sentence factual description of what you see in the image]. This is extracted server-side for your own memory continuity; do not reference or repeat it conversationally.`;
   // For multi-image sends, interleave a role-labelled text block before each
   // image so the model can reason about each photo in context.
   // Single-image sends use a plain image block (no label needed).
@@ -6277,6 +6305,33 @@ router.post("/chat/image", async (req, res): Promise<void> => {
   assistantText = assistantText.replace(/\[selfie:\s*[^\]]+\]/gi, "").trim();
   if (!assistantText) {
     assistantText = "*looks at the photo* one sec — let me try that again?";
+  }
+
+  // Extract the [VISUAL: ...] description tag for context continuity (Option B).
+  // Claude is instructed to open her reply with this tag; we strip it before
+  // saving or sending so it never reaches the mobile UI.
+  let imageDescription: string | null = null;
+  const visualTagMatch = assistantText.match(/^\[VISUAL:\s*(.+?)\][\n\r]*/i);
+  if (visualTagMatch) {
+    imageDescription = visualTagMatch[1]!.trim().slice(0, 300);
+    assistantText = assistantText.slice(visualTagMatch[0]!.length).trim();
+    if (!assistantText) {
+      assistantText = "*looks at the photo* one sec — let me try that again?";
+    }
+  }
+
+  // Store imageDescription on the user row so all future history builders can
+  // inject it into context placeholders. Non-fatal if it fails.
+  if (imageDescription) {
+    try {
+      await db
+        .update(messagesTable)
+        .set({ imageDescription })
+        .where(eq(messagesTable.id, userRow.id));
+      req.log.info({ deviceId, imageDescription }, "image: stored visual description on user row");
+    } catch (err) {
+      req.log.warn({ err }, "image: failed to store imageDescription on user row (non-fatal)");
+    }
   }
 
   // 7. Persist Ashley's reply.
