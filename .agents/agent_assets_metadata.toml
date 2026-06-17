@@ -257,3 +257,9 @@ id = "9DVDJt6VRsEJ627FTnkvE"
 uri = "file://attached_assets/Ashley_VoiceCall_Phase2_P1-3_Implementation_Notes.txt"
 type = "text"
 title = "P1-3 Windowed Reconnect Counter — Implementation Notes"
+
+[[outputs]]
+id = "m77O6OdSM1aakex2NjQ4v"
+uri = "file://attached_assets/Ashley_VoiceCall_Phase2_P1-2_Implementation_Notes.txt"
+type = "text"
+title = "P1-2 End-of-Call Summarisation — Implementation Notes"
