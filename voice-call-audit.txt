@@ -1,0 +1,128 @@
+VOICE CALL FEATURE — SESSION AUDIT
+===================================
+Date: 17 June 2026
+
+
+WHAT WAS BEING BUILT
+--------------------
+A phone call feature for Ashley. Tap to connect, talk freely back and forth,
+tap to hang up. No buttons during the call. Ashley listens, replies with
+her voice, you listen, repeat.
+
+
+SERVER SIDE — CORRECT THROUGHOUT
+---------------------------------
+Files written or modified:
+
+  artifacts/api-server/src/lib/VoiceIntentClassifier.ts   (new)
+  artifacts/api-server/src/lib/AudioClipRegistry.ts        (new)
+  artifacts/api-server/src/lib/VoiceContextAssembler.ts    (new)
+  artifacts/api-server/src/lib/VoiceOrchestrationService.ts (new)
+  artifacts/api-server/src/lib/VoiceSessionRegistry.ts     (modified)
+  artifacts/api-server/src/routes/voice-call.ts            (new)
+  artifacts/api-server/src/index.ts                        (modified)
+
+What these do:
+
+  - WebSocket endpoint at /api/voice/call
+  - Client connects with Bearer token + device ID headers
+  - Server assembles Ashley's context (your profile, memories, message history)
+  - Your speech arrives as a transcript (speech_final message)
+  - Server runs LLM to generate Ashley's reply
+  - TTS streams back as MP3 chunks, sentence by sentence
+  - After each sentence's chunks, a sentence_end signal tells mobile to play it
+  - tts_done signals the full turn is over, includes the full response text
+  - Every exchange is persisted to messagesTable (same device ID, same table as
+    text chat) — so Ashley in text mode sees everything said in a voice call
+  - 4 audio clips generated on boot: call-dropped, gone-quiet, say-that-again,
+    thinking — cached to disk, reloaded on restart
+  - Session state machine: active / listening / llm_pending / tts_streaming /
+    interrupted_cleanup / recovering / closing / closed / failed
+
+The server has been running and typecheck-clean since it was written.
+
+
+MOBILE CLIENT — WHERE IT WENT WRONG
+-------------------------------------
+The design notes from the previous session (before today's mobile work began)
+explicitly specified "push-to-talk (PressIn/PressOut)" as the mobile input model.
+That is a walkie-talkie, not a phone call.
+
+First version of useVoiceCall.ts was built to that spec:
+  - Hold mic button to record
+  - Release to send
+  - No way to interrupt Ashley mid-sentence from the screen flow
+
+This was wrong. It was caught, called out, and fixed.
+
+
+MOBILE CLIENT — CURRENT STATE (CORRECT)
+-----------------------------------------
+Files written or modified:
+
+  artifacts/mobile/lib/useVoiceCall.ts   (rewritten)
+  artifacts/mobile/app/voice-call.tsx    (rewritten)
+  artifacts/mobile/app/index.tsx         (modified — phone icon, routes to /voice-call)
+
+How it works now:
+
+  1. Tap "Call Ashley" — WebSocket connects, mic opens immediately
+  2. Talk freely — the recorder produces live dBFS metering every ~100ms
+  3. VAD (Voice Activity Detection) runs on every metering tick:
+       - Below -45 dBFS = silence
+       - Above -45 dBFS = speech
+       - When silence lasts 1.8s after at least 400ms of actual speech,
+         the segment is automatically submitted
+  4. Segment posts to POST /api/chat/transcribe (Whisper STT)
+  5. Transcript sent to server via speech_final WS message
+  6. Ashley's LLM reply streams back as MP3, plays sentence by sentence
+  7. While Ashley is speaking, mic is closed (prevents feedback loop)
+  8. When Ashley finishes, mic reopens automatically — back to step 2
+  9. Tap "End call" at any point to hang up
+
+Screen UX:
+  - One large button: "Call Ashley" (green) before connecting
+  - Same button becomes "End call" (red) once connected
+  - Status line: Listening / You're speaking / Thinking... / Ashley speaking
+  - Animated dot pulses during user_speaking and speaking phases
+  - Last exchange shown (your transcript + Ashley's response text)
+  - Navigates back automatically 1.8s after call ends
+
+
+VAD TUNING PARAMETERS (top of useVoiceCall.ts)
+------------------------------------------------
+  SILENCE_DB    = -45    dBFS threshold for silence vs speech
+  SILENCE_MS    = 1800   milliseconds of silence before auto-submit
+  MIN_SPEECH_MS = 400    minimum speech duration to avoid submitting noise
+
+These will likely need adjustment after real-device testing. -45 dBFS is a
+reasonable starting point but varies by phone, mic sensitivity, and environment.
+If Ashley is submitting on background noise, raise SILENCE_DB toward -35.
+If she is not picking up your voice, lower it toward -55.
+If the 1.8s pause feels too slow, reduce SILENCE_MS to 1200 or 1400.
+
+
+TYPECHECK STATUS
+-----------------
+  API server:  CLEAN (confirmed)
+  Mobile:      CLEAN (confirmed)
+
+
+WHAT STILL NEEDS REAL-DEVICE TESTING
+--------------------------------------
+  1. VAD thresholds — will need tuning based on your actual phone mic
+  2. Audio focus handoff — mic closes while Ashley speaks; must reopen cleanly
+     on Android (audio session management can be finicky)
+  3. End-to-end latency — STT + LLM + TTS chain; acceptable latency TBD
+  4. Voice → text memory continuity — after a call, open text chat and confirm
+     Ashley references what was said (should work; messagesTable is shared)
+
+
+WHAT WAS NOT BUILT YET (follow-ups, not blocking)
+---------------------------------------------------
+  - Server-side interruption: pressing "End call" stops local playback but the
+    server still finishes generating the current TTS sentence. A proper interrupt
+    signal (send { type: "interrupt" } over WS) would stop it server-side too.
+  - Scrolling conversation log: currently only the last exchange is shown.
+    Multiple turns are not accumulated on screen during the call.
+  - Call timer (MM:SS counter while connected).

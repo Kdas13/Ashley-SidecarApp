@@ -269,3 +269,9 @@ id = "OFlo12BbjEahT6SMfBZ5s"
 uri = "file://attached_assets/Ashley_VoiceCall_Phase2_P1-4_BlockerNotes_17Jun2026.txt"
 type = "text"
 title = "P1-4 Pre-Build Blocker Notes — 17 Jun 2026"
+
+[[outputs]]
+id = "hQzZ7yepO-z30XOpHlLb8"
+uri = "file://voice-call-audit.txt"
+type = "text"
+title = "Voice Call Feature — Session Audit"
