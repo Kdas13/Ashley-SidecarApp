@@ -275,3 +275,9 @@ id = "hQzZ7yepO-z30XOpHlLb8"
 uri = "file://voice-call-audit.txt"
 type = "text"
 title = "Voice Call Feature — Session Audit"
+
+[[outputs]]
+id = "w61l_jK0UpZiHUHzk0dfm"
+uri = "file://.local/voice-call-audit-trail.txt"
+type = "text"
+title = "Voice Call Audit Trail — 2026-06-17"

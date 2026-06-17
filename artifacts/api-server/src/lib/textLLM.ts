@@ -98,7 +98,7 @@ export async function generateChatText(opts: GenerateOpts): Promise<string> {
 export async function* streamChatText(
   opts: StreamOpts,
 ): AsyncGenerator<string, void, void> {
-  if (activeChatProvider() === "gemini") {
+  if ((opts.forceProvider ?? activeChatProvider()) === "gemini") {
     let lastErr: unknown;
     for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
       if (attempt > 0) await sleep(RETRY_DELAYS_MS[attempt - 1]!);
