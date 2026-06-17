@@ -1,6 +1,7 @@
 // ---------------------------------------------------------------------------
 // VoiceSessionRegistry — Phase 1 voice call session state manager.
 //                        P1-3 windowed reconnect counter (Phase 2).
+//                        P1-1 + G-1 persistent session state (Phase 2).
 //
 // All voice session state lives here. Nothing lives in route closures.
 // This file has NO Express or WS imports so it can be unit-tested in
@@ -11,6 +12,10 @@
 //   CONTEXT_LOADED, CLAUDE_STARTED, CLAUDE_FINISHED, TTS_STARTED,
 //   TTS_FINISHED, CALL_ENDED
 // ---------------------------------------------------------------------------
+
+import { PersistentSessionStateGuard } from "./PersistentSessionStateGuard";
+import { db, activeSessionsTable } from "@workspace/db";
+import { eq } from "drizzle-orm";
 
 // Minimal duck-type for the WebSocket — avoids importing 'ws' here so the
 // file stays testable without Express/WS in scope.
@@ -145,6 +150,19 @@ export function create(deviceId: string, ws: WsLike): VoiceSession {
   sessionIdByDeviceId.set(deviceId, session.sessionId);
 
   appendLog(session, "CALL_CREATED", `deviceId=${deviceId}`);
+
+  // P1-1: persist new session to DB (fire-and-forget, chained).
+  PersistentSessionStateGuard.queue({
+    sessionId: session.sessionId,
+    deviceId: session.deviceId,
+    connectionGeneration: session.connectionGeneration,
+    state: session.state,
+    currentTurnId: null,
+    currentResponseId: null,
+    callStartTime: session.callStartTime,
+    updatedAt: new Date(),
+  });
+
   return session;
 }
 
@@ -200,6 +218,19 @@ export function reclaimSession(
     "CALL_RECONNECTED",
     `gen=${session.connectionGeneration} reconnects=${session.reconnectAttempts} cause=${session.lastReconnectCause ?? "unknown"}`,
   );
+
+  // P1-1: persist reconnect state.
+  PersistentSessionStateGuard.queue({
+    sessionId: session.sessionId,
+    deviceId: session.deviceId,
+    connectionGeneration: session.connectionGeneration,
+    state: session.state,
+    currentTurnId: session.currentTurnId ?? null,
+    currentResponseId: session.currentResponseId ?? null,
+    callStartTime: session.callStartTime,
+    updatedAt: new Date(),
+  });
+
   return session;
 }
 
@@ -238,6 +269,18 @@ export function markRecovering(sessionId: string): void {
   }, 60_000);
 
   appendLog(session, "CALL_RECOVERING", `gen=${session.connectionGeneration}`);
+
+  // P1-1: persist recovering state.
+  PersistentSessionStateGuard.queue({
+    sessionId: session.sessionId,
+    deviceId: session.deviceId,
+    connectionGeneration: session.connectionGeneration,
+    state: "recovering",
+    currentTurnId: session.currentTurnId ?? null,
+    currentResponseId: session.currentResponseId ?? null,
+    callStartTime: session.callStartTime,
+    updatedAt: new Date(),
+  });
 }
 
 /**
@@ -265,6 +308,19 @@ export function finalise(sessionId: string, reason: string): void {
   sessionIdByDeviceId.delete(session.deviceId);
 
   appendLog(session, "CALL_ENDED", `reason=${reason}`);
+
+  // P1-1: persist terminal state then clear the chain.
+  PersistentSessionStateGuard.queue({
+    sessionId: session.sessionId,
+    deviceId: session.deviceId,
+    connectionGeneration: session.connectionGeneration,
+    state: "closed",
+    currentTurnId: null,
+    currentResponseId: null,
+    callStartTime: session.callStartTime,
+    updatedAt: new Date(),
+  });
+  PersistentSessionStateGuard.clearChain(session.sessionId);
 }
 
 /**
@@ -362,6 +418,73 @@ export function isReconnectRateLimited(session: VoiceSession): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// P1-1 — Boot recovery: reload 'recovering' sessions from DB into registry.
+// ---------------------------------------------------------------------------
+
+/**
+ * Called once on server boot.
+ * Loads any sessions with state = 'recovering' from DB back into registry.
+ * Allows reconnecting clients to reclaim their session normally.
+ *
+ * P1-3: lastReconnectCause is set to 'network_drop' for all restored sessions
+ * so they automatically enter grace mode (limit 15 instead of 10).
+ */
+export async function restoreRecoveringSessions(): Promise<void> {
+  const rows = await db
+    .select()
+    .from(activeSessionsTable)
+    .where(eq(activeSessionsTable.state, "recovering"));
+
+  for (const row of rows) {
+    const session: VoiceSession = {
+      sessionId: row.sessionId,
+      deviceId: row.deviceId,
+      connectionGeneration: row.connectionGeneration,
+      sequenceNumber: 0,
+      state: "recovering",
+      ws: null,
+
+      currentSpeechId: null,
+      currentTurnId: row.currentTurnId ?? null,
+      currentResponseId: row.currentResponseId ?? null,
+      currentAbortController: null,
+      processedUtteranceIds: new Set(),
+      completedTurnIds: new Set(),
+
+      callStartTime: new Date(row.callStartTime),
+      lastAudioReceivedAt: null,
+      silenceWarningSent: false,
+
+      totalTokensUsed: 0,
+      totalTtsChars: 0,
+
+      // P1-3: reset window — old timestamps no longer relevant after restart.
+      // Cause set to 'network_drop' → grace mode (limit 15) automatically.
+      reconnectTimestamps: [],
+      reconnectAttempts: 0,
+      lastReconnectCause: "network_drop",
+
+      consecutiveContextFailures: 0,
+
+      recoveryTimer: null,
+      silenceTimer: null,
+
+      log: [],
+    };
+
+    sessionsBySessionId.set(session.sessionId, session);
+    sessionIdByDeviceId.set(session.deviceId, session.sessionId);
+
+    console.info(
+      "[P1-1] Restored recovering session:",
+      session.sessionId,
+      "deviceId:",
+      session.deviceId,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Convenience: export the registry as a namespace-style object so callers
 // can do: import * as registry from "./VoiceSessionRegistry"
 // ---------------------------------------------------------------------------
@@ -376,4 +499,7 @@ export const registry = {
   validateMessage,
   cancelCurrentTurn,
   isReconnectRateLimited,
+  restoreRecoveringSessions,
+  sessionsBySessionId,
+  sessionIdByDeviceId,
 };

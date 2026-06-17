@@ -7,6 +7,7 @@ import { timingSafeEqual } from "node:crypto";
 // @ts-ignore – ws ships no bundled types; @types/ws not yet installed
 import { WebSocketServer } from "ws";
 import * as registry from "./lib/VoiceSessionRegistry";
+import { restoreRecoveringSessions } from "./lib/VoiceSessionRegistry";
 import { handleVoiceTurn, startSilenceMonitor } from "./routes/voice-call";
 
 const rawPort = process.env["PORT"];
@@ -30,6 +31,11 @@ const server = app.listen(port, (err: unknown) => {
   }
 
   logger.info({ port }, "Server listening");
+
+  // P1-1: restore any voice sessions that were mid-call on last process exit.
+  restoreRecoveringSessions().catch((err) => {
+    logger.error({ err }, "[P1-1] Failed to restore recovering sessions");
+  });
 
   // Presence-Loop boot recovery: any messages row left in `status='streaming'`
   // from a previous process is an orphan — the SSE response that owned it has

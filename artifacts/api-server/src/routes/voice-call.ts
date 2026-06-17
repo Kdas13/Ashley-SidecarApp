@@ -19,6 +19,7 @@ import {
   memoriesTable,
   conversationSummariesTable,
 } from "@workspace/db";
+import { PersistentSessionStateGuard } from "../lib/PersistentSessionStateGuard";
 import { eq, desc } from "drizzle-orm";
 import { getOrCreateProfileFor } from "../lib/profile";
 import { buildSystemPrompt } from "../lib/ashleyCoreSpec";
@@ -322,6 +323,30 @@ export async function handleVoiceTurn(
   session.currentTurnId = turnId;
   session.currentResponseId = responseId;
   session.state = "llm_pending";
+
+  // P1-1: persist turn start.
+  PersistentSessionStateGuard.queue({
+    sessionId: session.sessionId,
+    deviceId: session.deviceId,
+    connectionGeneration: session.connectionGeneration,
+    state: session.state,
+    currentTurnId: session.currentTurnId,
+    currentResponseId: null,
+    callStartTime: session.callStartTime,
+    updatedAt: new Date(),
+  });
+
+  // P1-1: persist response start (both IDs now assigned).
+  PersistentSessionStateGuard.queue({
+    sessionId: session.sessionId,
+    deviceId: session.deviceId,
+    connectionGeneration: session.connectionGeneration,
+    state: session.state,
+    currentTurnId: session.currentTurnId,
+    currentResponseId: session.currentResponseId ?? null,
+    callStartTime: session.callStartTime,
+    updatedAt: new Date(),
+  });
 
   // ── 0. Persist user row immediately on speech_final acceptance ─────────────
   // Captured before the first await so the timestamp is accurate even if
