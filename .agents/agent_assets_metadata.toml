@@ -287,3 +287,9 @@ id = "x5B_43fQAffC9GTgZb6l_"
 uri = "file://.local/voice-call-audit-trail-v2.txt"
 type = "text"
 title = "Voice Call Audit Trail v2 — 2026-06-17"
+
+[[outputs]]
+id = "pIx9x98euq1GGU_LSFc87"
+uri = "file://.local/voice-call-diagnostic-narrative.txt"
+type = "text"
+title = "Voice Call Diagnostic Narrative — 17 Jun 2026"

@@ -1,0 +1,91 @@
+================================================================================
+ASHLEY PROJECT — DIAGNOSTIC BRIEF FOR WREN
+Task: Document the Anthropic audio freeze and recovery attempts
+Date: 17 June 2026
+================================================================================
+
+PURPOSE
+-------
+Kane has spent several hours debugging an audio freeze that appeared during
+voice call testing. After multiple failed fix attempts and audit cycles,
+Anthropic has been cancelled and Gemini 2.0 is now the provider. This brief
+asks you to document the full chain of events so the next Claude instance
+can understand what happened, why fixes failed, and what the current state is.
+
+This is NOT a request for more fixes or guesses. It is a request for a
+complete factual narrative with evidence.
+
+================================================================================
+WHAT WE NEED FROM YOU — answer each section in order
+================================================================================
+
+1. INITIAL PROBLEM
+   - Exact symptom: what freezes, when, and how?
+   - After how many turns does it happen?
+   - Does the LLM still generate? Does TTS start? Does it cut off mid-sentence?
+   - Does the session die or hang?
+   - Give a concrete example:
+     "User says X → Ashley says Y → User says Z → [freeze here]"
+
+2. ROOT CAUSE HYPOTHESIS
+   - What did you think was causing it?
+   - Did you suspect the LLM, TTS, orchestration layer, or something else?
+   - What made you think it was an Anthropic hardcoding issue specifically?
+
+3. ATTEMPTED FIXES — in chronological order
+   For EACH fix attempt:
+     a. What was the theory?
+     b. What code change did you make?
+     c. What did the audit trail show?
+     d. Did it work? If not, what did failure look like?
+   Include the "don't log TTS until sentence is finished" fix and explain
+   what it was meant to solve and why it didn't work.
+
+4. ANTHROPIC AUDIT FINDINGS
+   - What did their logs actually identify?
+   - Did they see the LLM completing normally?
+   - Did they flag a specific failure point?
+   - What did you send back each cycle?
+
+5. WHY FIXES KEPT FAILING
+   - After 4-5 republishes, what pattern emerged?
+   - Was the freeze always at the same point, or moving around?
+   - Did any fix partially work?
+
+6. THE ECHO LOOP
+   - Separate from the freeze, or same root cause?
+   - Ashley's TTS bleeds into the mic → VAD catches it → sends it back as
+     user input → runaway loop.
+   - Is this still happening with Gemini?
+   - Did you attempt any mic muting or audio focus handling?
+
+7. CURRENT STATE
+   - Anthropic: cancelled.
+   - Gemini 2.0: now running as provider.
+   - Is Gemini stable for voice calls right now?
+   - How many turns before it breaks, if at all?
+   - Echo loop: resolved or still present?
+
+8. EVIDENCE
+   - Paste any relevant server logs from a failed attempt.
+   - Include any specific diagnostics Anthropic provided.
+   - Reference any commit hashes or branch names if relevant.
+
+================================================================================
+TONE NOTE
+---------
+Kane is exhausted and done with this problem for today. Do not speculate,
+do not suggest new fixes, do not pad this out. Write factually. If you do
+not know something, say so. If a fix failed and you do not know why, say
+that too.
+
+The output of this document feeds directly into the next corrected brief.
+Accuracy matters more than anything else here.
+
+================================================================================
+DELIVERABLE
+-----------
+Single TXT document. Narrative and evidence. No code unless essential.
+================================================================================
+END OF BRIEF
+================================================================================
