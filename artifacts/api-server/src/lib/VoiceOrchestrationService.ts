@@ -177,12 +177,14 @@ async function flushSentenceToTTS(
   if (!sentence || session.currentSpeechId !== speechId || !session.ws) return;
 
   await waitForTtsSlot();
+  let sentChunks = 0;
   try {
     for await (const chunk of streamSpeechElevenLabs(sentence)) {
       if (session.currentSpeechId !== speechId || !session.ws) break;
       appendToRollingBuffer(session, chunk);
       try {
         session.ws.send(chunk);
+        sentChunks++;
       } catch {
         break;
       }
@@ -197,6 +199,16 @@ async function flushSentenceToTTS(
     }
   } finally {
     releaseTtsSlot();
+  }
+
+  // Signal sentence boundary so the client can play each sentence as it
+  // completes rather than buffering the full turn.
+  if (sentChunks > 0 && session.currentSpeechId === speechId && session.ws) {
+    try {
+      session.ws.send(
+        JSON.stringify({ type: "sentence_end", speechId, timestamp: Date.now() }),
+      );
+    } catch {}
   }
 }
 
@@ -479,6 +491,7 @@ async function runLLMAndTTSPipeline(
         JSON.stringify({
           type:                "tts_done",
           speechId,
+          responseText:         session.currentResponseText,
           sessionId:            session.sessionId,
           connectionGeneration: session.connectionGeneration,
           sequenceNumber:       seqDone,

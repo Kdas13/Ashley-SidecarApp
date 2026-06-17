@@ -50,11 +50,11 @@ export default function HomeScreen(): React.JSX.Element {
           </Pressable>
           <View style={styles.topBarRight}>
             <Pressable
-              onPress={() => router.push("/voice-test" as never)}
+              onPress={() => router.push("/voice-call" as never)}
               style={styles.iconBtn}
-              accessibilityLabel="Voice test"
+              accessibilityLabel="Voice call"
             >
-              <Feather name="mic" size={20} color={colors.light.mutedForeground} />
+              <Feather name="phone" size={20} color={colors.light.mutedForeground} />
             </Pressable>
             <Pressable
               onPress={() => router.push("/visuals" as never)}

@@ -163,7 +163,7 @@ export function useUpdateProfile() {
       if (patch.imageCameraDefault !== undefined)
         wirePatch.imageCameraDefault = patch.imageCameraDefault;
       if (patch.imageDefaultsExtra !== undefined)
-        wirePatch.imageDefaultsExtra = patch.imageDefaultsExtra;
+        wirePatch.imageDefaultsExtra = patch.imageDefaultsExtra ?? undefined;
       if (patch.contentMode !== undefined)
         wirePatch.contentMode = patch.contentMode;
       if (patch.intimacyLevel !== undefined)
