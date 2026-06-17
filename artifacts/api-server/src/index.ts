@@ -9,6 +9,8 @@ import { WebSocketServer } from "ws";
 import * as registry from "./lib/VoiceSessionRegistry";
 import { restoreRecoveringSessions } from "./lib/VoiceSessionRegistry";
 import { handleVoiceTurn, startSilenceMonitor } from "./routes/voice-call";
+import * as VoiceOrchestrationService from "./lib/VoiceOrchestrationService";
+import { initialize as initAudioClips } from "./lib/AudioClipRegistry";
 
 const rawPort = process.env["PORT"];
 
@@ -35,6 +37,11 @@ const server = app.listen(port, (err: unknown) => {
   // P1-1: restore any voice sessions that were mid-call on last process exit.
   restoreRecoveringSessions().catch((err) => {
     logger.error({ err }, "[P1-1] Failed to restore recovering sessions");
+  });
+
+  // P1-4: pre-generate audio clips for voice calls (non-blocking).
+  initAudioClips().catch((err) => {
+    logger.warn({ err }, "AudioClipRegistry: startup initialization failed");
   });
 
   // Presence-Loop boot recovery: any messages row left in `status='streaming'`
@@ -248,12 +255,25 @@ wss.on("connection", (ws: any, _req: any, deviceId: string) => {
   // 1I: Start (or restart on reconnect) the silence lifecycle monitor.
   startSilenceMonitor(session);
 
+  // P1-4: Start zombie cleanup interval for this session.
+  VoiceOrchestrationService.startOrchestration(session, ws as registry.WsLike);
+
+  // P1-4: On reconnect (generation > 1), acknowledge the drop naturally.
+  if (session.connectionGeneration > 1) {
+    void VoiceOrchestrationService.handleReconnect(session, ws as registry.WsLike).catch((err) => {
+      logger.warn({ err, sessionId: session.sessionId }, "voice: handleReconnect failed");
+    });
+  }
+
   const sessionId = session.sessionId; // capture for closure safety
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ws.on("message", async (data: any, isBinary: boolean) => {
     const currentSession = registry.findBySessionId(sessionId);
     if (!currentSession) return;
+
+    // P1-4: update heartbeat on every message (zombie detection).
+    currentSession.lastActiveHeartbeatAt = new Date();
 
     // In ws v8+, all frames arrive as Buffer. Use the isBinary flag to
     // distinguish binary audio frames from text JSON control messages.
@@ -289,6 +309,25 @@ wss.on("connection", (ws: any, _req: any, deviceId: string) => {
       })
     ) {
       return; // stale message — already logged by validateMessage
+    }
+
+    // P1-4 Stage 2: speech_interim — intent pre-classification only.
+    if (msg["type"] === "speech_interim") {
+      const interimTranscript = ((msg["transcript"] as string | undefined) ?? "").trim();
+      if (interimTranscript) {
+        VoiceOrchestrationService.handleSpeechInterim(currentSession, interimTranscript, ws as registry.WsLike);
+      }
+      return;
+    }
+
+    // P1-4: call_end — client-initiated graceful call termination.
+    if (msg["type"] === "call_end") {
+      logger.info({ deviceId, sessionId: currentSession.sessionId }, "voice: client sent call_end");
+      try {
+        ws.send(JSON.stringify({ type: "call_ended", reason: "client_call_end" }));
+      } catch {}
+      registry.finalise(currentSession.sessionId, "client_call_end");
+      return;
     }
 
     if (msg["type"] === "speech_final") {

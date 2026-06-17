@@ -80,6 +80,32 @@ export interface VoiceSession {
 
   // Lifecycle logs
   log: Array<{ event: string; ts: Date; detail?: string }>;
+
+  // P1-4: orchestration fields
+  streamActive: boolean;
+  lastActiveHeartbeatAt: Date;
+
+  // Stage 2 — turn detection
+  silenceStartedAt: Date | null;
+  lastSpeechAt: Date | null;
+  intentDetected: boolean;
+  silenceThreshold: number;
+
+  // Stage 4 — turn content
+  lastResponseBuffer: string | null;
+  passiveMode: boolean;
+
+  // Stage 6 — LLM state
+  currentResponseText: string;
+  llmStreamActive: boolean;
+
+  // Stage 8 — interruption
+  wasInterrupted: boolean;
+  interruptedAt: number | null;
+  remainingResponse: string | null;
+
+  // Stage 7 — audio
+  rollingAudioBuffer: Buffer;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +171,22 @@ export function create(deviceId: string, ws: WsLike): VoiceSession {
     silenceTimer: null,
 
     log: [],
+
+    // P1-4: orchestration fields
+    streamActive: false,
+    lastActiveHeartbeatAt: new Date(),
+    silenceStartedAt: null,
+    lastSpeechAt: null,
+    intentDetected: false,
+    silenceThreshold: 3500,
+    lastResponseBuffer: null,
+    passiveMode: false,
+    currentResponseText: "",
+    llmStreamActive: false,
+    wasInterrupted: false,
+    interruptedAt: null,
+    remainingResponse: null,
+    rollingAudioBuffer: Buffer.alloc(0),
   };
 
   sessionsBySessionId.set(session.sessionId, session);
@@ -480,6 +522,22 @@ export async function restoreRecoveringSessions(): Promise<void> {
       silenceTimer: null,
 
       log: [],
+
+      // P1-4: orchestration fields
+      streamActive: false,
+      lastActiveHeartbeatAt: new Date(),
+      silenceStartedAt: null,
+      lastSpeechAt: null,
+      intentDetected: false,
+      silenceThreshold: 3500,
+      lastResponseBuffer: null,
+      passiveMode: false,
+      currentResponseText: "",
+      llmStreamActive: false,
+      wasInterrupted: false,
+      interruptedAt: null,
+      remainingResponse: null,
+      rollingAudioBuffer: Buffer.alloc(0),
     };
 
     sessionsBySessionId.set(session.sessionId, session);

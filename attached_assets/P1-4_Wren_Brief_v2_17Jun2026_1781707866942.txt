@@ -1,0 +1,480 @@
+================================================================================
+ASHLEY PROJECT — WREN BUILD BRIEF
+Task: P1-4 — Voice Orchestration Layer
+Version: 2 (revised following pre-build blocker review)
+Date: 17 June 2026
+Status: FINAL — cleared for build
+================================================================================
+
+BLOCKER RESOLUTIONS (from Wren's pre-build notes dated 17 June 2026)
+---------------------------------------------------------------------
+
+ISSUE 1 — STT MODEL: OPTION B SELECTED
+  The mobile client continues to handle STT on-device. The server receives
+  speech_final JSON messages as it does today. The 1G stub (server-side
+  Deepgram STT) is NOT being completed in P1-4. It remains parked.
+  VoiceOrchestrationService wraps the existing speech_final path.
+  Stages 1-3 of the original brief (binary audio → Deepgram → onFinal) are
+  replaced by the client-side STT model described below.
+
+ISSUE 2 — DEEPGRAM SILENCE THRESHOLD: MOOT
+  Silence detection and turn boundaries are handled on the client device.
+  deepgramStream.ts is NOT modified in this task.
+
+ISSUE 3 — AUDIOCLIPREGISTRY STARTUP: NON-BLOCKING
+  AudioClipRegistry attempts clip generation at startup. If ELEVENLABS_API_KEY
+  or ELEVENLABS_VOICE_ID are absent or generation fails, log a structured
+  warning and continue. Fall back to speakFallback() at runtime. Server must
+  not fail to start due to missing clips.
+
+ISSUE 4 — CONTEXT ASSEMBLER HISTORY SCOPING: ACKNOWLEDGED
+  VoiceContextAssembler uses a session-scoped count query
+  (source='voice_call' AND created_at >= callStartTime) for the 100-turn
+  threshold check. Separate from the existing loadVoiceContext() function.
+  No changes to loadVoiceContext().
+
+================================================================================
+WHAT P1-4 BUILDS
+================================================================================
+
+VoiceOrchestrationService — wraps the existing speech_final pipeline and
+adds: intent classification, enhanced context assembly, streaming LLM
+response with TTS, interruption handling, reconnect acknowledgment, passive
+mode, command handling, and pre-generated audio clips.
+
+The existing handleVoiceTurn(session, transcript, utteranceId) is the entry
+point. P1-4 replaces or extends its internals. The WebSocket message routing
+in index.ts and routes/voice-call.ts is already wired — the speech_final
+JSON path is live.
+
+P1-4 does NOT touch:
+  - deepgramStream.ts
+  - elevenlabsStream.ts (TTS is already live — P1-4 uses it)
+  - The 1G binary audio stub in index.ts
+  - Call summarisation (P1-2, complete)
+  - Reconnect logic (P1-3, complete)
+  - Persistent session state (P1-1, complete)
+  - loadVoiceContext() in routes/voice-call.ts
+
+================================================================================
+INCOMING MESSAGE CONTRACT (replaces Stages 1-3 from v1 brief)
+================================================================================
+
+The server receives two relevant JSON message types from the client:
+
+TYPE 1 — speech_final
+  {
+    type: "speech_final",
+    transcript: string,     // complete utterance, client-assembled
+    utteranceId: string     // unique ID for this turn
+  }
+  This is the primary pipeline trigger. On receipt, route to
+  VoiceOrchestrationService.handleSpeechFinal(session, transcript, utteranceId, ws).
+
+TYPE 2 — speech_interim (NEW — client must send this)
+  {
+    type: "speech_interim",
+    transcript: string      // partial transcript, may change
+  }
+  Used for intent pre-classification only (early direct-question detection).
+  Allows the silence threshold to be communicated back to the client early
+  if a direct question is detected mid-utterance.
+  If the client does not yet send speech_interim, intent classification
+  runs on speech_final only — no blocking dependency.
+
+CLIENT SILENCE DETECTION:
+  The client device handles silence detection and turn boundaries.
+  Default silence threshold is 3500ms on the client.
+  If a direct question is detected from a speech_interim message, the server
+  sends back:
+    { type: "set_silence_threshold", ms: 800 }
+  The client applies this for the current turn only, then resets to 3500ms.
+  If the client does not support dynamic threshold messages, this is a
+  graceful degradation — intent detection still works on speech_final,
+  the reduced threshold just won't apply.
+
+================================================================================
+PIPELINE ARCHITECTURE — REVISED STAGES
+================================================================================
+
+STAGE 1: INCOMING MESSAGE ROUTING
+STAGE 2: INTERIM TRANSCRIPT HANDLING (intent pre-classification)
+STAGE 3: SPEECH_FINAL RECEIPT AND UTTERANCE VALIDATION
+STAGE 4: INTENT CLASSIFICATION
+STAGE 5: CONTEXT ASSEMBLY
+STAGE 6: LLM GENERATION WITH STREAMING
+STAGE 7: TTS STREAMING AND PLAYBACK
+STAGE 8: INTERRUPTION HANDLING AND RECOVERY
+
+================================================================================
+STAGE 1 — INCOMING MESSAGE ROUTING
+================================================================================
+
+Entry point: existing WebSocket message handler in routes/voice-call.ts.
+
+On each WS message:
+  - Parse JSON.
+  - If type === 'speech_interim': route to handleSpeechInterim().
+  - If type === 'speech_final': route to handleSpeechFinal().
+  - If type === 'call_end': trigger finalise() (existing).
+  - Binary frames: existing 1G stub handling — unchanged.
+  - Unknown types: log and discard.
+
+Update session.lastActiveHeartbeatAt on every message regardless of type.
+
+================================================================================
+STAGE 2 — INTERIM TRANSCRIPT HANDLING
+================================================================================
+
+METHOD: handleSpeechInterim(session, transcript, ws)
+
+  - Run VoiceIntentClassifier.classify(transcript) on the partial text.
+  - If result is DIRECT_QUESTION and session.intentDetected is false:
+      session.intentDetected = true
+      session.silenceThreshold = 800
+      Send to client: { type: "set_silence_threshold", ms: 800 }
+  - Do not trigger any LLM or TTS calls from interim transcripts.
+  - Do not store interim transcripts.
+
+================================================================================
+STAGE 3 — SPEECH_FINAL RECEIPT AND UTTERANCE VALIDATION
+================================================================================
+
+METHOD: handleSpeechFinal(session, transcript, utteranceId, ws)
+
+  - Trim and normalise whitespace: transcript.replace(/\s+/g, ' ').trim()
+  - If result is empty: discard, reset turn state, return.
+  - Reset turn state:
+      session.intentDetected = false
+      session.silenceThreshold = 3500
+  - Pass to Stage 4.
+
+================================================================================
+STAGE 4 — INTENT CLASSIFICATION
+================================================================================
+
+Run VoiceIntentClassifier.classify(utterance) on the final transcript.
+
+CLASSIFICATION CATEGORIES:
+
+  CONVERSATIONAL   — normal dialogue, pass to Stage 5.
+  DIRECT_QUESTION  — explicit question, pass to Stage 5 with isDirectQuestion=true.
+  COMMAND          — handle immediately, do not pass to Stage 5.
+  REPEAT_REQUEST   — handle immediately, do not pass to Stage 5.
+  EMPTY            — discard (belt-and-braces after Stage 3 check).
+
+COMMAND HANDLING:
+  'stop' / 'pause'     → abortCurrentOutputs(session)
+  'end_call'           → abortCurrentOutputs(session)
+                         send: { type: "CALL_TERMINATED_BY_COMMAND" }
+                         trigger finalise(session.sessionId)
+  'go_quiet'           → session.passiveMode = true
+                         Ashley says nothing until spoken to directly.
+                         On next DIRECT_QUESTION: session.passiveMode = false.
+
+REPEAT_REQUEST HANDLING:
+  If session.wasInterrupted OR session.rollingAudioBuffer is empty:
+    → Send pre-generated clip: 'say-that-again'
+  Else:
+    → Send session.rollingAudioBuffer to client.
+
+PASSIVE MODE:
+  If session.passiveMode === true AND category is CONVERSATIONAL:
+    → Do not pass to Stage 5. Discard silently.
+  If session.passiveMode === true AND category is DIRECT_QUESTION:
+    → session.passiveMode = false
+    → Pass to Stage 5 normally.
+
+================================================================================
+STAGE 5 — CONTEXT ASSEMBLY
+================================================================================
+
+Handled by VoiceContextAssembler.assemble(). See file spec below.
+
+Inputs:
+  sessionId, deviceId, callStartTime, currentUtterance,
+  reconnectCount, isDirectQuestion, retrievedMemories,
+  wasInterrupted, remainingResponse
+
+SYSTEM PROMPT ASSEMBLY ORDER:
+  1. Ashley persona and voice call instructions (base prompt)
+  2. Relevant memories (if any — passed in from caller)
+  3. Reconnect preamble (if reconnectCount > 0) — committed summaries only
+  4. Interruption context (if wasInterrupted and remainingResponse exists)
+  5. Direct question instruction (if isDirectQuestion)
+
+CONVERSATION HISTORY:
+  - Query messagesTable: device_id = deviceId AND source = 'voice_call'
+    AND created_at >= callStartTime.
+  - Order ASC. Limit 100.
+  - Filter to role 'user' and 'assistant' only.
+  - Redact sensitive data on each message content.
+
+100-TURN OVERFLOW PREAMBLE:
+  - Run a COUNT query scoped to current session (same filters as above).
+  - If count >= 100: fetch most recent committed call_summaries row where
+    session_id != current sessionId AND created_at < callStartTime.
+    (Previous session summary — not mid-call. Mid-call summaries do not
+    exist in P1-2 v2.)
+  - If found: prepend as system message:
+    "Context from previous call session: [summary_text]"
+  - Do NOT modify loadVoiceContext(). This is a separate query in the assembler.
+
+RECONNECT PREAMBLE:
+  - Query call_summaries: session_id = sessionId, status = 'committed'.
+    Order DESC, limit 1.
+  - If found: use topic field.
+  - If not found: use "our ongoing discussion" as fallback.
+  - Append to system prompt:
+    "Note: the call dropped and reconnected [N] time(s). Acknowledge the
+     drop naturally and resume the conversation. Last topic: [topic]."
+
+INTERRUPTION CONTEXT:
+  - remainingResponse capped at 400 characters before inclusion.
+  - Redact sensitive data before inclusion.
+  - Append to system prompt:
+    "[INTERRUPTION CONTEXT]: You were mid-response when Kane interrupted.
+     Unspoken remainder: <remainder>[text]</remainder>. Acknowledge Kane's
+     input, then weave back naturally if still relevant."
+
+================================================================================
+STAGE 6 — LLM GENERATION WITH STREAMING
+================================================================================
+
+  - Call generateChatText with:
+      provider: "anthropic"         — pinned, no exceptions
+      system: contextPayload.systemPrompt
+      messages: contextPayload.messages
+      maxTokens: 1024
+      stream: true
+      signal: abortController.signal
+
+  - session.llmStreamActive = true before call.
+  - session.currentTurnId = new UUID.
+  - session.currentResponseText = "" (reset).
+
+  - Write user utterance to messagesTable (fire-and-forget) before LLM call.
+
+TIMEOUT HANDLING:
+  - Start watchdog timer: FIRST_TOKEN_WATCHDOG_TIMEOUT_MS = 8000ms.
+  - If no first token within 8 seconds:
+      → Send pre-generated clip: 'thinking'
+      → Continue waiting.
+  - Hard AbortController budget: MAX_TURN_EXECUTION_BUDGET_MS = 20000ms.
+  - If aborted: send pre-generated clip: 'say-that-again'. Log error.
+  - On any LLM error: log with sessionId, turnId, error type, timestamp.
+    Send 'say-that-again' clip. Do not crash session.
+
+RESPONSE STYLE (via system prompt instruction — already in Stage 5 base prompt):
+  - Conversational only. No lists, bullets, headers, markdown.
+  - No "As an AI..." hedging.
+  - Natural speech rhythm. Short to medium sentences.
+  - If thinking: say so out loud naturally.
+
+================================================================================
+STAGE 7 — TTS STREAMING AND PLAYBACK
+================================================================================
+
+  - As LLM tokens stream in, buffer into localSentenceBuffer.
+  - On sentence boundary (. ! ? followed by whitespace or end of stream):
+      → Send buffered sentence to ElevenLabs via session.elevenLabsStream.
+      → Stream returned audio chunks directly to client WebSocket.
+      → Append audio to session.rollingAudioBuffer.
+  - Continue until LLM stream ends.
+  - After last sentence: write complete assistant response to messagesTable
+    (fire-and-forget).
+  - session.lastResponseBuffer = session.currentResponseText.
+  - session.llmStreamActive = false.
+
+ROLLING AUDIO BUFFER:
+  - session.rollingAudioBuffer: Buffer — rolling last ~30 seconds of audio.
+  - Ceiling: ROLLING_AUDIO_BUFFER_MAX_BYTES = 960_000
+    (30 seconds at 256kbps variable bitrate — generous headroom for
+    ElevenLabs variable output).
+  - On overflow: slice to keep tail (most recent audio), discard head.
+
+TTS CONCURRENCY:
+  - Max concurrent in-flight TTS requests: CONCURRENT_TTS_POOL_LIMIT = 2.
+  - If pool is full: wait 50ms and retry until slot available.
+  - This prevents TTS backpressure from growing unbounded.
+
+TTS ERROR HANDLING:
+  - If ElevenLabs synthesize() throws on a sentence: log warning, skip
+    that sentence, continue with next. Do not abort the turn.
+  - If elevenLabsStream is unavailable entirely: log critical error.
+    Continue without audio — session stays alive.
+
+PRE-GENERATED AUDIO CLIPS (via AudioClipRegistry):
+  All clips sent as raw audio Buffers to client WebSocket.
+  'thinking'       — "Hang on, I'm thinking..."
+  'say-that-again' — "Sorry, say that again?"
+  'gone-quiet'     — "You've gone quiet — everything okay?"
+  'call-dropped'   — "Sorry about that — looks like we dropped. Where were we?"
+
+================================================================================
+STAGE 8 — INTERRUPTION HANDLING AND RECOVERY
+================================================================================
+
+--- PART A: KANE INTERRUPTS ASHLEY ---
+
+DETECTION:
+  Client sends: { type: "speech_interim" } or { type: "speech_final" }
+  while session.llmStreamActive === true OR audio is being sent to client.
+
+  On any speech_interim or speech_final received while output is active:
+    → Fire handleInterruption(session, ws) immediately.
+    → Then route the incoming transcript through normal Stage 2/3 flow.
+
+BEHAVIOUR:
+  Step 1: session.wasInterrupted = true
+  Step 2: session.interruptedAt = session.currentResponseText.length
+  Step 3: session.remainingResponse =
+            session.currentResponseText.substring(session.interruptedAt)
+          (Capped at 400 chars in Stage 5 before LLM inclusion.)
+  Step 4: abortCurrentOutputs(session)
+            - session.llmStreamActive = false
+            - session.elevenLabsStream.abort() if available
+  Step 5: send { type: "STOP_AUDIO_PLAYBACK_IMMEDIATE" } to client.
+  Step 6: Continue into normal pipeline with Kane's new utterance.
+
+--- PART B: SYSTEM RECOVERY ON RECONNECT ---
+
+On session restore (P1-1 restoreRecoveringSessions()):
+  VoiceOrchestrationService.handleReconnect(session, ws) is called.
+
+RECONNECT BEHAVIOUR:
+  Step 1: Query call_summaries for this session_id, status = 'committed',
+          order DESC limit 1.
+  Step 2: If committed summary exists:
+            → LLM call with recovery prompt:
+              "The call just dropped and reconnected. Acknowledge naturally —
+               something like 'oh sorry, looks like I lost signal — where were
+               we? We were talking about [topic]...' Use the summary to orient
+               yourself. Be natural, not robotic."
+            → Pass summary topic + last few turns as context.
+            → Stream response to TTS as normal.
+          If no committed summary:
+            → Send pre-generated clip: 'call-dropped'
+  Step 3: Resume normal orchestration.
+
+--- PART C: ZOMBIE SESSION CLEANUP ---
+
+  setInterval every 15 seconds: check session.lastActiveHeartbeatAt.
+  If elapsed > 90 seconds without any message:
+    → Close WebSocket with code 4005.
+    → Call finalise(session.sessionId) to trigger P1-2 summarisation.
+    → Clear interval.
+
+================================================================================
+NEW FILES TO CREATE (3)
+================================================================================
+
+1. lib/VoiceOrchestrationService.ts
+2. lib/VoiceIntentClassifier.ts
+3. lib/AudioClipRegistry.ts
+
+Note: VoiceContextAssembler logic may be implemented as a class in its own
+file (lib/VoiceContextAssembler.ts) or as a private method within
+VoiceOrchestrationService.ts — Wren's call based on what fits the codebase.
+
+================================================================================
+FILES TO MODIFY (2)
+================================================================================
+
+4. lib/VoiceSessionRegistry.ts
+   - Add new state fields (listed below).
+   - Initialise all fields in createNewSessionInstance() with explicit values.
+   - Wire handleReconnect() call into restoreRecoveringSessions().
+
+5. routes/voice-call.ts
+   - Add routing for speech_interim and call_end message types.
+   - Replace or extend handleVoiceTurn() internals with orchestration entry.
+   - Do NOT modify loadVoiceContext().
+
+================================================================================
+NEW STATE FIELDS ON VoiceSession
+================================================================================
+
+All fields must be explicitly initialised. No undefined values on a live session.
+
+  // Routing and stream
+  streamActive: boolean                 = false
+  lastActiveHeartbeatAt: Date           = new Date()
+
+  // Turn detection
+  silenceStartedAt: Date | null         = null
+  lastSpeechAt: Date | null             = null
+  intentDetected: boolean               = false
+  silenceThreshold: number              = 3500
+
+  // Turn content
+  lastResponseBuffer: string | null     = null
+  passiveMode: boolean                  = false
+
+  // LLM state
+  currentTurnId: string | null          = null
+  currentResponseText: string           = ""
+  llmStreamActive: boolean              = false
+
+  // Interruption
+  wasInterrupted: boolean               = false
+  interruptedAt: number | null          = null
+  remainingResponse: string | null      = null
+
+  // Audio
+  rollingAudioBuffer: Buffer            = Buffer.alloc(0)
+
+================================================================================
+AUDIOCLIPREGISTRY — STARTUP BEHAVIOUR
+================================================================================
+
+  - Called once at server startup: AudioClipRegistry.initialize(elevenLabsClient)
+  - If ELEVENLABS_API_KEY or ELEVENLABS_VOICE_ID not set:
+      → Log structured warning. Do not throw. Do not block startup.
+      → All getClipBuffer() calls return Buffer.alloc(0) (silent).
+      → speakFallback() text path used at runtime as fallback.
+  - If keys present but ElevenLabs generation fails:
+      → Same as above — log warning, continue.
+  - If clip file already exists on disk: load from disk, verify SHA256 checksum.
+  - If checksum fails: regenerate from ElevenLabs (if keys available) or log
+    warning and use empty buffer.
+
+================================================================================
+STANDING CONSTRAINTS
+================================================================================
+
+  - DB is PostgreSQL. ORM is Drizzle.
+  - drizzle-kit generate is BROKEN — all SQL written manually.
+  - Drizzle insert idiom: db.insert(table).values(...).onConflictDoUpdate(...)
+  - TypeScript must be clean — no implicit any, no unhandled promise rejections.
+  - generateChatText provider must be "anthropic". No exceptions.
+  - Fire-and-forget DB writes must catch all errors internally.
+  - All new session fields must be initialised explicitly — no undefined.
+  - Pre-generated clips are non-blocking. Server must start without them.
+  - Log all errors with sessionId, errorType, timestamp in structured JSON.
+  - If anything in this brief conflicts with the live codebase: flag before
+    building. Do not self-correct silently.
+
+================================================================================
+DELIVERY REQUIREMENTS — MANDATORY
+================================================================================
+
+Deliver in the SAME response. No deferral.
+
+[ ] lib/VoiceIntentClassifier.ts           — complete file
+[ ] lib/AudioClipRegistry.ts               — complete file
+[ ] lib/VoiceOrchestrationService.ts       — complete file
+    (or lib/VoiceContextAssembler.ts separately if extracted)
+[ ] lib/VoiceSessionRegistry.ts            — new fields, initialiser, and
+                                             handleReconnect() wiring only.
+                                             Do not rewrite whole file.
+[ ] routes/voice-call.ts                   — message routing additions and
+                                             handleVoiceTurn() extension only.
+                                             Do not rewrite whole file.
+
+If any file cannot be delivered in the same response, state the reason
+explicitly before proceeding. Do not defer without explanation.
+
+================================================================================
+END OF BRIEF — P1-4 — Voice Orchestration Layer (v2)
+================================================================================
