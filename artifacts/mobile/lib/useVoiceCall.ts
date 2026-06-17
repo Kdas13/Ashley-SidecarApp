@@ -407,6 +407,8 @@ export function useVoiceCall(): {
           break;
 
         case "reconnect_ok":
+          reconnectAttemptsRef.current = 0;
+          setError(null);
           void openMicRef.current();
           break;
 
