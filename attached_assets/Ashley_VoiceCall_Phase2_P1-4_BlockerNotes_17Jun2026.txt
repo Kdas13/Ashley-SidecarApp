@@ -1,0 +1,192 @@
+Ashley-Sidecar — Voice Call Protocol Phase 2
+P1-4: Voice Orchestration Layer — Pre-Build Blocker Notes
+==========================================================
+
+Date: 17 June 2026
+Status: BLOCKED — awaiting architectural clarification before implementation
+Author: Wren (after full read of brief + all six relevant source files)
+
+
+PURPOSE OF THIS DOCUMENT
+-------------------------
+
+The P1-4 brief was authored in a pipeline (Claude architecture → Nova review →
+Perplexity air gap → Wren build). The agent handoff has introduced at least one
+structural contradiction between the brief and the live codebase that cannot be
+resolved by inference alone. This document states each issue precisely so the
+correct decision can be made before implementation begins.
+
+
+ISSUE 1 — WHO RUNS STT? (CRITICAL — blocks all of Stages 1-3)
+--------------------------------------------------------------
+
+WHAT THE BRIEF ASSUMES:
+
+  Stage 1-3 of the brief describe a server-side STT pipeline:
+    - Binary audio frames arrive from client mic
+    - Server forwards them to Deepgram via createDeepgramStream
+    - Deepgram fires onFinal(text, utteranceId) → pipeline continues
+    - onPartial(text) → intent classifier → early-completion timer
+
+  The brief's VoiceOrchestrationService is designed around this model.
+  Stage 2 (turn boundary detection), Stage 3 (utterance assembly), and
+  Stage 8A (interruption via Deepgram speech events mid-TTS) all assume
+  Deepgram is live on the server.
+
+WHAT THE LIVE CODE ACTUALLY DOES:
+
+  In artifacts/api-server/src/index.ts, binary audio frames arrive via WS
+  and the handler reads:
+
+    // Audio forwarding to Deepgram wired in 1G.
+    return;
+
+  The 1G stub was never completed. createDeepgramStream is never instantiated
+  in the connection handler. Deepgram is not used for STT anywhere in the
+  current live pipeline.
+
+  Instead, the mobile client handles STT on-device and sends a JSON message:
+
+    { type: "speech_final", transcript: "...", utteranceId: "..." }
+
+  The server receives this, calls handleVoiceTurn(session, transcript,
+  utteranceId), and proceeds with context → Claude → ElevenLabs TTS.
+
+  deepgramStream.ts and elevenlabsStream.ts both exist and are partially
+  wired (elevenlabsStream is live for TTS; deepgramStream exists but is
+  never instantiated in a live session).
+
+THE CONTRADICTION:
+
+  The brief describes P1-4 as building "the orchestration layer between the
+  raw audio streams and the Claude LLM." If the client already handles STT
+  and sends transcripts, then Stages 1-3 of the brief describe an
+  architecture that does not exist yet — the 1G stub — not an
+  orchestration layer wrapping something already built.
+
+  These are two different implementation scopes:
+
+  OPTION A — Complete 1G (server-side STT):
+    Wire createDeepgramStream into the connection handler.
+    Binary audio → Deepgram → onFinal → orchestration pipeline.
+    This is what the brief describes but was never built.
+    Estimated scope: significantly larger than a single P1-4 item.
+
+  OPTION B — Client-side STT (current model):
+    Client continues to send speech_final JSON messages.
+    VoiceOrchestrationService wraps the existing speech_final path.
+    Stages 1-3 are treated as already complete (handled on client).
+    The orchestration layer adds: intent classification, enhanced
+    context assembly, interruption handling, reconnect acknowledgment,
+    audio clip registry, passive mode, and command handling.
+    This is implementable as a single focused item.
+
+  DECISION REQUIRED: Which option is P1-4?
+
+
+ISSUE 2 — DEEPGRAM SILENCE THRESHOLD (depends on Issue 1)
+----------------------------------------------------------
+
+Stage 2 of the brief specifies:
+  - Default silence threshold: 3500ms
+  - Intent-based reduced threshold: 800ms on direct question detection
+
+The only way to set 3500ms is via Deepgram's `endpointing` parameter in the
+stream URL. The current DEEPGRAM_PARAMS in deepgramStream.ts reads:
+
+  "model=nova-3&smart_format=true&punctuate=true&interim_results=true"
+
+No endpointing parameter. The brief explicitly lists deepgramStream.ts as a
+file NOT to modify.
+
+If Issue 1 resolves to Option A (server-side STT), deepgramStream.ts must be
+modified (or the parameter must be injectable). If Option B, this issue is
+moot (silence/endpointing is handled on the client device).
+
+
+ISSUE 3 — AUDIOCLIPREGISTRY STARTUP DEPENDENCY (moderate)
+----------------------------------------------------------
+
+The brief requires the four pre-generated ElevenLabs audio clips to be
+generated at server startup:
+
+  - "Hang on, I'm thinking..."
+  - "Sorry, say that again?"
+  - "You've gone quiet — everything okay?"
+  - "Sorry about that — looks like we dropped. Where were we?"
+
+ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID are optional secrets. They are
+not set in the dev environment. If AudioClipRegistry makes clip generation
+a hard blocking startup dependency, the server will fail to start in dev
+without those keys.
+
+Two reasonable approaches:
+  OPTION A — Non-blocking: attempt generation on startup, log warning if
+    keys absent or generation fails, fall back to text-only at runtime
+    (the text fallback path already exists in speakFallback()).
+  OPTION B — Mandatory: server refuses to start without valid clips.
+    Appropriate for production but breaks dev.
+
+Suggested resolution: Option A (non-blocking), with a structured warning
+log. No decision is forced — raising for confirmation.
+
+
+ISSUE 4 — VOICECONTEXTASSEMBLER HISTORY SCOPING (minor)
+--------------------------------------------------------
+
+Stage 5 says: if the call is longer than 100 turns, prepend the most recent
+committed/pending_review call_summaries row as a preamble.
+
+The existing loadVoiceContext() fetches all messages for the device
+(no source filter, no callStartTime filter):
+
+  db.select().from(messagesTable)
+    .where(eq(messagesTable.deviceId, deviceId))
+    .orderBy(desc(messagesTable.createdAt))
+    .limit(HISTORY_WINDOW)  // 80
+
+To count call turns accurately (for the >100 check), the query needs to be
+scoped to the current session: source='voice_call' AND created_at >=
+callStartTime. Without this, a device with a long text chat history would
+hit the 100-turn threshold incorrectly.
+
+This is implementable in VoiceContextAssembler without changing the existing
+loadVoiceContext() function. The assembler can run a separate count query
+scoped to the session, then conditionally fetch and prepend the summary.
+
+Not a blocker — flagging so the design is explicit.
+
+
+SUMMARY OF REQUIRED DECISIONS
+------------------------------
+
+1. [CRITICAL] Is P1-4 completing the 1G stub (server-side Deepgram STT),
+   or does the mobile client continue to handle STT and send speech_final
+   JSON? This determines the entire scope of the implementation.
+
+2. [IF OPTION A above] May deepgramStream.ts be modified to add the
+   endpointing=3500 parameter (and make it injectable for the 800ms
+   intent-based mode)?
+
+3. [MODERATE] Should AudioClipRegistry fail hard on missing ElevenLabs keys,
+   or log a warning and continue without clips?
+
+4. [MINOR, no decision needed] VoiceContextAssembler will scope the turn-count
+   query to the current session. Flagged for awareness only.
+
+
+WHAT IS READY TO BUILD (regardless of Issue 1 resolution)
+----------------------------------------------------------
+
+These components are unambiguous in both Options A and B and can be written
+as soon as Issue 1 is resolved:
+
+  - VoiceIntentClassifier.ts (Stage 4: pattern matching, no LLM)
+  - VoiceContextAssembler.ts (Stage 5: enhanced context + reconnect preamble
+    + summary preamble — session-scoped history)
+  - AudioClipRegistry.ts (startup generation + disk cache + fallback)
+  - VoiceSessionRegistry.ts additions (new state fields, both options need them)
+
+VoiceOrchestrationService.ts and the routes/voice-call.ts entry point depend
+on Issue 1 resolution, since the orchestration surface is different in each
+option.
