@@ -122,6 +122,7 @@ export function useVoiceCall(): {
   const segmentSpeechMsRef  = useRef(0);
   const speechStartAtRef    = useRef(0);
   const vadActiveRef        = useRef(false); // true only while mic should be running
+  const autoSubmitTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Audio playback queue ──────────────────────────────────────────────────
 
@@ -198,12 +199,20 @@ export function useVoiceCall(): {
 
   // ── Mic open / submit / reopen cycle ──────────────────────────────────────
 
+  const clearAutoSubmitTimer = useCallback((): void => {
+    if (autoSubmitTimerRef.current !== null) {
+      clearTimeout(autoSubmitTimerRef.current);
+      autoSubmitTimerRef.current = null;
+    }
+  }, []);
+
   // openMic is used by both initial connect and post-Ashley reopen.
   // Defined after VAD watchers so the closure captures everything it needs.
   const openMicRef = useRef<() => Promise<void>>(async () => {});
 
   const submitSegment = useCallback(async (): Promise<void> => {
     if (phaseRef.current === "submitting" || phaseRef.current === "thinking") return;
+    clearAutoSubmitTimer();
     vadActiveRef.current = false;
     setPhaseSync("submitting");
 
@@ -225,6 +234,7 @@ export function useVoiceCall(): {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${key}`,
+          "X-Api-Key": key,
           "X-Device-Id": deviceId,
         },
         body: JSON.stringify({ audioBase64: audio.audioBase64, mimeType: audio.mimeType }),
@@ -260,7 +270,7 @@ export function useVoiceCall(): {
       setPhaseSync("listening");
       void openMicRef.current();
     }
-  }, [recorder, setPhaseSync]);
+  }, [recorder, setPhaseSync, clearAutoSubmitTimer]);
 
   const submitSegmentRef = useRef(submitSegment);
   useEffect(() => { submitSegmentRef.current = submitSegment; }, [submitSegment]);
@@ -309,6 +319,7 @@ export function useVoiceCall(): {
     lastSpeechAtRef.current = 0;
     segmentSpeechMsRef.current = 0;
     speechStartAtRef.current = 0;
+    clearAutoSubmitTimer();
 
     const ok = await recorder.ensurePermission();
     if (!ok) {
@@ -319,10 +330,23 @@ export function useVoiceCall(): {
       await recorder.start();
       vadActiveRef.current = true;
       setPhaseSync("listening");
+
+      // Fallback: if metering-based VAD never fires (metering null on this
+      // device), auto-submit after 6 s so the call doesn't hang forever.
+      autoSubmitTimerRef.current = setTimeout(() => {
+        autoSubmitTimerRef.current = null;
+        if (
+          phaseRef.current === "listening" ||
+          phaseRef.current === "user_speaking"
+        ) {
+          vadActiveRef.current = false;
+          void submitSegmentRef.current();
+        }
+      }, 6000);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not open mic");
     }
-  }, [recorder, setPhaseSync]);
+  }, [recorder, setPhaseSync, clearAutoSubmitTimer]);
 
   // Keep openMicRef in sync.
   useEffect(() => { openMicRef.current = openMic; }, [openMic]);
@@ -437,6 +461,7 @@ export function useVoiceCall(): {
   // ── Disconnect ────────────────────────────────────────────────────────────
 
   const disconnect = useCallback((): void => {
+    clearAutoSubmitTimer();
     vadActiveRef.current = false;
     stopPlayback();
     void recorder.cancel();
@@ -448,19 +473,20 @@ export function useVoiceCall(): {
     }
     chunkBufRef.current = [];
     setPhaseSync("ended");
-  }, [stopPlayback, recorder, setPhaseSync]);
+  }, [stopPlayback, recorder, setPhaseSync, clearAutoSubmitTimer]);
 
   // ── Cleanup on unmount ────────────────────────────────────────────────────
 
   useEffect(() => {
     return () => {
+      clearAutoSubmitTimer();
       vadActiveRef.current = false;
       stopPlayback();
       const ws = wsRef.current;
       wsRef.current = null;
       if (ws) { try { ws.close(); } catch { /* ignore */ } }
     };
-  }, [stopPlayback]);
+  }, [stopPlayback, clearAutoSubmitTimer]);
 
   const submitNow = useCallback((): void => {
     if (
