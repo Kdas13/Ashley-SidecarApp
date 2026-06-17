@@ -1,13 +1,9 @@
 // ---------------------------------------------------------------------------
-// Voice Call Screen — live Ashley call via WebSocket + push-to-talk.
+// Voice Call Screen
 //
-// Phase flow:
-//   idle → connecting → listening ⇄ recording → transcribing → thinking
-//   → speaking → listening (repeat)
-//   Any phase → ended (hang up or WS close)
-//
-// Push-to-talk: hold the mic button to record, release to send.
-// Interruption: pressing mic while Ashley is speaking stops her immediately.
+// UX: tap "Call" → connects, mic opens automatically.
+// Talk freely. Silence auto-submits. Ashley replies. Mic reopens when she
+// finishes. Tap "End call" at any point to hang up.
 // ---------------------------------------------------------------------------
 
 import React, { useCallback, useEffect, useRef } from "react";
@@ -27,61 +23,58 @@ import { useVoiceCall, type VoiceCallPhase } from "@/lib/useVoiceCall";
 
 function phaseLabel(phase: VoiceCallPhase): string {
   switch (phase) {
-    case "idle":          return "Tap call to connect";
+    case "idle":          return "Ready";
     case "connecting":    return "Connecting...";
     case "listening":     return "Listening";
-    case "recording":     return "Recording...";
-    case "transcribing":  return "Sending...";
+    case "user_speaking": return "You're speaking";
+    case "submitting":    return "Sending...";
     case "thinking":      return "Thinking...";
-    case "speaking":      return "Speaking";
+    case "speaking":      return "Ashley speaking";
     case "ended":         return "Call ended";
   }
 }
 
 function phaseColor(phase: VoiceCallPhase): string {
   switch (phase) {
-    case "recording":     return "#4ade80";
+    case "user_speaking": return "#4ade80";
     case "speaking":      return "#a78bfa";
-    case "thinking":      return "#60a5fa";
+    case "thinking":
+    case "submitting":    return "#60a5fa";
     case "ended":         return "rgba(255,255,255,0.2)";
     default:              return "rgba(255,255,255,0.55)";
   }
 }
 
-// ── Animated pulsing dot ─────────────────────────────────────────────────────
+// ── Animated pulse ────────────────────────────────────────────────────────────
 
 function PulseDot({ phase }: { phase: VoiceCallPhase }): React.JSX.Element {
   const anim = useRef(new Animated.Value(1)).current;
-  const pulse = phase === "recording" || phase === "speaking";
+  const pulse = phase === "user_speaking" || phase === "speaking";
 
   useEffect(() => {
     if (pulse) {
       const loop = Animated.loop(
         Animated.sequence([
-          Animated.timing(anim, { toValue: 0.3, duration: 600, useNativeDriver: true }),
-          Animated.timing(anim, { toValue: 1,   duration: 600, useNativeDriver: true }),
+          Animated.timing(anim, { toValue: 0.25, duration: 500, useNativeDriver: true }),
+          Animated.timing(anim, { toValue: 1,    duration: 500, useNativeDriver: true }),
         ]),
       );
       loop.start();
       return () => loop.stop();
-    } else {
-      anim.stopAnimation();
-      anim.setValue(1);
-      return undefined;
     }
+    anim.stopAnimation();
+    anim.setValue(1);
+    return undefined;
   }, [pulse, anim]);
 
   return (
     <Animated.View
-      style={[
-        styles.dot,
-        { backgroundColor: phaseColor(phase), opacity: anim },
-      ]}
+      style={[styles.dot, { backgroundColor: phaseColor(phase), opacity: anim }]}
     />
   );
 }
 
-// ── Screen ───────────────────────────────────────────────────────────────────
+// ── Screen ────────────────────────────────────────────────────────────────────
 
 export default function VoiceCallScreen(): React.JSX.Element {
   const insets = useSafeAreaInsets();
@@ -92,18 +85,12 @@ export default function VoiceCallScreen(): React.JSX.Element {
     error,
     connect,
     disconnect,
-    startRecording,
-    stopRecording,
-    cancelRecording,
   } = useVoiceCall();
 
-  // Connect as soon as the screen mounts.
-  useEffect(() => {
-    connect();
-  }, [connect]);
+  const connected =
+    phase !== "idle" && phase !== "connecting" && phase !== "ended";
 
-  // Navigate back when the call ends (with a short pause so "Call ended" is
-  // visible for a moment rather than the screen immediately disappearing).
+  // Navigate back shortly after call ends.
   useEffect(() => {
     if (phase === "ended") {
       const t = setTimeout(() => router.back(), 1800);
@@ -112,13 +99,11 @@ export default function VoiceCallScreen(): React.JSX.Element {
     return undefined;
   }, [phase]);
 
-  const onHangUp = useCallback(() => {
+  const onMainButton = useCallback(() => {
+    if (phase === "idle") { connect(); return; }
     disconnect();
-  }, [disconnect]);
+  }, [phase, connect, disconnect]);
 
-  const canRecord =
-    phase === "listening" || phase === "speaking" || phase === "thinking";
-  const isRecording = phase === "recording";
   const isEnded = phase === "ended";
 
   return (
@@ -127,15 +112,13 @@ export default function VoiceCallScreen(): React.JSX.Element {
       <View
         style={[
           styles.root,
-          { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 32 },
+          { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 40 },
         ]}
       >
         {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.name}>Ashley</Text>
-        </View>
+        <Text style={styles.name}>Ashley</Text>
 
-        {/* Status row */}
+        {/* Status */}
         <View style={styles.statusRow}>
           <PulseDot phase={phase} />
           <Text style={[styles.statusText, { color: phaseColor(phase) }]}>
@@ -143,10 +126,10 @@ export default function VoiceCallScreen(): React.JSX.Element {
           </Text>
         </View>
 
-        {/* Transcript area */}
+        {/* Transcript */}
         <ScrollView
-          style={styles.transcriptScroll}
-          contentContainerStyle={styles.transcriptContent}
+          style={styles.scroll}
+          contentContainerStyle={styles.scrollContent}
         >
           {!!userTranscript && (
             <View style={styles.bubble}>
@@ -169,42 +152,26 @@ export default function VoiceCallScreen(): React.JSX.Element {
 
         {/* Controls */}
         <View style={styles.controls}>
-          {/* Mic button — hold to speak */}
+          {/* Large call / end call button */}
           <Pressable
-            onPressIn={() => { void startRecording(); }}
-            onPressOut={() => { void stopRecording(); }}
-            onLongPress={() => { /* already handled by onPressIn */ }}
-            disabled={isEnded || (!canRecord && !isRecording)}
+            onPress={onMainButton}
+            disabled={isEnded || phase === "connecting"}
             style={[
-              styles.micBtn,
-              isRecording && styles.micBtnActive,
-              (isEnded || (!canRecord && !isRecording)) && styles.micBtnDisabled,
+              styles.callBtn,
+              connected ? styles.callBtnActive : styles.callBtnIdle,
+              (isEnded || phase === "connecting") && styles.callBtnDisabled,
             ]}
           >
-            <Text style={styles.micIcon}>{isRecording ? "●" : "◉"}</Text>
-            <Text style={styles.micLabel}>
-              {isRecording ? "Release to send" : "Hold to speak"}
+            <Text style={styles.callBtnIcon}>
+              {connected ? "✕" : "◎"}
             </Text>
-          </Pressable>
-
-          {/* Cancel recording — visible only while recording */}
-          {isRecording && (
-            <Pressable
-              onPress={() => { void cancelRecording(); }}
-              style={styles.cancelBtn}
-            >
-              <Text style={styles.cancelBtnText}>Cancel</Text>
-            </Pressable>
-          )}
-
-          {/* Hang-up button */}
-          <Pressable
-            onPress={onHangUp}
-            disabled={isEnded}
-            style={[styles.hangUpBtn, isEnded && styles.hangUpBtnDisabled]}
-          >
-            <Text style={styles.hangUpIcon}>✕</Text>
-            <Text style={styles.hangUpLabel}>End call</Text>
+            <Text style={styles.callBtnLabel}>
+              {phase === "connecting"
+                ? "Connecting..."
+                : connected
+                  ? "End call"
+                  : "Call Ashley"}
+            </Text>
           </Pressable>
         </View>
       </View>
@@ -212,7 +179,7 @@ export default function VoiceCallScreen(): React.JSX.Element {
   );
 }
 
-// ── Styles ───────────────────────────────────────────────────────────────────
+// ── Styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   root: {
@@ -221,22 +188,19 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 
-  header: {
-    marginBottom: 16,
-    alignItems: "center",
-  },
   name: {
     color: "#ffffff",
     fontSize: 28,
     fontFamily: "Inter_700Bold",
     letterSpacing: 0.5,
+    marginBottom: 12,
   },
 
   statusRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    marginBottom: 32,
+    marginBottom: 28,
   },
   dot: {
     width: 8,
@@ -248,12 +212,12 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_500Medium",
   },
 
-  transcriptScroll: {
+  scroll: {
     flex: 1,
     width: "100%",
     paddingHorizontal: 24,
   },
-  transcriptContent: {
+  scrollContent: {
     gap: 14,
     paddingBottom: 16,
   },
@@ -267,10 +231,10 @@ const styles = StyleSheet.create({
   ashleyBubble: {
     backgroundColor: "rgba(167,139,250,0.08)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(167,139,250,0.2)",
+    borderColor: "rgba(167,139,250,0.25)",
   },
   bubbleLabel: {
-    color: "rgba(255,255,255,0.35)",
+    color: "rgba(255,255,255,0.3)",
     fontSize: 11,
     fontFamily: "Inter_600SemiBold",
     textTransform: "uppercase",
@@ -284,7 +248,6 @@ const styles = StyleSheet.create({
   },
   ashleyText: {
     color: "rgba(255,255,255,0.9)",
-    fontFamily: "Inter_400Regular",
   },
 
   errorText: {
@@ -299,74 +262,36 @@ const styles = StyleSheet.create({
     width: "100%",
     alignItems: "center",
     paddingHorizontal: 24,
-    gap: 16,
     marginTop: 8,
   },
 
-  micBtn: {
-    width: 140,
-    height: 140,
-    borderRadius: 70,
-    backgroundColor: "rgba(255,255,255,0.08)",
-    borderWidth: 2,
-    borderColor: "rgba(255,255,255,0.15)",
+  callBtn: {
+    width: 160,
+    height: 160,
+    borderRadius: 80,
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
+    gap: 8,
+    borderWidth: 2,
   },
-  micBtnActive: {
-    backgroundColor: "rgba(74,222,128,0.15)",
+  callBtnIdle: {
+    backgroundColor: "rgba(74,222,128,0.12)",
     borderColor: "#4ade80",
   },
-  micBtnDisabled: {
-    opacity: 0.3,
+  callBtnActive: {
+    backgroundColor: "rgba(239,68,68,0.12)",
+    borderColor: "#ef4444",
   },
-  micIcon: {
+  callBtnDisabled: {
+    opacity: 0.35,
+  },
+  callBtnIcon: {
     color: "#ffffff",
-    fontSize: 32,
+    fontSize: 36,
   },
-  micLabel: {
-    color: "rgba(255,255,255,0.55)",
-    fontSize: 12,
-    fontFamily: "Inter_500Medium",
-    textAlign: "center",
-  },
-
-  cancelBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 20,
-    backgroundColor: "rgba(251,146,60,0.12)",
-    borderRadius: 20,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(251,146,60,0.4)",
-  },
-  cancelBtnText: {
-    color: "#fb923c",
+  callBtnLabel: {
+    color: "rgba(255,255,255,0.75)",
     fontSize: 13,
-    fontFamily: "Inter_500Medium",
-  },
-
-  hangUpBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 28,
-    backgroundColor: "rgba(239,68,68,0.15)",
-    borderRadius: 24,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(239,68,68,0.4)",
-  },
-  hangUpBtnDisabled: {
-    opacity: 0.3,
-  },
-  hangUpIcon: {
-    color: "#ef4444",
-    fontSize: 16,
-  },
-  hangUpLabel: {
-    color: "#ef4444",
-    fontSize: 14,
     fontFamily: "Inter_500Medium",
   },
 });
