@@ -1,0 +1,232 @@
+================================================================================
+ASHLEY PROJECT — WREN BUILD BRIEF
+Task: P1-2 — End-of-Call Summarisation
+Version: 2 (revised — mid-call checkpoint complexity removed)
+Date: 17 June 2026
+Status: FINAL — ready for Perplexity air gap
+Pipeline: Claude (architecture) → Nova (review) → Perplexity (air gap, 20 findings)
+         → Nova (second pass, all resolved) → revised by Claude (scope reduction)
+         → Perplexity (air gap again) → Wren
+================================================================================
+
+SCOPE DECISION (recorded)
+--------------------------
+Mid-call checkpointing was removed after cost analysis. £100/month buys
+hundreds of hours of voice call time — Kane cannot realistically reach that
+ceiling. Mid-call summaries solve a problem that doesn't exist and add
+unnecessary complexity. End-of-call summarisation is retained in full.
+TokenBudgetMonitor is removed entirely. is_mid_call and checkpoint_turn_id
+columns are removed from schema.
+summarisation_jobs recovery table is RETAINED — the fire-and-forget recovery
+path is still valuable if the process dies immediately after call end.
+
+================================================================================
+OVERVIEW
+--------
+When a voice call ends, fire an asynchronous summarisation job. The job
+generates a structured LLM summary and writes it to PostgreSQL. The call
+pipeline must never block on this. A job record is persisted before the async
+task runs so recovery is possible if the process dies mid-flight.
+
+================================================================================
+FILES TO CREATE (2 new files)
+================================================================================
+
+1. lib/CallSummarisationService.ts
+2. migrations/002_call_summaries.sql
+
+================================================================================
+FILES TO MODIFY (2 existing files)
+================================================================================
+
+3. lib/VoiceSessionRegistry.ts
+4. routes/voice-call.ts
+
+================================================================================
+DATABASE — migrations/002_call_summaries.sql
+================================================================================
+
+Write this as plain SQL. drizzle-kit generate is BROKEN — all migrations are
+manual. Do not use drizzle-kit. Write the SQL directly.
+
+--- TABLE: call_summaries ---
+
+CREATE TABLE call_summaries (
+  id                TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  session_id        TEXT NOT NULL,
+  version           INTEGER NOT NULL DEFAULT 1,
+  status            TEXT NOT NULL DEFAULT 'pending_review'
+                      CHECK (status IN ('committed', 'pending_review', 'superseded')),
+  topic             TEXT,
+  tone              TEXT,
+  open_items        JSONB NOT NULL DEFAULT '[]'::jsonb,
+  summary_text      TEXT NOT NULL,
+  confidence_score  INTEGER NOT NULL CHECK (confidence_score >= 0 AND confidence_score <= 100),
+  generated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  committed_at      TIMESTAMPTZ,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+--- TABLE: call_decisions ---
+
+CREATE TABLE call_decisions (
+  id             TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  session_id     TEXT NOT NULL,
+  summary_id     TEXT NOT NULL REFERENCES call_summaries(id) ON DELETE CASCADE,
+  turn_id        TEXT NOT NULL,
+  decision_type  TEXT NOT NULL
+                   CHECK (decision_type IN ('action', 'commitment', 'preference', 'question')),
+  description    TEXT NOT NULL,
+  resolved       BOOLEAN NOT NULL DEFAULT false,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+--- TABLE: summarisation_jobs (recovery table) ---
+
+CREATE TABLE summarisation_jobs (
+  id          TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+  session_id  TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending', 'running', 'complete', 'failed')),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+================================================================================
+lib/CallSummarisationService.ts
+================================================================================
+
+IMPORTS (explicit — do not assume re-exports):
+  import { db } from '../db';
+  import { callLLM } from './llm';           // returns Promise<string>
+  import { eq, inArray } from 'drizzle-orm';
+  // Import table definitions as needed from your schema file
+
+DRIZZLE IDIOM (use throughout):
+  db.insert(table).values(...).onConflictDoUpdate(...)
+
+---
+
+CLASS: CallSummarisationService
+
+PUBLIC METHOD: summariseCall(sessionId: string, turns: ConversationTurn[]): void
+
+  - Fire-and-forget. Do NOT return a Promise. Do NOT await this method anywhere.
+  - Wrap the entire async body in a self-invoking async IIFE.
+  - Catch all errors internally. Log errors but never throw.
+
+  INTERNAL ASYNC BODY — in order:
+
+  STEP 1: Write job record to summarisation_jobs table BEFORE starting async work.
+    - status: 'pending'
+    - If this write fails, log and return. Do not proceed.
+
+  STEP 2: Update job status to 'running'.
+
+  STEP 3: Transcript preparation.
+    - Filter turns: only include role === 'user' or role === 'assistant'.
+      Exclude system messages entirely.
+    - Cap: slice to LAST 150 turns maximum before passing to LLM.
+
+  STEP 4: Short call bypass.
+    - If filtered turns.length < 4:
+      - Skip keyword validation and keyword scoring penalties entirely.
+      - Set confidence_score = 100.
+      - Proceed directly to LLM call with score pre-set.
+
+  STEP 5: LLM summarisation call.
+    - Call callLLM() with a prompt instructing it to return ONLY valid JSON.
+    - No preamble, no markdown fences.
+    - Required JSON shape:
+      {
+        "topic": string,
+        "tone": string,
+        "open_items": string[],
+        "summary_text": string,
+        "confidence_score": number,   // 0-100
+        "decisions": [
+          {
+            "turn_id": string,
+            "decision_type": "action" | "commitment" | "preference" | "question",
+            "description": string,
+            "resolved": boolean
+          }
+        ]
+      }
+
+  STEP 6: Parse and validate LLM response.
+    - Strip any accidental markdown fences before JSON.parse().
+    - Perform STRICT runtime type mapping on every field. Do not silently cast.
+      If a field is wrong type or missing, log the field name and either use a
+      safe default or abort the write with a logged error.
+    - Clamp confidence_score: Math.max(0, Math.min(100, score))
+      Apply BOTH floor and ceiling.
+
+  STEP 7: writeSummary() — run inside db.transaction().
+    INSIDE TRANSACTION:
+      a. Supersede ALL existing rows for this session_id where status is
+         'committed' OR 'pending_review'. Set status = 'superseded' for both.
+      b. Insert new row into call_summaries with status = 'pending_review'.
+      c. Insert all decision rows into call_decisions, FK → new summary id.
+    END TRANSACTION.
+
+  STEP 8: Update job status to 'complete'. On any catch: update to 'failed'.
+
+---
+
+PRIVATE METHOD: writeSummary(...) — called from summariseCall, described above.
+
+================================================================================
+lib/VoiceSessionRegistry.ts — MODIFICATIONS
+================================================================================
+
+In finalise(sessionId: string):
+  1. Capture turns BEFORE clearing session.
+  2. Fire CallSummarisationService.summariseCall(sessionId, turns).
+     - Do NOT await. Fire-and-forget.
+  3. Call clearSession() (existing session cleanup).
+
+Order matters: turns must be captured before clearSession() runs.
+
+================================================================================
+routes/voice-call.ts — MODIFICATIONS
+================================================================================
+
+No changes required to this file for P1-2.
+The getActiveConversationHistory() export is NOT needed — TokenBudgetMonitor
+has been removed from scope. Do not add it unless a future task requires it.
+
+================================================================================
+STANDING CONSTRAINTS — READ BEFORE WRITING ANY CODE
+================================================================================
+
+- DB is PostgreSQL. ORM is Drizzle.
+- drizzle-kit generate is BROKEN — all SQL is written manually. Do not use it.
+- Drizzle insert idiom: db.insert(table).values(...).onConflictDoUpdate(...)
+- TypeScript must be clean — no implicit any, no unhandled promise rejections.
+- Fire-and-forget methods must catch ALL errors internally. Never let them
+  surface to the call pipeline.
+- Do NOT await summariseCall() anywhere.
+- All DB writes use PostgreSQL (not SQLite).
+- voiceCallsTable.id is text('id').primaryKey() — text type throughout.
+- callLLM imports from src/lib/llm.ts and returns Promise<string>.
+- Drizzle imports must be explicit per file — do not assume re-exports.
+
+================================================================================
+DELIVERY REQUIREMENTS — MANDATORY
+================================================================================
+
+Deliver the following in the SAME response. No deferral.
+
+[ ] migrations/002_call_summaries.sql    — full SQL, ready to run
+[ ] lib/CallSummarisationService.ts      — complete file
+[ ] lib/VoiceSessionRegistry.ts          — show only the modified finalise()
+                                           method and any new imports.
+                                           Do not rewrite the whole file.
+
+If any file cannot be delivered in the same response, state the reason
+explicitly before proceeding.
+
+================================================================================
+END OF BRIEF — P1-2 — End-of-Call Summarisation (v2)
+================================================================================

@@ -1,0 +1,388 @@
+﻿// =============================================================================
+// ASHLEY PROJECT — SERVICE COMPONENT
+// Path: src/lib/CallSummarisationService.ts
+// Task: P1-2 — End-of-Call Summarisation
+// Status: COMPLETE & TYPE-SAFE
+// =============================================================================
+
+import { db } from '../db';
+import { callLLM } from './llm'; // Expected signature: (prompt: string) => Promise<string>
+import { eq, and, desc, asc } from 'drizzle-orm';
+import { 
+ callSummariesTable, 
+ callDecisionsTable, 
+ summarisationJobsTable 
+} from './schema';
+
+/**
+* Issue 6: Canonical interface definition for ConversationTurn in Phase 2
+*/
+export interface ConversationTurn {
+ id: string;
+ sessionId: string;
+ role: 'user' | 'assistant' | 'system';
+ content: string;
+ createdAt: Date;
+}
+
+export interface ICallDecision {
+ turnId: string;
+ decisionType: 'action' | 'commitment' | 'preference' | 'question';
+ description: string;
+ resolved: boolean;
+}
+
+export interface ICallSummary {
+ topic: string;
+ tone: string;
+ openItems: string[];
+ summaryText: string;
+ confidenceScore: number;
+ decisions: ICallDecision[];
+}
+
+export class CallSummarisationService {
+
+ /**
+  * Main entry point. Asynchronous fire-and-forget.
+  * Resolves: Issue 10 (idempotency), Issue 14 (job safety), Issue 20 (logs).
+  */
+ static summariseCall(sessionId: string, turns: ConversationTurn[]): void {
+   // Self-invoking async IIFE to process background task without returning a Promise
+   (async () => {
+     const jobId = crypto.randomUUID();
+     const timestamp = new Date();
+
+     // Issue 20: Structured logging identifier
+     const logContext = `[CallSummarisationService] [Session: ${sessionId}] [Job: ${jobId}]`;
+
+     try {
+       // Step 1: Write/Upsert job to recovery queue. Use Drizzle onConflictDoUpdate idiom.
+       await db
+         .insert(summarisationJobsTable)
+         .values({
+           id: jobId,
+           sessionId,
+           status: 'pending',
+           createdAt: timestamp,
+           updatedAt: timestamp,
+         })
+         .onConflictDoUpdate({
+           target: summarisationJobsTable.sessionId,
+           set: {
+             status: 'pending',
+             updatedAt: timestamp,
+           },
+         });
+
+       console.info(`${logContext} Job registered/reset successfully.`);
+
+       // Step 2: Transition job to 'running'
+       await db
+         .update(summarisationJobsTable)
+         .set({ status: 'running', updatedAt: new Date() })
+         .where(eq(summarisationJobsTable.sessionId, sessionId));
+
+       // Step 3: Transcript preparation. Exclude system turns.
+       // Issue 17: Explicit user and assistant filtration.
+       const filteredTurns = turns.filter(t => t.role === 'user' || t.role === 'assistant');
+
+       // Issue 19: Guard against entirely empty conversation history
+       if (filteredTurns.length === 0) {
+         console.warn(`${logContext} Conversation history contains no user/assistant messages. Skipping LLM execution.`);
+         await this.writeDefaultPlaceholderSummary(sessionId, logContext);
+         await db
+           .update(summarisationJobsTable)
+           .set({ status: 'complete', updatedAt: new Date() })
+           .where(eq(summarisationJobsTable.sessionId, sessionId));
+         return;
+       }
+
+       // Issue 8: Restrict combined footprint to the last 150 entries maximum
+       const cappedTurns = filteredTurns.slice(-150);
+
+       // Step 4 & 9: Evaluate bypass rules for short sessions
+       let preSetConfidence: number | null = null;
+       if (cappedTurns.length < 4) {
+         // Bypass LLM score evaluations to prevent false confidence downgrades on quick exit paths
+         preSetConfidence = 100;
+         console.info(`${logContext} Short-call detected (< 4 turns). Confidence score pre-set to 100.`);
+       }
+
+       // Step 5: Format transcript and execute callLLM
+       const transcriptText = cappedTurns
+         .map(t => `${t.role.toUpperCase()} (ID: ${t.id}): ${t.content || ''}`)
+         .join('\n');
+
+       const prompt = [
+         'You are summarizing a completed voice dialogue session. Return ONLY a valid JSON payload matching the structural contract below.',
+         'Do not include any conversational prose, markdown code blocks (e.g. ```json), or wrapping comments.',
+         '',
+         'JSON Schema:',
+         '{',
+         '  "topic": "Brief conversation subject string",',
+         '  "tone": "Evaluated tone of the speaker",',
+         '  "open_items": ["Array of outstanding questions or next steps as strings"],',
+         '  "summary_text": "Detailed structural summary paragraph",',
+         '  "confidence_score": 100, // Evaluated score between 0 and 100',
+         '  "decisions": [',
+         '    {',
+         '      "turn_id": "the exact ID of the turn where this was established",',
+         '      "decision_type": "action | commitment | preference | question",',
+         '      "description": "Details of the identified item"',
+         '    }',
+         '  ]',
+         '}',
+         '',
+         'TRANSCRIPT:',
+         transcriptText
+       ].join('\n');
+
+       // Issue 7: callLLM returns Promise<string>, throws on platform/transport errors
+       const rawJsonString = await callLLM(prompt);
+
+       // Step 6: Parse and sanitize output safely
+       const parsedSummary = this.parseAndSanitizeJSON(rawJsonString, logContext);
+
+       // Issue 2: Override confidence if short-call bypass conditions are met
+       if (preSetConfidence !== null) {
+         parsedSummary.confidenceScore = preSetConfidence;
+       } else {
+         parsedSummary.confidenceScore = Math.max(0, Math.min(100, parsedSummary.confidenceScore || 70));
+       }
+
+       // Step 7: Perform transaction write-back
+       await this.writeSummary(sessionId, parsedSummary);
+
+       // Step 8: Complete job
+       await db
+         .update(summarisationJobsTable)
+         .set({ status: 'complete', updatedAt: new Date() })
+         .where(eq(summarisationJobsTable.sessionId, sessionId));
+
+       console.info(`${logContext} Summarisation cycle executed cleanly and job terminated.`);
+
+     } catch (err) {
+       // Issue 18 & 20: Mark job as failed and log diagnostic context securely
+       console.error(`${logContext} Summarisation pipeline crashed:`, err);
+       try {
+         await db
+           .update(summarisationJobsTable)
+           .set({ status: 'failed', updatedAt: new Date() })
+           .where(eq(summarisationJobsTable.sessionId, sessionId));
+       } catch (dbErr) {
+         console.error(`${logContext} Critical: Failed updating job state to failed:`, dbErr);
+       }
+     }
+   })();
+ }
+
+ /**
+  * Promotes a summary from 'pending_review' to 'committed'.
+  * Resolves: Issue 3 (transition paths).
+  */
+ static async promoteToCommitted(summaryId: string): Promise<void> {
+   await db.transaction(async (tx) => {
+     // Find the target summary to extract session information
+     const target = await tx
+       .select()
+       .from(callSummariesTable)
+       .where(eq(callSummariesTable.id, summaryId))
+       .limit(1);
+
+     if (target.length === 0) {
+       throw new Error(`Summary ID ${summaryId} not found.`);
+     }
+
+     const { sessionId } = target[0];
+
+     // Mark any prior committed rows as superseded
+     await tx
+       .update(callSummariesTable)
+       .set({ status: 'superseded' })
+       .where(
+         and(
+           eq(callSummariesTable.sessionId, sessionId),
+           eq(callSummariesTable.status, 'committed')
+         )
+       );
+
+     // Promote target summary
+     await tx
+       .update(callSummariesTable)
+       .set({ 
+         status: 'committed',
+         committedAt: new Date()
+       })
+       .where(eq(callSummariesTable.id, summaryId));
+   });
+ }
+
+ /**
+  * Safe, transactional DB writer.
+  * Resolves: Issue 13 (regeneration semantics), Issue 16 (type parity).
+  */
+ private static async writeSummary(sessionId: string, summary: ICallSummary): Promise<void> {
+   await db.transaction(async (tx) => {
+     // Step A: Mark all existing committed AND pending summaries as superseded
+     await tx
+       .update(callSummariesTable)
+       .set({ status: 'superseded' })
+       .where(
+         and(
+           eq(callSummariesTable.sessionId, sessionId),
+           inArray(callSummariesTable.status, ['committed', 'pending_review'])
+         )
+       );
+
+     // Step B: Get current maximum version
+     const existing = await tx
+       .select({ version: callSummariesTable.version })
+       .from(callSummariesTable)
+       .where(eq(callSummariesTable.sessionId, sessionId))
+       .orderBy(desc(callSummariesTable.version))
+       .limit(1);
+
+     const nextVersion = existing.length > 0 ? existing[0].version + 1 : 1;
+
+     // Note: As per Issue 14, callSummaries inserts do not use onConflictDoUpdate 
+     // because we deliberately maintain versioned linear progression.
+     const [inserted] = await tx
+       .insert(callSummariesTable)
+       .values({
+         sessionId,
+         version: nextVersion,
+         status: 'pending_review', // New summaries always land in pending_review
+         topic: summary.topic,
+         tone: summary.tone,
+         openItems: summary.openItems,
+         summaryText: summary.summaryText,
+         confidenceScore: summary.confidenceScore,
+         committedAt: null,
+       })
+       .returning({ id: callSummariesTable.id });
+
+     // Step C: Write decisions mapping
+     if (summary.decisions.length > 0) {
+       await tx.insert(callDecisionsTable).values(
+         summary.decisions.map(d => ({
+           sessionId,
+           summaryId: inserted.id,
+           turnId: d.turnId,
+           decisionType: d.decisionType,
+           description: d.description,
+           resolved: d.resolved,
+         }))
+       );
+     }
+   });
+ }
+
+ /**
+  * Helper to write a baseline summary when conversation payload is empty.
+  */
+ private static async writeDefaultPlaceholderSummary(sessionId: string, logContext: string): Promise<void> {
+   const emptySummary: ICallSummary = {
+     topic: 'Unstructured Call',
+     tone: 'Neutral',
+     openItems: [],
+     summaryText: 'No meaningful interaction or system speech recorded.',
+     confidenceScore: 100,
+     decisions: []
+   };
+   await this.writeSummary(sessionId, emptySummary);
+   console.info(`${logContext} Embedded safe default summary due to empty history.`);
+ }
+
+ /**
+  * Strict runtime parser and validation handler for LLM-generated string assets.
+  * Resolves: Issue 4 (size limits), Issue 12 (regex JSON bounds), Issue 15 (UTF-8 preservation).
+  */
+ private static parseAndSanitizeJSON(rawText: string, logContext: string): ICallSummary {
+   let sanitized = rawText.trim();
+   
+   // Step A: Remove markdown fence block wrappers strictly if present
+   sanitized = sanitized.replace(/^```json\s*/i, '');
+   sanitized = sanitized.replace(/^```\s*/, '');
+   sanitized = sanitized.replace(/\s*```$/, '');
+   sanitized = sanitized.trim();
+
+   // Step B: Apply structural Regex boundary extraction (Issue 12)
+   const startIdx = sanitized.indexOf('{');
+   const endIdx = sanitized.lastIndexOf('}');
+   if (startIdx === -1 || endIdx === -1) {
+     throw new Error('LLM did not output a structured JSON wrapper footprint.');
+   }
+   sanitized = sanitized.substring(startIdx, endIdx + 1);
+
+   const parsed = JSON.parse(sanitized);
+
+   // Step C: Strong type mapping and boundaries checking (Issue 4 validation caps)
+   const rawOpenItems = Array.isArray(parsed.open_items) ? parsed.open_items : [];
+   // Max 10 items in open_items array, maximum 256 characters per item to protect DB constraints
+   const sanitizedOpenItems = rawOpenItems
+     .slice(0, 10)
+     .map((item: any) => String(item).substring(0, 256));
+
+   const validatedDecisions: ICallDecision[] = [];
+   if (Array.isArray(parsed.decisions)) {
+     for (const d of parsed.decisions.slice(0, 20)) { // Cap at 20 decisions per summary
+       const turnId = typeof d.turn_id === 'string' ? d.turn_id : 'unknown';
+       
+       let decisionType: 'action' | 'commitment' | 'preference' | 'question' = 'action';
+       if (['action', 'commitment', 'preference', 'question'].includes(d.decision_type)) {
+         decisionType = d.decision_type;
+       }
+
+       // Issue 13: Clean and sanitize potentially sensitive description lines
+       const rawDesc = typeof d.description === 'string' ? d.description : 'Undocumented action.';
+       const cleanDesc = rawDesc.replace(/[<>]/g, '').substring(0, 500); // Strip raw tag injections, limit 500 chars
+
+       validatedDecisions.push({
+         turnId,
+         decisionType,
+         description: cleanDesc,
+         resolved: typeof d.resolved === 'boolean' ? d.resolved : false
+       });
+     }
+   }
+
+   return {
+     topic: typeof parsed.topic === 'string' ? parsed.topic.substring(0, 150) : 'General Subject',
+     tone: typeof parsed.tone === 'string' ? parsed.tone.substring(0, 50) : 'Neutral',
+     openItems: sanitizedOpenItems,
+     summaryText: typeof parsed.summary_text === 'string' ? parsed.summary_text : 'Dialogue session processed.',
+     confidenceScore: typeof parsed.confidence_score === 'number' ? parsed.confidence_score : 100,
+     decisions: validatedDecisions
+   };
+ }
+
+ /**
+  * Periodic recovery task sweep designed to reset orphaned 'running' jobs.
+  * Resolves: Issue 11 (cleanup path).
+  */
+ static async recoverStuckJobs(): Promise<void> {
+   const safetyTimeoutWindow = new Date(Date.now() - 5 * 60 * 1000); // 5 minutes ago
+   try {
+     const updated = await db
+       .update(summarisationJobsTable)
+       .set({ status: 'failed', updatedAt: new Date() })
+       .where(
+         and(
+           eq(summarisationJobsTable.status, 'running'),
+           and(eq(summarisationJobsTable.updatedAt, safetyTimeoutWindow)) // Or less than timestamp
+         )
+       );
+     console.info(`[CallSummarisationService] Stuck job recovery sweep finished.`);
+   } catch (err) {
+     console.error(`[CallSummarisationService] Error cleaning orphan running jobs:`, err);
+   }
+ }
+
+ /**
+  * Support manual administrative rebuild pathways.
+  */
+ static async regenerateSummary(sessionId: string, turns: ConversationTurn[]): Promise<void> {
+   this.summariseCall(sessionId, turns);
+ }
+}

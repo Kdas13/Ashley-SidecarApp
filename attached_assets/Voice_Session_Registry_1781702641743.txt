@@ -1,0 +1,53 @@
+﻿// =============================================================================
+// ASHLEY PROJECT — CODEBASE INTEGRATION
+// Path: src/lib/VoiceSessionRegistry.ts
+// Task: P1-2 — End-of-Call Summarisation
+// Status: ACTIVE MODIFICATION BLOCK ONLY (As Requested)
+// =============================================================================
+
+// --- NEW REQUIRED IMPORTS ---
+import { CallSummarisationService, ConversationTurn } from './CallSummarisationService';
+
+// Note: Ensure the remainder of VoiceSessionRegistry imports (such as db, schema mappings, etc.) 
+// are left intact as defined in the existing local implementation.
+
+export class VoiceSessionRegistry {
+ 
+ // ... existing class properties and setup logic remain unchanged ...
+
+ /**
+  * Terminal finalise cleanup method for terminating voice calls.
+  * Triggered when a call connection cleanly disconnects or is explicitly closed.
+  */
+ static finalise(sessionId: string): void {
+   const session = this.activeSessions.get(sessionId);
+   
+   if (!session) {
+     console.warn(`[VoiceSessionRegistry] Finalise requested for non-existent session: ${sessionId}`);
+     return;
+   }
+
+   // Step 1: Capture historical turns from memory BEFORE purging state variables
+   // Issue 6: Maps existing session dialogue history into explicit ConversationTurn structures
+   const sessionTurns: ConversationTurn[] = Array.isArray(session.turns) 
+     ? session.turns.map((turn: any) => ({
+         id: turn.id,
+         sessionId: sessionId,
+         role: turn.role,
+         content: turn.content,
+         createdAt: turn.createdAt instanceof Date ? turn.createdAt : new Date(turn.createdAt)
+       }))
+     : [];
+
+   console.info(`[VoiceSessionRegistry] Session ${sessionId} finalising with ${sessionTurns.length} recorded turns.`);
+
+   // Step 2: Trigger End-of-Call Summarisation pipeline as an un-awaited fire-and-forget task
+   // Resolves: Issue 1 & 14 (safe async execution boundary)
+   CallSummarisationService.summariseCall(sessionId, sessionTurns);
+
+   // Step 3: Clear session state records securely to release hardware resources
+   this.clearSession(sessionId);
+ }
+
+ // ... rest of the class methods (clearSession, reclaimSession, isReconnectRateLimited) remain unchanged ...
+}

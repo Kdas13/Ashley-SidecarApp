@@ -14,6 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import { PersistentSessionStateGuard } from "./PersistentSessionStateGuard";
+import { CallSummarisationService } from "./CallSummarisationService";
 import { db, activeSessionsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 
@@ -308,6 +309,15 @@ export function finalise(sessionId: string, reason: string): void {
   sessionIdByDeviceId.delete(session.deviceId);
 
   appendLog(session, "CALL_ENDED", `reason=${reason}`);
+
+  // P1-2: fire end-of-call summarisation. Must be fire-and-forget — the call
+  // pipeline must never block on this. Pass deviceId + callStartTime so the
+  // service can fetch turns from messagesTable (turns are not stored on session).
+  CallSummarisationService.summariseCall(
+    session.sessionId,
+    session.deviceId,
+    session.callStartTime,
+  );
 
   // P1-1: persist terminal state then clear the chain.
   PersistentSessionStateGuard.queue({
