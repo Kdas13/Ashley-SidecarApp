@@ -190,21 +190,35 @@ wss.on("connection", (ws: any, _req: any, deviceId: string) => {
   // otherwise create a fresh session. TRAP 2: all state in registry.
   let session = registry.reclaimSession(deviceId, ws as registry.WsLike);
   if (session) {
-    // 1H: Reject pathological reconnect loops (> 15 attempts = 16+ connections).
-    if (session.reconnectAttempts > 15) {
+    // P1-3: windowed rate limit check (replaces lifetime >15 guard).
+    if (registry.isReconnectRateLimited(session)) {
       logger.warn(
-        { deviceId, sessionId: session.sessionId, reconnectAttempts: session.reconnectAttempts },
-        "Voice-call WS: reconnect attempts exceeded — ending call",
+        {
+          deviceId,
+          sessionId: session.sessionId,
+          reconnectAttempts: session.reconnectAttempts,
+          lastCause: session.lastReconnectCause,
+        },
+        "Voice-call WS: reconnect rate limit exceeded — ending call",
       );
       try {
-        ws.send(JSON.stringify({ type: "call_ended", reason: "too_many_reconnects" }));
+        ws.send(JSON.stringify({
+          type: "call_ended",
+          reason: "reconnect_rate_limit_exceeded",
+        }));
       } catch {}
-      registry.finalise(session.sessionId, "too_many_reconnects");
-      ws.close(1008, "too_many_reconnects");
+      registry.finalise(session.sessionId, "reconnect_rate_limit_exceeded");
+      ws.close(1008, "reconnect_rate_limit_exceeded");
       return;
     }
     logger.info(
-      { deviceId, sessionId: session.sessionId, gen: session.connectionGeneration, reconnectAttempts: session.reconnectAttempts },
+      {
+        deviceId,
+        sessionId: session.sessionId,
+        gen: session.connectionGeneration,
+        reconnectAttempts: session.reconnectAttempts,
+        lastCause: session.lastReconnectCause,
+      },
       "Voice-call WS: session reclaimed",
     );
   } else {
@@ -339,6 +353,15 @@ wss.on("connection", (ws: any, _req: any, deviceId: string) => {
     );
     const closingSession = registry.findBySessionId(sessionId);
     if (closingSession) {
+      // P1-3: detect cause from WS close code before marking recovering.
+      if (code === 1000 || code === 1001) {
+        closingSession.lastReconnectCause = "clean_close";
+      } else if (code === 1006) {
+        // 1006 = abnormal closure, no close frame — network drop.
+        closingSession.lastReconnectCause = "network_drop";
+      } else {
+        closingSession.lastReconnectCause = "timeout";
+      }
       registry.markRecovering(sessionId);
     }
   });

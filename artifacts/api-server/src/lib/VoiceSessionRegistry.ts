@@ -1,5 +1,6 @@
 // ---------------------------------------------------------------------------
 // VoiceSessionRegistry — Phase 1 voice call session state manager.
+//                        P1-3 windowed reconnect counter (Phase 2).
 //
 // All voice session state lives here. Nothing lives in route closures.
 // This file has NO Express or WS imports so it can be unit-tested in
@@ -56,7 +57,11 @@ export interface VoiceSession {
   // Cost tracking (F19)
   totalTokensUsed: number;
   totalTtsChars: number;
-  reconnectAttempts: number;
+
+  // P1-3: windowed reconnect tracking
+  reconnectTimestamps: Date[];        // ring buffer, max 20 entries
+  reconnectAttempts: number;          // diagnostic only — must NOT gate termination
+  lastReconnectCause: "clean_close" | "network_drop" | "timeout" | null;
 
   // Context failure tracking (Checkpoint 1D)
   consecutiveContextFailures: number;
@@ -124,7 +129,10 @@ export function create(deviceId: string, ws: WsLike): VoiceSession {
 
     totalTokensUsed: 0,
     totalTtsChars: 0,
+
+    reconnectTimestamps: [],
     reconnectAttempts: 0,
+    lastReconnectCause: null,
     consecutiveContextFailures: 0,
 
     recoveryTimer: null,
@@ -179,12 +187,18 @@ export function reclaimSession(
   session.connectionGeneration += 1;
   session.state = "active";
   session.ws = ws;
-  session.reconnectAttempts += 1;
+
+  // P1-3: push timestamp into ring buffer, cap at 20 entries.
+  session.reconnectTimestamps.push(new Date());
+  if (session.reconnectTimestamps.length > 20) {
+    session.reconnectTimestamps.shift();
+  }
+  session.reconnectAttempts += 1; // diagnostic only
 
   appendLog(
     session,
     "CALL_RECONNECTED",
-    `gen=${session.connectionGeneration} reconnects=${session.reconnectAttempts}`,
+    `gen=${session.connectionGeneration} reconnects=${session.reconnectAttempts} cause=${session.lastReconnectCause ?? "unknown"}`,
   );
   return session;
 }
@@ -322,6 +336,32 @@ export function cancelCurrentTurn(
 }
 
 // ---------------------------------------------------------------------------
+// P1-3 — Windowed reconnect rate limiter.
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true if the session has exceeded the reconnect rate limit.
+ *
+ * Limit: 10 reconnects within any rolling 10-minute window.
+ * Grace mode: if lastReconnectCause is 'network_drop', allow +5 (limit → 15).
+ *
+ * reconnectAttempts (lifetime counter) is intentionally NOT used here —
+ * it is a diagnostic field only and must never gate termination.
+ */
+export function isReconnectRateLimited(session: VoiceSession): boolean {
+  const windowMs = 10 * 60 * 1000; // 10 minutes
+  const cutoff = Date.now() - windowMs;
+
+  const recentCount = session.reconnectTimestamps.filter(
+    (ts) => ts.getTime() > cutoff,
+  ).length;
+
+  const limit = session.lastReconnectCause === "network_drop" ? 15 : 10;
+
+  return recentCount >= limit;
+}
+
+// ---------------------------------------------------------------------------
 // Convenience: export the registry as a namespace-style object so callers
 // can do: import * as registry from "./VoiceSessionRegistry"
 // ---------------------------------------------------------------------------
@@ -335,4 +375,5 @@ export const registry = {
   incrementSequence,
   validateMessage,
   cancelCurrentTurn,
+  isReconnectRateLimited,
 };
