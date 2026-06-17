@@ -63,6 +63,11 @@ export function useVoiceRecorder(): VoiceRecorder {
     },
   );
   const [state, setState] = useState<VoiceRecorderState>("idle");
+  const stateRef = useRef<VoiceRecorderState>("idle");
+  const setStateTracked = useCallback((s: VoiceRecorderState) => {
+    stateRef.current = s;
+    setState(s);
+  }, []);
   const [elapsedMs, setElapsedMs] = useState(0);
   const startedAtRef = useRef<number | null>(null);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -93,6 +98,14 @@ export function useVoiceRecorder(): VoiceRecorder {
 
   const start = useCallback(async () => {
     audioLog("STT.start");
+    // Guard: if the recorder is already running, skip rather than calling
+    // prepareToRecordAsync on a prepared session (throws "already been prepared").
+    // This is a safety net — the mutex in openMic should prevent concurrent calls,
+    // but defensive here in case any other caller bypasses that guard.
+    if (stateRef.current === "recording") {
+      audioLog("STT.start.skipped — already recording");
+      return;
+    }
     // setAudioModeAsync({ allowsRecording: true }) configures the audio
     // session for capture on iOS; it also tells Android we want recording
     // focus. Must complete BEFORE prepareToRecordAsync so the session is
@@ -123,7 +136,7 @@ export function useVoiceRecorder(): VoiceRecorder {
     recorder.record();
     startedAtRef.current = Date.now();
     setElapsedMs(0);
-    setState("recording");
+    setStateTracked("recording");
     patchAudioState({
       sttListening: true,
       sttReady: true,
@@ -141,7 +154,7 @@ export function useVoiceRecorder(): VoiceRecorder {
         stopTicker();
       }
     }, 100);
-  }, [recorder, stopTicker]);
+  }, [recorder, stopTicker, setStateTracked]);
 
   const finish = useCallback(
     async (returnAudio: boolean): Promise<RecordedAudio | null> => {
@@ -156,7 +169,7 @@ export function useVoiceRecorder(): VoiceRecorder {
         audioLog("STT.finish.stopped", { durationMs });
       } catch (err) {
         audioError("STT.finish.stop", err, { durationMs });
-        setState("idle");
+        setStateTracked("idle");
         patchAudioState({
           sttListening: false,
           lastSttStoppedAt: Date.now(),
@@ -183,13 +196,13 @@ export function useVoiceRecorder(): VoiceRecorder {
       patchAudioState({ sttListening: false, lastSttStoppedAt: Date.now() });
 
       if (!returnAudio || !uri || durationMs < MIN_RECORDING_MS) {
-        setState("idle");
+        setStateTracked("idle");
         setElapsedMs(0);
         audioLog("STT.finish.discarded", { returnAudio, hasUri: !!uri, durationMs });
         return null;
       }
 
-      setState("processing");
+      setStateTracked("processing");
       try {
         const audioBase64 = await FileSystem.readAsStringAsync(uri, {
           encoding: FileSystem.EncodingType.Base64,
@@ -208,11 +221,11 @@ export function useVoiceRecorder(): VoiceRecorder {
         audioError("STT.finish.readAudio", err, { uri });
         return null;
       } finally {
-        setState("idle");
+        setStateTracked("idle");
         setElapsedMs(0);
       }
     },
-    [recorder, stopTicker],
+    [recorder, stopTicker, setStateTracked],
   );
 
   const stop = useCallback(() => finish(true), [finish]);

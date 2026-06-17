@@ -129,6 +129,9 @@ export function useVoiceCall(): {
   // Guards against reopening the mic between sentences (race between playNext
   // draining the queue and the next sentence_end arriving).
   const ttsCompleteRef      = useRef(true);
+  // Mutex: prevents two concurrent openMic calls from both calling
+  // prepareToRecordAsync — the second call would throw "already been prepared".
+  const micOpeningRef       = useRef(false);
 
   // ── Audio playback queue ──────────────────────────────────────────────────
 
@@ -321,6 +324,11 @@ export function useVoiceCall(): {
   const openMic = useCallback(async (): Promise<void> => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     if (phaseRef.current === "ended") return;
+    // Mutex: only one openMic call may proceed at a time. A second concurrent
+    // call would hit prepareToRecordAsync while the first is still preparing,
+    // causing "AudioRecorder has already been prepared" on Android.
+    if (micOpeningRef.current) return;
+    micOpeningRef.current = true;
 
     // Reset VAD state for new segment.
     isUserSpeakingRef.current = false;
@@ -331,6 +339,7 @@ export function useVoiceCall(): {
 
     const ok = await recorder.ensurePermission();
     if (!ok) {
+      micOpeningRef.current = false;
       setError("Microphone permission denied");
       return;
     }
@@ -338,6 +347,10 @@ export function useVoiceCall(): {
       await recorder.start();
       vadActiveRef.current = true;
       setPhaseSync("listening");
+      // Release mutex once recorder is fully started — the recorder is now
+      // running and a subsequent openMic call (e.g. after the next submit)
+      // must be allowed through.
+      micOpeningRef.current = false;
 
       // Fallback: if metering-based VAD never fires (metering null on this
       // device), auto-submit after 3 s so the call doesn't hang forever.
@@ -352,6 +365,7 @@ export function useVoiceCall(): {
         }
       }, 3000);
     } catch (err) {
+      micOpeningRef.current = false;
       setError(err instanceof Error ? err.message : "Could not open mic");
     }
   }, [recorder, setPhaseSync, clearAutoSubmitTimer]);
