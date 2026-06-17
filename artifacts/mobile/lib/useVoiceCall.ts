@@ -26,9 +26,9 @@ import { getDeviceIdSync } from "./deviceId";
 
 // ── VAD config ────────────────────────────────────────────────────────────────
 
-const SILENCE_DB    = -45;    // dBFS below this is treated as silence
-const SILENCE_MS    = 1800;   // how long silence must last to trigger submit
-const MIN_SPEECH_MS = 400;    // ignore segments shorter than this
+const SILENCE_DB    = -30;    // dBFS below this is treated as silence
+const SILENCE_MS    = 1200;   // how long silence must last to trigger submit
+const MIN_SPEECH_MS = 200;    // ignore segments shorter than this
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -45,6 +45,8 @@ export type VoiceCallPhase =
 export interface VoiceCallActions {
   connect: () => void;
   disconnect: () => void;
+  /** Manually stop recording and submit the current segment. */
+  submitNow: () => void;
 }
 
 // ── Audio helpers ─────────────────────────────────────────────────────────────
@@ -89,6 +91,8 @@ export function useVoiceCall(): {
   userTranscript: string;
   ashleyResponse: string;
   error: string | null;
+  /** Live mic level in dBFS (~-160 silence … 0 peak). null when mic closed. */
+  metering: number | null;
 } & VoiceCallActions {
   const [phase, setPhase] = useState<VoiceCallPhase>("idle");
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -458,13 +462,25 @@ export function useVoiceCall(): {
     };
   }, [stopPlayback]);
 
+  const submitNow = useCallback((): void => {
+    if (
+      phaseRef.current === "listening" ||
+      phaseRef.current === "user_speaking"
+    ) {
+      vadActiveRef.current = false;
+      void submitSegmentRef.current();
+    }
+  }, []);
+
   return {
     phase,
     sessionId,
     userTranscript,
     ashleyResponse,
     error,
+    metering: recorder.metering,
     connect,
     disconnect,
+    submitNow,
   };
 }

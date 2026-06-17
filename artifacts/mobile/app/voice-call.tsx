@@ -1,11 +1,3 @@
-// ---------------------------------------------------------------------------
-// Voice Call Screen
-//
-// UX: tap "Call" → connects, mic opens automatically.
-// Talk freely. Silence auto-submits. Ashley replies. Mic reopens when she
-// finishes. Tap "End call" at any point to hang up.
-// ---------------------------------------------------------------------------
-
 import React, { useCallback, useEffect, useRef } from "react";
 import {
   Animated,
@@ -19,14 +11,14 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, Stack } from "expo-router";
 import { useVoiceCall, type VoiceCallPhase } from "@/lib/useVoiceCall";
 
-// ── Status label ─────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function phaseLabel(phase: VoiceCallPhase): string {
   switch (phase) {
     case "idle":          return "Ready";
     case "connecting":    return "Connecting...";
-    case "listening":     return "Listening";
-    case "user_speaking": return "You're speaking";
+    case "listening":     return "Listening — speak when ready";
+    case "user_speaking": return "Got you — keep going";
     case "submitting":    return "Sending...";
     case "thinking":      return "Thinking...";
     case "speaking":      return "Ashley speaking";
@@ -41,11 +33,11 @@ function phaseColor(phase: VoiceCallPhase): string {
     case "thinking":
     case "submitting":    return "#60a5fa";
     case "ended":         return "rgba(255,255,255,0.2)";
-    default:              return "rgba(255,255,255,0.55)";
+    default:              return "rgba(255,255,255,0.45)";
   }
 }
 
-// ── Animated pulse ────────────────────────────────────────────────────────────
+// ── Animated pulse dot ────────────────────────────────────────────────────────
 
 function PulseDot({ phase }: { phase: VoiceCallPhase }): React.JSX.Element {
   const anim = useRef(new Animated.Value(1)).current;
@@ -55,8 +47,8 @@ function PulseDot({ phase }: { phase: VoiceCallPhase }): React.JSX.Element {
     if (pulse) {
       const loop = Animated.loop(
         Animated.sequence([
-          Animated.timing(anim, { toValue: 0.25, duration: 500, useNativeDriver: true }),
-          Animated.timing(anim, { toValue: 1,    duration: 500, useNativeDriver: true }),
+          Animated.timing(anim, { toValue: 0.2, duration: 500, useNativeDriver: true }),
+          Animated.timing(anim, { toValue: 1,   duration: 500, useNativeDriver: true }),
         ]),
       );
       loop.start();
@@ -74,6 +66,39 @@ function PulseDot({ phase }: { phase: VoiceCallPhase }): React.JSX.Element {
   );
 }
 
+// ── Mic level bar ─────────────────────────────────────────────────────────────
+// Maps dBFS (-80…0) to a 0–1 fill. Null → empty bar (mic closed).
+
+function MicLevelBar({ metering }: { metering: number | null }): React.JSX.Element {
+  const fill = metering === null ? 0 : Math.max(0, Math.min(1, (metering + 80) / 80));
+  const anim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.timing(anim, {
+      toValue: fill,
+      duration: 80,
+      useNativeDriver: false,
+    }).start();
+  }, [fill, anim]);
+
+  return (
+    <View style={styles.levelTrack}>
+      <Animated.View
+        style={[
+          styles.levelFill,
+          {
+            width: anim.interpolate({
+              inputRange: [0, 1],
+              outputRange: ["0%", "100%"],
+            }),
+            backgroundColor: fill > 0.6 ? "#4ade80" : fill > 0.3 ? "#60a5fa" : "rgba(255,255,255,0.3)",
+          },
+        ]}
+      />
+    </View>
+  );
+}
+
 // ── Screen ────────────────────────────────────────────────────────────────────
 
 export default function VoiceCallScreen(): React.JSX.Element {
@@ -83,14 +108,20 @@ export default function VoiceCallScreen(): React.JSX.Element {
     userTranscript,
     ashleyResponse,
     error,
+    metering,
     connect,
     disconnect,
+    submitNow,
   } = useVoiceCall();
 
-  const connected =
-    phase !== "idle" && phase !== "connecting" && phase !== "ended";
+  const micOpen = phase === "listening" || phase === "user_speaking";
+  const connected = phase !== "idle" && phase !== "connecting" && phase !== "ended";
+  const isEnded = phase === "ended";
 
-  // Navigate back shortly after call ends.
+  useEffect(() => {
+    connect();
+  }, [connect]);
+
   useEffect(() => {
     if (phase === "ended") {
       const t = setTimeout(() => router.back(), 1800);
@@ -99,12 +130,7 @@ export default function VoiceCallScreen(): React.JSX.Element {
     return undefined;
   }, [phase]);
 
-  const onMainButton = useCallback(() => {
-    if (phase === "idle") { connect(); return; }
-    disconnect();
-  }, [phase, connect, disconnect]);
-
-  const isEnded = phase === "ended";
+  const onHangUp = useCallback(() => disconnect(), [disconnect]);
 
   return (
     <>
@@ -112,7 +138,7 @@ export default function VoiceCallScreen(): React.JSX.Element {
       <View
         style={[
           styles.root,
-          { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 40 },
+          { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 36 },
         ]}
       >
         {/* Header */}
@@ -126,11 +152,16 @@ export default function VoiceCallScreen(): React.JSX.Element {
           </Text>
         </View>
 
+        {/* Mic level bar — only shows when mic is open */}
+        <View style={styles.levelRow}>
+          {micOpen && <MicLevelBar metering={metering} />}
+          {micOpen && metering !== null && (
+            <Text style={styles.meteringLabel}>{Math.round(metering)} dB</Text>
+          )}
+        </View>
+
         {/* Transcript */}
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={styles.scrollContent}
-        >
+        <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
           {!!userTranscript && (
             <View style={styles.bubble}>
               <Text style={styles.bubbleLabel}>You</Text>
@@ -140,37 +171,39 @@ export default function VoiceCallScreen(): React.JSX.Element {
           {!!ashleyResponse && (
             <View style={[styles.bubble, styles.ashleyBubble]}>
               <Text style={styles.bubbleLabel}>Ashley</Text>
-              <Text style={[styles.bubbleText, styles.ashleyText]}>
-                {ashleyResponse}
-              </Text>
+              <Text style={[styles.bubbleText, styles.ashleyText]}>{ashleyResponse}</Text>
             </View>
           )}
-          {!!error && (
-            <Text style={styles.errorText}>{error}</Text>
-          )}
+          {!!error && <Text style={styles.errorText}>{error}</Text>}
         </ScrollView>
 
         {/* Controls */}
         <View style={styles.controls}>
-          {/* Large call / end call button */}
+          {/* Manual send — tap if VAD doesn't fire */}
+          {micOpen && (
+            <Pressable
+              onPress={submitNow}
+              style={({ pressed }) => [
+                styles.sendBtn,
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Text style={styles.sendBtnText}>Send ▶</Text>
+            </Pressable>
+          )}
+
+          {/* Hang up */}
           <Pressable
-            onPress={onMainButton}
+            onPress={onHangUp}
             disabled={isEnded || phase === "connecting"}
             style={[
-              styles.callBtn,
-              connected ? styles.callBtnActive : styles.callBtnIdle,
-              (isEnded || phase === "connecting") && styles.callBtnDisabled,
+              styles.hangUpBtn,
+              (isEnded || phase === "connecting") && styles.hangUpBtnDisabled,
             ]}
           >
-            <Text style={styles.callBtnIcon}>
-              {connected ? "✕" : "◎"}
-            </Text>
-            <Text style={styles.callBtnLabel}>
-              {phase === "connecting"
-                ? "Connecting..."
-                : connected
-                  ? "End call"
-                  : "Call Ashley"}
+            <Text style={styles.hangUpIcon}>✕</Text>
+            <Text style={styles.hangUpLabel}>
+              {phase === "connecting" ? "Connecting..." : connected ? "End call" : "Call Ashley"}
             </Text>
           </Pressable>
         </View>
@@ -187,20 +220,18 @@ const styles = StyleSheet.create({
     backgroundColor: "#0a0a0a",
     alignItems: "center",
   },
-
   name: {
     color: "#ffffff",
     fontSize: 28,
     fontFamily: "Inter_700Bold",
     letterSpacing: 0.5,
-    marginBottom: 12,
+    marginBottom: 10,
   },
-
   statusRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    marginBottom: 28,
+    marginBottom: 16,
   },
   dot: {
     width: 8,
@@ -208,10 +239,36 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   statusText: {
-    fontSize: 14,
+    fontSize: 13,
     fontFamily: "Inter_500Medium",
   },
-
+  levelRow: {
+    width: "100%",
+    paddingHorizontal: 32,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 20,
+    height: 20,
+  },
+  levelTrack: {
+    flex: 1,
+    height: 6,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderRadius: 3,
+    overflow: "hidden",
+  },
+  levelFill: {
+    height: "100%",
+    borderRadius: 3,
+  },
+  meteringLabel: {
+    color: "rgba(255,255,255,0.3)",
+    fontSize: 10,
+    fontFamily: "Inter_500Medium",
+    width: 48,
+    textAlign: "right",
+  },
   scroll: {
     flex: 1,
     width: "100%",
@@ -221,7 +278,6 @@ const styles = StyleSheet.create({
     gap: 14,
     paddingBottom: 16,
   },
-
   bubble: {
     backgroundColor: "rgba(255,255,255,0.05)",
     borderRadius: 14,
@@ -249,7 +305,6 @@ const styles = StyleSheet.create({
   ashleyText: {
     color: "rgba(255,255,255,0.9)",
   },
-
   errorText: {
     color: "#f87171",
     fontSize: 13,
@@ -257,41 +312,47 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginTop: 8,
   },
-
   controls: {
     width: "100%",
     alignItems: "center",
     paddingHorizontal: 24,
+    gap: 14,
     marginTop: 8,
   },
-
-  callBtn: {
-    width: 160,
-    height: 160,
-    borderRadius: 80,
+  sendBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 36,
+    backgroundColor: "rgba(96,165,250,0.12)",
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(96,165,250,0.4)",
+  },
+  sendBtnText: {
+    color: "#60a5fa",
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+  },
+  hangUpBtn: {
+    flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
     gap: 8,
-    borderWidth: 2,
-  },
-  callBtnIdle: {
-    backgroundColor: "rgba(74,222,128,0.12)",
-    borderColor: "#4ade80",
-  },
-  callBtnActive: {
+    paddingVertical: 14,
+    paddingHorizontal: 32,
     backgroundColor: "rgba(239,68,68,0.12)",
-    borderColor: "#ef4444",
+    borderRadius: 28,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(239,68,68,0.4)",
   },
-  callBtnDisabled: {
-    opacity: 0.35,
+  hangUpBtnDisabled: {
+    opacity: 0.3,
   },
-  callBtnIcon: {
-    color: "#ffffff",
-    fontSize: 36,
+  hangUpIcon: {
+    color: "#ef4444",
+    fontSize: 16,
   },
-  callBtnLabel: {
-    color: "rgba(255,255,255,0.75)",
-    fontSize: 13,
+  hangUpLabel: {
+    color: "#ef4444",
+    fontSize: 14,
     fontFamily: "Inter_500Medium",
   },
 });
