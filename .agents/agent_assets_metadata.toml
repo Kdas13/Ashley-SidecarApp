@@ -245,3 +245,9 @@ id = "_RvPZSNVLghvWsNEAAgXm"
 uri = "file://ashley-voice-call-phase2-brief.txt"
 type = "text"
 title = "Ashley Voice Call — Phase 2 Brief (consolidated)"
+
+[[outputs]]
+id = "9F5OtcW_LzkUnahN3PT4e"
+uri = "file://ashley-voice-call-phase2-brief-v4-final.txt"
+type = "text"
+title = "Ashley Voice Call — Phase 2 Brief v4.0 Final (Gemini consolidated)"
