@@ -125,6 +125,10 @@ export function useVoiceCall(): {
   const autoSubmitTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const connectRef          = useRef<() => void>(() => {});
+  // ttsCompleteRef: true when no TTS turn is in progress or tts_done received.
+  // Guards against reopening the mic between sentences (race between playNext
+  // draining the queue and the next sentence_end arriving).
+  const ttsCompleteRef      = useRef(true);
 
   // ── Audio playback queue ──────────────────────────────────────────────────
 
@@ -146,8 +150,10 @@ export function useVoiceCall(): {
   const playNext = useCallback(async (): Promise<void> => {
     const uri = playQueueRef.current.shift();
     if (!uri) {
-      // Queue drained — re-open mic if we are still connected.
-      if (phaseRef.current === "speaking") {
+      // Queue drained — re-open mic only when tts_done has also been received.
+      // Without this guard the mic opens between sentences while more TTS is
+      // still arriving, causing Ashley's own voice to be picked up and echoed.
+      if (phaseRef.current === "speaking" && ttsCompleteRef.current) {
         setPhaseSync("listening");
         void openMicRef.current();
       }
@@ -381,6 +387,7 @@ export function useVoiceCall(): {
 
         case "speech_start":
           chunkBufRef.current = [];
+          ttsCompleteRef.current = false; // more sentences may follow — hold the mic
           // Mic is already closed during thinking/submitting phase.
           break;
 
@@ -392,11 +399,24 @@ export function useVoiceCall(): {
           await flushChunkBuffer();
           const text = (msg["responseText"] as string | undefined) ?? "";
           if (text) setAshleyResponse(text);
-          // If nothing is queued and nothing playing, reopen mic immediately.
-          if (playQueueRef.current.length === 0 && !playerRef.current) {
-            setPhaseSync("listening");
-            void openMicRef.current();
-          }
+          ttsCompleteRef.current = true;
+          // Let playNext handle the mic reopen when the queue drains.
+          // Use a short defer here to handle the edge case where the buffer
+          // was empty (nothing to play): playNext may have already shifted
+          // the last item and is creating the player asynchronously, so
+          // checking the queue immediately would give a false "empty" result
+          // and reopen the mic while audio is still being prepared.
+          setTimeout(() => {
+            if (
+              playQueueRef.current.length === 0 &&
+              !playerRef.current &&
+              phaseRef.current !== "listening" &&
+              phaseRef.current !== "ended"
+            ) {
+              setPhaseSync("listening");
+              void openMicRef.current();
+            }
+          }, 200);
           break;
         }
 
