@@ -32,7 +32,7 @@ import { logger } from "./logger.js";
 
 const VOICE_MAX_TOKENS                = 1_024;
 const FIRST_TOKEN_WATCHDOG_MS         = 8_000;
-const MAX_TURN_BUDGET_MS              = 20_000;
+const MAX_TURN_BUDGET_MS              = 45_000;
 const ROLLING_AUDIO_BUFFER_MAX_BYTES  = 960_000;
 const CONCURRENT_TTS_POOL_LIMIT       = 2;
 const TTS_POOL_RETRY_MS               = 50;
@@ -444,10 +444,11 @@ async function runLLMAndTTSPipeline(
 
   try {
     const stream = streamChatText({
-      system:    ctx.systemPrompt,
-      messages:  ctx.messages,
-      maxTokens: VOICE_MAX_TOKENS,
-      signal:    controller.signal,
+      system:        ctx.systemPrompt,
+      messages:      ctx.messages,
+      maxTokens:     VOICE_MAX_TOKENS,
+      forceProvider: "gemini",
+      signal:        controller.signal,
     });
 
     for await (const chunk of stream) {

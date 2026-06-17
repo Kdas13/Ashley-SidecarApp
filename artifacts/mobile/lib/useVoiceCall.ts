@@ -123,6 +123,8 @@ export function useVoiceCall(): {
   const speechStartAtRef    = useRef(0);
   const vadActiveRef        = useRef(false); // true only while mic should be running
   const autoSubmitTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const connectRef          = useRef<() => void>(() => {});
 
   // ── Audio playback queue ──────────────────────────────────────────────────
 
@@ -372,6 +374,7 @@ export function useVoiceCall(): {
       switch (msg["type"] as string) {
         case "call_connected":
           setSessionId((msg["sessionId"] as string) ?? null);
+          reconnectAttemptsRef.current = 0; // successful connection — reset counter
           // Open the mic immediately — the call has started.
           await openMicRef.current();
           break;
@@ -446,17 +449,38 @@ export function useVoiceCall(): {
 
     ws.onmessage = (e: MessageEvent) => { void handleMessage(e); };
     ws.onerror = () => {
-      setError("Connection error — check network and API key");
-      setPhaseSync("ended");
+      // onclose always fires after onerror — let it handle state.
+      // Just surface a transient message in case reconnect doesn't succeed.
+      setError("Connection dropped — reconnecting...");
     };
     ws.onclose = () => {
       wsRef.current = null;
       vadActiveRef.current = false;
+      clearAutoSubmitTimer();
       stopPlayback();
       chunkBufRef.current = [];
-      if (phaseRef.current !== "ended") setPhaseSync("ended");
+
+      // If the user tapped End Call, phase is already "ended" — stop here.
+      if (phaseRef.current === "ended") return;
+
+      // Abnormal close (Replit proxy timeout, network blip) — try once to
+      // reconnect transparently. The server holds the session for 90s.
+      if (reconnectAttemptsRef.current < 1) {
+        reconnectAttemptsRef.current++;
+        setError(null);
+        setPhaseSync("connecting");
+        setTimeout(() => { connectRef.current(); }, 1500);
+      } else {
+        // Second drop in a row — give up and show the ended screen.
+        reconnectAttemptsRef.current = 0;
+        setPhaseSync("ended");
+      }
     };
-  }, [handleMessage, stopPlayback, setPhaseSync]);
+  }, [handleMessage, stopPlayback, setPhaseSync, clearAutoSubmitTimer]);
+
+  // Keep connectRef current so the onclose reconnect timer always calls the
+  // latest version of connect (avoids stale-closure bugs).
+  useEffect(() => { connectRef.current = connect; }, [connect]);
 
   // ── Disconnect ────────────────────────────────────────────────────────────
 
