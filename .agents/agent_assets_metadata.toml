@@ -239,3 +239,9 @@ id = "FVgbnbpCB2VNmyXaIGe-R"
 uri = "file://ashley-voice-call-phase1.txt"
 type = "text"
 title = "Ashley Voice Call — Phase 1 complete (1A–1I)"
+
+[[outputs]]
+id = "_RvPZSNVLghvWsNEAAgXm"
+uri = "file://ashley-voice-call-phase2-brief.txt"
+type = "text"
+title = "Ashley Voice Call — Phase 2 Brief (consolidated)"

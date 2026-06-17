@@ -1,0 +1,336 @@
+================================================================================
+ASHLEY PROJECT — WREN IMPLEMENTATION BRIEF
+Voice Call — Phase 2 Complete Hardening
+Version 2.0 (Consolidated)  |  June 2026
+Prerequisite: Phase 1 Live on Device
+================================================================================
+
+Dual Reviewer Verdicts
+──────────────────────
+ATLAS — PASS  |  Phase 2 Backlog Quality: 8.8 / 10
+CODA  — PASS WITH ONE ADDITIONAL P1 ITEM  |  Backlog Quality: 9.0 / 10
+
+Phase 1 is approved and live. This brief is the complete, consolidated
+implementation specification for Phase 2. Nothing here was optional — all P1
+items must be completed before ATDE tool calls are connected to the voice
+pipeline.
+
+Prerequisites
+─────────────
+- Phase 1 confirmed live on device (Build 30+)
+- ATDE brief handed to Coda separately — Phase 2 and ATDE must not be merged
+  into one build
+- Commitment 1 Standard in force: three options before any code, written
+  approval before implementation, one job per message
+
+================================================================================
+PHASE 2 ITEM REGISTER
+================================================================================
+
+#      Item                          Reviewer(s)     Priority   Status
+──────────────────────────────────────────────────────────────────────────────
+P1-1   Persistent active-call state  Atlas + Coda    BLOCKER    Not started
+P1-2   End-of-call summarisation     Atlas + Coda    BLOCKER    Not started
+P1-3   Windowed reconnect counter    Atlas + Coda    BLOCKER    Not started
+P1-4   Voice orchestration layer     Atlas + Coda    BLOCKER    Not started
+P1-5   Orchestration recovery        Coda            BLOCKER    Not started
+P2-1   Bounded idempotency sets      Coda + Atlas    Hardening  Not started
+P2-2   Session log caps + categories Atlas           Hardening  Not started
+P3-1   Adaptive voice quality        Atlas           Future     PARKED
+P3-2   Multi-device ownership policy Atlas           Future     PARKED
+
+================================================================================
+P1-1 — PERSISTENT ACTIVE-CALL STATE
+================================================================================
+
+Problem
+───────
+VoiceSession lives entirely in memory. A server restart mid-call loses all
+session state — the call cannot be recovered and the session is gone.
+
+Required Implementation
+───────────────────────
+- Persist to DB at session creation:
+    sessionId, deviceId, connectionGeneration, state, callStartTime
+- Persist on state transition:
+    state, currentTurnId, currentResponseId
+- On server boot: query DB for sessions with state = 'recovering', reload
+  into VoiceSessionRegistry
+- Do NOT persist: audio buffers, full log arrays — these remain in memory only
+
+Recovery Ownership Rules (Atlas addition)
+─────────────────────────────────────────
+- Maximum recovery window: 60 seconds from disconnect before forced DB closure
+- Simultaneous reclaim: if two devices attempt recovery on the same sessionId,
+  the first to arrive wins; second receives a 409 Conflict and must start a
+  fresh session
+- Stale generation guard: after a restart, reclaimed sessions must validate
+  connectionGeneration against the DB value before accepting new messages
+- Recovery audit: every reclaim attempt (success or failure) must be written
+  to the session log with device ID, timestamp, and outcome
+
+================================================================================
+P1-2 — END-OF-CALL SUMMARISATION
+================================================================================
+
+Problem
+───────
+Call history accumulates as individual turn rows. Long calls produce large
+context payloads on every turn reload. After call end there is no compressed
+record.
+
+Required Implementation
+───────────────────────
+- Trigger: when finalise() transitions session to 'closed' or 'failed'
+- Compress last N turns into a structured summary with:
+    topic, key decisions, tone, open items
+- Write summary to Ashley's memory store with tag: call_summary
+- Raw turn rows may be archived or pruned after successful summarisation
+
+Atlas Additions
+───────────────
+- Summary versioning: each summary gets a version number; regeneration
+  increments the version rather than overwriting
+- Critical decisions stored separately: any turn containing a confirmed action
+  (calendar entry, reminder set, etc.) is extracted into a decisions log
+  distinct from the conversational summary
+- Confidence score on generated summaries: Ashley rates her own summary quality
+  0–100; low-confidence summaries are flagged for Kane review
+- Regeneration support: the summarisation pipeline must be re-runnable against
+  the raw turn archive if summariser quality improves later
+
+Active Context Budgeting (Atlas additional risk)
+────────────────────────────────────────────────
+End-of-call summarisation helps after calls. Active long calls still need
+context budgeting mid-call. Implement a token counter per turn; if context
+approaches the LLM window limit, summarise the oldest N turns in-flight and
+replace them with a mid-call checkpoint summary.
+
+================================================================================
+P1-3 — WINDOWED RECONNECT COUNTER
+================================================================================
+
+Problem
+───────
+reconnectAttempts is a lifetime counter. Sessions exceeding 15 reconnects are
+terminated. Mobile users in poor signal areas can exhaust this limit
+legitimately and be permanently kicked.
+
+Required Implementation
+───────────────────────
+- Replace lifetime counter with a rolling time window
+- Track last 20 reconnect timestamps in a ring buffer on the session
+- Limit: no more than 10 reconnects within any rolling 10-minute window
+- Lifetime total retained for diagnostics only — must not gate termination
+
+Atlas Additions
+───────────────
+- Track reconnect cause where detectable:
+    clean close vs network drop vs timeout
+- Different thresholds by connection type:
+    Wi-Fi (stricter) vs mobile (more lenient)
+- Grace mode: if reconnect frequency spikes and recent cause is network drop
+  (not clean close), enter a grace period of +5 additional reconnects before
+  termination
+
+================================================================================
+P1-4 — VOICE ORCHESTRATION LAYER
+================================================================================
+
+Problem
+───────
+The current handleVoiceTurn function owns the full pipeline. Once ATDE tool
+calls are inserted, this becomes unmanageable. Each stage needs to be
+independently testable, cancellable, and recoverable.
+
+Required Pipeline Architecture
+───────────────────────────────
+Stage   Name                  Responsibility
+──────────────────────────────────────────────────────────────────────────────
+1       Speech Input          Raw audio received from client microphone
+2       Session Validation    Validate generation + state before processing
+3       Context Assembly      Load memory, history, user profile
+4       Tool Decision Layer   ATDE confidence scoring — ANSWER / ASK / ACT
+5       Tool Execution Layer  Invoke tools with timeout + idempotency guard
+6       Response Generation   LLM call with assembled context + tool results
+7       TTS Generation        ElevenLabs streaming synthesis
+8       Audio Delivery        Binary frame ownership protocol to client
+
+Design Rules
+────────────
+- Each stage is a discrete, independently testable function or class
+- AbortController threads through all stages — any stage can abort the full turn
+- Each stage has a defined timeout before falling back or erroring
+- Stage results are passed forward explicitly — no shared mutable state between
+  stages
+- Stage entry and exit are logged to the orchestration log category
+
+Additional Risks Identified by Atlas
+──────────────────────────────────────
+Tool Execution Deadlock
+  A slow tool must never stall the voice pipeline indefinitely. Every tool call
+  in Stage 5 must have an explicit timeout. On timeout: log TOOL_TIMEOUT, skip
+  the tool result, continue to Response Generation with a note that the tool
+  result was unavailable.
+
+Tool Result Freshness
+  Cached tool results must carry a timestamp. Before injecting a cached result
+  into context, validate its age against a per-tool freshness threshold. Stale
+  results must be either refreshed or discarded, never silently used.
+
+================================================================================
+P1-5 — ORCHESTRATION RECOVERY CONTRACT
+================================================================================
+
+Problem (Coda finding — not in original backlog)
+─────────────────────────────────────────────────
+ATDE integration introduces a new failure mode: a reconnect may arrive while
+Ashley is mid-tool-execution. Without a defined contract, it is ambiguous
+whether the in-flight tool action should replay, resume, or be abandoned.
+Duplicate tool execution (e.g. writing a calendar entry twice) is a concrete
+risk.
+
+Required Contract — Define Before ATDE Connects to Voice
+──────────────────────────────────────────────────────────
+Replay Rules
+  - Tool calls that are idempotent (read-only: search, calendar read, memory
+    read) MAY be replayed after reconnect
+  - Tool calls that are non-idempotent (write: calendar create, memory write,
+    reminder set) must NOT be replayed
+
+Resume Rules
+  - If a tool call was in-flight at disconnect: check completedTurnIds — if
+    the turnId is present, the turn completed; do not re-execute
+  - If the turnId is absent and the tool call was non-idempotent: abandon the
+    tool call, complete the turn without the tool result, log TOOL_SKIPPED
+    with reason: reconnect_during_execution
+
+Cancellation Rules
+  - On reconnect, if session.currentAbortController is non-null, call abort()
+    before reclaiming the session
+  - The new connection starts a clean turn — no carry-over of in-flight LLM or
+    TTS state
+
+Tool Idempotency Guarantees
+  - Every tool call must be assigned a toolCallId before execution
+  - toolCallId stored on the session alongside currentTurnId
+  - On resume check: if toolCallId is found in a completed record, return the
+    stored result rather than re-executing
+
+Recovery Ownership
+  - The orchestration layer owns recovery decisions — not the WS connection
+    handler
+  - VoiceSessionRegistry exposes the reconnect event; VoiceOrchestrator decides
+    what to do with the interrupted pipeline
+
+================================================================================
+P2-1 — BOUNDED IDEMPOTENCY SETS
+================================================================================
+
+Problem
+───────
+processedUtteranceIds and completedTurnIds grow without bound. On a 2-hour
+call this is a memory leak.
+
+Required Implementation
+───────────────────────
+- Cap both sets at a rolling 500 entries
+- On overflow: evict oldest entry before inserting newest
+- Implementation: replace Set<string> with a small LRU wrapper
+
+================================================================================
+P2-2 — SESSION LOG CAPS + STRUCTURED CATEGORIES
+================================================================================
+
+Problem
+───────
+The in-memory log array appends indefinitely and has no structure.
+
+Log Cap
+───────
+- Cap per-session log at 1,000 entries
+- On overflow: flush oldest 200 entries to DB, continue in memory
+- Provides partial audit trail if process crashes
+
+Structured Log Categories
+──────────────────────────
+Category        Events
+──────────────────────────────────────────────────────────────────────────────
+lifecycle       CALL_CREATED, CALL_RECOVERING, CALL_RECONNECTED, CALL_ENDED
+speech          TRANSCRIPT_FINAL, SILENCE_WARNING, SILENCE_FAREWELL
+orchestration   TURN_STARTED, CONTEXT_LOADED, LLM_STARTED, LLM_FINISHED,
+                TTS_STARTED, TTS_FINISHED
+tools           TOOL_DECISION, TOOL_CALLED, TOOL_RESULT, TOOL_TIMEOUT,
+                TOOL_SKIPPED
+recovery        RECONNECT_ATTEMPT, RECONNECT_SUCCESS, RECONNECT_FAILED,
+                SESSION_RESTORED
+errors          CONTEXT_FAILURE, LLM_ERROR, TTS_ERROR, TOOL_ERROR,
+                PIPELINE_ABORT
+
+================================================================================
+P3 — PARKED ITEMS (NO ACTION THIS PHASE)
+================================================================================
+
+P3-1 — Adaptive Voice Quality
+  Future: Ashley reacts to observable signal quality — reconnect frequency,
+  Deepgram queue saturation, TTS latency. Parked until multi-device
+  architecture is defined.
+
+P3-2 — Multi-Device Ownership Policy
+  Kane's long-term setup includes Phone, Android Auto, and Home Node. Ownership
+  arbitration rules will become critical. Atlas recommends this becomes a
+  dedicated subsystem rather than a patch on the session registry. Parked — no
+  action this phase, but design must not be ignored when Android Auto work
+  begins.
+
+================================================================================
+STANDING RULES — COMMITMENT 1 STANDARD
+================================================================================
+
+- Three options before any code
+- Written approval before implementation
+- One job per message
+- Atlas and Coda review required before any implementation proceeds
+- Explicit GitHub push before any EAS build trigger
+
+================================================================================
+PROPOSED EXECUTION ORDERS (Agent — awaiting approval)
+================================================================================
+
+Option A — Blockers first, hardening at end  [RECOMMENDED]
+───────────────────────────────────────────────────────────
+P1-3 → P1-1 → P1-2 → P1-4 → P1-5 → P2-1 → P2-2
+
+Rationale: P1-3 (windowed counter) is small and low-risk — good warm-up. P1-1
+(DB persistence) lands before P1-2 (summarisation) so summarisation is written
+against the stable session record. P1-4 (orchestration refactor) comes last
+among blockers, deliberately — it is the largest structural change and benefits
+from the earlier items already committed. P2-1 and P2-2 close as polish.
+
+Risk: orchestration refactor done with the most accumulated context pressure.
+
+Option B — Orchestration as foundation first
+─────────────────────────────────────────────
+P1-4 → P1-5 → P1-3 → P1-1 → P1-2 → P2-1 → P2-2
+
+Rationale: P1-4 is the most structural change — breaking handleVoiceTurn into
+eight stages. Doing it first means P1-1 and P1-2 are written against the new
+orchestration shape from the start. P1-5 (recovery contract) immediately follows
+P1-4 while pipeline design is the active thought.
+
+Risk: no DB persistence during orchestration work period. If P1-4 takes longer
+than expected, P1-1/P1-2 are delayed.
+
+Option C — Quick wins first, then structural
+─────────────────────────────────────────────
+P1-3 → P2-1 → P2-2 → P1-1 → P1-2 → P1-4 → P1-5
+
+Rationale: knock out the three easiest items before touching anything
+structural. Early momentum, cleaner codebase before the big refactor.
+
+Risk: hardening items P2-1/P2-2 done out of stated priority order. Longest
+gap before ATDE can connect.
+
+================================================================================
+Atlas: PASS 8.8/10  |  Coda: PASS 9.0/10  |  Version 2.0  |  June 2026
+================================================================================
