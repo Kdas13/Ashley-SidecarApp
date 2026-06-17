@@ -332,7 +332,7 @@ export function useVoiceCall(): {
       setPhaseSync("listening");
 
       // Fallback: if metering-based VAD never fires (metering null on this
-      // device), auto-submit after 6 s so the call doesn't hang forever.
+      // device), auto-submit after 3 s so the call doesn't hang forever.
       autoSubmitTimerRef.current = setTimeout(() => {
         autoSubmitTimerRef.current = null;
         if (
@@ -342,7 +342,7 @@ export function useVoiceCall(): {
           vadActiveRef.current = false;
           void submitSegmentRef.current();
         }
-      }, 6000);
+      }, 3000);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not open mic");
     }

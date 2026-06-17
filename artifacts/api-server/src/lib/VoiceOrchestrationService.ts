@@ -409,6 +409,27 @@ async function runLLMAndTTSPipeline(
       logger.warn({ sessionId: session.sessionId, turnId }, "VoiceOrch: hard budget exceeded — aborting");
       registry.cancelCurrentTurn(session, "hard_budget_exceeded");
       session.llmStreamActive = false;
+
+      // Notify the client immediately so it re-enters listening state rather
+      // than hanging indefinitely while the LLM stream drains its abort.
+      if (session.currentSpeechId === speechId) {
+        const seqBudget = registry.incrementSequence(session);
+        try {
+          session.ws?.send(
+            JSON.stringify({
+              type:                "tts_done",
+              speechId,
+              responseText:         session.currentResponseText ?? "",
+              sessionId:            session.sessionId,
+              connectionGeneration: session.connectionGeneration,
+              sequenceNumber:       seqBudget,
+              timestamp:            Date.now(),
+              reason:               "budget_exceeded",
+            }),
+          );
+        } catch {}
+        session.currentSpeechId = null;
+      }
     }
   }, MAX_TURN_BUDGET_MS);
 
@@ -423,11 +444,10 @@ async function runLLMAndTTSPipeline(
 
   try {
     const stream = streamChatText({
-      system:        ctx.systemPrompt,
-      messages:      ctx.messages,
-      maxTokens:     VOICE_MAX_TOKENS,
-      forceProvider: "anthropic",
-      signal:        controller.signal,
+      system:    ctx.systemPrompt,
+      messages:  ctx.messages,
+      maxTokens: VOICE_MAX_TOKENS,
+      signal:    controller.signal,
     });
 
     for await (const chunk of stream) {
@@ -465,7 +485,11 @@ async function runLLMAndTTSPipeline(
       await flushSentenceToTTS(session, speechId, stripMarkdown(trail));
     }
   } catch (err: unknown) {
-    const isAbort = err instanceof Error && err.name === "AbortError";
+    // Treat both the Web standard AbortError and the Anthropic SDK's
+    // APIUserAbortError as expected cancellations (budget exceeded, interrupt).
+    const isAbort =
+      err instanceof Error &&
+      (err.name === "AbortError" || err.name === "APIUserAbortError");
     if (!isAbort) {
       logger.error({ err, sessionId: session.sessionId, turnId }, "VoiceOrch: LLM stream error");
       await speakClipOrText(
