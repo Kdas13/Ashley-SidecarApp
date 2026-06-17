@@ -14,6 +14,11 @@ export type GenerateOpts = {
    * where Gemini's tendency to drop structured markers is not acceptable.
    */
   forceProvider?: ChatProvider;
+  /**
+   * Override the Gemini model for this call. Defaults to GEMINI_CHAT_MODEL.
+   * Use a lighter model (e.g. gemini-2.0-flash) for high-RPM paths like voice.
+   */
+  geminiModel?: string;
 };
 
 export type StreamOpts = GenerateOpts & {
@@ -105,7 +110,7 @@ export async function* streamChatText(
       let hasYielded = false;
       try {
         const stream = await getGemini().models.generateContentStream({
-          model: GEMINI_CHAT_MODEL,
+          model: opts.geminiModel ?? GEMINI_CHAT_MODEL,
           contents: toGeminiContents(opts.messages),
           config: {
             maxOutputTokens: opts.maxTokens,
@@ -135,14 +140,25 @@ export async function* streamChatText(
         if (isRateLimit(err) && !hasYielded && attempt < RETRY_DELAYS_MS.length) {
           lastErr = err;
           logger.warn(
-            { attempt: attempt + 1, delayMs: RETRY_DELAYS_MS[attempt] },
+            { attempt: attempt + 1, delayMs: RETRY_DELAYS_MS[attempt], model: opts.geminiModel ?? GEMINI_CHAT_MODEL },
             "Gemini rate limit on streamChatText — retrying",
           );
           continue;
         }
-        // If Gemini is rate-limited and we have exhausted retries, fall back
-        // to Anthropic so the user gets a response rather than PROVIDER_ERROR.
+        // If Gemini is rate-limited and we have exhausted retries:
+        // - When the caller force-pinned Gemini, throw rather than falling back.
+        //   The Anthropic integration throttles even harder on turn 2+, making
+        //   the hang longer, not shorter. The caller (voice orchestration) will
+        //   play a graceful error clip and re-enter listening state.
+        // - Otherwise fall back to Anthropic so the user gets a response.
         if (isRateLimit(err) && !hasYielded) {
+          if (opts.forceProvider === "gemini") {
+            logger.warn(
+              { attempt, model: opts.geminiModel ?? GEMINI_CHAT_MODEL },
+              "Gemini rate limit exhausted on streamChatText (forceProvider=gemini) — throwing, no Anthropic fallback",
+            );
+            throw err;
+          }
           logger.warn(
             { attempt },
             "Gemini rate limit exhausted on streamChatText — falling back to Anthropic",

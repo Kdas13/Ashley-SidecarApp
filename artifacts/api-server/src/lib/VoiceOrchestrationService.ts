@@ -448,6 +448,7 @@ async function runLLMAndTTSPipeline(
       messages:      ctx.messages,
       maxTokens:     VOICE_MAX_TOKENS,
       forceProvider: "gemini",
+      geminiModel:   "gemini-2.0-flash",
       signal:        controller.signal,
     });
 
