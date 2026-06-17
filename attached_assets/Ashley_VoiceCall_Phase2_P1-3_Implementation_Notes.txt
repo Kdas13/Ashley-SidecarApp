@@ -1,0 +1,107 @@
+Ashley-Sidecar — Voice Call Protocol Phase 2
+P1-3: Windowed Reconnect Counter — Implementation Notes
+========================================================
+
+Date: 17 June 2026
+Status: Complete, typecheck clean, smoke-tested
+
+
+WHAT CHANGED
+------------
+
+Two files modified: artifacts/api-server/src/lib/VoiceSessionRegistry.ts
+                   artifacts/api-server/src/index.ts
+
+
+VoiceSessionRegistry.ts
+-----------------------
+
+1. VoiceSession interface — three field changes:
+
+   - reconnectTimestamps: Date[]
+     Ring buffer of reconnect timestamps, capped at 20 entries.
+     Used by the windowed rate limiter. Initialised to [] on create().
+
+   - reconnectAttempts: number
+     DIAGNOSTIC ONLY. Still increments on every reclaimSession() call.
+     Must NOT gate termination decisions. Preserved for logging.
+
+   - lastReconnectCause: "clean_close" | "network_drop" | "timeout" | null
+     Set in index.ts ws.on('close') from the WS close code before
+     markRecovering() is called. Used by isReconnectRateLimited() to
+     determine the grace multiplier.
+
+2. create() — initialises reconnectTimestamps: [], reconnectAttempts: 0,
+   lastReconnectCause: null.
+
+3. reclaimSession() — on every successful reclaim:
+   - Pushes new Date() into reconnectTimestamps.
+   - Shifts the oldest entry if length exceeds 20 (ring buffer cap).
+   - Increments reconnectAttempts (diagnostic counter).
+   - Includes lastReconnectCause in the CALL_RECONNECTED log entry.
+
+4. isReconnectRateLimited(session: VoiceSession): boolean — new export.
+   Logic:
+   - Window = 10 minutes (600 000 ms).
+   - Count timestamps in ring buffer that fall within the window.
+   - If lastReconnectCause === 'network_drop': limit = 15 (grace mode).
+   - Otherwise: limit = 10.
+   - Returns true if recentCount >= limit.
+
+   Grace rationale: a code 1006 close means the network dropped without
+   a close frame — the client is not misbehaving. Raising the limit to 15
+   avoids ending a call during intermittent mobile connectivity loss.
+
+5. registry namespace object — isReconnectRateLimited added.
+
+
+index.ts
+--------
+
+1. ws.on('close') handler — sets lastReconnectCause on closingSession
+   from the WS close code BEFORE calling registry.markRecovering():
+
+   code 1000 or 1001  →  "clean_close"
+   code 1006          →  "network_drop"
+   anything else      →  "timeout"
+
+2. Connection reclaim block — replaces old lifetime guard:
+
+   OLD: if (session.reconnectAttempts > 15) { ... reason: "too_many_reconnects" }
+   NEW: if (registry.isReconnectRateLimited(session)) { ... reason: "reconnect_rate_limit_exceeded" }
+
+   The new block logs reconnectAttempts and lastReconnectCause for
+   diagnostics, sends call_ended { reason: "reconnect_rate_limit_exceeded" }
+   to the client, calls registry.finalise(), and closes with code 1008.
+
+
+ACCEPTANCE CRITERIA — ALL PASSED
+---------------------------------
+
+  [x] reconnectTimestamps field on VoiceSession interface
+  [x] lastReconnectCause field on VoiceSession interface
+  [x] create() initialises both new fields
+  [x] reclaimSession() ring buffer push, 20-entry cap, diagnostic counter still increments
+  [x] isReconnectRateLimited() exported from VoiceSessionRegistry.ts
+  [x] index.ts uses isReconnectRateLimited() — old > 15 guard removed
+  [x] ws.on('close') sets lastReconnectCause before markRecovering()
+  [x] call_ended and ws.close() reason updated to "reconnect_rate_limit_exceeded"
+  [x] reconnectAttempts still increments and appears in logs
+  [x] tsc --noEmit passes with no new errors
+  [x] Smoke test: connect → call_connected → clean close (code 1000)
+
+
+WHAT WAS NOT CHANGED
+--------------------
+
+  voice-call.ts        — untouched
+  deepgramStream.ts    — untouched
+  elevenlabsStream.ts  — untouched
+
+
+NEXT ITEM
+---------
+
+P1-1: DB persistence (in-memory + async write queue via PersistentSessionStateGuard,
+       Option 1 as approved).
+       Migration SQL to be written manually (drizzle-kit generate broken in this repo).

@@ -251,3 +251,9 @@ id = "9F5OtcW_LzkUnahN3PT4e"
 uri = "file://ashley-voice-call-phase2-brief-v4-final.txt"
 type = "text"
 title = "Ashley Voice Call — Phase 2 Brief v4.0 Final (Gemini consolidated)"
+
+[[outputs]]
+id = "9DVDJt6VRsEJ627FTnkvE"
+uri = "file://attached_assets/Ashley_VoiceCall_Phase2_P1-3_Implementation_Notes.txt"
+type = "text"
+title = "P1-3 Windowed Reconnect Counter — Implementation Notes"
