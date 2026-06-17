@@ -142,7 +142,7 @@ export function useVoiceCall(): {
       // Queue drained — re-open mic if we are still connected.
       if (phaseRef.current === "speaking") {
         setPhaseSync("listening");
-        void openMic();
+        void openMicRef.current();
       }
       return;
     }
