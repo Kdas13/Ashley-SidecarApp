@@ -1406,6 +1406,21 @@ export default function ChatScreen(): React.JSX.Element {
               )}
             </Pressable>
           </View>
+          <Pressable
+            onPress={() => router.push("/voice-call" as never)}
+            style={({ pressed }) => [
+              styles.attachBtn,
+              pressed && { transform: [{ scale: 0.95 }] },
+            ]}
+            accessibilityLabel="Call Ashley"
+            hitSlop={6}
+          >
+            <Feather
+              name="phone"
+              size={20}
+              color={colors.light.mutedForeground}
+            />
+          </Pressable>
           {activeStream != null ||
           presence.state === "thinking" ||
           presence.state === "speaking" ? (
