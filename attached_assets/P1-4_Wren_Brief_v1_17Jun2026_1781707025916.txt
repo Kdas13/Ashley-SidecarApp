@@ -1,0 +1,503 @@
+================================================================================
+ASHLEY PROJECT — WREN BUILD BRIEF
+Task: P1-4 — Voice Orchestration Layer
+Version: 1
+Date: 17 June 2026
+Status: DRAFT — for Nova review → Perplexity air gap → Wren
+Pipeline: Claude (architecture) → Nova (review) → Perplexity (air gap) → Wren
+================================================================================
+
+CONTEXT
+-------
+Ashley is a personal AI companion. The voice call feature allows Kane to have
+a continuous, hands-free, natural conversation with Ashley — primarily while
+driving. It should feel like a phone call with someone who knows him, not a
+voice assistant. Ashley has full access to her complete memory store across
+every interaction mode (text, voice, orchestration). She is the same instance
+in every context.
+
+Phase 1 (complete) established the five-file architecture:
+  lib/VoiceSessionRegistry.ts      — session state authority
+  lib/deepgramStream.ts            — STT adapter
+  lib/elevenlabsStream.ts          — TTS adapter
+  routes/voice-call.ts             — turn pipeline
+  index.ts                         — WebSocket upgrade + connection handler
+
+Phase 2 items P1-3 and P1-1 are complete (reconnect counter, persistent
+session state). P1-2 is complete (end-of-call summarisation). P1-4 is the
+voice orchestration layer — the largest change in Phase 2.
+
+================================================================================
+WHAT P1-4 BUILDS
+================================================================================
+
+P1-4 builds the VoiceOrchestrationService — an 8-stage pipeline that sits
+between the raw audio streams and the Claude LLM. It manages the full
+lifecycle of a voice turn: from detecting that Kane has finished speaking,
+through transcription, intent analysis, context assembly, LLM generation,
+streaming TTS response, and handling interruptions and errors.
+
+P1-4 does NOT touch:
+  - Memory architecture (already solved upstream)
+  - Identity continuity (already solved upstream)
+  - Call summarisation (P1-2, complete)
+  - Reconnect logic (P1-3, complete)
+  - Persistent session state (P1-1, complete)
+
+================================================================================
+PIPELINE ARCHITECTURE — 8 STAGES
+================================================================================
+
+STAGE 1: AUDIO CAPTURE AND STREAM MANAGEMENT
+STAGE 2: TURN BOUNDARY DETECTION
+STAGE 3: TRANSCRIPTION AND UTTERANCE ASSEMBLY
+STAGE 4: INTENT CLASSIFICATION
+STAGE 5: CONTEXT ASSEMBLY
+STAGE 6: LLM GENERATION WITH STREAMING
+STAGE 7: TTS STREAMING AND PLAYBACK
+STAGE 8: INTERRUPTION HANDLING AND RECOVERY
+
+Each stage is described in full below.
+
+================================================================================
+STAGE 1 — AUDIO CAPTURE AND STREAM MANAGEMENT
+================================================================================
+
+RESPONSIBILITY:
+Maintain a single persistent WebSocket connection per call session for the
+duration of the call. Audio streams in from the client (Kane's mic) and out
+to the client (Ashley's voice). Deepgram and ElevenLabs both operate over
+this connection.
+
+BEHAVIOUR:
+- One WebSocket per call session. Open on call start. Close on call end.
+- The connection must stay open regardless of silence or inactivity.
+- Audio chunks from the client mic are passed directly to Deepgram STT stream.
+- TTS audio chunks from ElevenLabs are passed directly back to the client.
+- No per-turn open/close of the WebSocket.
+
+STATE TRACKED (on VoiceSession):
+  streamActive: boolean          — is audio currently flowing from client?
+  deepgramConnected: boolean     — is Deepgram stream healthy?
+  elevenLabsConnected: boolean   — is ElevenLabs stream healthy?
+
+ERROR HANDLING:
+- If Deepgram stream drops: attempt reconnect (see Stage 8).
+- If ElevenLabs stream drops: attempt reconnect (see Stage 8).
+- Never close the main WebSocket due to a vendor stream failure.
+- Log all stream state changes with sessionId and timestamp.
+
+================================================================================
+STAGE 2 — TURN BOUNDARY DETECTION
+================================================================================
+
+RESPONSIBILITY:
+Detect when Kane has finished speaking and it is Ashley's turn to respond.
+This uses a hybrid detection model: silence-based and intent-based.
+
+SILENCE-BASED DETECTION:
+- Monitor for continuous silence from the audio stream.
+- Silence threshold: 3500ms (3.5 seconds) of no speech detected.
+- Deepgram provides speech activity events — use these, do not implement
+  custom VAD.
+- When silence threshold is crossed after speech has been detected:
+  → Fire TURN_COMPLETE event.
+
+INTENT-BASED DETECTION:
+- Run lightweight intent scan on Deepgram's interim transcripts in real time.
+- Detect direct question patterns:
+    - "what do you think"
+    - "what's your thought"
+    - "what are your thoughts"
+    - "do you agree"
+    - "would you say"
+    - "what would you do"
+    - "your thoughts on that"
+    - Any sentence ending in "?" with a personal pronoun directed at Ashley
+- When a direct question pattern is detected in interim transcript:
+  → Reduce silence threshold to 800ms for this turn only.
+  → If 800ms silence follows the question: fire TURN_COMPLETE immediately.
+  → Reset to 3500ms threshold after turn completes.
+
+EDGE CASES:
+- Natural mid-sentence pauses (under 3500ms) must NOT trigger TURN_COMPLETE.
+- If Kane resumes speaking after silence has started but before threshold
+  is reached: cancel the pending TURN_COMPLETE and reset the silence timer.
+- If Kane is silent for the entire call for more than 60 seconds:
+  → Ashley should check in: "You've gone quiet — everything okay?"
+  → Reset timer. Do not fire TURN_COMPLETE from silence-only check-ins.
+
+STATE TRACKED (on VoiceSession):
+  silenceStartedAt: Date | null     — when silence began
+  lastSpeechAt: Date | null         — when Kane last spoke
+  intentDetected: boolean           — whether a direct question was found
+  silenceThreshold: number          — current active threshold (ms)
+
+================================================================================
+STAGE 3 — TRANSCRIPTION AND UTTERANCE ASSEMBLY
+================================================================================
+
+RESPONSIBILITY:
+Assemble Deepgram's interim and final transcript events into a complete
+utterance to pass downstream.
+
+BEHAVIOUR:
+- Deepgram emits two types of transcript events:
+    interim:  partial, may change as more speech is processed
+    final:    committed, will not change
+- Collect all final transcript chunks during the turn.
+- On TURN_COMPLETE event: concatenate all final chunks into one utterance string.
+- Strip leading/trailing whitespace. Normalise multiple spaces to single space.
+- If the assembled utterance is empty or only whitespace after TURN_COMPLETE:
+  → Discard. Do not pass to Stage 4.
+  → Reset turn state and return to listening.
+
+INTERIM TRANSCRIPTS:
+- Used by Stage 2 (intent detection) only.
+- Never stored permanently. Overwritten on each Deepgram interim event.
+
+FINAL OUTPUT OF THIS STAGE:
+  utterance: string    — the complete transcript of what Kane said this turn
+
+================================================================================
+STAGE 4 — INTENT CLASSIFICATION
+================================================================================
+
+RESPONSIBILITY:
+Classify the utterance to determine how Ashley should handle it before passing
+to the LLM. This is a lightweight classification — not a full LLM call.
+
+CLASSIFICATION CATEGORIES:
+
+  CONVERSATIONAL   — normal dialogue, pass to LLM as-is
+  DIRECT_QUESTION  — explicit question directed at Ashley, pass to LLM with
+                     high-priority flag (expect immediate response)
+  COMMAND          — instruction to Ashley ("stop", "pause", "end the call",
+                     "go quiet for a bit")
+  REPEAT_REQUEST   — Kane asking Ashley to repeat herself ("say that again",
+                     "what was that", "sorry, I missed that")
+  EMPTY            — no content (already filtered in Stage 3, belt-and-braces)
+
+COMMAND HANDLING (do not pass to LLM):
+  "stop" / "pause"          → suspend Ashley's current response if active
+  "end the call" / "goodbye" / "bye Ashley" → trigger call termination flow
+  "go quiet" / "quiet for a bit" → enter passive mode (Ashley stops initiating,
+                                   still responds if spoken to directly)
+
+REPEAT_REQUEST HANDLING (do not pass to LLM):
+  → Replay Ashley's last TTS audio chunk if still in buffer.
+  → If buffer empty: Ashley says "Sorry, I've lost that — can you remind me
+    what we were talking about?"
+
+CONVERSATIONAL and DIRECT_QUESTION:
+  → Pass utterance to Stage 5.
+
+STATE TRACKED (on VoiceSession):
+  lastResponseBuffer: string | null   — Ashley's last response text, for repeat
+  passiveMode: boolean                — whether Ashley is in quiet mode
+
+================================================================================
+STAGE 5 — CONTEXT ASSEMBLY
+================================================================================
+
+RESPONSIBILITY:
+Build the full context payload to send to the LLM. This includes conversation
+history, memory, and the current utterance.
+
+CONTEXT ASSEMBLY ORDER:
+  1. Ashley's system prompt (persona, standing instructions)
+  2. Retrieved memories relevant to the current utterance (from memory store)
+  3. Current call conversation history (from messagesTable, this session)
+  4. Kane's current utterance
+
+CONVERSATION HISTORY:
+  - Fetch from messagesTable: device_id + source='voice_call' +
+    created_at >= callStartTime.
+  - Filter to role 'user' and 'assistant' only. Exclude system.
+  - Cap at last 100 turns to manage context window.
+  - If call is longer than 100 turns: the call summarisation (P1-2) has
+    already generated checkpoints. Prepend the most recent committed or
+    pending_review summary as a context preamble before the last 100 turns.
+
+RECOVERY CONTEXT (after reconnect):
+  - If session.reconnectCount > 0: prepend a recovery preamble to the
+    system context:
+      "Note: the call dropped and reconnected [N] time(s). Kane expects
+       you to acknowledge the drop naturally and resume the conversation
+       thread. Reference the last topic discussed."
+  - Pull last topic from most recent call_summaries row for this session.
+
+DIRECT_QUESTION FLAG:
+  - If Stage 4 classified utterance as DIRECT_QUESTION:
+    → Append instruction to system context:
+      "Kane has asked you a direct question. Respond immediately and
+       directly. Do not hedge or defer."
+
+FINAL OUTPUT OF THIS STAGE:
+  messages: Message[]    — full message array ready for LLM call
+  systemPrompt: string   — assembled system prompt for this turn
+
+================================================================================
+STAGE 6 — LLM GENERATION WITH STREAMING
+================================================================================
+
+RESPONSIBILITY:
+Send the assembled context to Claude and stream the response back as it
+generates, token by token.
+
+BEHAVIOUR:
+- Use generateChatText with streaming enabled.
+- forceProvider: "anthropic" — pinned. Do not use Gemini for voice responses.
+  (Gemini's tendency to drop structured output is not acceptable in voice context.)
+- maxTokens: 1024 per turn. Voice responses should be conversational length.
+  Ashley should not deliver essays mid-call.
+- As tokens stream in: pass them to Stage 7 in real time. Do not buffer the
+  full response before passing to TTS.
+
+RESPONSE STYLE ENFORCEMENT (via system prompt instruction):
+  - Responses must be conversational. No lists, no bullet points, no headers.
+  - No "As an AI..." hedging.
+  - Ashley speaks as herself. Casual, dry, direct.
+  - Sentence length should match natural speech rhythm.
+  - If Ashley needs to think through something complex: she says so out loud,
+    naturally ("give me a second on that one...") rather than going silent.
+
+ERROR HANDLING:
+  - If LLM call times out (threshold: 8 seconds to first token):
+    → Ashley says: "Hang on, I'm thinking..." (pre-generated audio clip,
+      not an LLM call — see Stage 7).
+    → Continue waiting up to 20 seconds total.
+    → If still no response at 20 seconds: retry once.
+    → If retry also fails: Ashley says "Sorry, I've lost my train of thought
+      there. What were you saying?" — treat as REPEAT_REQUEST.
+  - If LLM returns empty string: treat as retry.
+  - Log all LLM errors with sessionId, turn_id, error type, timestamp.
+
+STATE TRACKED (on VoiceSession):
+  currentTurnId: string         — UUID for this turn
+  currentResponseText: string   — accumulating response text (for lastResponseBuffer)
+  llmStreamActive: boolean      — is LLM currently streaming?
+
+================================================================================
+STAGE 7 — TTS STREAMING AND PLAYBACK
+================================================================================
+
+RESPONSIBILITY:
+Convert Ashley's LLM response to audio and stream it to Kane in real time.
+Ashley should start speaking as soon as the first sentence is available —
+not after the full response is generated.
+
+SENTENCE BOUNDARY DETECTION:
+- As LLM tokens stream in, buffer them.
+- Detect sentence boundaries: ".", "!", "?" followed by whitespace or end.
+- On each sentence boundary: send the buffered sentence to ElevenLabs TTS.
+- ElevenLabs returns audio chunks: stream these directly to client WebSocket.
+- Continue until LLM stream ends.
+
+PRE-GENERATED AUDIO CLIPS:
+The following should be pre-generated ElevenLabs audio clips stored on server,
+played back instantly without an LLM or TTS call:
+  - "Hang on, I'm thinking..."   (LLM timeout, Stage 6)
+  - "Sorry, say that again?"     (fallback repeat request)
+  - "You've gone quiet — everything okay?"  (60-second silence check-in)
+  - "Sorry about that — looks like we dropped. Where were we?"
+    (reconnect acknowledgment — used if memory pull fails)
+
+AUDIO BUFFER:
+  - Keep the last 30 seconds of Ashley's TTS audio in a rolling buffer.
+  - Used by Stage 4 REPEAT_REQUEST handling to replay last response.
+  - Buffer is in-memory only. Cleared on call end.
+
+ERROR HANDLING:
+  - If ElevenLabs stream fails mid-sentence:
+    → Retry that sentence once.
+    → If retry fails: skip to next sentence, continue.
+    → If ElevenLabs is fully down: Ashley says (via pre-generated clip or
+      text fallback to client): "My voice is playing up — bear with me."
+    → Keep attempting ElevenLabs recovery in background.
+  - Never drop the call due to TTS failure.
+
+================================================================================
+STAGE 8 — INTERRUPTION HANDLING AND RECOVERY
+================================================================================
+
+RESPONSIBILITY:
+Handle two distinct scenarios: (A) Kane interrupts Ashley mid-response, and
+(B) system-level failures (stream drops, process crashes, reconnects).
+
+--- PART A: INTERRUPTION ---
+
+DETECTION:
+- Deepgram speech activity events fire even while Ashley is speaking.
+- If speech is detected from Kane while Ashley's TTS is active:
+  → INTERRUPTION event fires immediately.
+
+BEHAVIOUR ON INTERRUPTION:
+  Step 1: Stop ElevenLabs TTS stream immediately. Ashley stops speaking.
+  Step 2: Note the point in the response where Ashley was interrupted.
+          Store: interruptedAt (character index in currentResponseText).
+          Store: remainingResponse (text not yet spoken).
+  Step 3: Enter LISTENING state. Allow Kane to speak.
+  Step 4: After Kane's turn completes (Stage 2-3):
+          → Pass Kane's new utterance to Stage 4.
+          → If CONVERSATIONAL or DIRECT_QUESTION:
+              Assemble new LLM context that includes:
+                - The fact Ashley was mid-response when interrupted
+                - The unspoken remainder of her previous response
+                - Kane's interruption utterance
+              Instruct LLM: "You were interrupted mid-response. Acknowledge
+              Kane's input, then if still relevant, complete your earlier
+              thought naturally before moving on."
+          → If COMMAND: handle as per Stage 4.
+
+STATE TRACKED (on VoiceSession):
+  wasInterrupted: boolean
+  interruptedAt: number | null
+  remainingResponse: string | null
+
+--- PART B: SYSTEM RECOVERY ---
+
+RECONNECT RECOVERY (process crash or network drop):
+- P1-1 (complete) handles session state persistence and reload.
+- P1-3 (complete) handles reconnect rate limiting.
+- P1-4 adds the orchestration recovery behaviour on top:
+
+ON RECONNECT:
+  Step 1: VoiceSessionRegistry.restoreRecoveringSessions() reloads session
+          from DB (already implemented in P1-1).
+  Step 2: VoiceOrchestrationService detects restored session.
+  Step 3: Pull most recent call_summaries row for this session (if exists).
+  Step 4: Ashley plays reconnect acknowledgment:
+            If summary exists:
+              LLM call with recovery prompt:
+                "The call just dropped and reconnected. Acknowledge this
+                 naturally — something like 'oh, sorry about that, looks
+                 like I lost signal — where were we? We were talking about
+                 [topic]...' Use the summary to orient yourself. Be natural,
+                 not robotic."
+              Pass summary topic and last few turns as context.
+            If no summary (call just started):
+              Play pre-generated clip: "Sorry about that — looks like we
+              dropped. Where were we?"
+  Step 5: Resume normal orchestration pipeline.
+
+VENDOR STREAM RECOVERY:
+  Deepgram drop:
+    → Attempt reconnect immediately.
+    → Retry up to 3 times with 2-second backoff.
+    → On reconnect: resume transcription. No gap in session.
+    → Ashley does not announce Deepgram recovery unless > 10 seconds elapsed.
+    → If > 10 seconds: Ashley says "Sorry, I lost you for a moment — say
+      that again?"
+    → If 3 retries exhausted: log as critical, attempt full Deepgram
+      session restart.
+
+  ElevenLabs drop:
+    → Attempt reconnect immediately.
+    → Retry up to 3 times with 2-second backoff.
+    → On reconnect: resume from next sentence boundary (do not replay
+      interrupted sentence).
+    → If 3 retries exhausted: log as critical. Ashley continues in
+      degraded mode — text responses sent to client as fallback.
+
+================================================================================
+NEW FILES TO CREATE
+================================================================================
+
+1. lib/VoiceOrchestrationService.ts   — main orchestration service (all 8 stages)
+2. lib/VoiceIntentClassifier.ts       — Stage 4 intent classification
+3. lib/VoiceContextAssembler.ts       — Stage 5 context assembly
+4. lib/AudioClipRegistry.ts           — Stage 7 pre-generated clip management
+5. assets/audio/                      — directory for pre-generated TTS clips
+   - thinking.mp3
+   - say-that-again.mp3
+   - gone-quiet.mp3
+   - call-dropped.mp3
+
+================================================================================
+FILES TO MODIFY
+================================================================================
+
+6. lib/VoiceSessionRegistry.ts
+   - Add new state fields (listed per stage above)
+   - Wire VoiceOrchestrationService into session lifecycle
+
+7. routes/voice-call.ts
+   - Replace current turn handling with orchestration pipeline entry point
+   - Each incoming WebSocket message routes through VoiceOrchestrationService
+
+8. index.ts
+   - No structural changes expected
+   - Confirm WebSocket upgrade still routes correctly to voice-call.ts
+
+================================================================================
+NEW STATE FIELDS ON VoiceSession
+================================================================================
+
+Add the following to the VoiceSession type/interface:
+
+  // Stage 1
+  streamActive: boolean
+  deepgramConnected: boolean
+  elevenLabsConnected: boolean
+
+  // Stage 2
+  silenceStartedAt: Date | null
+  lastSpeechAt: Date | null
+  intentDetected: boolean
+  silenceThreshold: number          // default: 3500
+
+  // Stage 4
+  lastResponseBuffer: string | null
+  passiveMode: boolean
+
+  // Stage 6
+  currentTurnId: string | null
+  currentResponseText: string
+  llmStreamActive: boolean
+
+  // Stage 8
+  wasInterrupted: boolean
+  interruptedAt: number | null
+  remainingResponse: string | null
+
+================================================================================
+STANDING CONSTRAINTS
+================================================================================
+
+- DB is PostgreSQL. ORM is Drizzle.
+- drizzle-kit generate is BROKEN — all SQL written manually.
+- Drizzle insert idiom: db.insert(table).values(...).onConflictDoUpdate(...)
+- TypeScript must be clean — no implicit any, no unhandled promise rejections.
+- forceProvider: "anthropic" for all LLM calls in this service. No exceptions.
+- WebSocket stays open for the full call duration. Never close on vendor failure.
+- All fire-and-forget methods catch errors internally. Never surface to pipeline.
+- All new state fields must be initialised in VoiceSessionRegistry session
+  creation. No undefined fields on a live session.
+- Pre-generated audio clips must be generated once at server startup via
+  ElevenLabs and cached to disk. Do not call ElevenLabs at runtime for
+  pre-generated clips.
+- Log all errors with sessionId, relevant IDs, error type, timestamp.
+  Structured log format throughout.
+
+================================================================================
+DELIVERY REQUIREMENTS — MANDATORY
+================================================================================
+
+Deliver the following in the SAME response. No deferral.
+
+[ ] lib/VoiceOrchestrationService.ts     — complete file
+[ ] lib/VoiceIntentClassifier.ts         — complete file
+[ ] lib/VoiceContextAssembler.ts         — complete file
+[ ] lib/AudioClipRegistry.ts             — complete file
+[ ] lib/VoiceSessionRegistry.ts          — modified fields and lifecycle wiring
+                                           only. Do not rewrite whole file.
+[ ] routes/voice-call.ts                 — modified turn handler entry point
+                                           only. Do not rewrite whole file.
+
+If any file cannot be delivered in the same response, state the reason
+explicitly before proceeding. Do not defer without explanation.
+
+================================================================================
+END OF BRIEF — P1-4 — Voice Orchestration Layer (v1)
+================================================================================

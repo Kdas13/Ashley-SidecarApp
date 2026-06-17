@@ -1,0 +1,186 @@
+Ashley-Sidecar — Voice Call Protocol Phase 2
+P1-2: End-of-Call Summarisation — Implementation Notes
+=======================================================
+
+Date: 17 June 2026
+Status: Complete, typecheck clean, end-to-end verified
+Phase 2 item: 3 of 11
+
+
+WHAT CHANGED
+------------
+
+Two new files created:
+  artifacts/api-server/src/lib/CallSummarisationService.ts
+  lib/db/migrations/0004_call_summaries.sql
+
+One existing file modified:
+  artifacts/api-server/src/lib/VoiceSessionRegistry.ts
+    (import added, finalise() modified — no other changes)
+
+Drizzle schema extended:
+  lib/db/src/schema/voice.ts
+    (three new tables appended: callSummariesTable, callDecisionsTable,
+     summarisationJobsTable)
+
+
+DATABASE — migrations/0004_call_summaries.sql
+---------------------------------------------
+
+Three tables created (PostgreSQL, IF NOT EXISTS, manual migration):
+
+  call_summaries
+    id              TEXT PK DEFAULT gen_random_uuid()::text
+    session_id      TEXT NOT NULL
+    version         INTEGER NOT NULL DEFAULT 1
+    status          TEXT CHECK ('committed', 'pending_review', 'superseded')
+    topic           TEXT
+    tone            TEXT
+    open_items      JSONB DEFAULT '[]'
+    summary_text    TEXT NOT NULL
+    confidence_score INTEGER CHECK (0..100)
+    generated_at    TIMESTAMPTZ DEFAULT NOW()
+    committed_at    TIMESTAMPTZ
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+
+  call_decisions
+    id              TEXT PK DEFAULT gen_random_uuid()::text
+    session_id      TEXT NOT NULL
+    summary_id      TEXT NOT NULL REFERENCES call_summaries(id) ON DELETE CASCADE
+    turn_id         TEXT NOT NULL
+    decision_type   TEXT CHECK ('action', 'commitment', 'preference', 'question')
+    description     TEXT NOT NULL
+    resolved        BOOLEAN DEFAULT false
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+
+  summarisation_jobs  (recovery + idempotency queue)
+    id              TEXT PK DEFAULT gen_random_uuid()::text
+    session_id      TEXT NOT NULL UNIQUE
+    status          TEXT CHECK ('pending', 'running', 'complete', 'failed')
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+    updated_at      TIMESTAMPTZ DEFAULT NOW()
+
+Indexes on session_id and status for each table.
+
+
+CallSummarisationService.ts
+---------------------------
+
+SIGNATURE (adaptation from brief):
+  static summariseCall(sessionId: string, deviceId: string, callStartTime: Date): void
+
+  The brief specified (sessionId, turns: ConversationTurn[]) but VoiceSession
+  has no turns array — turns go straight to messagesTable from handleVoiceTurn().
+  The service fetches turns directly from the DB:
+
+    SELECT * FROM messages
+    WHERE device_id = deviceId
+      AND source = 'voice_call'
+      AND created_at >= callStartTime
+    ORDER BY created_at ASC
+
+  DB role "ashley" is normalised to "assistant" for the LLM prompt.
+
+ASYNC BODY (self-invoking IIFE — fire-and-forget):
+
+  Step 1: Insert job row (status: 'pending') into summarisation_jobs.
+          onConflictDoUpdate on session_id UNIQUE — safe retry.
+          If this write fails, log and return. Nothing else proceeds.
+
+  Step 2: Update job status to 'running'.
+
+  Step 3: Fetch turns from messagesTable. Filter to user/assistant only.
+          Guard: if 0 turns found, write placeholder summary and mark complete.
+
+  Step 4: Cap at last 150 turns. Short call bypass: < 4 turns → confidence = 100,
+          skip LLM scoring.
+
+  Step 5: Build prompt. Call generateChatText(forceProvider: "anthropic",
+          maxTokens: 2048). Anthropic is pinned because structured JSON
+          reliability matters; Gemini tendency to drop structure is not
+          acceptable here.
+
+  Step 6: parseAndSanitizeJSON() — strip markdown fences, extract JSON bounds,
+          strict runtime type validation on every field, safety caps:
+            topic: max 150 chars
+            tone: max 50 chars
+            open_items: max 10 items, each max 256 chars
+            decisions: max 20 items, description max 500 chars, < > stripped
+            confidence_score: Math.max(0, Math.min(100, score))
+
+  Step 7: writeSummary() inside db.transaction():
+            a. Supersede all existing 'committed' and 'pending_review' rows
+               for this session_id.
+            b. Get max version for session, set nextVersion = max + 1 (or 1).
+            c. Insert new call_summaries row (status: 'pending_review').
+            d. Insert call_decisions rows FK → new summary id.
+
+  Step 8: Update job status to 'complete'.
+          On any catch: update job to 'failed', log error.
+
+ADAPTATION SUMMARY (brief vs implementation):
+  callLLM('./llm')           → generateChatText from './textLLM'
+                               forceProvider: "anthropic"
+  turns: ConversationTurn[]  → fetched from messagesTable by
+                               (deviceId, source='voice_call', createdAt >= callStartTime)
+  session.turns              → not available on VoiceSession — N/A
+  middleware signature        → summariseCall(sessionId, deviceId, callStartTime)
+
+
+VoiceSessionRegistry.ts — finalise() modification
+--------------------------------------------------
+
+Import added at top of file:
+  import { CallSummarisationService } from "./CallSummarisationService";
+
+Inside finalise(), after appendLog("CALL_ENDED") and before P1-1 guard queue:
+
+  // P1-2: fire end-of-call summarisation. Fire-and-forget.
+  CallSummarisationService.summariseCall(
+    session.sessionId,
+    session.deviceId,
+    session.callStartTime,
+  );
+
+Order: session is still in the session variable (maps already deleted, but
+the object is still alive). deviceId and callStartTime are captured safely.
+No await. The call pipeline is never blocked.
+
+
+WHAT WAS NOT CHANGED
+--------------------
+
+  routes/voice-call.ts     — untouched (brief confirmed: no changes needed)
+  index.ts                 — untouched
+  deepgramStream.ts        — untouched
+  elevenlabsStream.ts      — untouched
+  TokenBudgetMonitor       — removed from scope (cost analysis confirmed
+                             mid-call checkpointing unnecessary at realistic
+                             usage levels)
+
+
+END-TO-END VERIFICATION
+-----------------------
+
+Test: connect WS → receive call_connected → clean close → wait 60s for
+      recovery timer to fire → finalise() called → summariseCall() fires.
+
+DB result (confirmed live):
+  summarisation_jobs: id=b2b861a7, session_id=d4cb56f7, status=complete
+  call_summaries:     session_id=d4cb56f7, version=1, status=pending_review,
+                      confidence_score=100
+
+Confidence=100 is correct: test call had no speech turns → short-call path →
+placeholder summary written → job marked complete.
+
+Server log confirmed:
+  [CallSummarisationService] [session=d4cb56f7...] [job=b2b861a7...]
+    No user/assistant turns found — writing placeholder summary.
+  [CallSummarisationService] [session=d4cb56f7...] [job=b2b861a7...]
+    Placeholder summary written.
+
+
+NEXT ITEM
+---------
+
+P1-4: (to be briefed).
