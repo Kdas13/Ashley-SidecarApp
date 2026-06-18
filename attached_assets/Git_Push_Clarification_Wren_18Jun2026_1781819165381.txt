@@ -1,0 +1,41 @@
+================================================================================
+ASHLEY PROJECT — CLARIFICATION REQUEST FOR WREN
+Date: 18 June 2026
+================================================================================
+
+GitHub integration shows Active in this project's Integrations panel.
+However, the Git Providers section states: "Not accessible to Replit Agent."
+
+QUESTION — answer directly, no hedging:
+
+Can you run `git push` (or equivalent) via the bash/shell tool yourself,
+even though the Git pane UI says it's not accessible to the Agent?
+
+Specifically:
+
+1. If you run `git add`, `git commit`, `git push` as shell commands
+   right now, does it work? Or does it fail/get blocked?
+
+2. If it fails — what is the exact error?
+
+3. If it works — can you confirm you are able to push commits to GitHub
+   without Kane having to do it manually via the Git pane?
+
+4. If you CANNOT push directly: what is the actual process? Does Kane
+   need to push manually via the Git pane after you've made changes,
+   and then you read back the resulting commit hash for the completion
+   report? Or is there another method?
+
+We need a definitive answer on this before any future briefs are issued,
+since all completion reports now require GitHub permalinks as proof of
+work (see Standing Completion Report Template v2.0).
+
+Do not test this by attempting a real push with throwaway content.
+Use the actual current state of the repo, or state clearly if you are
+unable to test this without making an unwanted change.
+
+================================================================================
+ANSWER DIRECTLY. NO SPECULATION. STATE WHAT YOU OBSERVE WHEN YOU TRY IT.
+================================================================================
+END OF REQUEST
+================================================================================
