@@ -305,3 +305,9 @@ id = "0S18ZETxKAFLWBg6J8RMZ"
 uri = "file://ashley-system-audit.txt"
 type = "text"
 title = "Ashley-Sidecar System Audit"
+
+[[outputs]]
+id = "1Yf4py1aI4WKx-uhDUNVj"
+uri = "file://vad-files-18Jun2026.txt"
+type = "text"
+title = "VAD files — useVoiceCall / VoiceOrchestrationService / voice-call"

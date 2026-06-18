@@ -1,0 +1,48 @@
+================================================================================
+ASHLEY PROJECT — CODE REQUEST FOR WREN
+Date: 18 June 2026
+================================================================================
+
+DO NOT BUILD ANYTHING.
+DO NOT FIX ANYTHING.
+DO NOT CHANGE ANYTHING.
+
+Send the files listed below. Nothing else.
+
+================================================================================
+FILES REQUIRED — SEND IN FULL, NO TRUNCATION
+================================================================================
+
+1. artifacts/mobile/lib/useVoiceCall.ts
+   Send the complete file. Every line. No "..." shortcuts.
+   No "similar to above." The entire file as it exists right now.
+
+2. artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+   Send the complete file. Every line. No truncation.
+
+3. artifacts/api-server/src/routes/voice-call.ts
+   Send the complete file. Every line. No truncation.
+
+================================================================================
+WHY THESE FILES
+================================================================================
+
+These three files contain the VAD logic, auto-submit timer, silence
+threshold, playback queue, and turn handling that are currently broken.
+They will be reviewed externally before any further fix attempts.
+
+================================================================================
+FORMAT
+================================================================================
+
+Send each file preceded by its full path as a header.
+Send as plain text.
+If too large for one response, send in numbered blocks and complete
+each file before starting the next.
+
+================================================================================
+WAIT FOR INSTRUCTIONS AFTER SENDING.
+DO NOT ATTEMPT ANY FIXES UNTIL TOLD TO.
+================================================================================
+END OF REQUEST
+================================================================================
