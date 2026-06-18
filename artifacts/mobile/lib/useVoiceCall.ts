@@ -125,9 +125,12 @@ export function useVoiceCall(): {
   const autoSubmitTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const connectRef          = useRef<() => void>(() => {});
-  // ttsCompleteRef: true when no TTS turn is in progress or tts_done received.
-  // Guards against reopening the mic between sentences (race between playNext
-  // draining the queue and the next sentence_end arriving).
+  // ttsServerDoneRef: true once the server has sent tts_done (all chunks sent).
+  // ttsCompleteRef:   true once the device has finished PLAYING all queued audio.
+  // Both must be true before openMic is allowed to run.
+  // Separating them prevents the mic from opening during the gap between
+  // "server finished sending" and "device finished playing".
+  const ttsServerDoneRef    = useRef(true);
   const ttsCompleteRef      = useRef(true);
   // Mutex: prevents two concurrent openMic calls from both calling
   // prepareToRecordAsync — the second call would throw "already been prepared".
@@ -153,10 +156,13 @@ export function useVoiceCall(): {
   const playNext = useCallback(async (): Promise<void> => {
     const uri = playQueueRef.current.shift();
     if (!uri) {
-      // Queue drained — re-open mic only when tts_done has also been received.
-      // Without this guard the mic opens between sentences while more TTS is
-      // still arriving, causing Ashley's own voice to be picked up and echoed.
-      if (phaseRef.current === "speaking" && ttsCompleteRef.current) {
+      // Queue drained — only open mic once the server has also sent tts_done
+      // (guards against opening between sentences while more chunks are arriving).
+      // Setting ttsCompleteRef HERE (not on tts_done) ensures the mic gate only
+      // lifts after the device has actually finished playing, not when the server
+      // finished sending — those two events are not the same.
+      if (phaseRef.current === "speaking" && ttsServerDoneRef.current) {
+        ttsCompleteRef.current = true;
         setPhaseSync("listening");
         void openMicRef.current();
       }
@@ -402,8 +408,8 @@ export function useVoiceCall(): {
 
         case "speech_start":
           chunkBufRef.current = [];
-          ttsCompleteRef.current = false; // more sentences may follow — hold the mic
-          // Mic is already closed during thinking/submitting phase.
+          ttsCompleteRef.current = false;   // device not done playing
+          ttsServerDoneRef.current = false; // server not done sending
           break;
 
         case "sentence_end":
@@ -414,24 +420,14 @@ export function useVoiceCall(): {
           await flushChunkBuffer();
           const text = (msg["responseText"] as string | undefined) ?? "";
           if (text) setAshleyResponse(text);
-          ttsCompleteRef.current = true;
-          // Let playNext handle the mic reopen when the queue drains.
-          // Use a short defer here to handle the edge case where the buffer
-          // was empty (nothing to play): playNext may have already shifted
-          // the last item and is creating the player asynchronously, so
-          // checking the queue immediately would give a false "empty" result
-          // and reopen the mic while audio is still being prepared.
-          setTimeout(() => {
-            if (
-              playQueueRef.current.length === 0 &&
-              !playerRef.current &&
-              phaseRef.current !== "listening" &&
-              phaseRef.current !== "ended"
-            ) {
-              setPhaseSync("listening");
-              void openMicRef.current();
-            }
-          }, 200);
+          ttsServerDoneRef.current = true;
+          // If nothing was queued (silent/empty response), open mic directly.
+          // Otherwise playNext opens mic after the last audio track finishes.
+          if (playQueueRef.current.length === 0 && !playerRef.current) {
+            ttsCompleteRef.current = true;
+            setPhaseSync("listening");
+            void openMicRef.current();
+          }
           break;
         }
 
