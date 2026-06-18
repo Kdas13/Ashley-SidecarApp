@@ -1,0 +1,746 @@
+================================================================================
+ASHLEY PROJECT — CODE REQUEST RESPONSE
+Date: 18 June 2026
+Sections: as requested. No truncation. No fixes.
+================================================================================
+
+NOTE ON handleVoiceTurn():
+handleVoiceTurn() does NOT live in VoiceOrchestrationService.ts.
+It lives in artifacts/api-server/src/routes/voice-call.ts (lines 293-303).
+It is a thin delegation wrapper. Both are included below.
+
+================================================================================
+SECTION 1: handleVoiceTurn() — voice-call.ts lines 293-303
+================================================================================
+
+2851	// ---------------------------------------------------------------------------
+2852	// handleVoiceTurn — P1-4: thin delegation entry point.
+2853	//
+2854	// All pipeline logic (intent classification, context assembly, LLM streaming,
+2855	// sentence-boundary TTS, interruption handling, rolling audio buffer) now
+2856	// lives in VoiceOrchestrationService. This function is the stable interface
+2857	// called from index.ts on speech_final acceptance.
+2858	// ---------------------------------------------------------------------------
+2859	export async function handleVoiceTurn(
+    10	  session: VoiceSession,
+    11	  transcript: string,
+    12	  utteranceId: string,
+    13	): Promise<void> {
+    14	  await VoiceOrchestrationService.handleSpeechFinal(
+    15	    session,
+    16	    transcript,
+    17	    utteranceId,
+    18	  );
+    19	}
+
+[exact lines with original line numbers:]
+ 285	// ---------------------------------------------------------------------------
+ 286	// handleVoiceTurn — P1-4: thin delegation entry point.
+ 287	//
+ 288	// All pipeline logic (intent classification, context assembly, LLM streaming,
+ 289	// sentence-boundary TTS, interruption handling, rolling audio buffer) now
+ 290	// lives in VoiceOrchestrationService. This function is the stable interface
+ 291	// called from index.ts on speech_final acceptance.
+ 292	// ---------------------------------------------------------------------------
+ 293	export async function handleVoiceTurn(
+ 294	  session: VoiceSession,
+ 295	  transcript: string,
+ 296	  utteranceId: string,
+ 297	): Promise<void> {
+ 298	  await VoiceOrchestrationService.handleSpeechFinal(
+ 299	    session,
+ 300	    transcript,
+ 301	    utteranceId,
+ 302	  );
+ 303	}
+
+================================================================================
+SECTION 2: handleSpeechFinal() — VoiceOrchestrationService.ts lines 666-741
+(This is the full function handleVoiceTurn delegates to)
+================================================================================
+
+ 666	/**
+ 667	 * Stage 3-7: Handle a speech_final message — the full turn pipeline.
+ 668	 * Called from handleVoiceTurn in routes/voice-call.ts.
+ 669	 */
+ 670	export async function handleSpeechFinal(
+ 671	  session: VoiceSession,
+ 672	  transcript: string,
+ 673	  utteranceId: string,
+ 674	): Promise<void> {
+ 675	  // Update heartbeat.
+ 676	  session.lastActiveHeartbeatAt = new Date();
+ 677	
+ 678	  // Stage 8A: interruption check.
+ 679	  if (session.llmStreamActive || session.state === "tts_streaming") {
+ 680	    handleInterruption(session);
+ 681	  }
+ 682	
+ 683	  // Stage 3: normalise.
+ 684	  const utterance = transcript.replace(/\s+/g, " ").trim();
+ 685	  if (!utterance) {
+ 686	    session.intentDetected   = false;
+ 687	    session.silenceThreshold = 3500;
+ 688	    return;
+ 689	  }
+ 690	
+ 691	  // Reset turn detection state.
+ 692	  session.intentDetected   = false;
+ 693	  session.silenceThreshold = 3500;
+ 694	
+ 695	  // Stage 4: classify.
+ 696	  const result = classify(utterance);
+ 697	
+ 698	  if (result.category === "EMPTY") return;
+ 699	
+ 700	  if (result.category === "COMMAND") {
+ 701	    await handleCommand(session, result.command!);
+ 702	    return;
+ 703	  }
+ 704	
+ 705	  if (result.category === "REPEAT_REQUEST") {
+ 706	    await handleRepeatRequest(session);
+ 707	    return;
+ 708	  }
+ 709	
+ 710	  // Passive mode gate.
+ 711	  if (session.passiveMode) {
+ 712	    if (result.category === "CONVERSATIONAL") {
+ 713	      logger.info(
+ 714	        { sessionId: session.sessionId },
+ 715	        "VoiceOrch: passive mode — CONVERSATIONAL discarded",
+ 716	      );
+ 717	      return;
+ 718	    }
+ 719	    if (result.category === "DIRECT_QUESTION") {
+ 720	      session.passiveMode = false;
+ 721	    }
+ 722	  }
+ 723	
+ 724	  // Send intent-based silence threshold to client BEFORE starting the LLM
+ 725	  // pipeline so it is applied to the NEXT listen window (after Ashley speaks).
+ 726	  if (isDirectQuestion(utterance)) {
+ 727	    try {
+ 728	      session.ws?.send(JSON.stringify({ type: "set_silence_threshold", ms: 800 }));
+ 729	    } catch { /* ignore send failures */ }
+ 730	  }
+ 731	
+ 732	  // Persist user utterance (fire-and-forget) before LLM call.
+ 733	  persistMessage(session.deviceId, "user", utterance, new Date());
+ 734	
+ 735	  // Stages 5-7: context → LLM → TTS.
+ 736	  await runLLMAndTTSPipeline(
+ 737	    session,
+ 738	    utterance,
+ 739	    result.category === "DIRECT_QUESTION",
+ 740	  );
+ 741	}
+
+================================================================================
+SECTION 3: ALL LOCATIONS WHERE tts_done IS SENT
+================================================================================
+
+--- 3A: speakClipOrText() — lines 200-220 (clip/fallback TTS path) ---
+
+ 200	    } catch {}
+ 201	  }
+ 202	
+ 203	  // tts_done signals end of this audio unit. Client sets ttsCompleteRef=true
+ 204	  // and reopens the mic once playback drains.
+ 205	  if (session.ws) {
+ 206	    try {
+ 207	      session.ws.send(JSON.stringify({
+ 208	        type:                "tts_done",
+ 209	        speechId:             clipSpeechId,
+ 210	        sessionId:            session.sessionId,
+ 211	        connectionGeneration: session.connectionGeneration,
+ 212	        sequenceNumber:       registry.incrementSequence(session),
+ 213	        timestamp:            Date.now(),
+ 214	      }));
+ 215	    } catch {}
+ 216	  }
+ 217	
+ 218	  // Restore the caller's speechId ownership.
+ 219	  session.currentSpeechId = savedSpeechId;
+ 220	}
+
+--- 3B: runLLMAndTTSPipeline() — hard budget timeout, lines 461-488 ---
+
+ 461	  const hardBudget = setTimeout(() => {
+ 462	    if (session.currentAbortController === controller) {
+ 463	      logger.warn({ sessionId: session.sessionId, turnId }, "VoiceOrch: hard budget exceeded — aborting");
+ 464	      registry.cancelCurrentTurn(session, "hard_budget_exceeded");
+ 465	      session.llmStreamActive = false;
+ 466	
+ 467	      // Notify the client immediately so it re-enters listening state rather
+ 468	      // than hanging indefinitely while the LLM stream drains its abort.
+ 469	      if (session.currentSpeechId === speechId) {
+ 470	        const seqBudget = registry.incrementSequence(session);
+ 471	        try {
+ 472	          session.ws?.send(
+ 473	            JSON.stringify({
+ 474	              type:                "tts_done",
+ 475	              speechId,
+ 476	              responseText:         session.currentResponseText ?? "",
+ 477	              sessionId:            session.sessionId,
+ 478	              connectionGeneration: session.connectionGeneration,
+ 479	              sequenceNumber:       seqBudget,
+ 480	              timestamp:            Date.now(),
+ 481	              reason:               "budget_exceeded",
+ 482	            }),
+ 483	          );
+ 484	        } catch {}
+ 485	        session.currentSpeechId = null;
+ 486	      }
+ 487	    }
+ 488	  }, MAX_TURN_BUDGET_MS);
+
+--- 3C: runLLMAndTTSPipeline() — main tts_done after LLM/TTS, lines 564-582 ---
+
+ 564	
+ 565	  // ── Send tts_done if we still own the speechId ─────────────────────────
+ 566	  if (session.currentSpeechId === speechId) {
+ 567	    const seqDone = registry.incrementSequence(session);
+ 568	    try {
+ 569	      session.ws?.send(
+ 570	        JSON.stringify({
+ 571	          type:                "tts_done",
+ 572	          speechId,
+ 573	          responseText:         session.currentResponseText,
+ 574	          sessionId:            session.sessionId,
+ 575	          connectionGeneration: session.connectionGeneration,
+ 576	          sequenceNumber:       seqDone,
+ 577	          timestamp:            Date.now(),
+ 578	        }),
+ 579	      );
+ 580	    } catch {}
+ 581	    session.currentSpeechId = null;
+ 582	  }
+ 583	
+ 584	  // Store last response for REPEAT_REQUEST.
+ 585	  session.lastResponseBuffer = session.currentResponseText;
+ 586	
+ 587	  // Persist assistant row (fire-and-forget).
+ 588	  if (session.currentResponseText.trim() && !session.completedTurnIds.has(turnId)) {
+ 589	    session.completedTurnIds.add(turnId);
+ 590	    persistMessage(session.deviceId, "ashley", session.currentResponseText, new Date());
+ 591	  }
+ 592	
+ 593	  session.state         = "listening";
+ 594	  session.currentTurnId = null;
+ 595	  session.currentResponseId = null;
+ 596	}
+
+--- 3D: handleReconnect() — tts_done for reconnect ack, lines 836-867 ---
+
+ 836	
+ 837	      await flushSentenceToTTS(session, speechId, stripMarkdown(reconnectText));
+ 838	
+ 839	      if (session.currentSpeechId === speechId) {
+ 840	        const seqDone = registry.incrementSequence(session);
+ 841	        try {
+ 842	          ws.send(
+ 843	            JSON.stringify({
+ 844	              type:                "tts_done",
+ 845	              speechId,
+ 846	              sessionId:            session.sessionId,
+ 847	              connectionGeneration: session.connectionGeneration,
+ 848	              sequenceNumber:       seqDone,
+ 849	              timestamp:            Date.now(),
+ 850	            }),
+ 851	          );
+ 852	        } catch {}
+ 853	        session.currentSpeechId = null;
+ 854	      }
+ 855	    } else {
+ 856	      await speakClipOrText(session, "call-dropped", "Sorry about that — looks like we dropped. Where were we?");
+ 857	    }
+ 858	  } catch (err) {
+ 859	    logger.warn({ err, sessionId: session.sessionId }, "VoiceOrch: handleReconnect LLM failed — falling back to clip");
+ 860	    await speakClipOrText(session, "call-dropped", "Sorry about that — looks like we dropped. Where were we?");
+ 861	  } finally {
+ 862	    if (session.currentAbortController) {
+ 863	      session.currentAbortController = null;
+ 864	    }
+ 865	    session.state = "listening";
+ 866	  }
+ 867	}
+
+================================================================================
+SECTION 4: FULL SESSION STATE TRANSITIONS IN VoiceOrchestrationService.ts
+================================================================================
+
+All assignments to session.state (grep result with context):
+
+282:    session.state = "listening";
+372:  session.state               = "llm_pending";
+411:    session.state           = "listening";
+432:  session.state           = "tts_streaming";
+449:    session.state           = "listening";
+593:  session.state         = "listening";
+865:    session.state = "listening";
+
+--- Context for each assignment ---
+
+LINE 282 — abortCurrentOutputs() sets state=listening:
+ 273	export function abortCurrentOutputs(session: VoiceSession): void {
+ 274	  session.llmStreamActive = false;
+ 275	  registry.cancelCurrentTurn(session, "orchestration_abort");
+ 276	  session.currentSpeechId = null;
+ 277	  if (
+ 278	    session.state !== "closed" &&
+ 279	    session.state !== "failed" &&
+ 280	    session.state !== "closing"
+ 281	  ) {
+ 282	    session.state = "listening";
+ 283	  }
+ 284	}
+ 285	
+
+LINE 372 — runLLMAndTTSPipeline() sets state=llm_pending (turn start):
+ 368	  session.currentTurnId       = turnId;
+ 369	  session.currentResponseId   = crypto.randomUUID();
+ 370	  session.currentResponseText = "";
+ 371	  session.llmStreamActive     = true;
+ 372	  session.state               = "llm_pending";
+ 373	  session.wasInterrupted      = false;
+ 374	  session.remainingResponse   = null;
+ 375	  session.interruptedAt       = null;
+
+LINE 411 — context failure recovery sets state=listening:
+ 408	      "VoiceOrch: context assembly failed",
+ 409	    );
+ 410	    session.llmStreamActive = false;
+ 411	    session.state           = "listening";
+ 412	
+ 413	    if (session.consecutiveContextFailures >= 2) {
+ 414	      try {
+
+LINE 432 — after speech_start sent, sets state=tts_streaming:
+ 430	  // ── Send speech_start ──────────────────────────────────────────────────
+ 431	  session.currentSpeechId = speechId;
+ 432	  session.state           = "tts_streaming";
+ 433	
+ 434	  const seqStart = registry.incrementSequence(session);
+ 435	  try {
+
+LINE 449 — speech_start send failure, sets state=listening:
+ 446	  } catch (err) {
+ 447	    logger.warn({ err, sessionId: session.sessionId }, "VoiceOrch: failed to send speech_start");
+ 448	    session.llmStreamActive = false;
+ 449	    session.state           = "listening";
+ 450	    session.currentSpeechId = null;
+ 451	    return;
+ 452	  }
+ 453	
+
+LINE 593 — runLLMAndTTSPipeline() end, sets state=listening (AFTER tts_done sent):
+ 583	
+ 584	  // Store last response for REPEAT_REQUEST.
+ 585	  session.lastResponseBuffer = session.currentResponseText;
+ 586	
+ 587	  // Persist assistant row (fire-and-forget).
+ 588	  if (session.currentResponseText.trim() && !session.completedTurnIds.has(turnId)) {
+ 589	    session.completedTurnIds.add(turnId);
+ 590	    persistMessage(session.deviceId, "ashley", session.currentResponseText, new Date());
+ 591	  }
+ 592	
+ 593	  session.state         = "listening";
+ 594	  session.currentTurnId = null;
+ 595	  session.currentResponseId = null;
+ 596	}
+
+LINE 865 — handleReconnect() finally block, sets state=listening:
+ 861	  } finally {
+ 862	    if (session.currentAbortController) {
+ 863	      session.currentAbortController = null;
+ 864	    }
+ 865	    session.state = "listening";
+ 866	  }
+ 867	}
+
+================================================================================
+SECTION 5: VoiceSessionRegistry.ts lines 197-573 (full remainder of file)
+================================================================================
+
+ 197	  // P1-1: persist new session to DB (fire-and-forget, chained).
+ 198	  PersistentSessionStateGuard.queue({
+ 199	    sessionId: session.sessionId,
+ 200	    deviceId: session.deviceId,
+ 201	    connectionGeneration: session.connectionGeneration,
+ 202	    state: session.state,
+ 203	    currentTurnId: null,
+ 204	    currentResponseId: null,
+ 205	    callStartTime: session.callStartTime,
+ 206	    updatedAt: new Date(),
+ 207	  });
+ 208	
+ 209	  return session;
+ 210	}
+ 211	
+ 212	/**
+ 213	 * Look up a session by deviceId. Returns null if none exists.
+ 214	 */
+ 215	export function findByDeviceId(deviceId: string): VoiceSession | null {
+ 216	  const sessionId = sessionIdByDeviceId.get(deviceId);
+ 217	  if (!sessionId) return null;
+ 218	  return sessionsBySessionId.get(sessionId) ?? null;
+ 219	}
+ 220	
+ 221	/**
+ 222	 * Look up a session by sessionId. Returns null if none exists.
+ 223	 */
+ 224	export function findBySessionId(sessionId: string): VoiceSession | null {
+ 225	  return sessionsBySessionId.get(sessionId) ?? null;
+ 226	}
+ 227	
+ 228	/**
+ 229	 * Attempt to reclaim a recovering session for a reconnecting device.
+ 230	 * Returns the reclaimed session, or null if no recovering session found.
+ 231	 *
+ 232	 * ATOMIC: clears recovery timer, increments connectionGeneration, sets
+ 233	 * state to "active", and attaches the new WS — all before returning.
+ 234	 * Logs CALL_RECONNECTED.
+ 235	 */
+ 236	export function reclaimSession(
+ 237	  deviceId: string,
+ 238	  ws: WsLike,
+ 239	): VoiceSession | null {
+ 240	  const session = findByDeviceId(deviceId);
+ 241	  if (!session || session.state !== "recovering") return null;
+ 242	
+ 243	  // Atomically clear timer + increment generation + attach new ws.
+ 244	  if (session.recoveryTimer !== null) {
+ 245	    clearTimeout(session.recoveryTimer);
+ 246	    session.recoveryTimer = null;
+ 247	  }
+ 248	  session.connectionGeneration += 1;
+ 249	  session.state = "active";
+ 250	  session.ws = ws;
+ 251	
+ 252	  // P1-3: push timestamp into ring buffer, cap at 20 entries.
+ 253	  session.reconnectTimestamps.push(new Date());
+ 254	  if (session.reconnectTimestamps.length > 20) {
+ 255	    session.reconnectTimestamps.shift();
+ 256	  }
+ 257	  session.reconnectAttempts += 1; // diagnostic only
+ 258	
+ 259	  appendLog(
+ 260	    session,
+ 261	    "CALL_RECONNECTED",
+ 262	    `gen=${session.connectionGeneration} reconnects=${session.reconnectAttempts} cause=${session.lastReconnectCause ?? "unknown"}`,
+ 263	  );
+ 264	
+ 265	  // P1-1: persist reconnect state.
+ 266	  PersistentSessionStateGuard.queue({
+ 267	    sessionId: session.sessionId,
+ 268	    deviceId: session.deviceId,
+ 269	    connectionGeneration: session.connectionGeneration,
+ 270	    state: session.state,
+ 271	    currentTurnId: session.currentTurnId ?? null,
+ 272	    currentResponseId: session.currentResponseId ?? null,
+ 273	    callStartTime: session.callStartTime,
+ 274	    updatedAt: new Date(),
+ 275	  });
+ 276	
+ 277	  return session;
+ 278	}
+ 279	
+ 280	/**
+ 281	 * Mark a session as recovering after a WebSocket disconnect.
+ 282	 * Starts a 60-second timer that calls finalise() if no reconnect arrives.
+ 283	 * The timer re-checks state AND connectionGeneration before finalising
+ 284	 * so a concurrent reclaimSession() wins the race cleanly.
+ 285	 * Logs CALL_RECOVERING.
+ 286	 */
+ 287	export function markRecovering(sessionId: string): void {
+ 288	  const session = sessionsBySessionId.get(sessionId);
+ 289	  if (!session) return;
+ 290	
+ 291	  session.state = "recovering";
+ 292	  session.ws = null;
+ 293	
+ 294	  // Snapshot the generation at the time we start the timer.
+ 295	  const generationAtStart = session.connectionGeneration;
+ 296	
+ 297	  if (session.recoveryTimer !== null) {
+ 298	    clearTimeout(session.recoveryTimer);
+ 299	  }
+ 300	
+ 301	  session.recoveryTimer = setTimeout(() => {
+ 302	    const current = sessionsBySessionId.get(sessionId);
+ 303	    if (!current) return;
+ 304	    // Only finalise if state is still "recovering" AND generation hasn't
+ 305	    // changed (i.e. reclaimSession() hasn't already run).
+ 306	    if (
+ 307	      current.state === "recovering" &&
+ 308	      current.connectionGeneration === generationAtStart
+ 309	    ) {
+ 310	      finalise(sessionId, "recovery_timeout");
+ 311	    }
+ 312	  }, 60_000);
+ 313	
+ 314	  appendLog(session, "CALL_RECOVERING", `gen=${session.connectionGeneration}`);
+ 315	
+ 316	  // P1-1: persist recovering state.
+ 317	  PersistentSessionStateGuard.queue({
+ 318	    sessionId: session.sessionId,
+ 319	    deviceId: session.deviceId,
+ 320	    connectionGeneration: session.connectionGeneration,
+ 321	    state: "recovering",
+ 322	    currentTurnId: session.currentTurnId ?? null,
+ 323	    currentResponseId: session.currentResponseId ?? null,
+ 324	    callStartTime: session.callStartTime,
+ 325	    updatedAt: new Date(),
+ 326	  });
+ 327	}
+ 328	
+ 329	/**
+ 330	 * Permanently close and remove a session.
+ 331	 * Clears the recovery timer, removes from both maps, and logs CALL_ENDED.
+ 332	 * Safe to call multiple times (idempotent via map removal).
+ 333	 */
+ 334	export function finalise(sessionId: string, reason: string): void {
+ 335	  const session = sessionsBySessionId.get(sessionId);
+ 336	  if (!session) return;
+ 337	
+ 338	  session.state = "closed";
+ 339	
+ 340	  if (session.recoveryTimer !== null) {
+ 341	    clearTimeout(session.recoveryTimer);
+ 342	    session.recoveryTimer = null;
+ 343	  }
+ 344	
+ 345	  if (session.silenceTimer !== null) {
+ 346	    clearTimeout(session.silenceTimer);
+ 347	    session.silenceTimer = null;
+ 348	  }
+ 349	
+ 350	  sessionsBySessionId.delete(sessionId);
+ 351	  sessionIdByDeviceId.delete(session.deviceId);
+ 352	
+ 353	  appendLog(session, "CALL_ENDED", `reason=${reason}`);
+ 354	
+ 355	  // P1-2: fire end-of-call summarisation. Must be fire-and-forget — the call
+ 356	  // pipeline must never block on this. Pass deviceId + callStartTime so the
+ 357	  // service can fetch turns from messagesTable (turns are not stored on session).
+ 358	  CallSummarisationService.summariseCall(
+ 359	    session.sessionId,
+ 360	    session.deviceId,
+ 361	    session.callStartTime,
+ 362	  );
+ 363	
+ 364	  // P1-1: persist terminal state then clear the chain.
+ 365	  PersistentSessionStateGuard.queue({
+ 366	    sessionId: session.sessionId,
+ 367	    deviceId: session.deviceId,
+ 368	    connectionGeneration: session.connectionGeneration,
+ 369	    state: "closed",
+ 370	    currentTurnId: null,
+ 371	    currentResponseId: null,
+ 372	    callStartTime: session.callStartTime,
+ 373	    updatedAt: new Date(),
+ 374	  });
+ 375	  PersistentSessionStateGuard.clearChain(session.sessionId);
+ 376	}
+ 377	
+ 378	/**
+ 379	 * Increment and return the session's sequence number.
+ 380	 */
+ 381	export function incrementSequence(session: VoiceSession): number {
+ 382	  session.sequenceNumber += 1;
+ 383	  return session.sequenceNumber;
+ 384	}
+ 385	
+ 386	/**
+ 387	 * Validate that an incoming message belongs to the current session
+ 388	 * generation. Returns false (and logs) for stale messages without throwing.
+ 389	 */
+ 390	export function validateMessage(
+ 391	  session: VoiceSession,
+ 392	  msg: { sessionId: string; connectionGeneration: number },
+ 393	): boolean {
+ 394	  if (msg.sessionId !== session.sessionId) {
+ 395	    appendLog(
+ 396	      session,
+ 397	      "VALIDATE_FAIL",
+ 398	      `sessionId mismatch: got=${msg.sessionId}`,
+ 399	    );
+ 400	    return false;
+ 401	  }
+ 402	  if (msg.connectionGeneration < session.connectionGeneration) {
+ 403	    appendLog(
+ 404	      session,
+ 405	      "VALIDATE_STALE",
+ 406	      `gen: got=${msg.connectionGeneration} current=${session.connectionGeneration}`,
+ 407	    );
+ 408	    return false;
+ 409	  }
+ 410	  return true;
+ 411	}
+ 412	
+ 413	/**
+ 414	 * Cancel the current in-flight turn atomically and idempotently.
+ 415	 * Safe to call multiple times — clears ownership fields and aborts the
+ 416	 * AbortController if one is set. Never throws.
+ 417	 */
+ 418	export function cancelCurrentTurn(
+ 419	  session: VoiceSession,
+ 420	  reason: string,
+ 421	): void {
+ 422	  const hadTurn = session.currentTurnId !== null;
+ 423	
+ 424	  // Clear ownership fields first so any concurrent callbacks that check
+ 425	  // them see null before the AbortController fires.
+ 426	  session.currentSpeechId = null;
+ 427	  session.currentTurnId = null;
+ 428	  session.currentResponseId = null;
+ 429	
+ 430	  // Abort any active controller. AbortController.abort() is safe to call
+ 431	  // multiple times; the second call is a no-op.
+ 432	  if (session.currentAbortController !== null) {
+ 433	    try {
+ 434	      session.currentAbortController.abort();
+ 435	    } catch {
+ 436	      // abort() never throws in practice, but guard anyway.
+ 437	    }
+ 438	    session.currentAbortController = null;
+ 439	  }
+ 440	
+ 441	  if (hadTurn) {
+ 442	    appendLog(session, "TURN_CANCELLED", `reason=${reason}`);
+ 443	  }
+ 444	}
+ 445	
+ 446	// ---------------------------------------------------------------------------
+ 447	// P1-3 — Windowed reconnect rate limiter.
+ 448	// ---------------------------------------------------------------------------
+ 449	
+ 450	/**
+ 451	 * Returns true if the session has exceeded the reconnect rate limit.
+ 452	 *
+ 453	 * Limit: 10 reconnects within any rolling 10-minute window.
+ 454	 * Grace mode: if lastReconnectCause is 'network_drop', allow +5 (limit → 15).
+ 455	 *
+ 456	 * reconnectAttempts (lifetime counter) is intentionally NOT used here —
+ 457	 * it is a diagnostic field only and must never gate termination.
+ 458	 */
+ 459	export function isReconnectRateLimited(session: VoiceSession): boolean {
+ 460	  const windowMs = 10 * 60 * 1000; // 10 minutes
+ 461	  const cutoff = Date.now() - windowMs;
+ 462	
+ 463	  const recentCount = session.reconnectTimestamps.filter(
+ 464	    (ts) => ts.getTime() > cutoff,
+ 465	  ).length;
+ 466	
+ 467	  const limit = session.lastReconnectCause === "network_drop" ? 15 : 10;
+ 468	
+ 469	  return recentCount >= limit;
+ 470	}
+ 471	
+ 472	// ---------------------------------------------------------------------------
+ 473	// P1-1 — Boot recovery: reload 'recovering' sessions from DB into registry.
+ 474	// ---------------------------------------------------------------------------
+ 475	
+ 476	/**
+ 477	 * Called once on server boot.
+ 478	 * Loads any sessions with state = 'recovering' from DB back into registry.
+ 479	 * Allows reconnecting clients to reclaim their session normally.
+ 480	 *
+ 481	 * P1-3: lastReconnectCause is set to 'network_drop' for all restored sessions
+ 482	 * so they automatically enter grace mode (limit 15 instead of 10).
+ 483	 */
+ 484	export async function restoreRecoveringSessions(): Promise<void> {
+ 485	  const rows = await db
+ 486	    .select()
+ 487	    .from(activeSessionsTable)
+ 488	    .where(eq(activeSessionsTable.state, "recovering"));
+ 489	
+ 490	  for (const row of rows) {
+ 491	    const session: VoiceSession = {
+ 492	      sessionId: row.sessionId,
+ 493	      deviceId: row.deviceId,
+ 494	      connectionGeneration: row.connectionGeneration,
+ 495	      sequenceNumber: 0,
+ 496	      state: "recovering",
+ 497	      ws: null,
+ 498	
+ 499	      currentSpeechId: null,
+ 500	      currentTurnId: row.currentTurnId ?? null,
+ 501	      currentResponseId: row.currentResponseId ?? null,
+ 502	      currentAbortController: null,
+ 503	      processedUtteranceIds: new Set(),
+ 504	      completedTurnIds: new Set(),
+ 505	
+ 506	      callStartTime: new Date(row.callStartTime),
+ 507	      lastAudioReceivedAt: null,
+ 508	      silenceWarningSent: false,
+ 509	
+ 510	      totalTokensUsed: 0,
+ 511	      totalTtsChars: 0,
+ 512	
+ 513	      // P1-3: reset window — old timestamps no longer relevant after restart.
+ 514	      // Cause set to 'network_drop' → grace mode (limit 15) automatically.
+ 515	      reconnectTimestamps: [],
+ 516	      reconnectAttempts: 0,
+ 517	      lastReconnectCause: "network_drop",
+ 518	
+ 519	      consecutiveContextFailures: 0,
+ 520	
+ 521	      recoveryTimer: null,
+ 522	      silenceTimer: null,
+ 523	
+ 524	      log: [],
+ 525	
+ 526	      // P1-4: orchestration fields
+ 527	      streamActive: false,
+ 528	      lastActiveHeartbeatAt: new Date(),
+ 529	      silenceStartedAt: null,
+ 530	      lastSpeechAt: null,
+ 531	      intentDetected: false,
+ 532	      silenceThreshold: 3500,
+ 533	      lastResponseBuffer: null,
+ 534	      passiveMode: false,
+ 535	      currentResponseText: "",
+ 536	      llmStreamActive: false,
+ 537	      wasInterrupted: false,
+ 538	      interruptedAt: null,
+ 539	      remainingResponse: null,
+ 540	      rollingAudioBuffer: Buffer.alloc(0),
+ 541	    };
+ 542	
+ 543	    sessionsBySessionId.set(session.sessionId, session);
+ 544	    sessionIdByDeviceId.set(session.deviceId, session.sessionId);
+ 545	
+ 546	    console.info(
+ 547	      "[P1-1] Restored recovering session:",
+ 548	      session.sessionId,
+ 549	      "deviceId:",
+ 550	      session.deviceId,
+ 551	    );
+ 552	  }
+ 553	}
+ 554	
+ 555	// ---------------------------------------------------------------------------
+ 556	// Convenience: export the registry as a namespace-style object so callers
+ 557	// can do: import * as registry from "./VoiceSessionRegistry"
+ 558	// ---------------------------------------------------------------------------
+ 559	export const registry = {
+ 560	  create,
+ 561	  findByDeviceId,
+ 562	  findBySessionId,
+ 563	  reclaimSession,
+ 564	  markRecovering,
+ 565	  finalise,
+ 566	  incrementSequence,
+ 567	  validateMessage,
+ 568	  cancelCurrentTurn,
+ 569	  isReconnectRateLimited,
+ 570	  restoreRecoveringSessions,
+ 571	  sessionsBySessionId,
+ 572	  sessionIdByDeviceId,
+ 573	};
+
+================================================================================
+END OF RESPONSE
+================================================================================

@@ -1,0 +1,43 @@
+================================================================================
+ASHLEY PROJECT — CODE REQUEST FOR WREN
+Date: 18 June 2026
+================================================================================
+
+DO NOT BUILD ANYTHING.
+DO NOT FIX ANYTHING YET.
+
+The file dump was truncated. I need the following specific sections
+before the fix can be reviewed and approved.
+
+================================================================================
+SECTIONS REQUIRED
+================================================================================
+
+FROM: artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+
+Send the following functions in full, no truncation:
+
+1. handleVoiceTurn() — the complete function
+2. The TTS streaming section — wherever tts_done is sent to the client
+3. Any function that sets session.state after TTS completes
+4. The full list of session state transitions in this file
+   (what sets state to "listening", "tts_streaming", "llm_pending" etc.)
+
+FROM: artifacts/api-server/src/lib/VoiceSessionRegistry.ts
+
+5. Lines 197 to end of file — the truncated section not received
+
+================================================================================
+FORMAT
+================================================================================
+
+Plain text. Full code. No truncation. No "..." shortcuts.
+If too large for one response, send in numbered blocks.
+Complete each function before starting the next.
+
+================================================================================
+WAIT FOR INSTRUCTIONS AFTER SENDING.
+DO NOT ATTEMPT ANY FIXES UNTIL TOLD TO.
+================================================================================
+END OF REQUEST
+================================================================================

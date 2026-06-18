@@ -323,3 +323,9 @@ id = "VWZSM4HRaxpUamjSHiyvZ"
 uri = "file://tts-race-files-18Jun2026.txt"
 type = "text"
 title = "TTS Race Fix — Source Files (18 Jun 2026)"
+
+[[outputs]]
+id = "re87vGHtIymTPYXBZpu4S"
+uri = "file://tts-race-sections-18Jun2026.txt"
+type = "text"
+title = "TTS Race Fix — Requested Sections (18 Jun 2026)"
