@@ -93,12 +93,20 @@ export function useVoiceCall(): {
   error: string | null;
   /** Live mic level in dBFS (~-160 silence … 0 peak). null when mic closed. */
   metering: number | null;
+  /** Audit log entries (newest first, capped at 40). Debug overlay only. */
+  auditLog: string[];
 } & VoiceCallActions {
   const [phase, setPhase] = useState<VoiceCallPhase>("idle");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [userTranscript, setUserTranscript] = useState("");
   const [ashleyResponse, setAshleyResponse] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [auditLog, setAuditLog] = useState<string[]>([]);
+
+  const addLog = useCallback((msg: string): void => {
+    const ts = new Date().toISOString().slice(11, 22); // HH:MM:SS.mm
+    setAuditLog(prev => [`${ts} ${msg}`, ...prev].slice(0, 40));
+  }, []);
 
   const phaseRef = useRef<VoiceCallPhase>("idle");
   const setPhaseSync = useCallback((p: VoiceCallPhase) => {
@@ -161,8 +169,10 @@ export function useVoiceCall(): {
       // Setting ttsCompleteRef HERE (not on tts_done) ensures the mic gate only
       // lifts after the device has actually finished playing, not when the server
       // finished sending — those two events are not the same.
+      addLog(`playNext: drained srvDone=${ttsServerDoneRef.current} phase=${phaseRef.current}`);
       if (phaseRef.current === "speaking" && ttsServerDoneRef.current) {
         ttsCompleteRef.current = true;
+        addLog("ttsComplete=true — opening mic");
         setPhaseSync("listening");
         void openMicRef.current();
       }
@@ -175,9 +185,11 @@ export function useVoiceCall(): {
       const player = createAudioPlayer({ uri });
       playerRef.current = player;
       playerUriRef.current = uri;
+      addLog(`player: started q=${playQueueRef.current.length}`);
       setPhaseSync("speaking");
       player.addListener("playbackStatusUpdate", (status) => {
         if (status.didJustFinish) {
+          addLog("player: finished");
           playerRef.current = null;
           playerUriRef.current = null;
           try { player.remove(); } catch { /* ignore */ }
@@ -228,7 +240,10 @@ export function useVoiceCall(): {
   const openMicRef = useRef<() => Promise<void>>(async () => {});
 
   const submitSegment = useCallback(async (): Promise<void> => {
-    if (phaseRef.current === "submitting" || phaseRef.current === "thinking" || phaseRef.current === "speaking") return;
+    if (phaseRef.current === "submitting" || phaseRef.current === "thinking" || phaseRef.current === "speaking") {
+      addLog(`submit BLOCKED phase=${phaseRef.current}`);
+      return;
+    }
     clearAutoSubmitTimer();
     vadActiveRef.current = false;
     setPhaseSync("submitting");
@@ -330,11 +345,15 @@ export function useVoiceCall(): {
   const openMic = useCallback(async (): Promise<void> => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     if (phaseRef.current === "ended") return;
-    // Mutex: only one openMic call may proceed at a time. A second concurrent
-    // call would hit prepareToRecordAsync while the first is still preparing,
-    // causing "AudioRecorder has already been prepared" on Android.
-    if (!ttsCompleteRef.current) return;
-    if (micOpeningRef.current) return;
+    if (!ttsCompleteRef.current) {
+      addLog(`openMic BLOCKED ttsComplete=false srvDone=${ttsServerDoneRef.current}`);
+      return;
+    }
+    if (micOpeningRef.current) {
+      addLog("openMic BLOCKED mutex");
+      return;
+    }
+    addLog("openMic start");
     micOpeningRef.current = true;
 
     // Reset VAD state for new segment.
@@ -354,15 +373,14 @@ export function useVoiceCall(): {
       await recorder.start();
       vadActiveRef.current = true;
       setPhaseSync("listening");
-      // Release mutex once recorder is fully started — the recorder is now
-      // running and a subsequent openMic call (e.g. after the next submit)
-      // must be allowed through.
+      addLog("openMic OK — recording");
       micOpeningRef.current = false;
 
       // Fallback: if metering-based VAD never fires (metering null on this
       // device), auto-submit after 3 s so the call doesn't hang forever.
       autoSubmitTimerRef.current = setTimeout(() => {
         autoSubmitTimerRef.current = null;
+        addLog(`autoSubmit fired phase=${phaseRef.current}`);
         if (
           phaseRef.current === "listening" ||
           phaseRef.current === "user_speaking"
@@ -410,6 +428,7 @@ export function useVoiceCall(): {
           chunkBufRef.current = [];
           ttsCompleteRef.current = false;   // device not done playing
           ttsServerDoneRef.current = false; // server not done sending
+          addLog("WS speech_start — gates reset");
           break;
 
         case "sentence_end":
@@ -421,10 +440,12 @@ export function useVoiceCall(): {
           const text = (msg["responseText"] as string | undefined) ?? "";
           if (text) setAshleyResponse(text);
           ttsServerDoneRef.current = true;
+          addLog(`WS tts_done — q=${playQueueRef.current.length} playing=${!!playerRef.current}`);
           // If nothing was queued (silent/empty response), open mic directly.
           // Otherwise playNext opens mic after the last audio track finishes.
           if (playQueueRef.current.length === 0 && !playerRef.current) {
             ttsCompleteRef.current = true;
+            addLog("ttsComplete=true (no audio) — opening mic");
             setPhaseSync("listening");
             void openMicRef.current();
           }
@@ -562,6 +583,7 @@ export function useVoiceCall(): {
     sessionId,
     userTranscript,
     ashleyResponse,
+    auditLog,
     error,
     metering: recorder.metering,
     connect,

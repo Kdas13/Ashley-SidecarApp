@@ -101,6 +101,23 @@ function MicLevelBar({ metering }: { metering: number | null }): React.JSX.Eleme
 
 // ── Screen ────────────────────────────────────────────────────────────────────
 
+// ── Debug log panel ───────────────────────────────────────────────────────────
+
+function DebugLog({ entries }: { entries: string[] }): React.JSX.Element {
+  return (
+    <View style={styles.debugPanel}>
+      <Text style={styles.debugTitle}>DBG</Text>
+      <ScrollView style={styles.debugScroll} nestedScrollEnabled>
+        {entries.map((e, i) => (
+          <Text key={i} style={styles.debugEntry}>{e}</Text>
+        ))}
+      </ScrollView>
+    </View>
+  );
+}
+
+// ── Screen ────────────────────────────────────────────────────────────────────
+
 export default function VoiceCallScreen(): React.JSX.Element {
   const insets = useSafeAreaInsets();
   const {
@@ -109,6 +126,7 @@ export default function VoiceCallScreen(): React.JSX.Element {
     ashleyResponse,
     error,
     metering,
+    auditLog,
     connect,
     disconnect,
     submitNow,
@@ -176,6 +194,9 @@ export default function VoiceCallScreen(): React.JSX.Element {
           )}
           {!!error && <Text style={styles.errorText}>{error}</Text>}
         </ScrollView>
+
+        {/* Debug audit log */}
+        <DebugLog entries={auditLog} />
 
         {/* Controls */}
         <View style={styles.controls}>
@@ -354,5 +375,29 @@ const styles = StyleSheet.create({
     color: "#ef4444",
     fontSize: 14,
     fontFamily: "Inter_500Medium",
+  },
+  debugPanel: {
+    width: "100%",
+    paddingHorizontal: 16,
+    marginBottom: 8,
+  },
+  debugTitle: {
+    color: "rgba(255,255,255,0.2)",
+    fontSize: 9,
+    fontFamily: "Inter_600SemiBold",
+    letterSpacing: 1,
+    marginBottom: 3,
+  },
+  debugScroll: {
+    maxHeight: 130,
+    backgroundColor: "rgba(0,0,0,0.4)",
+    borderRadius: 6,
+    padding: 6,
+  },
+  debugEntry: {
+    color: "rgba(255,255,255,0.45)",
+    fontSize: 9,
+    fontFamily: "Inter_400Regular",
+    lineHeight: 14,
   },
 });
