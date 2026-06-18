@@ -123,6 +123,11 @@ export function useVoiceCall(): {
   // Bridges the gap where playerRef is null between tracks but playback is
   // still in progress — prevents tts_done from opening the mic too early.
   const playBusyRef = useRef(false);
+  // Mutex: only one playNext call may be in flight at a time. Concurrent
+  // callers (flushChunkBuffer + didJustFinish arriving as separate JS tasks
+  // before the first microtask runs) return early — the running instance
+  // drains the queue via the didJustFinish → playNext loop.
+  const playNextRunningRef = useRef(false);
 
   const playNextRef = useRef<() => Promise<void>>(async () => {});
   const recorder = useVoiceRecorder();
@@ -153,6 +158,7 @@ export function useVoiceCall(): {
   const stopPlayback = useCallback((): void => {
     playQueueRef.current = [];
     playBusyRef.current = false;
+    playNextRunningRef.current = false;
     const p = playerRef.current;
     const u = playerUriRef.current;
     playerRef.current = null;
@@ -167,21 +173,28 @@ export function useVoiceCall(): {
   }, []);
 
   const playNext = useCallback(async (): Promise<void> => {
+    // Mutex: if a playNext is already in flight, return immediately.
+    // The running instance will drain the queue via its didJustFinish → playNext loop.
+    if (playNextRunningRef.current) {
+      addLog("playNext: skip — already running");
+      return;
+    }
+    playNextRunningRef.current = true;
+
     const uri = playQueueRef.current.shift();
     if (!uri) {
-      // Queue drained — only open mic once the server has also sent tts_done
-      // AND no track is currently being set up (playBusyRef guards the async gap
-      // between one track ending and the next player being created).
-      addLog(`playNext: drained srvDone=${ttsServerDoneRef.current} busy=${playBusyRef.current} phase=${phaseRef.current}`);
-      if (!playBusyRef.current && phaseRef.current === "speaking" && ttsServerDoneRef.current) {
+      // Queue drained — only open mic once the server has also sent tts_done.
+      addLog(`playNext: drained srvDone=${ttsServerDoneRef.current} phase=${phaseRef.current}`);
+      if (phaseRef.current === "speaking" && ttsServerDoneRef.current) {
         ttsCompleteRef.current = true;
         addLog("ttsComplete=true — opening mic");
         setPhaseSync("listening");
         void openMicRef.current();
       }
+      playNextRunningRef.current = false;
       return;
     }
-    // Mark busy BEFORE the first await so tts_done cannot see a false-empty window.
+
     playBusyRef.current = true;
     try {
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
@@ -195,17 +208,21 @@ export function useVoiceCall(): {
       player.addListener("playbackStatusUpdate", (status) => {
         if (status.didJustFinish) {
           addLog("player: finished");
-          playBusyRef.current = false; // clear BEFORE playerRef so tts_done sees correct state
+          playBusyRef.current = false;
           playerRef.current = null;
           playerUriRef.current = null;
+          // Release mutex BEFORE calling playNext so the next call can enter.
+          playNextRunningRef.current = false;
           try { player.remove(); } catch { /* ignore */ }
           FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => { /* ignore */ });
           void playNextRef.current();
         }
       });
       player.play();
+      // Note: playNextRunningRef stays true until didJustFinish releases it.
     } catch {
       playBusyRef.current = false;
+      playNextRunningRef.current = false;
       FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => { /* ignore */ });
       void playNextRef.current();
     }
@@ -229,7 +246,8 @@ export function useVoiceCall(): {
         encoding: FileSystem.EncodingType.Base64,
       });
       playQueueRef.current.push(uri);
-      if (!playerRef.current) void playNextRef.current();
+      // Always call playNext — the mutex inside ensures only one runs at a time.
+      void playNextRef.current();
     } catch { /* audio lost, call continues */ }
   }, []);
 
@@ -447,15 +465,11 @@ export function useVoiceCall(): {
           const text = (msg["responseText"] as string | undefined) ?? "";
           if (text) setAshleyResponse(text);
           ttsServerDoneRef.current = true;
-          addLog(`WS tts_done — q=${playQueueRef.current.length} playing=${!!playerRef.current} busy=${playBusyRef.current}`);
-          // Only open mic here if there is truly no audio in flight — queue empty,
-          // no active player, AND playBusyRef is false (not between tracks).
-          if (playQueueRef.current.length === 0 && !playerRef.current && !playBusyRef.current) {
-            ttsCompleteRef.current = true;
-            addLog("ttsComplete=true (no audio) — opening mic");
-            setPhaseSync("listening");
-            void openMicRef.current();
-          }
+          addLog(`WS tts_done — q=${playQueueRef.current.length} running=${playNextRunningRef.current}`);
+          // Route through playNext so the same drain logic handles both the
+          // "no audio queued" case and the "last track just finished" case.
+          // The mutex ensures this is a no-op if playback is already in flight.
+          void playNextRef.current();
           break;
         }
 
