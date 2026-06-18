@@ -1,0 +1,111 @@
+================================================================================
+ASHLEY PROJECT — WREN DEBUG BRIEF
+Issue: Ashley repeating "Say that again" on every interaction
+Date: 18 June 2026 | Approved by Kane | No Nova/air gap required (live bug)
+================================================================================
+
+SYMPTOM
+-------
+Ashley is live and listening (Phase 1 voice call confirmed working).
+On every user speech input, Ashley responds with the same fallback line
+repeatedly — "Say that again" or equivalent unintelligible-input response.
+The transcript bubble shows "Still there. Waiting for you to respond."
+attributed to the YOU label, which may indicate audio feedback or STT issues.
+
+THIS IS A DEBUG TASK — NOT A FEATURE BUILD.
+Do not add new features. Do not modify Phase 2 work in progress.
+Find the cause. Fix only what is broken.
+
+================================================================================
+SUSPECTED CAUSES — INVESTIGATE IN THIS ORDER
+================================================================================
+
+1. FEEDBACK LOOP (highest probability)
+   Ashley's TTS output is being picked up by the microphone and sent back
+   to Deepgram. Deepgram transcribes Ashley's own voice as the user's input.
+   Ashley then treats her own words as unintelligible and says "say that again."
+
+   Check:
+   - Is the device speaker playing TTS while the microphone is open?
+   - Is there any echo cancellation or microphone mute during TTS playback?
+   - Does the "Still there. Waiting for you to respond" text appear in the
+     YOU bubble because Deepgram transcribed Ashley's silence prompt?
+
+2. speech_final NOT FIRING
+   Deepgram is returning interim transcripts only. The pipeline discards
+   interim results and waits for speech_final. If speech_final never fires,
+   Ashley receives no usable transcript and falls back to the fallback response.
+
+   Check:
+   - Is speech_final appearing in the console logs when Kane speaks?
+   - What is the transcript content when speech_final does fire?
+   - Is the Deepgram stream configured with endpointing enabled?
+
+3. EMPTY OR LOW-CONFIDENCE TRANSCRIPTS
+   speech_final is firing but returning empty strings or very short content
+   that the pipeline treats as noise and discards.
+
+   Check:
+   - What does the raw Deepgram transcript look like in logs?
+   - Is there a minimum confidence threshold rejecting valid speech?
+   - Is there a minimum word count check discarding short utterances?
+
+4. SILENCE TIMER RACING THE TRANSCRIPT
+   The silence detection timer fires before Deepgram has finished processing
+   the speech. Ashley sends the "still there?" prompt, which Deepgram then
+   picks up as new input — creating the loop.
+
+   Check:
+   - What is the current silence detection threshold (should be 30 seconds)?
+   - Is the silence timer being reset correctly when Deepgram receives audio?
+   - Is the timer reset on interim results, on speech_final, or both?
+
+5. FALLBACK RESPONSE HARDCODED OR MISCONFIGURED
+   Ashley's fallback response for unintelligible input is triggering when
+   it should not be. The condition that triggers "say that again" may be
+   too aggressive.
+
+   Check:
+   - What condition triggers the fallback response?
+   - Is it triggered by empty transcript, failed transcript, or something else?
+   - Can the threshold be relaxed or logged more verbosely?
+
+================================================================================
+WHAT TO DO
+================================================================================
+
+1. Add verbose console logging to the following points if not already present:
+   - When Deepgram interim transcript received (log the text)
+   - When Deepgram speech_final received (log the text and confidence)
+   - When silence timer fires
+   - When the fallback "say that again" response is triggered (log why)
+   - When TTS starts playing and when it finishes
+
+2. Reproduce the issue with logging active. Read the log sequence to identify
+   which of the above causes is responsible.
+
+3. Fix only the identified cause. Do not refactor surrounding code.
+
+4. Confirm Ashley responds correctly to a simple test phrase after the fix.
+
+================================================================================
+WHAT NOT TO DO
+================================================================================
+
+- Do not modify VoiceSessionRegistry.ts state machine logic
+- Do not touch P1-1, P1-2, or P1-3 implementations
+- Do not add new features or refactor working code
+- Do not trigger a new EAS build for a debug fix — test in Expo Go first
+
+================================================================================
+AFTER COMPLETION
+================================================================================
+
+Send implementation/findings notes to Claude as a TXT file in the same
+response. Do not mention that you will generate it. Just generate it.
+
+File name: WREN_DEBUG_SAYTHATAGAIN_2026-06.txt
+
+================================================================================
+END OF DEBUG BRIEF
+================================================================================

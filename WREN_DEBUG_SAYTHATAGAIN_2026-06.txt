@@ -1,0 +1,159 @@
+================================================================================
+WREN_DEBUG_SAYTHATAGAIN_2026-06.txt
+Ashley Voice Call — "Say that again" loop debug findings
+Date: 18 June 2026
+================================================================================
+
+SYMPTOM OBSERVED
+----------------
+Every user input received the same fallback response. The YOU bubble showed
+"Still there. Waiting for you to respond." — text that belongs to Ashley's
+silence prompt, not the user. This confirmed the echo/feedback loop as the
+primary cause. After partial fixes, the symptom changed to Ashley speaking a
+concatenated response: "Sorry, I didn't quite get that. Sorry, can you say
+that again?" — two clips played as one audio file.
+
+================================================================================
+INVESTIGATION — CAUSES IN ORDER FOUND
+================================================================================
+
+CAUSE 1 — speakClipOrText sent raw binary with no envelope (ROOT CAUSE)
+------------------------------------------------------------------------
+All pre-generated audio clips (thinking, say-that-again, call-dropped) are
+sent to the client via speakClipOrText(). Before this fix, that function sent
+only raw binary bytes — no speech_start, no sentence_end, no tts_done.
+
+On the client, binary frames are pushed to chunkBufRef and held there until
+sentence_end or tts_done arrives to flush them. Without these signals:
+  - The clip binary sat in chunkBufRef indefinitely
+  - flushChunkBuffer() was never called
+  - The clip audio never played
+  - The client was never told to close the mic
+
+The echo fix added in the previous session (ttsCompleteRef flag) only protects
+against mic reopening between sentences of the MAIN turn pipeline. It has no
+effect on clips because clips never sent speech_start — so ttsCompleteRef was
+never set to false, and the mic stayed open throughout clip "playback" that
+was not actually playing.
+
+CAUSE 2 — thinking clip and say-that-again clip concatenated
+-------------------------------------------------------------
+When the LLM is slow (firstTokenWatchdog fires at 8s), the thinking clip
+binary is sent to chunkBufRef. If the LLM then fails, the say-that-again clip
+binary is also sent to chunkBufRef. The main turn's tts_done (sent at the end
+of runLLMAndTTSPipeline) then triggers flushChunkBuffer(), which concatenated
+both clips into one audio file and played them as: "Hang on, I'm thinking...
+Sorry, can you say that again?" This is what Kane heard as "Sorry, I didn't
+quite get that. Sorry, can you say that again?"
+
+CAUSE 3 — echo (already partially addressed)
+---------------------------------------------
+The silence monitor's "Still there?" prompt calls speakFallback() in
+voice-call.ts, which DOES send speech_start and tts_done correctly (that
+function was written correctly). However, with the mic open during clip
+playback (Cause 1), Ashley's clip audio was being picked up by the mic,
+transcribed, and submitted as the user's speech_final. The LLM then generated
+a response to Ashley's own words — producing "Still there. Waiting for you
+to respond." which appeared in the YOU bubble.
+
+================================================================================
+WHAT WAS CHECKED AND RULED OUT
+================================================================================
+
+speech_final firing: not the issue. The transcription pipeline was working.
+The problem was WHAT got transcribed — Ashley's own audio via the open mic.
+
+Empty/low-confidence transcripts: not the issue. Transcripts were non-empty;
+they just contained Ashley's words.
+
+Silence timer racing: not the issue. The 30s silence threshold is correct.
+The timer was functioning normally. The problem was downstream.
+
+Fallback threshold too aggressive: not the issue. The fallback triggers
+correctly. The issue was that the fallback clip's audio was being echoed back.
+
+================================================================================
+THE FIX
+================================================================================
+
+speakClipOrText() in VoiceOrchestrationService.ts was rewritten to send a
+complete audio lifecycle envelope around every clip:
+
+  1. speech_start (own clipSpeechId, NOT the main turn's speechId)
+     → client sets ttsCompleteRef=false, clears chunkBufRef
+
+  2. binary clip (or TTS stream for text fallback)
+     → client pushes to chunkBufRef
+
+  3. sentence_end
+     → client calls flushChunkBuffer() immediately
+     → clip is written to disk and added to the play queue
+     → player created, clip plays
+     → mic stays closed (ttsCompleteRef still false)
+
+  4. tts_done (own clipSpeechId)
+     → client sets ttsCompleteRef=true
+     → when play queue drains, mic reopens
+
+  5. session.currentSpeechId restored to savedSpeechId
+     → surrounding pipeline code (main tts_done at line 512) still works
+
+This makes every clip self-contained. Clips no longer accumulate in the
+buffer or interfere with each other. The thinking clip plays immediately
+when the watchdog fires; if the LLM then fails, the say-that-again clip
+plays as a separate audio unit with its own lifecycle.
+
+================================================================================
+AFFECTED CALL SITES
+================================================================================
+
+speakClipOrText is called from:
+  - firstTokenWatchdog (thinking clip)        — now correctly enveloped
+  - LLM error catch block (say-that-again)    — now correctly enveloped
+  - context failure handler (say-that-again)  — now correctly enveloped
+  - handleRepeatRequest (say-that-again)      — now correctly enveloped
+  - reconnect path (call-dropped)             — now correctly enveloped
+  - second reconnect path (call-dropped)      — now correctly enveloped
+
+speakFallback() in voice-call.ts was already correct — it sends speech_start,
+TTS stream, and tts_done. No change needed there.
+
+================================================================================
+WHAT WAS NOT TOUCHED
+================================================================================
+
+VoiceSessionRegistry.ts — not modified.
+P1-1, P1-2, P1-3 implementations — not modified.
+speakFallback() in voice-call.ts — not modified (already correct).
+Client audio playback queue — not modified for this fix.
+VAD or silence threshold — not modified.
+
+================================================================================
+FILES CHANGED
+================================================================================
+
+  artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+    — speakClipOrText rewritten with full speech_start/sentence_end/tts_done
+      envelope and save/restore of session.currentSpeechId (lines 134–223)
+
+  artifacts/mobile/lib/useVoiceCall.ts
+    — micOpeningRef mutex added to openMic (previous session, already published)
+
+  artifacts/mobile/lib/voiceInput.ts
+    — stateRef + defensive guard in start() (previous session, already published)
+
+================================================================================
+CURRENT STATE AFTER FIX
+================================================================================
+
+Clips now play as isolated audio units. The mic is closed during clip playback.
+The echo loop via clip audio is eliminated. The "thinking + say-that-again
+concatenation" bug is eliminated.
+
+Remaining risk: if the Gemini integration rate-limits on turn 2 (occasional),
+the say-that-again clip fires. This is expected and correct. The call continues
+after the clip plays — the mic reopens and the user can retry.
+
+================================================================================
+END
+================================================================================

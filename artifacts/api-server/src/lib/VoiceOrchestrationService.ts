@@ -141,28 +141,82 @@ async function speakClipOrText(
   )
     return;
 
-  if (hasClip(clipName)) {
-    try {
-      session.ws.send(getClipBuffer(clipName));
-    } catch (err) {
-      logger.warn({ err, clipName }, "VoiceOrch: failed to send clip buffer");
-    }
+  // Save caller's speechId so surrounding pipeline code (e.g. main tts_done)
+  // still works correctly after this returns.
+  const savedSpeechId = session.currentSpeechId;
+  const clipSpeechId  = crypto.randomUUID();
+
+  // Send speech_start so the client sets ttsCompleteRef=false and clears its
+  // chunk buffer. Without this the clip binary gets concatenated with whatever
+  // is already buffered (e.g. a previous clip) and plays as one mangled audio.
+  try {
+    session.ws.send(JSON.stringify({
+      type:                "speech_start",
+      speechId:             clipSpeechId,
+      sessionId:            session.sessionId,
+      connectionGeneration: session.connectionGeneration,
+      sequenceNumber:       registry.incrementSequence(session),
+      timestamp:            Date.now(),
+    }));
+  } catch {
     return;
   }
 
-  // Text TTS fallback.
-  try {
-    for await (const chunk of streamSpeechElevenLabs(fallbackText)) {
-      if (!session.ws) break;
-      try {
-        session.ws.send(chunk);
-      } catch {
-        break;
-      }
+  let sentChunks = 0;
+
+  if (hasClip(clipName)) {
+    try {
+      session.ws.send(getClipBuffer(clipName));
+      sentChunks = 1;
+    } catch (err) {
+      logger.warn({ err, clipName }, "VoiceOrch: failed to send clip buffer");
     }
-  } catch {
-    // ignore TTS errors for fallback clips
+  } else {
+    // Text TTS fallback.
+    try {
+      for await (const chunk of streamSpeechElevenLabs(fallbackText)) {
+        if (!session.ws) break;
+        try {
+          session.ws.send(chunk);
+          sentChunks++;
+        } catch {
+          break;
+        }
+      }
+    } catch {
+      // ignore TTS errors for fallback clips
+    }
   }
+
+  // sentence_end flushes the chunk buffer immediately so the clip plays on its
+  // own rather than sitting in the buffer until the next sentence_end/tts_done.
+  if (sentChunks > 0 && session.ws) {
+    try {
+      session.ws.send(JSON.stringify({
+        type:      "sentence_end",
+        speechId:  clipSpeechId,
+        timestamp: Date.now(),
+      }));
+    } catch {}
+  }
+
+  // tts_done signals end of this audio unit. Client sets ttsCompleteRef=true
+  // and reopens the mic once playback drains.
+  if (session.ws) {
+    try {
+      session.ws.send(JSON.stringify({
+        type:                "tts_done",
+        speechId:             clipSpeechId,
+        sessionId:            session.sessionId,
+        connectionGeneration: session.connectionGeneration,
+        sequenceNumber:       registry.incrementSequence(session),
+        timestamp:            Date.now(),
+      }));
+    } catch {}
+  }
+
+  // Restore the caller's speechId ownership.
+  session.currentSpeechId = savedSpeechId;
 }
 
 /**

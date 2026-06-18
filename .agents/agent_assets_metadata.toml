@@ -293,3 +293,9 @@ id = "pIx9x98euq1GGU_LSFc87"
 uri = "file://.local/voice-call-diagnostic-narrative.txt"
 type = "text"
 title = "Voice Call Diagnostic Narrative — 17 Jun 2026"
+
+[[outputs]]
+id = "Ov-Fspqt-3RRIINQdApjs"
+uri = "file://WREN_DEBUG_SAYTHATAGAIN_2026-06.txt"
+type = "text"
+title = "WREN_DEBUG_SAYTHATAGAIN_2026-06.txt"
