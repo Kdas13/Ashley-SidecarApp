@@ -19,7 +19,7 @@ import { streamSpeechElevenLabs } from "./elevenlabsStream.js";
 import * as registry from "./VoiceSessionRegistry.js";
 import type { VoiceSession, WsLike } from "./VoiceSessionRegistry.js";
 import { PersistentSessionStateGuard } from "./PersistentSessionStateGuard.js";
-import { classify } from "./VoiceIntentClassifier.js";
+import { classify, isDirectQuestion } from "./VoiceIntentClassifier.js";
 import type { CommandType } from "./VoiceIntentClassifier.js";
 import { VoiceContextAssembler } from "./VoiceContextAssembler.js";
 import { getClipBuffer, hasClip } from "./AudioClipRegistry.js";
@@ -719,6 +719,14 @@ export async function handleSpeechFinal(
     if (result.category === "DIRECT_QUESTION") {
       session.passiveMode = false;
     }
+  }
+
+  // Send intent-based silence threshold to client BEFORE starting the LLM
+  // pipeline so it is applied to the NEXT listen window (after Ashley speaks).
+  if (isDirectQuestion(utterance)) {
+    try {
+      session.ws?.send(JSON.stringify({ type: "set_silence_threshold", ms: 800 }));
+    } catch { /* ignore send failures */ }
   }
 
   // Persist user utterance (fire-and-forget) before LLM call.

@@ -1,0 +1,168 @@
+================================================================================
+ASHLEY PROJECT — FIX BRIEF FOR WREN
+Task: VAD threshold correction + intent-based silence threshold
+Date: 18 June 2026
+================================================================================
+
+TWO PARTS. READ BOTH BEFORE TOUCHING ANYTHING.
+
+This brief covers:
+  PART 1 — Three VAD constant corrections (useVoiceCall.ts)
+  PART 2 — Intent-based silence threshold (server + client)
+
+Part 2 was in the original P1-4 brief. It was not implemented.
+It is being specified again now. It will be implemented this time.
+
+================================================================================
+PART 1 — VAD THRESHOLD CORRECTION
+File: artifacts/mobile/lib/useVoiceCall.ts
+================================================================================
+
+Find the VAD config block at the top of the file:
+
+  const SILENCE_DB    = -30;
+  const SILENCE_MS    = 1200;
+  const MIN_SPEECH_MS = 200;
+
+Replace with:
+
+  const SILENCE_DB    = -45;    // was -30 — too sensitive, picking up room noise as speech
+  const SILENCE_MS    = 3500;   // was 1200 — was cutting Kane off mid-sentence
+  const MIN_SPEECH_MS = 500;    // was 200 — too short, catching non-speech sounds
+
+Also in useVoiceCall.ts — the fallback auto-submit timer at line ~415:
+
+  autoSubmitTimerRef.current = setTimeout(() => {
+    ...
+  }, 3000);
+
+Change 3000 to 4000. This is the fallback timer that fires if metering-based
+VAD never triggers. It must be longer than SILENCE_MS (3500) to avoid
+racing with the VAD.
+
+================================================================================
+PART 2 — INTENT-BASED SILENCE THRESHOLD
+Files: artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+       artifacts/mobile/lib/useVoiceCall.ts
+================================================================================
+
+WHAT THIS DOES:
+When Kane asks a direct question ("what do you think?", "your thoughts on
+that?", etc.), Ashley should respond almost immediately — not after the full
+3500ms silence window. The server detects the question pattern in the
+speech_final transcript and sends a message back to the client to shorten
+the next listen window to 800ms.
+
+--- SERVER SIDE ---
+File: artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+
+In handleSpeechFinal(), after the utterance is validated and before the
+LLM pipeline runs, add intent classification:
+
+  const isDirectQuestion = VoiceIntentClassifier.isDirectQuestion(transcript);
+
+  if (isDirectQuestion) {
+    try {
+      session.ws?.send(JSON.stringify({
+        type: "set_silence_threshold",
+        ms: 800
+      }));
+    } catch { /* ignore send failures */ }
+  }
+
+This must fire BEFORE the LLM call starts — the client needs to receive
+it and apply it to the NEXT listen window (after Ashley finishes speaking).
+
+In VoiceIntentClassifier, add or confirm the following static method:
+
+  public static isDirectQuestion(utterance: string): boolean {
+    const cleaned = utterance.trim().toLowerCase();
+    const hooks = [
+      'what do you think',
+      "what's your thought",
+      'what are your thoughts',
+      'do you agree',
+      'would you say',
+      'what would you do',
+      'your thoughts on that',
+      'what would you say',
+      'how do you feel about that',
+      'does that make sense to you',
+    ];
+    return hooks.some(h => cleaned.includes(h)) || cleaned.endsWith('?');
+  }
+
+This method must be separate from the full classify() method so it can
+be called independently without returning a full ClassificationResult.
+
+--- CLIENT SIDE ---
+File: artifacts/mobile/lib/useVoiceCall.ts
+
+Add a new ref at the top of the hook, with the other VAD state refs:
+
+  const nextSilenceThresholdRef = useRef<number | null>(null);
+
+In the WS message handler (handleMessage), add a new case:
+
+  case "set_silence_threshold": {
+    const ms = msg["ms"] as number | undefined;
+    if (typeof ms === "number" && ms > 0) {
+      nextSilenceThresholdRef.current = ms;
+      addLog(`WS set_silence_threshold — next=${ms}ms`);
+    }
+    break;
+  }
+
+In openMic(), after the existing VAD state reset block (the four lines
+resetting isUserSpeakingRef, lastSpeechAtRef etc.), add:
+
+  // Apply intent-based threshold if server requested one, then reset.
+  const activeSilenceMs = nextSilenceThresholdRef.current ?? SILENCE_MS;
+  nextSilenceThresholdRef.current = null;
+
+In the VAD effect (the useEffect that watches recorder.metering), replace
+the hardcoded SILENCE_MS reference in the silence check:
+
+  BEFORE:
+    now - lastSpeechAtRef.current >= SILENCE_MS
+
+  AFTER:
+    now - lastSpeechAtRef.current >= activeSilenceMs
+
+NOTE: activeSilenceMs is computed in openMic() and needs to be accessible
+in the VAD effect. The cleanest way is to store it in a ref:
+
+  const activeSilenceMsRef = useRef<number>(SILENCE_MS);
+
+Set it in openMic():
+  activeSilenceMsRef.current = nextSilenceThresholdRef.current ?? SILENCE_MS;
+  nextSilenceThresholdRef.current = null;
+
+Use it in the VAD effect:
+  now - lastSpeechAtRef.current >= activeSilenceMsRef.current
+
+This ensures the threshold resets to SILENCE_MS (3500) automatically on
+the next openMic() call — no manual reset required.
+
+================================================================================
+DELIVERY
+================================================================================
+
+[ ] useVoiceCall.ts — SILENCE_DB, SILENCE_MS, MIN_SPEECH_MS corrected
+[ ] useVoiceCall.ts — fallback autoSubmit timer changed from 3000 to 4000
+[ ] useVoiceCall.ts — nextSilenceThresholdRef and activeSilenceMsRef added
+[ ] useVoiceCall.ts — set_silence_threshold WS message case added
+[ ] useVoiceCall.ts — VAD effect uses activeSilenceMsRef.current
+[ ] VoiceOrchestrationService.ts — isDirectQuestion check in handleSpeechFinal
+[ ] VoiceOrchestrationService.ts — set_silence_threshold WS send added
+[ ] VoiceIntentClassifier.ts — isDirectQuestion() static method confirmed/added
+
+Confirm each checkbox before marking the build ready.
+
+================================================================================
+DO NOT TOUCH ANYTHING ELSE.
+No other files. No other changes. No "while I'm in there" fixes.
+Build. Confirm the checklist. Wait for test results.
+================================================================================
+END OF BRIEF
+================================================================================

@@ -25,9 +25,9 @@ import { getDeviceIdSync } from "./deviceId";
 
 // ── VAD config ────────────────────────────────────────────────────────────────
 
-const SILENCE_DB    = -30;    // dBFS below this is treated as silence
-const SILENCE_MS    = 1200;   // how long silence must last to trigger submit
-const MIN_SPEECH_MS = 200;    // ignore segments shorter than this
+const SILENCE_DB    = -45;    // was -30 — too sensitive, picking up room noise as speech
+const SILENCE_MS    = 3500;   // was 1200 — was cutting Kane off mid-sentence
+const MIN_SPEECH_MS = 500;    // was 200 — too short, catching non-speech sounds
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -139,6 +139,10 @@ export function useVoiceCall(): {
   const speechStartAtRef    = useRef(0);
   const vadActiveRef        = useRef(false); // true only while mic should be running
   const autoSubmitTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Intent-based silence threshold: server sends set_silence_threshold before
+  // the LLM pipeline; openMic() picks it up and resets to SILENCE_MS afterward.
+  const nextSilenceThresholdRef = useRef<number | null>(null);
+  const activeSilenceMsRef      = useRef<number>(SILENCE_MS);
   const reconnectAttemptsRef = useRef(0);
   const connectRef          = useRef<() => void>(() => {});
   // ttsServerDoneRef: true once the server has sent tts_done (all chunks sent).
@@ -361,7 +365,7 @@ export function useVoiceCall(): {
       if (
         isUserSpeakingRef.current &&
         segmentSpeechMsRef.current >= MIN_SPEECH_MS &&
-        now - lastSpeechAtRef.current >= SILENCE_MS
+        now - lastSpeechAtRef.current >= activeSilenceMsRef.current
       ) {
         // User has stopped talking long enough — submit.
         isUserSpeakingRef.current = false;
@@ -393,6 +397,9 @@ export function useVoiceCall(): {
     segmentSpeechMsRef.current = 0;
     speechStartAtRef.current = 0;
     clearAutoSubmitTimer();
+    // Apply intent-based threshold if server requested one, then reset.
+    activeSilenceMsRef.current = nextSilenceThresholdRef.current ?? SILENCE_MS;
+    nextSilenceThresholdRef.current = null;
 
     const ok = await recorder.ensurePermission();
     if (!ok) {
@@ -419,7 +426,7 @@ export function useVoiceCall(): {
           vadActiveRef.current = false;
           void submitSegmentRef.current();
         }
-      }, 3000);
+      }, 4000);
     } catch (err) {
       micOpeningRef.current = false;
       setError(err instanceof Error ? err.message : "Could not open mic");
@@ -492,6 +499,15 @@ export function useVoiceCall(): {
           setError(null);
           void openMicRef.current();
           break;
+
+        case "set_silence_threshold": {
+          const ms = msg["ms"] as number | undefined;
+          if (typeof ms === "number" && ms > 0) {
+            nextSilenceThresholdRef.current = ms;
+            addLog(`WS set_silence_threshold — next=${ms}ms`);
+          }
+          break;
+        }
 
         case "call_ended":
           break;

@@ -66,6 +66,21 @@ const REPEAT_PATTERNS: RegExp[] = [
 // ---------------------------------------------------------------------------
 
 /**
+ * Quick boolean check: does this utterance appear to be a direct question
+ * addressed to Ashley? Used independently of classify() so callers can
+ * act on the result without needing a full ClassificationResult.
+ */
+export function isDirectQuestion(utterance: string): boolean {
+  const t = utterance.trim();
+  if (!t) return false;
+  for (const re of DIRECT_QUESTION_PATTERNS) {
+    if (re.test(t)) return true;
+  }
+  if (PERSONAL_QUESTION_RE.test(t)) return true;
+  return false;
+}
+
+/**
  * Classify a transcript string into an IntentCategory.
  * Pure function — no side effects, no async.
  */
