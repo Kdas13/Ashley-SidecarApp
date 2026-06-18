@@ -52,8 +52,19 @@ const MIN_RECORDING_MS = 350;
 export function useVoiceRecorder(): VoiceRecorder {
   const meteringRef = useRef<number | null>(null);
   const [metering, setMetering] = useState<number | null>(null);
+  const VOICE_CALL_PRESET = {
+    ...RecordingPresets.HIGH_QUALITY,
+    android: {
+      ...RecordingPresets.HIGH_QUALITY.android,
+      // VOICE_COMMUNICATION enables hardware acoustic echo cancellation (AEC),
+      // noise suppression, and AGC on Android — the same source used by phone
+      // call apps. Prevents Ashley's TTS audio from leaking back into the mic.
+      audioSource: "voice_communication" as const,
+    },
+  };
+
   const recorder = useAudioRecorder(
-    RecordingPresets.HIGH_QUALITY,
+    VOICE_CALL_PRESET,
     (status: RecordingStatus) => {
       const m = (status as RecordingStatus & { metering?: number }).metering;
       if (typeof m === "number" && Number.isFinite(m)) {
@@ -121,7 +132,7 @@ export function useVoiceRecorder(): VoiceRecorder {
 
     try {
       await recorder.prepareToRecordAsync({
-        ...RecordingPresets.HIGH_QUALITY,
+        ...VOICE_CALL_PRESET,
         isMeteringEnabled: true,
       });
       audioLog("STT.start.prepared");
