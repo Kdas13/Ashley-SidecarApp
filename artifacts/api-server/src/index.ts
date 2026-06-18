@@ -235,6 +235,23 @@ wss.on("connection", (ws: any, _req: any, deviceId: string) => {
       "Voice-call WS: session reclaimed",
     );
   } else {
+    // Evict any stale active session for this device before creating a new one.
+    // reclaimSession only matches state==="recovering", so an active session
+    // that didn't disconnect cleanly falls through here. Without eviction,
+    // registry.create overwrites sessionIdByDeviceId but leaves the old session
+    // alive in sessionsBySessionId — both run concurrently and both send TTS
+    // to the same device, producing two simultaneous conversations.
+    const stale = registry.findByDeviceId(deviceId);
+    if (stale) {
+      logger.warn(
+        { deviceId, staleSessionId: stale.sessionId, staleState: stale.state },
+        "Voice-call WS: evicting stale session — new connection from same device",
+      );
+      try {
+        stale.ws?.send(JSON.stringify({ type: "call_ended", reason: "replaced_by_new_connection" }));
+      } catch { /* ignore — socket may already be dead */ }
+      registry.finalise(stale.sessionId, "replaced_by_new_connection");
+    }
     session = registry.create(deviceId, ws as registry.WsLike);
     logger.info(
       { deviceId, sessionId: session.sessionId },
