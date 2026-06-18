@@ -1,0 +1,26 @@
+The completion report template was included in the brief for a reason.
+You have not followed it.
+
+Three violations:
+
+1. NO TIMESTAMPS.
+Every checklist item requires HH:MM:SS of when it was completed.
+You have not provided a single timestamp. This is not optional.
+
+2. NO TXT FILE.
+The completion report must be returned as a downloadable TXT file.
+A chat response is not acceptable. It is not verifiable and it is
+not part of the paper trail.
+
+3. NO EAS BUILD INITIATED.
+The client-side changes (VAD constants, activeSilenceMsRef,
+set_silence_threshold handler) require a mobile build to be live.
+You have not initiated one. The server-side changes mean nothing
+to the user until the client is also deployed.
+
+ACTION REQUIRED:
+- Initiate the EAS build now.
+- Return a completed TXT completion report with timestamps
+  on every item once the build is confirmed live.
+- Do not consider this brief closed until the TXT file
+  is delivered and the mobile build is deployed.
