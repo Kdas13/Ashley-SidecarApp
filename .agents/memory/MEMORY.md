@@ -8,3 +8,4 @@
 - [Replicate LoRA image provider](replicate-provider.md) — Replicate LoRA wired in lib/replicate.ts; activate with ASHLEY_IMAGE_PROVIDER=replicate. REPLICATE_LORA_MODEL can be model-name (prepends REPLICATE_USERNAME) or owner/model or owner/model:version.
 - [Ashley design system](ashley-design-system.md) — navy/blue palette (#0B0F18 bg, #00B9FF accent); user bubbles dark+glow, Ashley bubbles warm grey; no purple anywhere.
 - [Image context continuity fix](image-context-continuity.md) — image_description column on messages; VISUAL tag extraction; all three history builders combine caption AND description in placeholder.
+- [Replit Gemini integration model names](replit-gemini-models.md) — only gemini-2.5-flash is confirmed supported; do not assume Google public model names work; verify against existing working code before adding any model override.
