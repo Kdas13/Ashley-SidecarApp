@@ -196,17 +196,24 @@ export function useVoiceCall(): {
     }
 
     playBusyRef.current = true;
-    try {
-      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
-    } catch { /* non-fatal */ }
+    // Do NOT call setAudioModeAsync({ allowsRecording: false }) here.
+    // Switching the audio mode tears down the VOICE_COMMUNICATION session and
+    // disables hardware echo cancellation. Keep allowsRecording: true for the
+    // entire call — voiceInput's start() set it and it must stay active.
     try {
       const player = createAudioPlayer({ uri });
       playerRef.current = player;
       playerUriRef.current = uri;
       addLog(`player: started q=${playQueueRef.current.length}`);
       setPhaseSync("speaking");
+      // One-shot guard: expo-audio can fire didJustFinish more than once for
+      // the same player on Android; the second fire would double-release the
+      // mutex and start a second concurrent playNext.
+      let trackFinished = false;
       player.addListener("playbackStatusUpdate", (status) => {
         if (status.didJustFinish) {
+          if (trackFinished) return;
+          trackFinished = true;
           addLog("player: finished");
           playBusyRef.current = false;
           playerRef.current = null;

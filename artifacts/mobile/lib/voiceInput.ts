@@ -191,16 +191,11 @@ export function useVoiceRecorder(): VoiceRecorder {
 
       const uri = recorder.uri;
 
-      // Release recording audio focus so subsequent TTS or recording
-      // sessions can acquire the session cleanly.
-      try {
-        await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
-        patchAudioState({ audioFocusState: "none" });
-        audioLog("STT.finish.audioModeReleased");
-      } catch (err) {
-        audioError("STT.finish.setAudioMode", err);
-        // Non-fatal — continue.
-      }
+      // Do NOT reset allowsRecording to false here. For voice calls, the
+      // VOICE_COMMUNICATION audio source (hardware AEC) must stay active
+      // throughout the session — switching the mode off between turns
+      // destroys the echo cancellation pipeline. The mode was set to
+      // { allowsRecording: true } in start() and must remain there.
 
       meteringRef.current = null;
       setMetering(null);
