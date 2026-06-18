@@ -17,7 +17,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createAudioPlayer,
-  setAudioModeAsync,
   type AudioPlayer,
 } from "expo-audio";
 import * as FileSystem from "expo-file-system/legacy";
