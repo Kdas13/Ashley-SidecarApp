@@ -317,3 +317,9 @@ id = "pJDZ5hepFXWT3jXafrKEM"
 uri = "file://VAD-completion-report-18Jun2026.txt"
 type = "text"
 title = "VAD Fix Completion Report — 18 Jun 2026"
+
+[[outputs]]
+id = "VWZSM4HRaxpUamjSHiyvZ"
+uri = "file://tts-race-files-18Jun2026.txt"
+type = "text"
+title = "TTS Race Fix — Source Files (18 Jun 2026)"
