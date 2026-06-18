@@ -299,3 +299,9 @@ id = "Ov-Fspqt-3RRIINQdApjs"
 uri = "file://WREN_DEBUG_SAYTHATAGAIN_2026-06.txt"
 type = "text"
 title = "WREN_DEBUG_SAYTHATAGAIN_2026-06.txt"
+
+[[outputs]]
+id = "0S18ZETxKAFLWBg6J8RMZ"
+uri = "file://ashley-system-audit.txt"
+type = "text"
+title = "Ashley-Sidecar System Audit"

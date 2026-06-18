@@ -1,0 +1,109 @@
+================================================================================
+ASHLEY PROJECT — FULL SYSTEM AUDIT REQUEST
+Date: 18 June 2026
+Requested by: Kane
+================================================================================
+
+THIS IS NOT A BUILD REQUEST.
+THIS IS NOT A FIX REQUEST.
+DO NOT TOUCH ANY CODE.
+DO NOT MAKE ANY CHANGES.
+DO NOT OFFER OPINIONS OR RECOMMENDATIONS.
+
+Produce the audit. Nothing else.
+
+================================================================================
+WHAT IS REQUIRED
+================================================================================
+
+A complete, unabridged, factual audit of every file in the Ashley system.
+Every file. Every system. Every connection. Every dependency.
+
+This includes but is not limited to:
+
+  - Voice call pipeline (client and server)
+  - Text chat pipeline
+  - Memory and context systems
+  - Session management
+  - Database schema and all tables
+  - Authentication and device ID handling
+  - WebSocket routing and connection management
+  - STT integration (Deepgram)
+  - TTS integration (ElevenLabs)
+  - LLM provider routing (textLLM, streamChatText, forceProvider logic)
+  - Orchestration service
+  - Audio playback and queue logic (client side)
+  - VAD and auto-submit logic (client side)
+  - Call summarisation service
+  - Reconnect and session recovery logic
+  - Environment variables and secrets in use
+  - All imports across all files
+  - All third party libraries and integrations
+  - Any dead code, unused imports, commented-out blocks, or TODOs
+
+================================================================================
+FORMAT REQUIREMENTS — NON-NEGOTIABLE
+================================================================================
+
+1. FACTUAL ONLY.
+   No opinions. No recommendations. No "this could be improved."
+   No personal statements. No commentary on what was fixed or why.
+   State what exists. State what it does. State how it connects to other systems.
+
+2. NO TRUNCATION.
+   Every file must be documented in full. If a file is long, document it in full.
+   Do not summarise. Do not use "..." to skip content.
+   Do not say "similar to above." Write it out.
+
+3. NO OMISSIONS.
+   If a file exists in the codebase, it appears in this audit.
+   If a system exists, it appears in this audit.
+   Nothing is excluded because it seems unrelated to the current problem.
+   Nothing is excluded because it seems obvious or trivial.
+
+4. STRUCTURE — for each file, provide:
+
+   FILE: [full file path]
+   PURPOSE: [what this file does]
+   DEPENDENCIES: [what it imports, what it depends on]
+   EXPORTS: [what it exports and what uses it]
+   STATE: [any state it holds, manages, or modifies]
+   CONNECTIONS: [what other systems it directly interacts with]
+   KNOWN ISSUES: [any bugs, TODOs, dead code, or unresolved items — factual only]
+
+5. DELIVER AS A SINGLE TXT FILE.
+   If the file is too large to deliver in one response, deliver it in clearly
+   numbered sequential blocks:
+     BLOCK 1 OF N
+     BLOCK 2 OF N
+   etc. Do not stop mid-file. Complete each file before moving to the next.
+
+6. DO NOT SELF-CENSOR.
+   If something is broken, document it as broken.
+   If something was removed, document what was removed and why.
+   If something is a workaround, document it as a workaround.
+   If you are uncertain about something, state the uncertainty explicitly.
+
+================================================================================
+WHAT THIS AUDIT IS FOR
+================================================================================
+
+This document will be handed to external AI systems for independent review.
+It must contain everything those systems need to form an accurate, complete
+picture of Ashley's current state — with no gaps, no spin, and no omissions.
+
+Any gap in this document is a gap in the review. Any omission will be found.
+
+================================================================================
+WHEN TO DELIVER
+================================================================================
+
+Before any further build attempts.
+Before any further fix attempts.
+Before any further conversation about what is or is not broken.
+
+Produce the audit. Send it. Wait for instructions.
+
+================================================================================
+END OF AUDIT REQUEST
+================================================================================

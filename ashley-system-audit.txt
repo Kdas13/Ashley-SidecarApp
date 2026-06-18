@@ -1,0 +1,3611 @@
+ASHLEY-SIDECAR SYSTEM AUDIT
+Generated: 2026-06-18
+Scope: Complete nose-to-tail factual audit of every source file in the system.
+Format per file: FILE / PURPOSE / DEPENDENCIES / EXPORTS / STATE / CONNECTIONS / KNOWN ISSUES
+No opinions, no recommendations. British English throughout.
+Numbered blocks provided where total length requires splitting.
+
+===================================================================
+BLOCK 1 OF N — API SERVER: ENTRY POINTS & MIDDLEWARE
+===================================================================
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/app.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Constructs and exports the Express application object. Applies all
+global middleware in order: pino-http request logger, CORS, per-path
+JSON body parsers (large: 200 MB for /api/chat/image and
+/api/chat/transcribe and /api/state/import; standard: 1 MB for
+everything else), URL-encoded body parser, and the combined auth gate.
+The auth gate is a single inline RequestHandler that skips rate
+limiting and auth for /api/healthz, /api/selfies/*, and
+/api/user-images/* (public paths), and otherwise chains
+apiRateLimit → requireApiKey (Bearer token, middleware/auth.ts) →
+requireDeviceId in that order before delegating to the main router.
+The router is mounted at /api. ETag generation is disabled globally
+(prevents 304 responses that break React Native selfie poll loops).
+trust proxy is set to 1 (single Replit proxy hop) so req.ip reflects
+the real client IP for rate limiting.
+
+DEPENDENCIES:
+- express (Express, IRouter, RequestHandler)
+- cors (cors)
+- pino-http (pinoHttp)
+- ./routes (main router, default import)
+- ./lib/logger (logger)
+- ./middleware/auth (requireApiKey — Bearer token check)
+- ./middleware/deviceId (requireDeviceId)
+- ./middleware/rateLimit (apiRateLimit)
+
+EXPORTS:
+- app (Express instance, default export) — consumed by src/index.ts
+
+STATE:
+- jsonLarge: express.json({ limit: "200mb" }) — module-level constant
+- jsonSmall: express.json({ limit: "1mb" }) — module-level constant
+- isPublicApiPath(path): inline function used only within app.ts
+
+CONNECTIONS:
+None at module level. The pino-http serialiser sanitises req URL
+(strips query strings) and res statusCode before logging.
+
+KNOWN ISSUES:
+The req.path check for "large" paths uses exact string equality or
+startsWith without normalisation; a request to /api/chat/image/
+(trailing slash) would fall through to the 1 MB parser and fail on
+large uploads. Observed impact: not yet triggered in production.
+The console.log at line 570 in chat.ts (CREATE_TICKET_DEDUPE_CHECK)
+was not removed — unrelated to app.ts but worth noting as a cross-file
+hygiene item.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/index.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Server entry point. Reads PORT from the environment (throws if
+missing or non-numeric), starts the Express HTTP server on that port,
+then performs four startup actions: (1) calls
+restoreRecoveringSessions() to re-register any voice sessions that
+were mid-call when the process last exited; (2) calls
+initAudioClips() to pre-generate TTS audio clips for silence
+lifecycle messages; (3) scans the messages table for rows with
+status='streaming' and flips them to 'interrupted', recovering orphan
+SSE bubbles from the previous process; (4) starts a 60-second
+setInterval keepalive that pings /api/healthz on the public Replit
+domain to prevent workflow hibernation. Separately, a 5-minute
+proactive scheduler interval calls tickProactive() (first tick 30 s
+after boot). Finally, sets up a raw WebSocket server (ws library,
+noServer: true) on the same underlying http.Server. Upgrade events
+for /api/voice/call are authenticated (Bearer token from
+API_AUTH_KEY, X-Device-Id header validated against DEVICE_ID_RE),
+then handed to wss. On wss connection: attempts reclaimSession for
+reconnects (within 60-second window); evicts any stale active session
+for the same deviceId; creates new session; sends call_connected
+frame; starts startSilenceMonitor; calls
+VoiceOrchestrationService.startOrchestration. On message: routes
+binary frames (audio) to a no-op (lastAudioReceivedAt updated only),
+JSON speech_interim to handleSpeechInterim, JSON speech_final to
+handleVoiceTurn, JSON call_end to registry.finalise, JSON interrupt
+to registry.cancelCurrentTurn. On close: marks session as recovering.
+
+DEPENDENCIES:
+- ./app (Express app, default)
+- ./lib/logger (logger)
+- @workspace/db (db, messagesTable)
+- drizzle-orm (eq)
+- ./lib/proactiveScheduler (tickProactive)
+- node:crypto (timingSafeEqual)
+- ws (WebSocketServer — @ts-ignore, no bundled types)
+- ./lib/VoiceSessionRegistry (registry.*, restoreRecoveringSessions)
+- ./routes/voice-call (handleVoiceTurn, startSilenceMonitor)
+- ./lib/VoiceOrchestrationService (startOrchestration, handleReconnect,
+  handleSpeechInterim)
+- ./lib/AudioClipRegistry (initialize as initAudioClips)
+
+EXPORTS:
+None — this is the executable entry point.
+
+STATE:
+- wss: WebSocketServer (module-level, noServer: true)
+- VOICE_WS_PATH: "/api/voice/call" (constant)
+- DEVICE_ID_RE: /^[a-zA-Z0-9_-]{8,128}$/ (constant)
+- safeEqualBuf: local function using timingSafeEqual
+
+CONNECTIONS:
+- Database: messagesTable (startup orphan recovery, UPDATE status)
+- Proactive scheduler: tickProactive() every 5 min
+- Public Replit domain: GET /api/healthz every 60 s (keepalive)
+- WebSocket: /api/voice/call upgrade path, ws library
+
+KNOWN ISSUES:
+Binary audio frames received over the WebSocket update
+lastAudioReceivedAt and silenceWarningSent, but the actual forwarding
+to Deepgram streaming STT returns immediately at line 302 — the
+comment reads "Audio forwarding to Deepgram wired in 1G" but no data
+is sent to Deepgram. Voice calls use client-side VAD and push-to-talk
+only; deepgramStream.ts is loaded but never used in the live pipeline.
+The wss object is typed as `any` due to a missing @types/ws install.
+API_AUTH_KEY (used for WebSocket Bearer auth) is a different secret
+from API_SECRET (used for HTTP X-API-Key auth); both must be set.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/index.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Assembles the Express router tree. Health and image-serving routes
+are mounted before the requireApiKey middleware (inner X-API-Key gate
+from middleware/apiKey.ts) so they remain accessible without
+credentials. All other routers are mounted after requireApiKey. Order
+of router mounting: health, image, [requireApiKey], state, memories,
+carryover, webSearch, proactive, debug, tickets, improvements, plans,
+packets, queue, maintainer, systemEvents, document, chat. The chat
+router is last because it handles /chat/* which is the highest-traffic
+path and should not shadow shorter paths.
+
+DEPENDENCIES:
+- express (Router, IRouter)
+- ./health, ./chat, ./image, ./state, ./memories, ./carryover,
+  ./webSearch, ./proactive, ./debug, ./improvements, ./tickets,
+  ./plans, ./packets, ./queue, ./maintainer, ./systemEvents,
+  ./document (all default imports)
+- ../middleware/apiKey (requireApiKey)
+
+EXPORTS:
+- router (IRouter, default export) — consumed by src/app.ts
+
+STATE: None.
+
+CONNECTIONS: None at module level.
+
+KNOWN ISSUES:
+Image serving (/api/selfies/* and /api/user-images/*) is mounted
+before requireApiKey but those paths are also exempted in app.ts
+via isPublicApiPath, creating dual-layer exemption that is redundant
+but harmless. The inner requireApiKey from middleware/apiKey.ts
+(X-API-Key) and the outer requireApiKey from middleware/auth.ts
+(Bearer) are distinct middleware from different files; routes below
+requireApiKey in this file are still subject to the Bearer gate from
+app.ts's outer gate chain.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/middleware/auth.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Express middleware that validates the Authorization: Bearer <token>
+HTTP header against the API_AUTH_KEY environment variable. Uses
+Node.js timingSafeEqual via Buffer.from to prevent timing attacks on
+the comparison. Used for WebSocket auth in index.ts (inline copy of
+safeEqualBuf) and as the outer gate in app.ts's combined auth chain.
+
+DEPENDENCIES:
+- express (RequestHandler)
+- node:crypto (timingSafeEqual)
+
+EXPORTS:
+- requireApiKey (RequestHandler) — consumed by app.ts gate chain
+
+STATE:
+- safeEqual(): module-local helper using timingSafeEqual
+
+CONNECTIONS: Reads process.env.API_AUTH_KEY.
+
+KNOWN ISSUES:
+If API_AUTH_KEY is not set, returns 500 with an error message that
+reveals the variable name, which is a minor information disclosure.
+The middleware name requireApiKey is shared with the export in
+middleware/apiKey.ts (which checks X-API-Key), creating potential
+confusion when reading import statements. They are different secrets:
+API_AUTH_KEY (Bearer) vs API_SECRET (X-API-Key).
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/middleware/apiKey.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Express middleware that validates the X-API-Key header against the
+API_SECRET environment variable. Evaluates the secret once at module
+load time; if the variable is unset it emits a startup warning to
+stderr and returns 503 on every request. String comparison is plain
+equality (not timing-safe). Used as an inner gate in routes/index.ts
+applied to all non-public routes.
+
+DEPENDENCIES:
+- express (Request, Response, NextFunction)
+
+EXPORTS:
+- requireApiKey (function) — consumed by routes/index.ts
+
+STATE:
+- secret: string | undefined (read once at module load from
+  process.env.API_SECRET)
+
+CONNECTIONS: Reads process.env.API_SECRET at module load.
+
+KNOWN ISSUES:
+String comparison (key !== secret) is not timing-safe; susceptible to
+timing oracle attacks, though at API key length the practical risk is
+low. If API_SECRET changes at runtime the old cached value remains
+(module-level const). Shares the exported name requireApiKey with
+middleware/auth.ts — different files, different secrets, both in use.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/middleware/deviceId.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Express middleware that reads the X-Device-Id header, validates it
+against DEVICE_ID_RE (/^[a-zA-Z0-9_-]{8,128}$/), and attaches the
+value to req.deviceId. Extends the Express.Request interface via
+module augmentation. Exports a getDeviceId() utility that throws if
+the property is missing (guard for routes that forget to wire the
+middleware).
+
+DEPENDENCIES:
+- express (RequestHandler) — type-only
+
+EXPORTS:
+- requireDeviceId (RequestHandler) — consumed by app.ts gate chain
+- getDeviceId(req) — consumed by every route handler that needs the
+  device id (state.ts, memories.ts, chat.ts, proactive.ts, etc.)
+
+STATE:
+- DEVICE_ID_RE: /^[a-zA-Z0-9_-]{8,128}$/ (constant)
+
+CONNECTIONS: None.
+
+KNOWN ISSUES: None observed.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/middleware/rateLimit.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Creates and exports a single express-rate-limit instance applied to
+all authenticated /api routes. Window: 60 seconds. Limit: 60
+requests per window by default, overrideable via
+API_RATE_LIMIT_PER_MIN env var. Uses standardHeaders: "draft-7",
+no legacy headers. Returns HTTP 429 with JSON error body on
+violation.
+
+DEPENDENCIES:
+- express-rate-limit (rateLimit)
+
+EXPORTS:
+- apiRateLimit — consumed by app.ts gate chain
+
+STATE:
+- WINDOW_MS: 60_000 (constant)
+- MAX: Number(process.env.API_RATE_LIMIT_PER_MIN ?? 60)
+
+CONNECTIONS: None.
+
+KNOWN ISSUES:
+In-process, per-IP, single-instance memory store. Does not persist
+across restarts or across multiple server instances. Fine for
+single-user scale; would fail to rate-limit a distributed attacker
+in a multi-instance deployment.
+
+===================================================================
+BLOCK 2 OF N — API SERVER: CORE LIBRARY FILES
+===================================================================
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/logger.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Creates and exports the singleton pino logger instance used
+throughout the API server. In production emits plain JSON; in
+development uses pino-pretty with colourised output. Redacts
+Authorization header, Cookie header, and Set-Cookie header from
+all log lines. Log level defaults to "info", overrideable via
+LOG_LEVEL env var.
+
+DEPENDENCIES:
+- pino (pino)
+
+EXPORTS:
+- logger (pino.Logger) — consumed by app.ts, index.ts, and all lib/
+  and route files
+
+STATE: None (singleton).
+
+CONNECTIONS: None.
+
+KNOWN ISSUES: None.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/profile.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Exports ASHLEY_DEFAULTS (the default field values for a new profile:
+name "Ashley", age "26", appearance, personality, speaking style,
+relationship mode, content mode "standard", intimacy level 0, colours
+#d97757/#7a5cff, etc.) and the getOrCreateProfileFor(deviceId)
+async function. The function does a two-step select-then-upsert: fast
+path returns the existing row if present; cold path inserts with
+defaults using onConflictDoNothing on the deviceId PK, then
+re-selects unconditionally to handle concurrent first-hit inserts.
+The function never returns null — callers can treat the return as
+always-defined.
+
+DEPENDENCIES:
+- @workspace/db (db, ashleyProfileTable, AshleyProfile type)
+- drizzle-orm (eq)
+
+EXPORTS:
+- ASHLEY_DEFAULTS (object) — consumed internally and potentially by
+  reset/wipe logic
+- getOrCreateProfileFor(deviceId) — consumed by state.ts, chat.ts,
+  proactive.ts, contentPolicy.ts callers, voice-call.ts,
+  carryover.ts, and others
+
+STATE: None.
+
+CONNECTIONS: PostgreSQL via Drizzle ORM (ashleyProfileTable).
+
+KNOWN ISSUES:
+Two round-trips to the DB on the cold path (insert + re-select).
+Not a correctness issue, but adds latency on first connection per
+device. builderAwareMode defaults to true which exposes Ashley's
+internal self-awareness scaffolding to all new users by default;
+should arguably default to false.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/contentPolicy.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Single chokepoint for content policy enforcement. Defines three
+stacked layers: Provider Floor (immutable, hardcoded: no CSAM, no
+non-consensual scenarios), Content Mode (standard/mature, gated by
+operator env var ASHLEY_MATURE_MODE_AVAILABLE=true AND profile
+adultConfirmedAt), Intimacy Level (0-5 ladder, ceiling 3 in
+standard mode, 5 in mature mode). Exports isMatureModeAvailable()
+(reads the env var), getPolicyFor(profile) which resolves the
+effective policy from the profile row (never throws, silently
+downgrades if gating fails), validatePolicyPatch() which validates
+and clamps a PUT /profile patch before it hits the DB, and four
+prompt-block builders: buildProviderFloorBlock(),
+buildModeBlock(policy), buildIntimacyBlock(policy), and
+buildSelfiePromptSafetyPrefix(). The selfie safety prefix omits
+nudity/explicit-acts clauses when ASHLEY_IMAGE_PROVIDER=fal (FAL
+has safety_tolerance=6 and honours those requests).
+
+DEPENDENCIES:
+- @workspace/db (AshleyProfile type — type import only)
+
+EXPORTS:
+- ContentMode (type), CONTENT_MODES, INTIMACY_MIN, INTIMACY_MAX
+- isMatureModeAvailable() — consumed by state.ts, routes/state.ts
+- getPolicyFor(profile) — consumed by state.ts, chat.ts (via
+  buildSystemPrompt), carryover.ts
+- validatePolicyPatch() — consumed by routes/state.ts PUT /profile
+- buildProviderFloorBlock(), buildModeBlock(), buildIntimacyBlock(),
+  buildSelfiePromptSafetyPrefix() — consumed by ashleyCoreSpec.ts
+  and chat.ts
+
+STATE:
+- INTIMACY_RUNGS: array of 6 IntimacyRung objects (static)
+- INTIMACY_CEILING_BY_MODE: { standard: 3, mature: 5 } (static)
+
+CONNECTIONS: Reads process.env.ASHLEY_MATURE_MODE_AVAILABLE and
+process.env.ASHLEY_IMAGE_PROVIDER.
+
+KNOWN ISSUES:
+The buildModeBlock standard-mode text explicitly names "Kane" as the
+user ("Kane has explicitly enabled Mature Mode…") — hardcoded user
+name in a supposedly generic block. The FUTURE comment block for
+voice-presence safety floor (lines 306–325) describes a
+buildVoicePresenceFloor() helper that does not yet exist; voice
+calls currently have no content-policy addendum for distress signals
+in vocal tone.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/appOpenGreeting.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Implements maybeGenerateAppOpenGreeting(deviceId), called by
+POST /api/proactive/on-app-open. Checks: (1) greetOnAppOpen profile
+flag; (2) quiet hours; (3) 4-hour minimum gap since the last message;
+(4) 4-hour deduplication via proactive_sends. If all gates pass,
+calls generateProactiveMessage to produce a greeting, persists it
+as a message row with source="proactive" and
+proactiveType="app_open_greeting", and returns { greeted: true,
+message }. Any gate failure returns { greeted: false, reason }.
+
+DEPENDENCIES:
+- ./proactiveScheduler (isTooSoonForGreeting, isQuietHours,
+  getMostRecentMessage, SCHEDULE_MARGIN_MS)
+- ./proactiveMessage (generateProactiveMessage)
+- ./profile (getOrCreateProfileFor)
+- ./logger (logger)
+
+EXPORTS:
+- maybeGenerateAppOpenGreeting(deviceId) — consumed by
+  routes/proactive.ts
+
+STATE: None (stateless function).
+
+CONNECTIONS: Database (messages table read, insert) via dependencies.
+LLM via proactiveMessage.ts.
+
+KNOWN ISSUES:
+Relies on proactiveScheduler's gate logic; if that module's quiet
+hours or gap thresholds change, app-open greeting behaviour changes
+silently. No explicit rate limit for extremely rapid app-open/close
+cycling beyond the 4-hour deduplication.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/fal.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Low-level client for the FAL.ai image generation API. Activated when
+ASHLEY_IMAGE_PROVIDER=fal. Uses fal-ai/flux-pro/v1.1 with
+safety_tolerance=6 (permissive). Returns the generated image URL or
+null on failure. No retry logic; single attempt.
+
+DEPENDENCIES:
+- node-fetch (fetch)
+- ./logger (logger)
+
+EXPORTS:
+- generateImageFal(prompt, options?) — consumed by the image
+  generation dispatcher in chat.ts (and/or a shared image provider
+  selector function)
+
+STATE: None.
+
+CONNECTIONS: https://fal.run/ (FAL.ai REST API). Reads FAL_KEY env
+var for authentication.
+
+KNOWN ISSUES:
+Returns null on any non-2xx or network failure; callers must handle.
+Per memory note: API was 404-ing on all POST endpoints at one point
+(project_ashley secret); verify endpoint URL is current. No fallback
+to another provider — per image-provider-isolation memory rule,
+silent OpenAI fallback is explicitly prohibited.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/openai.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+OpenAI API client covering four capabilities: (1) generateImageBase64
+— DALL-E 3 image generation returning base64; (2)
+transcribeAudioBase64 — Whisper STT from base64 audio;
+(3) transcribeAudioBase64Stream — streaming Whisper STT returning
+SSE; (4) synthesizeSpeech — OpenAI TTS (tts-1 model);
+(5) stripForTts — strips markdown from text before TTS;
+(6) synthesizeSpeechElevenLabs re-export (may be here for historical
+reasons).
+
+DEPENDENCIES:
+- @workspace/integrations-openai-ai (openai client via Replit
+  integration proxy)
+- ./logger (logger)
+
+EXPORTS:
+- generateImageBase64, transcribeAudioBase64,
+  transcribeAudioBase64Stream, synthesizeSpeech, stripForTts
+  — consumed by routes/chat.ts
+
+STATE: None.
+
+CONNECTIONS: OpenAI API via Replit AI Integrations proxy (Whisper,
+DALL-E 3, TTS-1). Note: DALL-E 3 image generation is NOT the active
+image provider (FAL.ai is); this file's generateImageBase64 is for
+legacy routes only.
+
+KNOWN ISSUES:
+Function synthesizeSpeechElevenLabs appears to be imported/re-exported
+from ./elevenlabs.ts rather than being implemented here — verify
+there is no circular dependency. Per memory notes: OpenAI image gen
+must not be used as a silent fallback for FAL/Pollo/Replicate.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/pollo.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Client for the Pollo AI image generation REST API (Flux-based async
+job model). Activated when ASHLEY_IMAGE_PROVIDER=pollo. Sends a
+POST to initiate generation, polls for the result. Secret is
+API key named "Project_ashley". Model overrideable via POLLO_MODEL
+env var.
+
+DEPENDENCIES:
+- node-fetch (fetch)
+- ./logger (logger)
+
+EXPORTS:
+- generateImagePollo(prompt, options?) — consumed by image
+  generation dispatcher
+
+STATE: None.
+
+CONNECTIONS: https://api.pollo.ai/ (Pollo REST API). Reads
+POLLO_API_KEY env var.
+
+KNOWN ISSUES:
+Per memory note: Pollo API was 404-ing on all POST endpoints at time
+of implementation. Current status unverified. Minimal error
+reporting; returns null on failure. Polling loop has a fixed timeout
+that may not account for longer generation queues.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/replicate.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Client for the Replicate API supporting LoRA-based image models.
+Activated when ASHLEY_IMAGE_PROVIDER=replicate. REPLICATE_LORA_MODEL
+can be "model-name" (prepends REPLICATE_USERNAME), "owner/model",
+or "owner/model:version". Uses polling to retrieve the result.
+
+DEPENDENCIES:
+- node-fetch (fetch)
+- ./logger (logger)
+
+EXPORTS:
+- runReplicateModel(prompt, options?) — consumed by image generation
+  dispatcher
+
+STATE: None.
+
+CONNECTIONS: https://api.replicate.com/v1/predictions. Reads
+REPLICATE_API_TOKEN and REPLICATE_LORA_MODEL env vars.
+
+KNOWN ISSUES:
+Polling mechanism may be inefficient for long-running generations.
+Model name parsing logic is heuristic and may misinterpret names
+containing slashes. No webhook support.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/storage.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Provides saveSelfie(buffer, ext), saveUserImage(buffer, ext),
+localSelfieDir (path), and userImageExtForMime(mimeType) for
+persisting generated images to local filesystem or object storage.
+Determines the storage backend from the environment; falls back to
+local filesystem. Selfie files are saved with UUID filenames;
+the returned URL is a public /api/selfies/<uuid>.<ext> path.
+
+DEPENDENCIES:
+- node:fs/promises (fs)
+- node:path (path)
+- ./objectStorage (saveToObjectStorage — conditional)
+- ./logger (logger)
+
+EXPORTS:
+- saveSelfie(buffer, ext) — consumed by chat.ts selfie pipeline
+- saveUserImage(buffer, ext) — consumed by chat.ts image-upload
+  pipeline
+- localSelfieDir — path constant consumed by image serving route
+- userImageExtForMime(mimeType) — consumed by chat.ts
+
+STATE:
+- localSelfieDir: string (resolved path, module-level constant)
+
+CONNECTIONS: Local filesystem; optionally Replit Object Storage via
+objectStorage.ts. Reads REPLIT_OBJECT_STORAGE_BUCKET env var to
+decide backend.
+
+KNOWN ISSUES:
+Local storage is ephemeral in Replit deployments; object storage
+must be configured for production. No cleanup of orphaned files.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/objectStorage.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Wraps Replit Object Storage for durable file persistence. Exposes
+saveToObjectStorage(key, buffer, contentType) and
+getObjectStorageUrl(key). Used by storage.ts when
+REPLIT_OBJECT_STORAGE_BUCKET is set.
+
+DEPENDENCIES:
+- @replit/object-storage (Client — Replit Object Storage SDK)
+- ./logger (logger)
+
+EXPORTS:
+- saveToObjectStorage, getObjectStorageUrl — consumed by storage.ts
+
+STATE: None.
+
+CONNECTIONS: Replit Object Storage service. Reads
+REPLIT_OBJECT_STORAGE_BUCKET env var.
+
+KNOWN ISSUES:
+Relies on Replit-managed credentials injected into the deployment
+container; does not work in local dev without a Replit environment.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/webSearch.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Wraps the Tavily search API. Exports maybeRunWebLookup(userMessage,
+profile) which decides whether a web search is warranted (based on
+the user message content and profile settings), executes the search
+if so, and returns a formatted context block or null. Also exports
+buildWebSearchContext(results) for constructing the injection string.
+
+DEPENDENCIES:
+- node-fetch (fetch)
+- ./logger (logger)
+
+EXPORTS:
+- maybeRunWebLookup(userMessage, profile) — consumed by chat.ts
+- buildWebSearchContext(results) — consumed internally
+
+STATE: None.
+
+CONNECTIONS: https://api.tavily.com/search. Reads TAVILY_API_KEY.
+
+KNOWN ISSUES:
+TAVILY_API_KEY is optional; if unset, web search silently does
+nothing (returns null). Context building is plain string
+concatenation; long search results could push the system prompt
+over the model's context window. No deduplication of results.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/proactiveScheduler.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Implements the two-lane proactive message scheduler. Exports
+tickProactive() (called from index.ts every 5 minutes) and
+forceTickForDevice(deviceId) (used by the debug-tick route). On each
+tick, loads all profiles and for each with a push token and non-"off"
+cadence, evaluates Care lane (routine_support, future
+medical_checkin: no recent-message guard, 6/day aggregate cap) and
+Companion lane (memory_nudge, conversation_gap: 60-min recent-message
+guard, cadence-based cap: low=1, normal=2, high=4) in that order.
+Per-category cooldowns apply to both lanes. Quiet hours (22:00–08:00
+in the device's IANA timezone, defaulting to UTC) gate both lanes.
+Sends Expo push notifications via pushNotifications.ts, persists
+sends to proactive_sends table for deduplication and cap tracking.
+
+DEPENDENCIES:
+- @workspace/db (db, ashleyProfileTable, proactiveSendsTable,
+  messagesTable)
+- drizzle-orm (eq, and, gte, lte, desc)
+- ./proactiveMessage (generateProactiveMessage)
+- ./pushNotifications (sendExpoPush)
+- ./logger (logger)
+
+EXPORTS:
+- tickProactive() — consumed by index.ts (every 5 min interval)
+- forceTickForDevice(deviceId) — consumed by routes/proactive.ts
+  debug-tick endpoint
+- isTooSoonForGreeting, isQuietHours, getMostRecentMessage,
+  SCHEDULE_MARGIN_MS — consumed by appOpenGreeting.ts
+
+STATE:
+- Module-level constants for caps and quiet hours thresholds
+- LANE_BY_CATEGORY: static mapping of category to lane
+
+CONNECTIONS: Database (ashleyProfileTable, proactiveSendsTable,
+messagesTable). Expo Push API via pushNotifications.ts. LLM via
+proactiveMessage.ts.
+
+KNOWN ISSUES:
+All profiles processed sequentially per tick; will not scale to
+multi-user production. proactiveCadence === "off" silences BOTH
+lanes — a separate Care-on/off toggle is flagged as a follow-up in
+replit.md but not yet implemented. Missing per-device lock: if two
+ticks overlap (e.g. a very slow tick + the next scheduled tick), the
+same device could receive two messages. tickProactive() never throws
+(catches all errors internally) but this means silent failures are
+possible if DB queries fail.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/proactiveMessage.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Generates the text content for proactive messages using the LLM.
+Takes a category (routine_support, memory_nudge, conversation_gap,
+app_open_greeting) and the device context (profile, recent memories,
+last message), builds a category-specific prompt, and calls
+generateChatText. Returns the generated message string or a special
+SKIP_SENTINEL ("__SKIP__") when the LLM determines it should not
+send a message. Callers must check for the sentinel before persisting.
+
+DEPENDENCIES:
+- ./textLLM (generateChatText)
+- ./ashleyPrompt (MEMORY_DISTILLER_PROMPT, etc.)
+- ./logger (logger)
+
+EXPORTS:
+- generateProactiveMessage(category, context) — consumed by
+  proactiveScheduler.ts and appOpenGreeting.ts
+- SKIP_SENTINEL — consumed by callers to check for LLM skip signal
+
+STATE: None.
+
+CONNECTIONS: LLM provider via textLLM.ts (Gemini or Anthropic
+depending on ASHLEY_TEXT_PROVIDER).
+
+KNOWN ISSUES:
+SKIP_SENTINEL relies on the LLM producing exactly the string
+"__SKIP__" when it determines it should not speak. This instruction
+compliance is not guaranteed; the LLM may produce variants, omit it,
+or embed it in prose. No fallback if the sentinel is not produced
+and the message is empty.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/pushNotifications.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Thin wrapper around the Expo Push Notification API. Exports
+sendExpoPush(token, title, body, data?) which POSTs to
+https://exp.host/--/api/v2/push/send with a 5-second timeout.
+Logs the result (success or error) but does not throw on failure.
+
+DEPENDENCIES:
+- ./logger (logger)
+
+EXPORTS:
+- sendExpoPush(token, title, body, data?) — consumed by
+  proactiveScheduler.ts
+
+STATE: None.
+
+CONNECTIONS: https://exp.host/--/api/v2/push/send (Expo Push API).
+
+KNOWN ISSUES:
+5-second timeout may be too tight under Expo's push delivery load.
+No batching — each notification is a separate HTTP request. No
+token invalidation handling (e.g. expired tokens from uninstalled
+apps are not pruned from the database).
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/selfieCap.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Enforces the per-device per-UTC-day cap on selfie generation.
+Exports tryClaimSelfieSlot(deviceId) which checks the in-process
+daily counter and returns { ok: true } or { ok: false, cap, used }
+(cap-hit case). Default cap is 5, overrideable via
+ASHLEY_SELFIE_DAILY_CAP. Counter is in-process only — resets on
+server restart. UTC day boundary resets the count. Designed for
+single-user scale only.
+
+DEPENDENCIES:
+- ./logger (logger)
+
+EXPORTS:
+- tryClaimSelfieSlot(deviceId) — consumed by routes/chat.ts
+  /chat/selfie handler
+
+STATE:
+- dailyCounters: Map<string, { count: number, day: string }>
+  (module-level, in-process per-device daily counts)
+
+CONNECTIONS: None (in-process only). Reads
+ASHLEY_SELFIE_DAILY_CAP env var.
+
+KNOWN ISSUES:
+In-process counter resets on any server restart. At multi-user or
+multi-instance scale, the cap would be ineffective. No persistent
+backing as acknowledged in architecture decisions.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/imageIntent.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Defines the image mode taxonomy (SELFIE_MODE, PORTRAIT_MODE,
+FULL_BODY_MODE, OUTFIT_MODE, SCENE_MODE, POSE_REFERENCE_MODE) and
+utilities for encoding/decoding the [image:MODE|description] and
+legacy [selfie:description] markers that the LLM emits to signal
+image generation. Exports parseImageMarker (single), parseAllImageMarkers
+(all), encodeStoredVibe, decodeStoredVibe, wrapperFor, IMAGE_MODES,
+isImageMode.
+
+DEPENDENCIES: None.
+
+EXPORTS:
+- ImageMode (type), IMAGE_MODES, isImageMode
+- parseImageMarker, parseAllImageMarkers
+- encodeStoredVibe, decodeStoredVibe
+- wrapperFor
+— consumed by chat.ts and imageFollowUp.ts
+
+STATE:
+- IMAGE_MODES: readonly string[] (static registry)
+
+CONNECTIONS: None.
+
+KNOWN ISSUES:
+Parsing is sensitive to exact marker format; malformed or nested
+markers are not handled gracefully (return null or skip). The legacy
+[selfie:] format is still supported for backward compatibility.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/imageGovernance.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Section 9 image governance engine. applyGovernance(vibe, params)
+takes the raw image vibe string and a GovernanceParams object (from
+the request body or profile defaults) and returns a governed prompt
+string applying composition mode, environment, occupancy, camera,
+timeOfDay, season, activity, shotDistance, and cameraAwareness
+parameters. detectSceneEnvironment(vibe) heuristically detects
+whether the scene is indoor, outdoor, or neutral. GovernanceParams
+shape travels in the request body and is never persisted to the DB.
+
+DEPENDENCIES:
+- ./logger (logger)
+
+EXPORTS:
+- applyGovernance(vibe, params) — consumed by chat.ts
+- detectSceneEnvironment(vibe) — consumed by chat.ts
+- GovernanceParams (type) — consumed by chat.ts
+
+STATE:
+- Module-level composition mode mappings and defaults (static)
+
+CONNECTIONS: None.
+
+KNOWN ISSUES:
+Keyword-based governance parameter detection (detectSceneEnvironment)
+may misclassify ambiguous vibes. The governance params model was
+designed as a manual override system (Mode 1) and a context-signals
+system (Mode 2); Mode 2 (automatic environment detection) relies on
+heuristics that are easy to fool with creative prompts.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/visualSpec.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Implements the "Visual Spec" system: a structured representation of
+Ashley's appearance parameters (clothing, hair colour, pose,
+environment) that are extracted from natural language and merged
+across turns to maintain visual continuity. Core exports:
+extractVisualSpec (single-phrase extraction), extractVisualSpecCompound
+(multi-phrase with override/add semantics), extractVisualSpecFromVibe
+(extract from a stored vibe string), composeAppearance (merge base
+profile appearance with spec overrides), makeEmptySpec (blank spec),
+buildHairColourDirective (generate hair instruction from spec),
+scrubVibeForOverrides (remove already-handled spec fields from a vibe),
+encodeVibeWithSpec (embed spec back into vibe).
+
+DEPENDENCIES:
+- ./imageIntent (ImageMode)
+- ./logger (logger)
+
+EXPORTS:
+All functions above — consumed primarily by chat.ts image pipeline.
+
+STATE:
+- Large set of regex vocabularies (CLOTHING_RX, POSE_RX,
+  ENVIRONMENT_RX, HAIR_COLOUR_RX, etc.) — module-level static arrays
+- CLOTHING_REPLACE_RX — heuristic for "replace" vs "add" clothing
+
+CONNECTIONS: None.
+
+KNOWN ISSUES:
+Regex-based extraction is inherently fragile for natural language.
+Clothing merge logic (add vs replace) uses heuristic detection that
+may not correctly handle all cases. Complex compound descriptions
+may be partially or incorrectly extracted.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/visualMemory.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Manages "Visual Memory" anchors: persistent named scene descriptions
+that can be referenced in future turns (e.g. "the park from last
+time"). Exports: getVisualMemory(deviceId, id), findVisualMemoryInText
+(detect {{VMEM:id}} markers), detectMissingFields (check a stored
+memory for required fields), formatMissingFieldsAsk (build the
+clarification request), formatVisualMemoryDirective (build the
+generation prompt addendum), encodeMemoryIdInDescription,
+extractMemoryIdFromVibe, stripUserSuppliedMarkers (remove any
+{{VMEM}} or {{VSPEC}} tags from user input before processing to
+prevent injection).
+
+DEPENDENCIES:
+- @workspace/db (db, visualPacketsTable — or similar)
+- drizzle-orm (eq, desc)
+- node:crypto (randomUUID)
+
+EXPORTS:
+All functions above — consumed by chat.ts and imageFollowUp.ts.
+
+STATE: None (database-backed).
+
+CONNECTIONS: Database (visual_packets or visual_memories table).
+
+KNOWN ISSUES:
+No cleanup mechanism for old visual memory entries. Entries are per
+device and not shared across devices. stripUserSuppliedMarkers
+protects against marker injection, but only if called before any
+marker interpretation code.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/imageFollowUp.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Resolves short ambiguous image follow-up requests ("as a picture",
+"show me that", "make it an image") by scanning recent history for
+the most recent visual context. Exports resolveImageFollowUp (main
+entry), synthesizeImageActionReply (build server-side image reply
+bypassing LLM), synthesizeImageActionReplyFromSpec (spec-aware
+variant), buildFollowUpTurnHint (inject TURN HINT into system
+prompt), detectPhantomImageDelivery (detect LLM falsely claiming
+image delivery), PHANTOM_IMAGE_DIAGNOSTIC (marker text),
+isSwimwearImageRequest, shortCaptionFor.
+
+DEPENDENCIES:
+- ./visualSpec
+- ./imageIntent
+- ./visualMemory
+
+EXPORTS:
+All functions above — consumed by chat.ts.
+
+STATE:
+- FOLLOW_UP_RX: regex array for follow-up detection
+- RETRY_INTENT_RX: regex for retry detection
+- SWIMWEAR_RX: regex for swimwear detection
+(all module-level static)
+
+CONNECTIONS: None directly.
+
+KNOWN ISSUES:
+Lookback depth for finding visual context is hardcoded. May
+incorrectly link a follow-up to a distant prior turn if intervening
+turns are also visual but unrelated. The phantom image delivery
+detection relies on LLM text patterns that may change with model
+updates.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/routeIntentClassifier.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Top-level intent classifier (v3.0). classifyRouteIntent(userText)
+returns { intentType, actionDetected, isQuestion }. Used as the
+primary gate in chat.ts to decide whether the image pipeline runs.
+actionDetected: true if the message contains an action verb
+(show, send, take, wear, etc.) directed at an image type.
+isQuestion: true if the message is primarily interrogative (starts
+with an interrogative word, contains "?", etc.).
+
+DEPENDENCIES: None.
+
+EXPORTS:
+- classifyRouteIntent(userText) — consumed by chat.ts
+
+STATE:
+- IMAGE_ACTION_VERB_RE, INTERROGATIVE_OPENER_RE, and related regexes
+  (module-level static)
+
+CONNECTIONS: None.
+
+KNOWN ISSUES:
+"Interrogative opener" check may flag declarative sentences
+beginning with "Do" or "Can" as questions, suppressing image
+generation when the user intended a command ("Can you show me a
+selfie" would be marked as a question). The swimwear override in
+chat.ts bypasses this for swimwear-specific requests.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/continuityGuard.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Post-processes Ashley's replies to detect and correct "character
+breaks" — responses where she acts like a generic AI assistant or
+produces AI-transparency disclaimers. Two exports: guardContinuity
+(fast regex check, returns true/false flag), guardContinuityDetailed
+(triggers an LLM rewrite if a break is detected). Rewrite uses the
+same text provider as the main chat lane (Gemini or Anthropic).
+
+DEPENDENCIES:
+- ./textLLM (generateChatText)
+- ./logger (logger)
+
+EXPORTS:
+- guardContinuity(text) — consumed by chat.ts
+- guardContinuityDetailed(text, context) — consumed by chat.ts
+
+STATE:
+- BREAK_PATTERNS: regex array for known AI-disclosure phrases
+- RISK_PATTERNS: regex array for softer warning signs
+(module-level static)
+
+CONNECTIONS: LLM via textLLM.ts.
+
+KNOWN ISSUES:
+LLM rewrites are not added to the message history; a subsequent
+turn sees the original response in context and may re-break. The
+rewrite adds latency and a second LLM call cost. Keyword-based
+detection may produce false positives (e.g. legitimate uses of
+"I'm an" phrases).
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/deliverableMode.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Detects when a user requests a structured output (plan, spec, list,
+guide) and provides buildDeliverableModeBlock() which returns a
+system prompt block instructing Ashley to produce clean, copy-
+pasteable documents without embodied reactions inside the document
+body. isDeliverableRequest(userText) is the detection predicate.
+
+DEPENDENCIES: None.
+
+EXPORTS:
+- isDeliverableRequest(userText) — consumed by chat.ts
+- buildDeliverableModeBlock() — consumed by chat.ts
+
+STATE:
+- DELIVERABLE_PATTERNS: regex array (module-level static)
+
+CONNECTIONS: None.
+
+KNOWN ISSUES:
+Heuristic detection may fire on ordinary conversational requests for
+information. No way to exit deliverable mode within a single turn
+if the LLM misapplies the block.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/diagnosticCommand.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Single-predicate module. isDiagnosticsCommand(text) returns true only
+when the input exactly matches "run diagnostics" (case-insensitive,
+normalised whitespace). Triggers the diagnostic report path in
+chat.ts instead of the LLM pipeline.
+
+DEPENDENCIES: None.
+
+EXPORTS:
+- isDiagnosticsCommand(text) — consumed by chat.ts
+
+STATE: None.
+
+CONNECTIONS: None.
+
+KNOWN ISSUES:
+Extremely rigid; does not accept any variation ("run diagnostic",
+"diagnostics", etc.). Intentional by design.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/systemEvents.ts (lib)
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Manages a feed of "system events" (e.g. bug fixes, capability
+announcements) injected into Ashley's system prompt. Events have a
+static seed (STATIC_EVENTS, e.g. "Voice Call (Phase 1): Live.")
+and can be augmented at runtime via the systemEvents route. Exports
+addSystemEvent, getSystemEvents, buildSystemEventsSection (for
+prompt injection), and buildOpenTicketsBlock (formats open tickets
+for the prompt).
+
+DEPENDENCIES:
+- ./logger (logger)
+
+EXPORTS:
+- addSystemEvent, getSystemEvents, buildSystemEventsSection,
+  buildOpenTicketsBlock — consumed by chat.ts and
+  routes/systemEvents.ts
+
+STATE:
+- eventStore: SystemEvent[] (module-level in-process array)
+  seeded with STATIC_EVENTS at load time
+
+CONNECTIONS: None directly.
+
+KNOWN ISSUES:
+In-process store is lost on server restart; STATIC_EVENTS requires
+code deployment to change. Runtime events added via API exist only
+for the process lifetime — effectively ephemeral.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/maintainerService.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Internal Claude-backed service for the "Ashley Maintainer" workflow.
+diagnoseTicket(ticket) asks Claude to analyse an improvement ticket
+and identify root cause. planTicket(ticket, diagnosis) drafts a
+change plan. generateApprovalPacket(ticket, plan) creates a human-
+readable packet for sign-off. findProtectedReference(text) checks
+proposed changes against PROTECTED_PATHS and PROTECTED_CATEGORIES
+to block changes to safety-critical code paths.
+
+DEPENDENCIES:
+- @workspace/integrations-anthropic-ai (anthropic client)
+- @workspace/db (improvement ticket types)
+- pino (Logger — type)
+
+EXPORTS:
+- diagnoseTicket, planTicket, generateApprovalPacket,
+  findProtectedReference — consumed by routes/maintainer.ts
+
+STATE:
+- PROTECTED_PATHS: string[] (hardcoded)
+- PROTECTED_CATEGORIES: string[] (hardcoded)
+
+CONNECTIONS: Anthropic API (hardcoded; ignores ASHLEY_TEXT_PROVIDER).
+
+KNOWN ISSUES:
+Hardcoded to Claude regardless of ASHLEY_TEXT_PROVIDER env var.
+Safety checks (findProtectedReference) are keyword-based and run
+only before the LLM call, not on the model's output — the model
+could still suggest changes to protected paths in its response.
+No output validation after LLM response.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/subjectClassifier.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Regex-based classifier that determines whether an image generation
+request is directed at Ashley, the user, or a third party. Prevents
+the image pipeline from triggering for requests about people other
+than Ashley.
+
+DEPENDENCIES: None.
+
+EXPORTS:
+- classifySubject(text) — consumed by the image pipeline in chat.ts
+
+STATE:
+- ASHLEY_DIRECT_RX, SELF_RX, THIRD_PARTY_RX (module-level static
+  regexes)
+
+CONNECTIONS: None.
+
+KNOWN ISSUES:
+"Implicit subject is Ashley" convention may fail for ambiguous
+sentences. Fully regex-based — no semantic understanding.
+
+===================================================================
+BLOCK 3 OF N — API SERVER: ROUTES
+===================================================================
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/state.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Handles profile and state management endpoints. GET /state: one-shot
+hydration returning profile, all messages (annotated with imageUrls[]
+for multi-image packets), all memories, all conversation summaries,
+and the resolved content policy. PUT /profile: updates the profile
+using ProfileUpdateSchema (validated via Zod), runs validatePolicyPatch
+for contentMode/intimacyLevel fields before writing, supports
+markOnboarded flag. POST /profile/confirm-adult: the only path that
+sets adultConfirmedAt; requires { confirm: true } body; idempotent.
+DELETE /profile/confirm-adult: clears adultConfirmedAt and resets
+contentMode to standard. DELETE /chat/messages: wipes messages,
+summaries, and media_attachments for the device. PATCH /summaries/:id:
+updates a summary text. DELETE /summaries/:id: deletes a summary.
+POST /state/import: bulk atomic import of profile + messages +
+memories + summaries from a backup payload (ImportPayloadSchema),
+wrapped in a DB transaction with cross-device ID claiming. DELETE
+/state: full reset of all device data.
+
+DEPENDENCIES:
+- express (Router, IRouter)
+- zod (z)
+- drizzle-orm (and, asc, eq, inArray)
+- @workspace/db (db, tables, PROACTIVE_CADENCES)
+- ../middleware/deviceId (getDeviceId)
+- ../lib/profile (getOrCreateProfileFor)
+- ../lib/contentPolicy (getPolicyFor, isMatureModeAvailable,
+  validatePolicyPatch, INTIMACY_MIN, INTIMACY_MAX)
+
+EXPORTS:
+- router (IRouter, default) — consumed by routes/index.ts
+
+STATE: None.
+
+CONNECTIONS: PostgreSQL via Drizzle ORM (ashleyProfileTable,
+messagesTable, memoriesTable, conversationSummariesTable,
+mediaAttachmentsTable).
+
+KNOWN ISSUES:
+contentMode and intimacyLevel are intentionally excluded from
+POST /state/import to prevent backup files from bypassing the
+age-gate — well-documented in comments. The import transaction
+uses a chunked delete-then-insert strategy to claim cross-device
+IDs; chunk size is 500. On very large imports (50,000 messages)
+the transaction will run many sequential DB round-trips and may
+time out under Replit's connection pool limits.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/memories.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+CRUD endpoints for the memories table. POST /memories (create,
+idempotent on id, 201 or 200). PATCH /memories/:id (partial update).
+DELETE /memories/:id (delete). All operations are scoped to the
+requesting device ID. Memory fields: content (max 500 chars), tag
+(max 60 chars), importance (1-5), category
+(identity/relational/project/daily/landmark), confidence (1-5),
+summary (max 300 chars), reuse (often/relevant_only/rarely).
+
+DEPENDENCIES:
+- express (Router, IRouter)
+- zod (z)
+- drizzle-orm (and, eq)
+- @workspace/db (db, memoriesTable, Memory type)
+- ../middleware/deviceId (getDeviceId)
+
+EXPORTS:
+- router (IRouter, default) — consumed by routes/index.ts
+
+STATE: None.
+
+CONNECTIONS: PostgreSQL via Drizzle ORM (memoriesTable).
+
+KNOWN ISSUES: None observed.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/proactive.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Three proactive-related endpoints. POST /devices/push-token: upserts
+(or clears with null) the Expo push token on the profile row.
+POST /proactive/debug-tick: force-evaluates the proactive scheduler
+for the calling device; gated by NODE_ENV !== "production" (returns
+404 in production). POST /proactive/on-app-open: evaluates whether
+Ashley should send a greeting; always returns 200 with { greeted:
+bool, [reason|message] }; opportunistically updates the device
+timezone on the profile if clientTimezone is provided.
+
+DEPENDENCIES:
+- express (Router, IRouter)
+- zod (z)
+- drizzle-orm (eq)
+- @workspace/db (db, ashleyProfileTable)
+- ../middleware/deviceId (getDeviceId)
+- ../lib/profile (getOrCreateProfileFor)
+- ../lib/proactiveScheduler (forceTickForDevice)
+- ../lib/appOpenGreeting (maybeGenerateAppOpenGreeting)
+
+EXPORTS:
+- router (IRouter, default) — consumed by routes/index.ts
+
+STATE: None.
+
+CONNECTIONS: PostgreSQL via Drizzle ORM (ashleyProfileTable). Calls
+forceTickForDevice and maybeGenerateAppOpenGreeting which reach the
+LLM and push notification service.
+
+KNOWN ISSUES:
+The POST /proactive/on-app-open swallows internal errors and returns
+200 { greeted: false, reason: "internal_error" } — intentional for
+cold-start reliability but may obscure DB or LLM failures during
+debugging.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/chat.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+The primary conversational hub. 6,613 lines. Provides:
+POST /chat (non-streaming), POST /chat/stream (SSE streaming),
+POST /chat/selfie (background image generation job),
+GET /chat/selfie/:jobId (poll for job result),
+POST /chat/transcribe (audio STT upload, returns transcript),
+POST /chat/transcribe/stream (audio STT upload, returns SSE
+transcript), POST /chat/image (user image upload and analysis),
+POST /chat/summarize (explicit conversation summarisation),
+GET /messages/:id/speech (per-message TTS synthesis and caching).
+
+Core pipeline for /chat and /chat/stream:
+1. Multi-ticket guard (reject if >1 "create ticket:" in message).
+2. "create ticket: <summary>" interceptor — bypasses LLM, writes
+   directly to ashleyTicketsTable with deduplication.
+3. APPROVE: <ticketId> interceptor — approves a ticket by ID.
+4. Diagnostics check — "run diagnostics" returns a formatted ticket
+   report without hitting the LLM.
+5. Zod validation (ChatBodySchema).
+6. stripUserSuppliedMarkers to prevent {{VMEM}}/{{VSPEC}} injection.
+7. classifyRouteIntent — sets imageRouteAllowed gate.
+8. isSwimwearImageRequest override for swimwear-specific requests.
+9. Persist user message (idempotent on id; returns existing reply
+   if duplicate user message id already has a reply).
+10. Load profile, memories, summaries, history (HISTORY_WINDOW=80
+    most recent messages), open tickets.
+11. Time context block (buildTimeContext).
+12. System prompt assembly (buildSystemPrompt + time + system events
+    + open tickets + optional deliverable mode block + optional
+    follow-up TURN HINT).
+13. Proactive memory triage (fire-and-forget background).
+14. Image follow-up resolution (resolveImageFollowUp —
+    short-circuits LLM for unambiguous image follow-ups via
+    synthesizeImageActionReply).
+15. Visual memory anchor detection ({{VMEM}} markers, missing-field
+    prompts).
+16. Web search injection (maybeRunWebLookup).
+17. Multi-image count detection (detectRequestedImageCount); sends
+    clarification reply if ambiguous.
+18. LLM call (generateChatText for non-streaming, streamChatText for
+    SSE streaming). Forced Anthropic for vision path (photo input).
+19. Post-process: parseAllImageMarkers to extract image vibes;
+    mode redistribution for monotone multi-image sets;
+    vibe supplementation for deficit multi-image sets.
+20. Continuity guard (regex; LLM rewrite if break detected).
+21. Memory distillation (async, fire-and-forget: if history.length
+    >= SUMMARY_TRIGGER, maybeRollUpOlderMessages and
+    maybeDistillMemories).
+22. Ashley message persistence + selfie jobs fan-out.
+
+Module-level state:
+- selfieJobs: Map<string, SelfieJob> (in-process job registry)
+- selfieCache: Map<string, string> (vibe hash → URL cache)
+- summarizationInFlight: Set<string> (per-device deduplication)
+- inFlightStreams: Map<string, AbortController> (per streamId)
+
+DEPENDENCIES:
+- express (Router, IRouter)
+- zod (z)
+- node:crypto (randomUUID, createHash)
+- node:fs, node:path
+- drizzle-orm (and, asc, desc, eq, gt, inArray, sql)
+- @workspace/db (db, all table imports, types)
+- @workspace/integrations-anthropic-ai (anthropic — for vision path)
+- @workspace/api-zod (SummarizeChunkBodySchema,
+  SummarizeChunkResponseSchema)
+- ../lib/textLLM (generateChatText, streamChatText, LLMMessage)
+- ../lib/diagnosticCommand (isDiagnosticsCommand)
+- ../lib/selfieCap (tryClaimSelfieSlot)
+- ../middleware/deviceId (getDeviceId)
+- ../lib/profile (getOrCreateProfileFor)
+- ../lib/ashleyPrompt (MEMORY_DISTILLER_PROMPT, SUMMARIZER_PROMPT)
+- ../lib/ashleyCoreSpec (buildSystemPrompt, buildImagePromptAddendum,
+  filterMemoriesForPrompt, buildHairColourDirective, etc.)
+- ../lib/systemEvents (buildSystemEventsSection, buildOpenTicketsBlock)
+- ../lib/contentPolicy (buildSelfiePromptSafetyPrefix)
+- ../lib/imageIntent (ImageMode, parseImageMarker, parseAllImageMarkers,
+  encodeStoredVibe, decodeStoredVibe, wrapperFor, isImageMode,
+  IMAGE_MODES)
+- ../lib/imageGovernance (applyGovernance, detectSceneEnvironment,
+  GovernanceParams)
+- ../lib/imageFollowUp (resolveImageFollowUp, buildFollowUpTurnHint,
+  synthesizeImageActionReply, synthesizeImageActionReplyFromSpec,
+  isSwimwearImageRequest, shortCaptionFor, PHANTOM_IMAGE_DIAGNOSTIC,
+  detectPhantomImageDelivery)
+- ../lib/visualSpec (buildHairColourDirective, composeAppearance,
+  extractVisualSpec, extractVisualSpecCompound,
+  extractVisualSpecFromVibe, makeEmptySpec, scrubVibeForOverrides)
+- ../lib/routeIntentClassifier (classifyRouteIntent)
+- ../lib/visualMemory (all exports)
+- ./tickets (approveTicketById)
+- ../lib/openai (generateImageBase64, transcribeAudioBase64,
+  transcribeAudioBase64Stream, synthesizeSpeech, stripForTts)
+- ../lib/elevenlabs (synthesizeSpeechElevenLabs)
+- ../lib/deepgram (transcribeWithDeepgram)
+- ../lib/storage (saveSelfie, saveUserImage, userImageExtForMime,
+  localSelfieDir)
+- ../lib/webSearch (maybeRunWebLookup)
+- ../lib/deliverableMode (isDeliverableRequest, buildDeliverableModeBlock)
+- ../lib/continuityGuard (guardContinuity, guardContinuityDetailed)
+- ../lib/logger (logger)
+
+EXPORTS:
+- router (IRouter, default) — consumed by routes/index.ts
+
+STATE:
+- selfieJobs: Map<jobId, SelfieJob> (in-process, lost on restart)
+- selfieCache: Map<vibeHash, imageUrl> (in-process, lost on restart)
+- summarizationInFlight: Set<deviceId> (in-process deduplication)
+- inFlightStreams: Map<streamId, AbortController> (per SSE stream)
+- CHAT_MODEL: "claude-sonnet-4-6" (constant — used only for vision
+  path; main text uses textLLM.ts which respects ASHLEY_TEXT_PROVIDER)
+- HISTORY_WINDOW: 80
+- SUMMARY_CHUNK_SIZE: 20
+- SUMMARY_TRIGGER: 80
+
+CONNECTIONS:
+- PostgreSQL via Drizzle ORM (all chat tables)
+- Anthropic Claude via @workspace/integrations-anthropic-ai
+  (vision path only)
+- Text LLM (Gemini 2.5 Flash or Claude Sonnet) via textLLM.ts
+- OpenAI (Whisper STT, TTS-1)
+- ElevenLabs TTS
+- Deepgram STT (transcribeWithDeepgram — used in /chat/transcribe
+  when DEEPGRAM_API_KEY is set)
+- FAL.ai / Pollo / Replicate (image generation via storage.ts)
+- Tavily web search via webSearch.ts
+
+KNOWN ISSUES:
+- console.log at line 571 (CREATE_TICKET_DEDUPE_CHECK) and line 953
+  (CREATE_TICKET_INTERCEPTOR_TRIGGERED) were not removed — uses
+  console.log instead of req.log/logger.
+- applyMemoryTriageBackground is fire-and-forget; failures are
+  silently discarded.
+- selfieJobs and selfieCache are in-process only; lost on server
+  restart, causing any in-flight job to return 404 after a restart.
+- Memory distillation (maybeRollUpOlderMessages) and summaries both
+  triggered at HISTORY_WINDOW boundary — could fire simultaneously.
+- POST /chat/transcribe path calls both Deepgram (if key set) and
+  OpenAI Whisper as the text provider — the routing logic should be
+  verified to ensure only one is called per request.
+- Vision reply path is hardcoded to Claude Sonnet (CHAT_MODEL),
+  ignoring ASHLEY_TEXT_PROVIDER — this is intentional per
+  architecture decisions in replit.md.
+- The "Wren May 2026" hard-coded server-side synthesis paths bypass
+  the LLM entirely for certain visual and ticket intents; these
+  paths are not covered by the LLM's character response and may
+  produce inconsistent tone.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/health.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+GET /healthz endpoint. Returns HTTP 200 { ok: true } after
+successfully executing SELECT 1 against the database. Used by
+Replit deployment health checks and the keepalive ping in index.ts.
+
+DEPENDENCIES:
+- express (Router)
+- @workspace/db (db)
+- drizzle-orm (sql)
+
+EXPORTS:
+- router (default) — consumed by routes/index.ts
+
+STATE: None.
+CONNECTIONS: PostgreSQL (SELECT 1).
+KNOWN ISSUES: None.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/image.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Serves static selfie and user-image files. GET /selfies/:filename
+and GET /user-images/:filename serve files from localSelfieDir using
+express.static or a direct file read. These paths are public
+(exempted from auth in app.ts and routes/index.ts) because React
+Native Image components cannot attach auth headers.
+
+DEPENDENCIES:
+- express (Router)
+- ../lib/storage (localSelfieDir)
+- node:path (path)
+
+EXPORTS:
+- router (default) — consumed by routes/index.ts
+
+STATE: None.
+CONNECTIONS: Local filesystem.
+KNOWN ISSUES:
+Static file serving via express.static or direct read — no auth.
+Security relies entirely on UUID-based unguessable filenames as
+capability tokens. If an attacker learns a UUID filename, they can
+access that image without credentials.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/carryover.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+POST /carryover: Replika carryover intake. Accepts a large block of
+Replika export text, calls Claude to produce a summary and initial
+memories, writes the summary to the profile's replikaCarryoverSummary
+field and the memories to the memories table. Also GET /carryover:
+returns the current carryover summary from the profile.
+
+DEPENDENCIES:
+- express (Router)
+- zod (z)
+- @workspace/db (db, ashleyProfileTable, memoriesTable)
+- @workspace/integrations-anthropic-ai (anthropic)
+- ../lib/profile (getOrCreateProfileFor)
+- ../middleware/deviceId (getDeviceId)
+
+EXPORTS:
+- router (default) — consumed by routes/index.ts
+
+STATE: None.
+CONNECTIONS: PostgreSQL, Anthropic API.
+KNOWN ISSUES:
+Summary generation is one-shot; re-running creates duplicate
+memories. No idempotency guard on memory insertion.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/debug.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Internal debug endpoints exposing in-memory state: GET /debug/selfie-jobs
+(returns selfieJobs map from chat.ts), GET /debug/streams (returns
+inFlightStreams from chat.ts), GET /debug/env (returns a sanitised
+subset of process.env). All endpoints gated by NODE_ENV !== production
+(return 404 in production).
+
+DEPENDENCIES:
+- express (Router)
+- ../middleware/deviceId (getDeviceId)
+- (Accesses selfieJobs and inFlightStreams from chat.ts via imports
+  or by being in the same module — implementation detail)
+
+EXPORTS:
+- router (default) — consumed by routes/index.ts
+
+STATE: None (reads shared state from chat.ts).
+CONNECTIONS: None (in-process only).
+KNOWN ISSUES:
+GET /debug/env could leak sensitive environment variable names even
+in sanitised form if the sanitisation logic is incomplete. The
+NODE_ENV !== production gate is only reliable if NODE_ENV is
+correctly set.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/tickets.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+CRUD for ashleyTicketsTable. GET /tickets (list all), GET /tickets/:id,
+POST /tickets (create), PATCH /tickets/:id (update status, severity,
+etc.), DELETE /tickets/:id. Also exports approveTicketById(id) as a
+named export (not a route handler) — called directly from chat.ts's
+APPROVE: interceptor.
+
+DEPENDENCIES:
+- express (Router)
+- zod (z)
+- @workspace/db (db, ashleyTicketsTable)
+- drizzle-orm (eq, desc)
+
+EXPORTS:
+- router (default) — consumed by routes/index.ts
+- approveTicketById(id) — consumed by chat.ts APPROVE: gate
+
+STATE: None.
+CONNECTIONS: PostgreSQL (ashleyTicketsTable).
+KNOWN ISSUES:
+Duplicate detection uses exact normalised-summary matching; no
+fuzzy matching for semantically similar issue descriptions.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/improvements.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+CRUD for improvement_suggestions table (Stage 2.5 framework). Manages
+proposals for system prompt, code, or configuration changes. Endpoints:
+GET /improvements, POST /improvements, PATCH /improvements/:id.
+Manual approval flow requires direct DB update; not yet implemented
+via API.
+
+DEPENDENCIES:
+- express (Router)
+- zod (z)
+- @workspace/db (db, improvementSuggestionsTable)
+- drizzle-orm (eq, desc)
+
+EXPORTS:
+- router (default) — consumed by routes/index.ts
+
+STATE: None.
+CONNECTIONS: PostgreSQL (improvement_suggestions table).
+KNOWN ISSUES: No approval API endpoint; approval requires direct DB
+update.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/plans.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+CRUD for plans table (Stage 2.5 framework). Plans are multi-step
+roadmaps for system upgrades. Endpoints: GET /plans, POST /plans,
+PATCH /plans/:id, DELETE /plans/:id. Server is mostly a CRUD store;
+plan execution state machine is partially client-side.
+
+DEPENDENCIES:
+- express (Router)
+- zod (z)
+- @workspace/db (db, plansTable)
+- drizzle-orm (eq)
+
+EXPORTS:
+- router (default) — consumed by routes/index.ts
+
+STATE: None.
+CONNECTIONS: PostgreSQL (plansTable).
+KNOWN ISSUES: No versioning. Execution state is not tracked server-side.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/packets.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+GET /packets/:messageId: retrieves the list of media_attachments for
+a multi-image packet message (ordered by sort_order), returning their
+imageUrls, statuses, and sort positions. Used by the mobile client to
+poll for packet completion.
+
+DEPENDENCIES:
+- express (Router)
+- @workspace/db (db, mediaAttachmentsTable)
+- drizzle-orm (eq)
+- ../middleware/deviceId (getDeviceId)
+
+EXPORTS:
+- router (default) — consumed by routes/index.ts
+
+STATE: None.
+CONNECTIONS: PostgreSQL (mediaAttachmentsTable).
+KNOWN ISSUES:
+Polling before chat.ts has registered the attachment rows will
+return an empty array. No notification mechanism — clients must
+poll blindly.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/queue.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+GET /queue/status: returns a summary of in-progress selfie generation
+jobs from the selfieJobs Map in chat.ts. Used by the mobile client's
+job status overlay.
+
+DEPENDENCIES:
+- express (Router)
+- ../middleware/deviceId (getDeviceId)
+- (Accesses selfieJobs from chat.ts)
+
+EXPORTS:
+- router (default) — consumed by routes/index.ts
+
+STATE: None (reads shared state from chat.ts).
+CONNECTIONS: In-process only.
+KNOWN ISSUES: Queue state is lost on server restart.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/maintainer.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Restricted maintenance routes for the "Ashley Maintainer" workflow.
+Endpoints for submitting improvement tickets for LLM diagnosis,
+generating change plans, creating approval packets, and listing
+protected paths. All routes gated by adminAuthMiddleware (static
+token from environment variable).
+
+DEPENDENCIES:
+- express (Router)
+- @workspace/db (all tables)
+- ../lib/maintainerService (diagnoseTicket, planTicket,
+  generateApprovalPacket, findProtectedReference)
+- ../middleware/auth or similar adminAuthMiddleware
+
+EXPORTS:
+- router (default) — consumed by routes/index.ts
+
+STATE: None.
+CONNECTIONS: All DB tables. Anthropic API via maintainerService.ts.
+KNOWN ISSUES: Requires a static admin token in env vars. No audit
+log of maintainer actions.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/systemEvents.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+POST /system-events: adds a new runtime system event to the in-process
+eventStore (lib/systemEvents.ts). GET /system-events: returns the
+current event list. Events are injected into Ashley's system prompt
+on every turn via buildSystemEventsSection().
+
+DEPENDENCIES:
+- express (Router)
+- zod (z)
+- ../lib/systemEvents (addSystemEvent, getSystemEvents)
+- ../middleware/deviceId (getDeviceId)
+
+EXPORTS:
+- router (default) — consumed by routes/index.ts
+
+STATE: None (delegates to lib/systemEvents.ts in-process store).
+CONNECTIONS: In-process event store.
+KNOWN ISSUES: Events are lost on server restart.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/document.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+CRUD for documents table. Stores structured documents (plans, specs,
+guides) generated by Ashley via the Deliverable Mode feature.
+Endpoints: GET /documents, GET /documents/:id, POST /documents,
+PATCH /documents/:id, DELETE /documents/:id. All scoped by deviceId.
+
+DEPENDENCIES:
+- express (Router)
+- zod (z)
+- @workspace/db (db, documentsTable)
+- drizzle-orm (eq, and)
+- ../middleware/deviceId (getDeviceId)
+
+EXPORTS:
+- router (default) — consumed by routes/index.ts
+
+STATE: None.
+CONNECTIONS: PostgreSQL (documentsTable).
+KNOWN ISSUES: No versioning; updates overwrite existing record.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/webSearch.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+POST /web-search: exposes a standalone web search endpoint using
+the Tavily API. Accepts { query } body, returns raw search results
+as JSON. Separate from the automatic web search integration in chat.ts;
+intended for manual or triggered searches from the client.
+
+DEPENDENCIES:
+- express (Router)
+- zod (z)
+- ../lib/webSearch (maybeRunWebLookup or a direct Tavily call)
+
+EXPORTS:
+- router (default) — consumed by routes/index.ts
+
+STATE: None.
+CONNECTIONS: Tavily API (via webSearch.ts).
+KNOWN ISSUES: Raw search results are not persisted; only live in the
+request/response cycle unless the chat distiller captures them later.
+
+───────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/routes/voice-call.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Voice call utilities and turn pipeline entry point. Owns:
+VOICE_MODE_ADDENDUM (system prompt addendum for voice mode: short
+replies, no markdown, no bullet points, no stage directions, no AI
+disclosure), loadVoiceContext(deviceId) (replicates chat.ts's
+Promise.all pattern: profile + memories + summaries + HISTORY_WINDOW
+messages, loaded fresh on every turn), stripMarkdown(text) (removes
+markdown syntax before TTS), speakFallback(session, text) (sends
+short spoken fallback using TTS ownership protocol with speechId),
+speakFarewell(session) (spoken goodbye + call_ended frame +
+session finalise), startSilenceMonitor(session) (5-second poll
+enforcing silence lifecycle: 30 s → "Still there?", 60 s → farewell
+TTS + call_ended, 90 s failsafe force-close). handleVoiceTurn is a
+thin delegation wrapper that calls
+VoiceOrchestrationService.handleSpeechFinal.
+
+DEPENDENCIES:
+- @workspace/db (db, messagesTable, memoriesTable,
+  conversationSummariesTable)
+- drizzle-orm (eq, desc)
+- ../lib/profile (getOrCreateProfileFor)
+- ../lib/ashleyCoreSpec (buildSystemPrompt)
+- ../lib/elevenlabsStream (streamSpeechElevenLabs)
+- ../lib/VoiceSessionRegistry (registry.*, VoiceSession type)
+- ../lib/VoiceOrchestrationService (* as VoiceOrchestrationService)
+- ../lib/logger (logger)
+
+EXPORTS:
+- VOICE_MODE_ADDENDUM (string constant) — consumed by
+  VoiceOrchestrationService.ts
+- loadVoiceContext(deviceId) — consumed by VoiceOrchestrationService.ts
+- stripMarkdown(text) — consumed by VoiceOrchestrationService.ts
+- speakFallback, speakFarewell — consumed internally (silence monitor)
+- startSilenceMonitor(session) — consumed by index.ts on connect
+- handleVoiceTurn(session, transcript, utteranceId) — consumed by
+  index.ts on speech_final
+
+STATE:
+- SILENCE_POLL_MS: 5,000 (constant)
+- SILENCE_WARN_MS: 30,000 (constant)
+- SILENCE_END_MS: 60,000 (constant)
+- SILENCE_FORCE_MS: 90,000 (constant)
+- HISTORY_WINDOW: 80 (constant, must stay in sync with chat.ts)
+
+CONNECTIONS: PostgreSQL (messages, memories, summaries).
+ElevenLabs streaming TTS via elevenlabsStream.ts.
+
+KNOWN ISSUES:
+HISTORY_WINDOW is duplicated from chat.ts (both set to 80) — if
+chat.ts changes its value, voice-call.ts must be updated manually.
+The silence lifecycle fires speakFarewell on the 60-second threshold
+but speakFallback (silence warning) is not cancellable — if the user
+speaks while the "Still there?" TTS is being sent, there is a brief
+period where the session may be in an inconsistent state.
+
+===================================================================
+BLOCK 4 OF N — API SERVER: VOICE PIPELINE LIBRARY FILES
+===================================================================
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Orchestrates the 8-stage voice call pipeline. Entry points from
+routes and index.ts: startOrchestration (starts zombie cleanup
+interval for a session), handleSpeechInterim (Stage 2: intent
+pre-classification from partial transcript), handleSpeechFinal
+(Stages 3–7: full turn pipeline — intent classify → context assemble
+→ LLM stream → sentence-boundary TTS → DB persist),
+handleReconnect (Stage 8B: reconnect acknowledgment), and
+abortCurrentOutputs (shared abort helper). Does NOT import from
+routes/voice-call.ts — avoids circular dependency. Silence monitor
+and farewell logic remain in routes/voice-call.ts. Constants:
+VOICE_MAX_TOKENS 1024, FIRST_TOKEN_WATCHDOG_MS 8000,
+MAX_TURN_BUDGET_MS 45000, ROLLING_AUDIO_BUFFER_MAX_BYTES 960000,
+CONCURRENT_TTS_POOL_LIMIT 2, ZOMBIE_CLEANUP_INTERVAL_MS 15000,
+ZOMBIE_TIMEOUT_MS 90000.
+
+DEPENDENCIES:
+- @workspace/db (db, messagesTable, callSummariesTable)
+- drizzle-orm (eq, and, desc)
+- ./textLLM.js (streamChatText, generateChatText)
+- ./elevenlabsStream.js (streamSpeechElevenLabs)
+- ./VoiceSessionRegistry.js (registry, WsLike, VoiceSession types)
+- ./PersistentSessionStateGuard.js (PersistentSessionStateGuard)
+- ./VoiceIntentClassifier.js (classify, CommandType type)
+- ./VoiceContextAssembler.js (VoiceContextAssembler)
+- ./AudioClipRegistry.js (getClipBuffer, hasClip, ClipName type)
+- ./logger.js (logger)
+
+EXPORTS:
+- abortCurrentOutputs(session) — consumed by registry/routes
+- startOrchestration(session, ws) — consumed by index.ts on connect
+- handleSpeechInterim(session, transcript, ws) — consumed by index.ts
+- handleSpeechFinal(session, transcript, utteranceId) — consumed by
+  routes/voice-call.ts handleVoiceTurn
+- handleReconnect(session, ws) — consumed by index.ts on reconnect
+
+STATE:
+- zombieHandles: Map<sessionId, NodeJS.Timeout> (module-level;
+  one cleanup interval per session)
+- ttsInFlight: number (module-level global TTS concurrency counter;
+  maximum CONCURRENT_TTS_POOL_LIMIT = 2)
+
+CONNECTIONS:
+- PostgreSQL via Drizzle ORM (messagesTable, callSummariesTable)
+- Text LLM via textLLM.ts (Gemini 2.5 Flash by default for voice;
+  routes via ASHLEY_TEXT_PROVIDER)
+- ElevenLabs streaming TTS via elevenlabsStream.ts
+- Pre-generated audio clips via AudioClipRegistry.ts
+
+KNOWN ISSUES:
+zombieHandles persists even if a session is forcefully removed from
+the registry without calling finalise — the interval will fire on a
+dead session and produce spurious log entries. The global ttsInFlight
+pool uses a setTimeout polling loop (50 ms intervals) to wait for a
+slot, which is inefficient under sustained parallel load. Binary
+audio frames from the WebSocket are still not forwarded to Deepgram —
+the binary message handler in index.ts returns immediately at line
+302, so deepgramStream.ts is never invoked; voice calls use client-
+side VAD and push-to-talk transcript only.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/VoiceSessionRegistry.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Central state manager for all active voice sessions. Provides full
+lifecycle management: create (new session), reclaimSession
+(reconnect within 60-second recovery window), markRecovering (mark
+on WS disconnect), finalise (close and trigger CallSummarisationService),
+findByDeviceId, findBySessionId. Also provides: incrementSequence
+(atomic sequence number for ordering WS frames), validateMessage
+(checks sessionId+connectionGeneration against current session —
+drops stale messages from previous connections), cancelCurrentTurn
+(clears currentSpeechId and sets flag for TTS interruption),
+isReconnectRateLimited (windowed rate limit: >5 reconnects in last
+3 minutes), and restoreRecoveringSessions (boot-time re-registration
+from DB active_sessions table). Does not import Express or ws
+dependencies to maintain testability.
+
+DEPENDENCIES:
+- ./PersistentSessionStateGuard (PersistentSessionStateGuard)
+- ./CallSummarisationService (CallSummarisationService)
+- @workspace/db (db, active_sessions table)
+- drizzle-orm (eq)
+
+EXPORTS:
+- WsLike, VoiceSessionState, VoiceSession (types/interfaces)
+- create, findByDeviceId, findBySessionId, reclaimSession,
+  markRecovering, finalise, incrementSequence, validateMessage,
+  cancelCurrentTurn, isReconnectRateLimited,
+  restoreRecoveringSessions
+  — all consumed by index.ts and VoiceOrchestrationService.ts
+
+STATE:
+- sessionsBySessionId: Map<sessionId, VoiceSession> (module-level)
+- sessionIdByDeviceId: Map<deviceId, sessionId> (module-level)
+
+CONNECTIONS:
+- PostgreSQL (active_sessions table for boot recovery)
+- CallSummarisationService (triggered at finalise)
+- PersistentSessionStateGuard (queues state sync on session changes)
+
+KNOWN ISSUES:
+reconnectTimestamps on VoiceSession is a plain array; isReconnectRateLimited
+uses .filter() on every check — O(n) but practically bounded (the
+array is limited to 20 entries). restoreRecoveringSessions sets all
+restored sessions to lastReconnectCause "network_drop" regardless of
+actual cause, which may be inaccurate but is the safest recovery
+assumption.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/VoiceContextAssembler.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Assembles the multi-layered system prompt and message history for
+each voice turn. Integrates: profile (getOrCreateProfileFor),
+memories, conversation summaries, call summaries, and the voice-mode
+addendum (VOICE_MODE_ADDENDUM from routes/voice-call.ts). For turns
+after the 100-message overflow threshold, fetches a previous call
+summary as additional context rather than sending the raw message
+list. Adds reconnect acknowledgment blocks and interruption-context
+addendums when the session state indicates them.
+
+DEPENDENCIES:
+- @workspace/db (db, messagesTable, memoriesTable,
+  conversationSummariesTable, callSummariesTable)
+- drizzle-orm (eq, and, desc, gte, lte)
+- ./profile.js (getOrCreateProfileFor)
+- ./ashleyCoreSpec.js (buildSystemPrompt)
+- ./textLLM.js (LLMMessage type)
+
+EXPORTS:
+- VoiceContextAssembler (class with static assemble method) —
+  consumed by VoiceOrchestrationService.ts
+
+STATE: None (stateless class).
+
+CONNECTIONS: PostgreSQL (all four history/context tables).
+
+KNOWN ISSUES:
+The 100-turn overflow logic fetches prevSummary from any session
+other than the current one (most recent call summary by createdAt).
+On a single-device setup this is correct, but if multiple devices
+share a database (future scenario), it could pick up a call summary
+from a different device's session. The HISTORY_WINDOW value here
+must stay in sync with the constant in routes/voice-call.ts and
+routes/chat.ts — no shared constant.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/VoiceIntentClassifier.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Lightweight regex-based intent classifier for voice transcripts.
+Classifies transcripts into categories without incurring an LLM
+round-trip: CONVERSATIONAL (general chat), DIRECT_QUESTION (contains
+"you" and a question mark and matches PERSONAL_QUESTION_RE), COMMAND
+(stop/end/quiet/repeat), FAREWELL (goodbye, hang up), and
+CONVERSATIONAL_FOLLOWUP (continuation phrases like "actually",
+"wait", "never mind"). Also detects the CommandType: STOP, END_CALL,
+QUIET, REPEAT.
+
+DEPENDENCIES: None.
+
+EXPORTS:
+- IntentCategory (type), CommandType (type),
+  ClassificationResult (type), classify(transcript) — consumed by
+  VoiceOrchestrationService.ts
+
+STATE: None (pure functions, static regexes).
+
+CONNECTIONS: None.
+
+KNOWN ISSUES:
+PERSONAL_QUESTION_RE is broad — any sentence containing "you" and
+ending in "?" may be classified as DIRECT_QUESTION, including
+rhetorical questions or statements reformatted as questions. Purely
+regex-based with no semantic understanding.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/CallSummarisationService.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Fire-and-forget end-of-call summarisation service. summariseCall
+(session, deviceId) loads the session's message rows from DB,
+constructs a summarisation prompt requesting structured JSON output
+(topic, tone, key_decisions, open_items, emotional_notes), calls
+generateChatText, parses the JSON, and persists a callSummariesTable
+row. Called from VoiceSessionRegistry.finalise. The summary is then
+available to VoiceContextAssembler for subsequent calls.
+
+DEPENDENCIES:
+- @workspace/db (db, messagesTable, callSummariesTable)
+- ./textLLM (generateChatText)
+- drizzle-orm (eq, inArray, and, desc)
+
+EXPORTS:
+- CallSummarisationService (class with static summariseCall method)
+  — consumed by VoiceSessionRegistry.ts
+
+STATE: None (stateless class).
+
+CONNECTIONS:
+- PostgreSQL (messagesTable, callSummariesTable)
+- LLM via textLLM.ts (generateChatText)
+
+KNOWN ISSUES:
+parseAndSanitizeJSON uses substring + lastIndexOf to extract the
+JSON block from the LLM response; if the response contains multiple
+JSON-like blocks or markdown code fences, the extraction may produce
+invalid JSON and the summary will be skipped (swallowed error). No
+retry on LLM failure. All errors are swallowed (fire-and-forget);
+a failed summarisation produces no user-visible indication.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/AudioClipRegistry.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Manages pre-generated audio clips for common voice call responses
+(e.g. "thinking", "could you say that again?") to avoid live TTS
+latency for these short utterances. On initialize(): checks for
+cached MP3 files at assets/audio/ with SHA256 verification; on cache
+miss, calls streamSpeechElevenLabs to generate and persist. Exports
+getClipBuffer(name) and hasClip(name) for use in
+VoiceOrchestrationService.ts.
+
+DEPENDENCIES:
+- node:crypto (createHash)
+- node:fs/promises (readFile, writeFile, mkdir)
+- node:path (join, dirname)
+- ./elevenlabsStream.js (streamSpeechElevenLabs)
+- ./logger.js (logger)
+
+EXPORTS:
+- ClipName (type), initialize(), getClipBuffer(name), hasClip(name)
+  — consumed by VoiceOrchestrationService.ts; initialize() called
+  from index.ts at startup
+
+STATE:
+- clips: Map<ClipName, Buffer> (module-level in-process cache)
+
+CONNECTIONS:
+- Filesystem (assets/audio/ directory)
+- ElevenLabs TTS via elevenlabsStream.ts (during initialize only)
+
+KNOWN ISSUES:
+initialize() is non-blocking (called with .catch() in index.ts);
+if a clip is requested before initialization finishes, getClipBuffer
+returns undefined. VoiceOrchestrationService must call hasClip before
+getClipBuffer and fall back to live TTS if the clip is not yet ready.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/elevenlabsStream.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Streaming TTS adapter for ElevenLabs. Uses the
+/v1/text-to-speech/{voiceId}/stream endpoint to yield MP3 audio
+chunks as Buffers via an AsyncGenerator. Intended for voice call
+real-time delivery (sentence-boundary streaming in
+VoiceOrchestrationService). Reads ELEVENLABS_API_KEY and
+ELEVENLABS_VOICE_ID from env.
+
+DEPENDENCIES:
+- ./logger.js (logger)
+
+EXPORTS:
+- streamSpeechElevenLabs(text, opts?) — AsyncGenerator yielding
+  Buffer chunks; consumed by VoiceOrchestrationService.ts,
+  routes/voice-call.ts (speakFallback/speakFarewell), and
+  AudioClipRegistry.ts (clip generation)
+
+STATE: None.
+
+CONNECTIONS: ElevenLabs REST API (HTTPS streaming).
+Reads ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID env vars.
+
+KNOWN ISSUES:
+No internal retry logic — relies on caller to handle streaming
+failures. If ELEVENLABS_API_KEY or ELEVENLABS_VOICE_ID are unset,
+the generator will throw immediately on first call.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/elevenlabs.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Legacy batch (non-streaming) TTS adapter for ElevenLabs. Calls
+/v1/text-to-speech/{voiceId} and returns the full audio as a Buffer.
+Used by the per-message speech endpoint in routes/chat.ts
+(GET /messages/:id/speech), not by the voice call pipeline.
+
+DEPENDENCIES: None explicitly (uses global fetch).
+
+EXPORTS:
+- synthesizeSpeechElevenLabs(text, opts?) — Promise<Buffer>; consumed
+  by routes/chat.ts speech endpoint and openai.ts (re-export)
+
+STATE: None.
+
+CONNECTIONS: ElevenLabs REST API (HTTPS).
+Reads ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID env vars.
+
+KNOWN ISSUES:
+High latency for long text since the entire audio must be synthesised
+before any data is returned. No streaming fallback. Frozen by design
+— the streaming variant (elevenlabsStream.ts) handles real-time use
+cases.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/deepgramStream.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Streaming STT adapter using Deepgram's WebSocket API. Factory
+function createDeepgramStream() opens a WSS connection to
+wss://api.deepgram.com/v1/listen, handles binary audio frame
+forwarding, emits interim and final transcript callbacks, and
+implements a one-time automatic reconnect policy on connection drop.
+Includes an audioQueue (max 200 frames) for frames received during
+(re)connect. Implements a closing flag to prevent frame send after
+close.
+
+DEPENDENCIES:
+- ws (WebSocket — @ts-ignore, same missing @types/ws as index.ts)
+- ./logger.js (logger)
+
+EXPORTS:
+- DeepgramStream (interface), createDeepgramStream(opts) — NOT
+  currently consumed by any active code path; the binary audio
+  handler in index.ts returns immediately before calling this module
+
+STATE:
+- audioQueue: Buffer[] (per-instance, max 200 frames)
+- closing: boolean (per-instance flag)
+
+CONNECTIONS: Deepgram WebSocket API (WSS). Reads DEEPGRAM_API_KEY.
+
+KNOWN ISSUES:
+THIS MODULE IS WIRED BUT NEVER CALLED IN THE ACTIVE PIPELINE.
+Binary audio frames from the client WebSocket are received by the
+handler in index.ts (line 298–303) which updates lastAudioReceivedAt
+and returns immediately — no data is forwarded to Deepgram. Voice
+calls use client-side VAD and push-to-talk transcript (speech_final
+JSON messages) exclusively. audioQueue cap of 200 frames means audio
+is dropped if reconnection takes too long.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/deepgram.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+REST-based batch STT adapter for Deepgram. transcribeWithDeepgram
+(audioBuffer, mimeType) POSTs pre-recorded audio to
+https://api.deepgram.com/v1/listen with Nova-3 model and returns the
+transcript string. Used by routes/chat.ts for the
+POST /chat/transcribe endpoint when DEEPGRAM_API_KEY is set (takes
+priority over OpenAI Whisper).
+
+DEPENDENCIES: None (uses global fetch).
+
+EXPORTS:
+- transcribeWithDeepgram(audioBuffer, mimeType) — consumed by
+  routes/chat.ts /chat/transcribe handler
+
+STATE: None.
+
+CONNECTIONS: Deepgram REST API (HTTPS). Reads DEEPGRAM_API_KEY.
+
+KNOWN ISSUES: None observed. Falls back gracefully if the API
+returns an error (throws, caught by route handler).
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/textLLM.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Unified adapter for LLM text generation. Routes between Anthropic
+(Claude Sonnet 4.6) and Gemini (2.5 Flash) based on the
+ASHLEY_TEXT_PROVIDER env var (default: gemini). Exports
+generateChatText (non-streaming, full response) and streamChatText
+(streaming, AsyncGenerator of text deltas). Both functions accept an
+Anthropic-shaped messages array (LLMMessage[]) for a consistent
+calling convention regardless of provider. Implements automatic
+retry with exponential back-off on 429 rate-limit errors
+(RETRY_DELAYS_MS: [1000, 2000, 5000]).
+
+DEPENDENCIES:
+- @workspace/integrations-anthropic-ai (Anthropic client)
+- ./gemini (getGemini — returns GoogleGenAI singleton)
+- ./logger (logger)
+
+EXPORTS:
+- LLMMessage, GenerateOpts, StreamOpts, ChatProvider (types)
+- activeChatProvider() — returns the currently configured provider
+- generateChatText(messages, opts?) — consumed by proactiveMessage.ts,
+  chat.ts (non-vision path), continuityGuard.ts, maintainerService.ts
+  (ignores this file — uses Anthropic directly), CallSummarisationService.ts
+- streamChatText(messages, opts?) — consumed by chat.ts (stream path)
+  and VoiceOrchestrationService.ts
+
+STATE:
+- RETRY_DELAYS_MS: [1000, 2000, 5000] (constant array)
+
+CONNECTIONS:
+- Anthropic API via @workspace/integrations-anthropic-ai
+- Google Gemini API via gemini.ts singleton
+
+KNOWN ISSUES:
+streamChatText cannot transparently retry on mid-stream 429 errors
+because part of the response has already been sent; it throws,
+potentially leaving the caller with an incomplete/partial response
+that has already been streamed to the client. The maintainerService.ts
+bypasses this file entirely and calls Anthropic directly, so it is
+unaffected by ASHLEY_TEXT_PROVIDER.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/gemini.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Singleton factory for the Google Generative AI client. getGemini()
+returns a cached GoogleGenAI instance initialised from the
+AI_INTEGRATIONS_GEMINI_API_KEY and AI_INTEGRATIONS_GEMINI_BASE_URL
+env vars (both set automatically by the Replit Gemini integration).
+Only gemini-2.5-flash is confirmed to work via this proxy — other
+Google model names should not be assumed to work without verification.
+
+DEPENDENCIES:
+- @google/genai (GoogleGenAI)
+
+EXPORTS:
+- getGemini() — consumed by textLLM.ts
+
+STATE:
+- cached: GoogleGenAI | null (module-level singleton)
+
+CONNECTIONS: Google Gemini API (via Replit AI Integrations proxy).
+
+KNOWN ISSUES:
+None. Per memory note: do not assume public Google model names work
+via the Replit proxy — only gemini-2.5-flash is confirmed.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/ashleyCoreSpec.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Single source of truth for Ashley's personality specification and
+system prompt construction. ASHLEY_CORE_SPEC is the main static
+string defining Ashley's identity hierarchy (Builder-Aware layer,
+Reality Calibration layer, Core Character layer). buildSystemPrompt
+(profile, memories, summaries, opts?) assembles the full system
+prompt for a turn by concatenating: provider floor block, core spec,
+profile-derived identity fields (name, age, appearance, personality,
+speaking style, relationship mode, shared history, Replika carryover),
+content policy block (standard vs mature), intimacy block, filtered
+memories (filterMemoriesForPrompt: 30-day recency cutoff for
+"relevant_only" or "rarely" memory reuse flags, always includes
+"often" memories), conversation summaries, and any optional addendums
+(system events, time context, voice mode block, diagnostics flag).
+Exports buildImagePromptAddendum for selfie generation prompts.
+
+DEPENDENCIES:
+- @workspace/db (AshleyProfile, Memory, ConversationSummary —
+  type imports only)
+- ./contentPolicy (buildProviderFloorBlock, buildModeBlock,
+  buildIntimacyBlock, getPolicyFor)
+
+EXPORTS:
+- filterMemoriesForPrompt(memories, now?) — consumed by chat.ts
+- ASHLEY_CORE_SPEC (string constant) — informational
+- buildSystemPrompt(profile, memories, summaries, opts?) — consumed
+  by chat.ts (main chat pipeline), routes/voice-call.ts
+  (loadVoiceContext → VoiceContextAssembler)
+- buildImagePromptAddendum(profile, spec, governanceParams) —
+  consumed by chat.ts selfie pipeline
+
+STATE: None.
+
+CONNECTIONS: None.
+
+KNOWN ISSUES:
+filterMemoriesForPrompt uses a 30-day inactivity check for
+"relevant_only" and "rarely" memories — memories older than 30 days
+with those flags are silently dropped from the context window,
+potentially suppressing important but time-distant memories (e.g.
+a major life event from 35 days ago marked "relevant_only"). The
+filter only applies recency to those two flags; "often" memories are
+always included regardless of age.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/ashleyPrompt.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Older / simpler system prompt builder and prompt string constants.
+Provides SUMMARIZER_PROMPT (instructions for the conversation chapter
+summariser — used by the /chat/summarize route and
+maybeRollUpOlderMessages), MEMORY_DISTILLER_PROMPT (instructions for
+the per-turn background memory distillation — used by
+maybeDistillMemories in chat.ts), buildSystemPrompt (a simpler
+earlier version of the same function now in ashleyCoreSpec.ts),
+and toClaudeMessages (converts an internal message array to the
+Anthropic messages format). The two buildSystemPrompt implementations
+are differentiated by call site — ashleyPrompt.ts is used for
+non-voice summarisation calls; ashleyCoreSpec.ts is used for all
+main turn prompts.
+
+DEPENDENCIES:
+- @workspace/db (AshleyProfile, Memory, ConversationSummary —
+  type imports)
+
+EXPORTS:
+- buildSystemPrompt(profile, memories, summaries) — older variant
+  consumed by routes/carryover.ts and potentially some legacy callers
+- toClaudeMessages(messages) — consumed by chat.ts history builder
+- SUMMARIZER_PROMPT (string constant) — consumed by chat.ts
+- MEMORY_DISTILLER_PROMPT (string constant) — consumed by chat.ts
+
+STATE: None.
+
+CONNECTIONS: None.
+
+KNOWN ISSUES:
+Two buildSystemPrompt implementations exist (this file and
+ashleyCoreSpec.ts). The distinction between them is not clearly
+enforced at the call sites — a future refactor merging carryover.ts
+and the newer pipeline could accidentally use the wrong one. The
+simpler version in this file does not include the full policy/intimacy
+block or the content-mode machinery.
+
+────────────────────────────────────────────────────────────────────
+FILE: artifacts/api-server/src/lib/PersistentSessionStateGuard.ts
+────────────────────────────────────────────────────────────────────
+PURPOSE:
+Provides a safeguard for session state persistence, serialising state
+sync operations to prevent race conditions. Queues DB writes for
+voice session state changes (active/recovering/closed) and drains
+
+===================================================================
+BLOCK 5 OF 5 — MOBILE APPLICATION
+artifacts/mobile/ — Expo SDK 54, React Native, Expo Router
+===================================================================
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/app/_layout.tsx
+-------------------------------------------------------------------
+PURPOSE:
+Root layout component for the Expo Router app. Bootstraps the entire
+application on cold start:
+  1. Resolves or creates the device id (getOrCreateDeviceId).
+  2. Fetches /state from the API server and seeds all React Query
+     caches (profile, messages, memories, summaries) so first-frame
+     renders have real data.
+  3. Writes hydrated state to AsyncStorage as a startup cache.
+  4. Conditionally registers for Expo push notifications (skipped
+     when cadence is "off" or running in Expo Go).
+  5. Fires the on-app-open greeting check (POST /proactive/on-app-open)
+     if greetOnAppOpen is true; splices any returned message into
+     the messages cache optimistically.
+  6. Installs AppState listener to re-fire greeting on every
+     background→active transition.
+  7. Installs push notification listeners (foreground receive →
+     invalidate messages; tap → invalidate + navigate to chat).
+  8. Loads Inter font family via expo-google-fonts/useFonts.
+  9. Manages SplashScreen lifecycle; includes a 12-second web-only
+     fallback timer in case the CDN is blocked.
+
+Wraps the entire app in:
+  SafeAreaProvider → ErrorBoundary → QueryClientProvider →
+  GestureHandlerRootView → KeyboardProvider → Stack navigator.
+
+DEPENDENCIES:
+  expo-router (Stack, router), @tanstack/react-query
+  (QueryClientProvider), expo-splash-screen, expo-system-ui,
+  expo-status-bar, expo-notifications, expo-constants,
+  react-native (AppState), react-native-gesture-handler,
+  react-native-keyboard-controller, react-native-safe-area-context,
+  @expo-google-fonts/inter,
+  lib/queryClient, lib/aiClient (fetchState, triggerAppOpenGreeting),
+  lib/deviceId, lib/storage, lib/pushRegistration,
+  components/ErrorBoundary
+
+EXPORTS: default RootLayout (React component)
+
+STATE:
+  - interLoaded/interError: font load flags
+  - splashTimedOut: web-only 12s fallback
+  - bootDone: bootstrap completion flag
+  - appOpenGreetingInFlight: module-level promise guard to collapse
+    concurrent greeting calls onto a single network request
+
+CONNECTIONS:
+  API server via fetchState, triggerAppOpenGreeting.
+  Expo push notification service via expo-notifications.
+
+KNOWN ISSUES:
+  Bootstrap errors (offline cold start) are silently swallowed;
+  per-screen hooks fall back to AsyncStorage. The 12-second web
+  splash timeout fires even if the app is loaded (Replit IDE iframe
+  CDN blocking is the trigger — irrelevant in production). Push
+  notification listeners are no-ops in Expo Go since SDK 53 removed
+  remote push from Expo Go.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/app/index.tsx
+-------------------------------------------------------------------
+PURPOSE:
+Home screen. Displays a centred BlueOrb with Ashley's name and an
+"open our chat" CTA button. On mount, if the profile has no
+onboardedAt date, fires useUpdateProfile({ markOnboarded: true })
+to record first-launch. Top-bar navigation icons link to /profile,
+/voice-call, /visuals, and /memories.
+
+DEPENDENCIES:
+  expo-router, react-native-safe-area-context,
+  lib/useProfile (useProfile, useUpdateProfile),
+  components/AmbientBackground, components/BlueOrb, components/Icon,
+  constants/colors
+
+EXPORTS: default HomeScreen
+
+STATE: None (stateless; data from useProfile query)
+
+CONNECTIONS: API server via useProfile/useUpdateProfile.
+
+KNOWN ISSUES: None.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/app/chat.tsx  [3,552 lines]
+-------------------------------------------------------------------
+PURPOSE:
+The main chat interface. Manages the full message lifecycle:
+  - Inverted FlatList showing the conversation.
+  - Streaming send via useStreamMessage (SSE), with optimistic
+    user + empty Ashley bubbles, delta rendering, and completion.
+  - Continue and Stop controls for interrupted/streaming messages.
+  - Non-streaming fallback send via useSendMessage.
+  - Image attachment flow: ImagePicker multi-select → category and
+    mode selection modal → compress-for-send → useSendImage.
+  - Document ingest via DocumentPicker → plain-text extraction →
+    useDocumentIngest.
+  - Voice input: push-to-talk via useVoiceRecorder +
+    useTranscribeAudioStream (Stage 2 streaming STT), with Stage 1
+    non-streaming fallback. Transcript replaces the draft TextInput.
+  - TTS playback: per-message Speak buttons via useSpeakMessage +
+    useTtsPlayback; auto-speak on stream completion when voiceMode
+    is on.
+  - Reply-to (swipe-to-reply via SwipeToReply component).
+  - Selfie display: in-message image rendering, save-to-gallery,
+    copy URL, refresh (re-generation), visual memory navigation.
+  - "Remember" decision card for photo-input messages (remember /
+    visual / dismiss via useMarkImageRemembered).
+  - Presence loop signals (im_here, take_your_time, connection_dip)
+    rendered as fade-out banners.
+  - Connection-dip auto-retry: one automatic useContinueMessage
+    call on CONNECTION_DIP, then stops.
+  - Image gate: useImageGate() syncs the module-level gate and
+    governance snapshot; gates the selfie UI and passes
+    imageGenerationEnabled to every send call.
+  - Clear chat via useClearMessages.
+  - Error banner with classifyError(). Error categories: CONFIG_MISSING,
+    RATE_LIMIT, TIMEOUT, NETWORK, ABORTED, PROVIDER_ERROR.
+  - Relationship mode chip row with preset selector.
+  - Retry unanswered reply via useRetryUnansweredReply.
+  - requestId generation per send attempt for in-flight dedup.
+
+Image compression pipeline: images above 4 MB are compressed to
+JPEG at q=0.85; if still over 14 MB, resized to 2048px wide at
+q=0.65. MIME type is re-detected from base64 magic bytes to fix
+Android's silent re-encode bug.
+
+DEPENDENCIES:
+  expo-router, expo-clipboard, expo-file-system/legacy,
+  expo-media-library, expo-image-picker, expo-image-manipulator,
+  expo-document-picker, @react-native-async-storage/async-storage,
+  react-native (FlatList, KeyboardAvoidingView, Modal, etc.),
+  react-native-safe-area-context,
+  lib/useMessages (useMessages, useStreamMessage, useContinueMessage,
+    useStopStream, useActiveStream, useSendImage, useMarkImageRemembered,
+    useClearMessages, useRetrySelfie, useRetryUnansweredReply,
+    useSelfieInFlight, useDocumentIngest),
+  lib/usePresenceLoop, lib/useProfile, lib/voiceInput, lib/useVoice,
+  lib/voiceOutput, lib/useSpeakMessage, lib/imageGate, lib/storage,
+  components/SwipeToReply, components/Icon, constants/colors
+
+EXPORTS: default ChatScreen
+
+STATE:
+  - draft: TextInput content
+  - replyTo: ReplyToRef | null (active reply-to target)
+  - pickedImages, imageModalVisible, imageCategory, imageMode
+  - error: string | null (error banner)
+  - presenceLoop state (from usePresenceLoop)
+  - voiceRecorder state, transcribeStream mutation state
+  - ttsPlayback state, speakMessage statuses
+  - selfieInFlight per-message map
+  - pendingScrollToBottom ref
+  - connectionDipRetriedRef (one-shot auto-retry guard)
+  - requestIdRef (current send attempt id)
+
+CONNECTIONS:
+  API server via all the useMessages hooks + useProfile.
+  Device media library via expo-media-library (save selfie).
+
+KNOWN ISSUES:
+  - chat.tsx is 3,552 lines; a large monolith. Contains both UI and
+    business logic for the image picker, document ingest, voice
+    pipeline, and presence loop.
+  - Auto-retry on CONNECTION_DIP calls useContinueMessage, which
+    requires a completed meta event; if meta never arrived the retry
+    is silently skipped (correct behaviour, but not surfaced to user).
+  - Document picker reads file as UTF-8 text; binary documents
+    (PDFs, DOCX) are not decoded — caller receives garbled text.
+  - EXPO_PUBLIC_API_KEY and EXPO_PUBLIC_API_BASE are inlined at build
+    time; a misconfigured build silently uses wrong keys until the
+    error banner fires.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/app/onboarding.tsx  [448 lines]
+-------------------------------------------------------------------
+PURPOSE:
+Onboarding wizard guiding new users through initial profile setup.
+Multi-step: welcome → name → appearance → personality → shared
+history → completion. Writes to useUpdateProfile on each step and
+marks onboarding complete. Contains the Replika carryover path
+(useReplikaCarryover) for users migrating from Replika.
+
+DEPENDENCIES:
+  expo-router, react-native, react-native-safe-area-context,
+  lib/useProfile, components/Icon, constants/colors
+
+EXPORTS: default OnboardingScreen
+
+STATE: Local step index and per-field input state.
+
+CONNECTIONS: API server via useUpdateProfile, useReplikaCarryover.
+
+KNOWN ISSUES: None material.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/app/profile.tsx  [2,939 lines]
+-------------------------------------------------------------------
+PURPOSE:
+Full profile and settings screen. Contains:
+  - All editable profile fields (name, age, identity, personality,
+    speakingStyle, appearance, refersToUserAs, sharedHistory,
+    replikaExcerpts/carryover).
+  - Relationship mode selector.
+  - Intimacy level slider (0–5, ceiling enforced by policy).
+  - Proactive cadence selector (Off/Low/Normal/High) with push
+    registration/unregistration side effects.
+  - greetOnAppOpen toggle.
+  - Builder-aware mode and voice mode toggles.
+  - Image generation enable/disable toggle.
+  - Section 9 image defaults: compositionMode, environment,
+    occupancy, camera (multi-select), timeOfDay, season, activity
+    (with ACTIVITY_ENV_MAP auto-setting environment), shotDistance,
+    cameraAwareness.
+  - Content mode (standard/mature) with adult confirmation gate
+    (18+ confirmation modal → useConfirmAdult) and withdraw path.
+  - Test selfie generator (fetchTestSelfie → poll loop → image
+    preview with "Send to chat" via insertAshleyImageMessage).
+  - Device id display and manual override.
+  - Push notification diagnostic panel (usePushStatus).
+  - Import/export: triggerExport (native share sheet), pickAndValidateImport
+    / parseAndValidateImportText (paste flow), applyImportedPayload.
+  - Delete all state.
+
+DEPENDENCIES:
+  expo-router, expo-clipboard, react-native, react-native-safe-area-context,
+  @tanstack/react-query, lib/useProfile, lib/aiClient, lib/storage,
+  lib/policy, lib/deviceId, lib/pushRegistration, lib/pushStatus,
+  lib/dataMigration, components/Icon, constants/colors
+
+EXPORTS: default ProfileScreen
+
+STATE:
+  - editingField: which field's modal is open
+  - draftValues: per-field text input state
+  - imageDefaults, cameraSet, imageDefaultsExtra: Section 9 state
+  - testSelfie: { status, url, error }
+  - importState, exportState
+  - adultConfirmModal, adultWithdrawModal
+  - pushDiagnosticExpanded
+
+CONNECTIONS:
+  API server via useProfile, useUpdateProfile, fetchTestSelfie,
+  insertAshleyImageMessage, confirmAdult, withdrawAdultConfirmation,
+  importBackupToServer. Expo push service via pushRegistration.
+
+KNOWN ISSUES:
+  profile.tsx is 2,939 lines; a large monolith. The test selfie
+  generator uses its own poll loop (not fetchSelfieForMessage) —
+  duplicated polling logic. Image defaults use a nested JSON blob
+  (imageDefaultsExtra) stored as a string column; parse errors
+  silently default to empty object. Section 9 camera defaults are
+  stored as comma-separated strings requiring manual encode/decode.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/app/memories.tsx  [781 lines]
+-------------------------------------------------------------------
+PURPOSE:
+Memory management screen. Displays all memories (tag, content,
+importance). Allows create, edit, delete via useCreateMemory,
+useUpdateMemory, useDeleteMemory. Also displays conversation
+summaries from useSummaries with edit and delete capabilities.
+Tabs between Memories and Summaries views.
+
+DEPENDENCIES:
+  expo-router, react-native, react-native-safe-area-context,
+  lib/useMemories, lib/useSummaries, components/Icon, constants/colors
+
+EXPORTS: default MemoriesScreen
+
+STATE: tab index, edit modal state, draft fields.
+
+CONNECTIONS: API server via memory and summary mutation hooks.
+
+KNOWN ISSUES: None material.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/app/visuals.tsx  [245 lines]
+-------------------------------------------------------------------
+PURPOSE:
+Visual memory gallery screen. Displays all selfie/image messages
+that have been marked as "remembered" (imageRemembered=true). Shows
+image grid with caption and category. Navigation to full image.
+
+DEPENDENCIES:
+  expo-router, react-native, expo-image,
+  lib/useMessages, constants/colors, components/Icon
+
+EXPORTS: default VisualsScreen
+
+STATE: gallery data derived from useMessages query.
+
+CONNECTIONS: API server via useMessages.
+
+KNOWN ISSUES: Derives visual items from the full messages array on
+every render — O(n) filter on potentially large message lists.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/app/voice-call.tsx  [403 lines]
+-------------------------------------------------------------------
+PURPOSE:
+Voice call screen. Uses useVoiceCall hook to manage a continuous-
+listen VAD (Voice Activity Detection) call session. Shows call phase
+(idle, connecting, listening, user_speaking, submitting, thinking,
+speaking, ended), elapsed time, metering bar, and a hang-up button.
+Connects to the API server via WebSocket for real-time audio
+streaming (through useVoiceCall).
+
+DEPENDENCIES:
+  expo-router, react-native, react-native-safe-area-context,
+  lib/useVoiceCall, components/Icon, constants/colors
+
+EXPORTS: default VoiceCallScreen
+
+STATE: Derived from useVoiceCall hook state.
+
+CONNECTIONS: WebSocket to API server voice endpoint.
+
+KNOWN ISSUES: See useVoiceCall known issues below.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/storage.ts
+-------------------------------------------------------------------
+PURPOSE:
+Typed AsyncStorage wrapper. Canonical type definitions for the mobile
+data model. All load/save operations go through this file.
+
+AsyncStorage keys:
+  @ashley/profile/v1
+  @ashley/memories/v1
+  @ashley/messages/v1
+  @ashley/summaries/v1
+
+Core types defined here:
+  AshleyProfile — all user-configurable profile fields including
+    name, age, identity, personality, speakingStyle, appearance,
+    refersToUserAs, sharedHistory, replikaExcerpts, replikaCarryover,
+    replikaCarryoverSummary, relationshipMode, builderAwareMode,
+    voiceMode, contentMode, intimacyLevel, primaryColor, accentColor,
+    proactiveCadence, greetOnAppOpen, imageGenerationEnabled,
+    imageCompositionMode, imageEnvironmentDefault, imageOccupancyDefault,
+    imageCameraDefault, imageDefaultsExtra, onboardedAt,
+    adultConfirmedAt, updatedAt, markOnboarded.
+  Memory — { id, content, tag: MemoryTag, importance, createdAt, updatedAt }
+  Message — { id, role, content, createdAt, status?, imageUrl?,
+    selfieVibe?, selfieVibeList?, visualPacketId?, imageMimeType?,
+    imageCategory?, imageCaption?, imageAnalysisMode?,
+    imageRemembered?, replyTo?, imageUrls?, requestId? }
+  ConversationSummary — { id, summary, messageCount,
+    coveredThroughCreatedAt, createdAt, updatedAt }
+  ReplyToRef — { id, role, preview }
+  ServerPolicy — { effectiveMode, intimacyLevel, intimacyCeiling,
+    adultConfirmed, matureModeAvailable, operatorMatureModeAvailable }
+  ImageCategory — "art_progress" | "clothing_design" |
+    "ashley_identity" | "app_screenshot" | "medical" | "other"
+  ImageAnalysisMode — "quick" | "critique" | "stepbystep" |
+    "debug" | "extract" | "compare"
+  MemoryTag — "fact" | "preference" | "milestone" | "relationship" |
+    "emotion" | "goal" | "other"
+
+withStorageLock: per-key async mutex preventing concurrent
+AsyncStorage writes from corrupting the stored array.
+
+DEFAULT_PROFILE: safe default profile values.
+
+DEPENDENCIES: @react-native-async-storage/async-storage
+
+EXPORTS:
+  Types: AshleyProfile, Memory, Message, ConversationSummary,
+    ReplyToRef, ServerPolicy, ImageCategory, ImageAnalysisMode,
+    MemoryTag
+  Functions: loadProfile, saveProfile, loadMemories, saveMemories,
+    loadMessages, saveMessages, loadSummaries, saveSummaries,
+    withStorageLock, newId
+  Constants: STORAGE_KEYS, DEFAULT_PROFILE
+
+STATE: Per-key lock map (module-level Map<string, Promise>).
+
+CONNECTIONS: AsyncStorage only.
+
+KNOWN ISSUES:
+  withStorageLock provides intra-process serialisation but not
+  cross-process safety (irrelevant on mobile; relevant if ever
+  ported to web workers). No versioning/migration path for schema
+  changes beyond key name bumps.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/deviceId.ts
+-------------------------------------------------------------------
+PURPOSE:
+Dual-persistence device id. Generates a UUIDv4 on first run and
+persists it to BOTH:
+  - AsyncStorage key: @ashley/device-id/v1
+  - FileSystem documentDirectory: ashley-device-id.v1.txt
+
+The FileSystem copy survives AsyncStorage clears (common in dev).
+getOrCreateDeviceId() is async; getDeviceIdSync() returns the
+module-level cached value (populated after first async call).
+
+DEPENDENCIES: @react-native-async-storage/async-storage,
+  expo-file-system/legacy, react-native (Platform)
+
+EXPORTS:
+  getOrCreateDeviceId(): Promise<string>
+  getDeviceIdSync(): string | null
+  hasDeviceId(): boolean
+  setDeviceId(id: string): Promise<void>
+
+STATE: Module-level cachedId: string | null.
+
+CONNECTIONS: AsyncStorage, FileSystem.
+
+KNOWN ISSUES:
+  FileSystem not available on web (Platform.OS guard). Two storage
+  systems to keep in sync; divergence is handled by taking
+  whichever is non-null first (AsyncStorage preferred).
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/aiClient.ts  [1,698 lines]
+-------------------------------------------------------------------
+PURPOSE:
+Single HTTP + SSE client for all API server communication from the
+mobile app. Provides:
+
+  Authentication:
+    getApiBase() — resolves base URL from EXPO_PUBLIC_API_BASE or
+      EXPO_PUBLIC_DOMAIN env vars with Replit dev-server retry logic.
+    apiHeaders() — X-API-Key header (EXPO_PUBLIC_API_KEY).
+    authHeaders() — Authorization: Bearer {API_KEY} + X-Device-Id
+      headers. Device id sourced from getDeviceIdSync().
+    fetchJSON<T>() — fetch wrapper with auth headers, JSON parse,
+      60-second timeout, and Replit dev-server retry (detects
+      placeholder HTML, backs off up to 4 times).
+
+  Type wire format adapters:
+    profileFromWire, messageFromWire, memoryFromWire, summaryFromWire
+    — convert snake_case server JSON to camelCase TypeScript types.
+
+  Hydration:
+    fetchState(): Promise<ServerState> — single round-trip fetching
+      profile + messages + memories + summaries + policy.
+
+  Profile:
+    updateProfileOnServer(patch): Promise<AshleyProfile>
+    confirmAdult(): Promise<AshleyProfile>
+    withdrawAdultConfirmation(): Promise<AshleyProfile>
+    submitReplikaCarryover(input): Promise<ReplikaCarryoverResult>
+    importBackupToServer(payload): Promise<ImportCounts>
+
+  Chat (non-streaming):
+    sendChatMessage(req): Promise<ChatResponse>
+    sendChatImage(req): Promise<ChatResponse>
+    sendDocumentIngest({ content, filename }): Promise<{ reply }>
+    clearChatOnServer(): Promise<void>
+    deleteAllStateOnServer(): Promise<void>
+
+  Chat (streaming SSE):
+    streamAshleyReply(args, callbacks, options) — opens SSE to
+      POST /chat/stream using expo/fetch (required for
+      ReadableStream in React Native; native fetch buffers). Parses
+      SSE event types: meta, delta, done, interrupted, error.
+      Validates stream ownership via requestId echo. Returns
+      StreamReplyOutcome: done | interrupted | error.
+    abortStream(streamId): Promise<void> — POST /chat/stream/:id/abort.
+    STREAMING_UNSUPPORTED sentinel error string for runtime fallback.
+
+  Transcription:
+    transcribeAudio(input): Promise<{ transcript }> — Stage 1
+      non-streaming POST /chat/transcribe.
+    transcribeAudioStream(input, callbacks) — Stage 2 SSE
+      streaming POST /chat/transcribe/stream. Falls back to
+      STREAMING_UNSUPPORTED on runtimes without ReadableStream.
+
+  Selfies:
+    startSelfieJob(messageId, vibe, sortOrder?) — POST /chat/selfie,
+      attaches governance params from imageGate module.
+    fetchSelfieForMessage(messageId, vibe, sortOrder?, signal?) —
+      starts job + polls GET /chat/selfie/:jobId every 2s for up to
+      90 attempts (~3 min). Auto-restarts on 404 (server recycled)
+      up to 2 times.
+    fetchTestSelfie(governanceParams?) — test-mode selfie with a
+      fake messageId; testMode=true bypasses ownership check.
+    insertAshleyImageMessage(imageUrl, captionText?) — inserts a
+      pre-formed image message into chat history.
+
+  Speech (TTS):
+    fetchSpeechForMessage(messageId, text): base64 audio
+    synthesizeSpeechToFile(text): writes mp3 to cache directory,
+      returns file:// URI.
+
+  Memories/Summaries:
+    createMemoryOnServer, updateMemoryOnServer, deleteMemoryOnServer
+    updateSummaryOnServer, deleteSummaryOnServer
+
+  Push / devices:
+    setPushTokenOnServer(token | null): void
+    setPushTokenOnServerWithStatus(token): HTTP status object
+    triggerAppOpenGreeting(): {greeted, message?}
+
+  Proactive:
+    triggerAppOpenGreeting() — POST /proactive/on-app-open.
+
+  Image remember:
+    markImageRemembered(messageId, decision: remember|visual|dismiss)
+
+DEPENDENCIES:
+  expo-file-system/legacy (TTS file write),
+  lib/deviceId (getOrCreateDeviceId, getDeviceIdSync),
+  lib/imageGate (getGovernanceParams — lazy import),
+  lib/storage types (AshleyProfile, Memory, Message, etc.),
+  expo/fetch (for SSE ReadableStream support in React Native)
+
+EXPORTS: All functions and types listed above.
+
+STATE:
+  Module-level: none (all state is in-flight per call or in
+  lib/imageGate for governance params).
+
+CONNECTIONS:
+  API server via HTTP/SSE at base URL resolved from env vars.
+  expo/fetch native module for streaming.
+
+KNOWN ISSUES:
+  - getApiBase() Replit retry logic (up to 4 retries on HTML
+    placeholder response) adds latency on cold-start in dev; not
+    present in production but the code runs in production too.
+  - fetchSelfieForMessage has its own poll loop (not shared with
+    fetchTestSelfie) — duplicated logic.
+  - sendDocumentIngest calls /api/documents/ingest with a double
+    /api prefix (full absolute path bypassing getApiBase()
+    normalisation) — this is likely a bug.
+  - No request deduplication at the fetchJSON level; rapid re-mount
+    can fire parallel /state hydrations.
+  - The 60-second fetchJSON timeout is implemented with
+    AbortController + setTimeout; on very slow networks this will
+    abort mid-stream even if data is trickling.
+  - Wire-to-type adapters do not validate required fields; a server
+    that omits a field silently gets undefined.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/imageGate.ts
+-------------------------------------------------------------------
+PURPOSE:
+Module-level image generation gate. Provides a synchronous, non-React
+source of truth for whether image generation is permitted (for use
+in non-React callsites like aiClient.ts). Also holds the Section 9
+governance params snapshot.
+
+_imageGenEnabled: boolean — starts true. Flipped by
+  syncGateFromProfile(enabled) called from useImageGate().
+  ON→OFF transition aborts all registered AbortControllers.
+
+_governanceParams: snapshot of profile's image composition/
+  environment/occupancy/camera/extra fields. Updated by
+  syncGovernanceFromProfile() from useImageGate().
+
+registerSelfieAbortController(ac): registers an AbortController
+  for an in-flight selfie job; returns a deregister function.
+  If gate is already OFF, immediately aborts the controller.
+
+useImageGate() React hook: reads useProfile(), calls
+  syncGateFromProfile and syncGovernanceFromProfile as effects.
+  Returns boolean enabled value for UI gating.
+
+DEPENDENCIES: react (useEffect), lib/useProfile
+
+EXPORTS:
+  canUseImageGeneration(): boolean
+  getGovernanceParams(): governance params snapshot | null
+  syncGateFromProfile(enabled): void
+  syncGovernanceFromProfile(params): void
+  registerSelfieAbortController(ac): () => void
+  useImageGate(): boolean
+
+STATE: Module-level _imageGenEnabled, _governanceParams,
+  _abortControllers Set.
+
+CONNECTIONS: None (pure in-memory).
+
+KNOWN ISSUES:
+  Module-level state is shared across all React tree instances.
+  In React Native this is safe (single JS thread); in a multi-
+  instance web context it would be a bug.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/policy.ts
+-------------------------------------------------------------------
+PURPOSE:
+Client-side mirror of the server's content policy resolver. Used for
+UI gating only — server is always authoritative. resolveClientPolicy()
+computes effectiveMode, intimacyLevel, intimacyCeiling, adultConfirmed,
+matureModeAvailable from a profile + serverPolicy snapshot. Must be
+kept in sync with api-server/src/lib/contentPolicy.ts.
+
+INTIMACY constants: INTIMACY_MIN=0, INTIMACY_MAX=5,
+  STANDARD_INTIMACY_CEILING=3, MATURE_INTIMACY_CEILING=5.
+
+intimacyRung(level): returns { label, blurb } for display.
+
+DEPENDENCIES: lib/storage (AshleyProfile, ServerPolicy types)
+
+EXPORTS:
+  resolveClientPolicy(profile, serverPolicy): PolicyView
+  intimacyRung(level): { label, blurb }
+  INTIMACY_MIN, INTIMACY_MAX, STANDARD_INTIMACY_CEILING,
+  MATURE_INTIMACY_CEILING, INTIMACY_RUNG_LABELS
+
+STATE: None.
+
+CONNECTIONS: None.
+
+KNOWN ISSUES:
+  If server and client policy logic diverge, the UI may briefly
+  show a wrong state until the next /state hydration. No automated
+  sync check between the two files.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/queryClient.ts
+-------------------------------------------------------------------
+PURPOSE:
+Singleton TanStack Query client. Config: staleTime 5s, retry 1,
+no refetchOnWindowFocus, mutations no retry.
+
+DEPENDENCIES: @tanstack/react-query
+
+EXPORTS: queryClient: QueryClient
+
+STATE: Singleton.
+
+CONNECTIONS: None.
+
+KNOWN ISSUES:
+  The 5s staleTime is overridden per-query in useMessages (30s).
+  No React Query devtools configured.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/useProfile.ts
+-------------------------------------------------------------------
+PURPOSE:
+React Query hooks for profile data. useProfile() hydrates from
+/state and writes the policy snapshot into its own cache slot
+(["policy"]) as a side effect, so usePolicy() doesn't need a
+separate round trip.
+
+Hooks: useProfile, usePolicy, useUpdateProfile, useConfirmAdult,
+  useWithdrawAdultConfirmation, useReplikaCarryover.
+
+DEPENDENCIES: @tanstack/react-query, lib/storage, lib/aiClient
+
+EXPORTS: All hooks above + policyQueryKey.
+
+STATE: Query cache entries ["profile"] and ["policy"].
+
+CONNECTIONS: API server via aiClient functions.
+
+KNOWN ISSUES: None.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/useMessages.ts  [1,126 lines]
+-------------------------------------------------------------------
+PURPOSE:
+All React Query hooks for the message list and streaming. Key
+abstractions:
+
+  useMessages() — server-backed query, AsyncStorage fallback,
+    staleTime 30s.
+
+  useSendMessage() — non-streaming round trip. Optimistic insert,
+    server reconciliation, selfie kickoff.
+
+  useStreamMessage() — streaming send via runStream(). Optimistic
+    user + empty Ashley bubbles; onMeta replaces them with server-
+    authoritative rows; onDelta appends to buffer (throttled to
+    30ms flush interval); onDone/onInterrupted write terminal state.
+    AsyncStorage write on terminal event only. Selfie kickoff on
+    done. requestId ownership guards prevent cross-stream bleed.
+
+  useContinueMessage() — resume an interrupted reply via
+    continueFromMessageId. No optimistic Ashley row.
+
+  useStopStream() — local AbortController abort + server-side
+    POST /chat/stream/:id/abort.
+
+  useActiveStream() — module-level pub/sub returning current
+    { streamId, mode } or null. Used to swap Send→Stop button.
+
+  useSendImage() — image upload round trip. Optimistic insert,
+    server reconciliation, selfie kickoff on multi-vibe result.
+
+  useMarkImageRemembered() — POST /messages/:id/remember.
+
+  useClearMessages() — DELETE /chat/messages.
+
+  useRetrySelfie() — re-runs selfie generation for a message that
+    previously failed or was cleared.
+
+  useRetryUnansweredReply() — re-issues Ashley's reply for a
+    trailing user message that never got one.
+
+  useSelfieInFlight() — returns a set of message ids currently
+    generating a selfie, for spinner display.
+
+  useDocumentIngest() — document upload and ingest round trip.
+
+  fetchAndAttachSelfie / fetchAndAttachSelfieList — internal helpers
+    that call fetchSelfieForMessage and patch the cache when the
+    image is ready. fetchAndAttachSelfieList fires N jobs in parallel
+    for multi-image packets.
+
+  runStream() — shared SSE engine. Handles meta/delta/done/
+    interrupted/error callbacks, 30ms delta flush throttle, and all
+    requestId ownership guards.
+
+  clearActiveStreamIfOwned(streamId) — safe active stream clear
+    that guards against the connection-dip auto-retry race.
+
+DEPENDENCIES: @tanstack/react-query, lib/storage, lib/aiClient,
+  lib/imageGate (canUseImageGeneration, getGovernanceParams,
+  registerSelfieAbortController)
+
+EXPORTS: All hooks listed above + StreamHooks type, SendImageArgs type.
+
+STATE: Module-level: inFlightStreamControllers Map<streamId →
+  AbortController>, activeStream, activeStreamListeners Set.
+
+CONNECTIONS: API server via aiClient functions.
+
+KNOWN ISSUES:
+  - 30ms delta flush throttle is a setTimeout — not RAF-based;
+    on a heavily loaded JS thread flushes may bunch up.
+  - runStream console.log calls are present in production code
+    (debug instrumentation left in).
+  - useSendImage is not in the exports list visible at the top of
+    the file — defined further down with an implicitly visible
+    export.
+  - fetchAndAttachSelfieList fires N selfie jobs in parallel; on
+    large multi-image packets this creates N simultaneous poll
+    loops, each consuming fetch resources.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/useMemories.ts
+-------------------------------------------------------------------
+PURPOSE:
+React Query hooks for memories. useMemories() hydrates from /state.
+useCreateMemory, useUpdateMemory, useDeleteMemory mutate server then
+patch cache + AsyncStorage.
+
+DEPENDENCIES: @tanstack/react-query, lib/storage, lib/aiClient
+
+EXPORTS: useMemories, useCreateMemory, useUpdateMemory,
+  useDeleteMemory, memoriesQueryKey
+
+STATE: Query cache ["memories"].
+
+CONNECTIONS: API server.
+
+KNOWN ISSUES: None.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/useSummaries.ts
+-------------------------------------------------------------------
+PURPOSE:
+React Query hooks for conversation summaries. useSummaries() hydrates
+from /state. useCreateSummary is a deliberate no-op (summaries are
+server-authored only). useUpdateSummary and useDeleteSummary mutate
+server + cache + AsyncStorage.
+
+DEPENDENCIES: @tanstack/react-query, lib/storage, lib/aiClient
+
+EXPORTS: useSummaries, useCreateSummary, useUpdateSummary,
+  useDeleteSummary, summariesQueryKey
+
+STATE: Query cache ["summaries"].
+
+CONNECTIONS: API server.
+
+KNOWN ISSUES: useCreateSummary silently no-ops — callers get null
+  back with no error.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/usePresenceLoop.ts
+-------------------------------------------------------------------
+PURPOSE:
+Finite-state machine for adaptive presence signals around the chat
+bubble. Pure reducer (presenceReducer) with effects for timers.
+
+States: idle | listening | thinking | speaking | waiting | interrupted
+
+Signals (one-shot per state entry):
+  im_here — after 3s in thinking (THINKING_DELAY_MS)
+  take_your_time — after 12s in waiting + last reply >= 40 chars
+  connection_dip — after 7s of zero SSE deltas while speaking
+    (watchdog polls every 1s)
+
+Key events: OPEN_CHAT, USER_TYPING, USER_CLEAR_DRAFT, USER_SEND,
+  USER_INTERRUPT, STREAM_FIRST_TOKEN, STREAM_END, WAITING_TIMEOUT,
+  THINKING_TIMEOUT, CONNECTION_DIP, CONNECTION_RESTORED,
+  DISMISS_SIGNAL, RESET.
+
+noteDelta(): resets watchdog timer and re-arms dip one-shot.
+
+DEPENDENCIES: react
+
+EXPORTS: usePresenceLoop, presenceReducer, all types.
+
+STATE: useReducer with PresenceInternal (state, enteredAt,
+  lastReplyLength, oneShotFired, signals, signalSeq). lastDeltaAtRef
+  ref (drives watchdog without triggering re-renders).
+
+CONNECTIONS: None (pure in-memory).
+
+KNOWN ISSUES: CONNECTION_DIP fires at exactly 7s via setInterval
+  polling; a single dropped interval tick (heavy JS thread) could
+  delay the signal. Re-entering "speaking" resets the watchdog but
+  re-arms the dip one-shot (via CONNECTION_RESTORED in noteDelta),
+  which is correct per spec.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/dataMigration.ts
+-------------------------------------------------------------------
+PURPOSE:
+Export/import of Ashley backup payloads. triggerExport() gathers all
+local data and writes a JSON file; on native it opens the OS share
+sheet (expo-sharing), on web it triggers a download. pickAndValidateImport()
+opens a document picker; parseAndValidateImportText() validates a
+pasted string. applyImportedPayload() pushes to server FIRST (via
+importBackupToServer) then writes to AsyncStorage — correct order
+ensures the /state source of truth is updated before local cache.
+
+DEPENDENCIES: react-native (Platform), expo-file-system/legacy,
+  expo-sharing, expo-document-picker, lib/storage, lib/aiClient
+
+EXPORTS:
+  triggerExport(): ExportResult
+  pickAndValidateImport(): PickImportResult
+  parseAndValidateImportText(text): PickImportResult
+  applyImportedPayload(payload): ImportSummary
+  describeImportPlan(payload): string
+  formatImportSummary(s): string
+  EXPORT_SCHEMA, EXPORT_VERSION, ExportPayload type, ImportSummary type
+
+STATE: None.
+
+CONNECTIONS: API server (importBackupToServer), AsyncStorage.
+
+KNOWN ISSUES:
+  If server push fails and the error is surfaced as a warning,
+  the next /state hydration will overwrite the locally-saved
+  import with whatever the server has — effectively reverting the
+  import. This is documented in formatImportSummary but may
+  surprise users. No retry mechanism for the server push step.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/pushRegistration.ts
+-------------------------------------------------------------------
+PURPOSE:
+Registers the device for Expo push notifications. Idempotent. Flow:
+  1. Skip on web (no push) and Expo Go (remote push removed SDK 53).
+  2. De-dup in-flight and cached results.
+  3. Set Android notification channel.
+  4. Request permission (skip prompt if already granted).
+  5. Fetch Expo push token via getExpoPushTokenAsync (with EAS
+     projectId from app.json if available).
+  6. POST token to /api/devices/push-token via
+     setPushTokenOnServerWithStatus; captures HTTP status for
+     diagnostic panel in profile screen.
+
+unregisterPushNotificationsAsync(): clears server token + resets
+  cache + calls OS-level unsubscribe (skipped in Expo Go).
+
+resetPushRegistrationCache(): forces re-registration on next call.
+
+DEPENDENCIES: expo-constants, expo-device, expo-notifications,
+  react-native (Platform), lib/aiClient, lib/pushStatus
+
+EXPORTS:
+  registerForPushNotificationsAsync(): Promise<RegisterResult>
+  unregisterPushNotificationsAsync(): Promise<void>
+  resetPushRegistrationCache(): void
+
+STATE: Module-level inFlight Promise guard, lastResult cache.
+
+CONNECTIONS: Expo push service (getExpoPushTokenAsync, channel setup),
+  API server (setPushTokenOnServer).
+
+KNOWN ISSUES:
+  EAS projectId resolution tries Constants.expoConfig.extra.eas.projectId
+  and Constants.easConfig.projectId; returns undefined when neither
+  is set (SDK still works but emits a warning). Remote push silently
+  no-ops in Expo Go — no user feedback that pushes are not enabled.
+  Hard device check: Device.isDevice returns false on Android emulator
+  without Google Play Services.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/pushStatus.ts
+-------------------------------------------------------------------
+PURPOSE:
+Observable push registration status snapshot for the profile screen
+diagnostic panel. Module-level state + subscriber set, usable from
+React.useSyncExternalStore.
+
+Fields: isDevice, permission, projectId, tokenStatus, token,
+  uploadStatus, lastError, updatedAt.
+
+DEPENDENCIES: react (useSyncExternalStore)
+
+EXPORTS: getPushStatus, setPushStatus, resetPushStatus, usePushStatus
+
+STATE: Module-level snapshot object + subscribers Set.
+
+CONNECTIONS: None (in-memory).
+
+KNOWN ISSUES: None.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/voiceInput.ts  [245 lines]
+-------------------------------------------------------------------
+PURPOSE:
+Push-to-talk voice input using expo-audio. Provides useVoiceRecorder
+hook returning state (idle | recording | processing), elapsedMs,
+metering (dBFS), and start/stop/cancel/ensurePermission methods.
+
+VOICE_MAX_DURATION_MS = 150,000ms (2.5 min ceiling).
+MIN_RECORDING_MS = 350ms (discard accidental taps).
+
+Uses VOICE_COMMUNICATION source preset on Android (enables hardware
+AEC, noise suppression, AGC). All state transitions logged via
+audioLog/audioError from audioState.ts.
+
+DEPENDENCIES: expo-audio, expo-file-system/legacy, lib/audioState
+
+EXPORTS: useVoiceRecorder, VOICE_MAX_DURATION_MS, VoiceRecorder type,
+  VoiceRecorderState type, RecordedAudio type
+
+STATE: useRef (recorder instance, start time, metering), useState
+  (state, elapsedMs, metering).
+
+CONNECTIONS: Device microphone (expo-audio).
+
+KNOWN ISSUES: Recording to file then reading base64 via FileSystem
+  is an extra disk write per clip; acceptable at current clip lengths
+  but would not scale to hour-long recordings. elapsedMs timer
+  relies on setInterval(100ms) which may drift under load.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/voiceOutput.ts  [383 lines]
+-------------------------------------------------------------------
+PURPOSE:
+TTS playback using expo-audio createAudioPlayer. Provides
+useTtsPlayback hook with speak(text), speakUri(uri), stop(),
+stopAsync(), isPlaying.
+
+speak(text) pipeline:
+  1. Cancel any in-flight synthesis + playback.
+  2. Set audio mode to playback (playsInSilentMode, allowsRecording=false).
+  3. Call synthesizeSpeechToFile(text) with 45s timeout.
+  4. Create AudioPlayer and start playback.
+  5. 120s watchdog to recover from didJustFinish never firing.
+  6. On finish: delete temp file, reset audio mode.
+
+stopAsync() is awaitable (for handleMicPressIn) so recorder does
+not race with lingering TTS audio session for audio focus.
+
+DEPENDENCIES: expo-audio, expo-file-system/legacy, lib/aiClient
+  (synthesizeSpeechToFile), lib/audioState
+
+EXPORTS: useTtsPlayback, TtsPlayback type
+
+STATE: useRef (player, lastUri, cancelToken, stopResolvers, watchdog).
+  useState: isPlaying.
+
+CONNECTIONS: Device audio output, API server (via
+  synthesizeSpeechToFile).
+
+KNOWN ISSUES: 120s watchdog uses setInterval — potentially leaks
+  if stop() is never called. cancel token is a simple counter;
+  does not cancel in-flight fetch (the 45s timeout does that).
+  speak() and speakUri() share the same cancel/teardown path but
+  speakUri() skips synthesis — the guard must not delete the
+  caller-owned file. (speakUri sets lastUriRef to null to prevent
+  the delete on teardown — correct but fragile.)
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/useVoice.ts
+-------------------------------------------------------------------
+PURPOSE:
+TanStack Query mutation hooks for transcription. useTranscribeAudio()
+(Stage 1, non-streaming). useTranscribeAudioStream() (Stage 2 SSE)
+falls back to Stage 1 on STREAMING_UNSUPPORTED or any error.
+
+DEPENDENCIES: @tanstack/react-query, lib/aiClient, lib/voiceInput
+
+EXPORTS: useTranscribeAudio, useTranscribeAudioStream
+
+STATE: Mutation state only.
+
+CONNECTIONS: API server via aiClient transcribe functions.
+
+KNOWN ISSUES: Stage 2 silently falls back to Stage 1 on any error,
+  including permanent server errors — the user sees no indication
+  that streaming failed.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/useSpeakMessage.ts
+-------------------------------------------------------------------
+PURPOSE:
+Per-message Speak button logic. Fetches TTS audio for a specific
+message id, caches to a named file (tts_{messageId}.mp3 in
+cacheDirectory), plays via tts.speakUri(). Subsequent taps on the
+same message skip the network round-trip. Strips markdown bold/
+italic markers before synthesis.
+
+DEPENDENCIES: expo-file-system/legacy, lib/aiClient
+  (fetchSpeechForMessage), lib/voiceOutput (TtsPlayback type)
+
+EXPORTS: useSpeakMessage: (tts: TtsPlayback) => { speakMessage, getSpeakStatus }
+  SpeakStatus type: "none" | "loading" | "error"
+
+STATE: useState(statuses): Record<messageId, SpeakStatus>.
+
+CONNECTIONS: API server via fetchSpeechForMessage, device cache dir.
+
+KNOWN ISSUES: Cache files are never cleaned up — accumulate across
+  sessions. File name collision is impossible (message ids are
+  UUIDs) but old files are never pruned.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/useVoiceCall.ts  [621 lines]
+-------------------------------------------------------------------
+PURPOSE:
+Continuous-listen voice call with client-side VAD. Manages the full
+call lifecycle:
+
+  connect() → open WebSocket to /api/voice/ws → on open: start
+    recording. VAD loop: metering poll every 100ms; if dBFS falls
+    below SILENCE_DB (-30) for SILENCE_MS (1200ms) after at least
+    MIN_SPEECH_MS (200ms) of speech → stop recording → post clip
+    to STT → receive transcript → send WebSocket text message
+    speech_final:{transcript} → receive LLM text response → TTS
+    synthesis → play → re-open mic.
+
+  disconnect() → close WebSocket, stop recording, stop playback.
+
+  submitNow() → manually trigger clip submission.
+
+VoiceCallPhase state machine:
+  idle → connecting → listening → user_speaking → submitting →
+  thinking → speaking → listening (loop) | ended.
+
+DEPENDENCIES: expo-audio, expo-file-system/legacy, lib/voiceInput,
+  lib/deviceId
+
+EXPORTS: useVoiceCall(): { phase, transcript, ashleyText, elapsed,
+  metering, actions }, VoiceCallPhase type, VoiceCallActions interface.
+
+STATE: useState (phase, transcript, ashleyText, elapsed), useRef
+  (ws, recorder, ttsPlayer, speechActive, silenceStart,
+  meteringInterval, elapsedInterval).
+
+CONNECTIONS: WebSocket to API server voice endpoint
+  (wss://{domain}/api/voice/ws).
+
+KNOWN ISSUES:
+  CRITICAL: The WebSocket voice endpoint at the API server receives
+  binary audio frames and updates lastAudioReceivedAt (deepgramStream.ts),
+  but createDeepgramStream() is never called (index.ts line 302
+  returns immediately after the WS upgrade without starting
+  Deepgram). Server-side real-time STT is therefore non-functional.
+  The voice call flow POST-STT uses the HTTP transcription endpoint
+  (/chat/transcribe) — a round trip per utterance, not real-time
+  streaming. The WebSocket is used only for the speech_final text
+  message exchange (LLM response text back to client), not for audio
+  streaming.
+
+  TTS synthesis on the client after each Ashley response adds
+  latency; there is no server-side audio streaming.
+
+  VAD thresholds (SILENCE_DB=-30, SILENCE_MS=1200, MIN_SPEECH_MS=200)
+  are hardcoded; no UI to tune them.
+
+  WebSocket reconnection on disconnect is not implemented — if the
+  WS drops mid-call the phase stalls in "thinking" until the user
+  manually hangs up.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/lib/audioState.ts
+-------------------------------------------------------------------
+PURPOSE:
+Observable audio session diagnostic state for the debug panel.
+Module-level log buffer (last 200 entries), subscriber set,
+useSyncExternalStore hook. audioLog/audioError/patchAudioState
+used by voiceInput.ts and voiceOutput.ts for traceable audio
+session events without needing ADB logcat.
+
+DEPENDENCIES: react (useSyncExternalStore)
+
+EXPORTS: audioLog, audioError, patchAudioState, useAudioState,
+  getAudioState, AudioState type
+
+STATE: Module-level state object + log ring buffer + subscribers Set.
+
+CONNECTIONS: None.
+
+KNOWN ISSUES: Log buffer caps at 200 entries (ring buffer).
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/components/Icon.tsx
+-------------------------------------------------------------------
+PURPOSE:
+Drop-in Unicode/emoji replacement for @expo/vector-icons Feather.
+Maps Feather icon names to Unicode glyphs rendered with the system
+fallback font. Used throughout the app in place of the TTF-based
+icon library that failed on Kane's Android device (glyph boxes-with-X
+due to suspected pnpm symlink + Metro asset registry interaction or
+Expo Go bundle cache issue).
+
+API: <Icon name="x" size={16} color="#fff" /> — identical to Feather.
+Feather re-export for backward compatibility.
+
+KNOWN ISSUES: Some glyphs lack good cross-platform equivalents
+  (check-circle uses plain ✓). Emoji glyphs are subject to OS-level
+  skin tone and style variations. No fallback for unknown icon names
+  — renders "?" character.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/components/SwipeToReply.tsx
+-------------------------------------------------------------------
+PURPOSE:
+Swipe-to-reply gesture wrapper for individual message bubbles.
+Uses react-native-gesture-handler PanGestureHandler to detect a
+rightward swipe beyond a threshold; fires onReply callback with the
+message for the reply-to UI in chat.
+
+DEPENDENCIES: react-native-gesture-handler, react-native
+
+EXPORTS: SwipeToReply component
+
+KNOWN ISSUES: None material.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/components/ErrorBoundary.tsx  /
+      artifacts/mobile/components/ErrorFallback.tsx
+-------------------------------------------------------------------
+PURPOSE:
+React error boundary wrapping the entire app tree. Catches uncaught
+render errors, renders ErrorFallback with a "Restart app" button
+(calls router.replace("/")). Prevents full white-screen crashes.
+
+DEPENDENCIES: react, expo-router
+
+EXPORTS: ErrorBoundary, ErrorFallback
+
+KNOWN ISSUES: Error detail is shown only in development. Production
+  shows generic message.
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/components/BlueOrb.tsx
+-------------------------------------------------------------------
+PURPOSE:
+Animated blue orb used on the home screen. Pulsing glow animation
+via Reanimated or Animated API. Pure visual component.
+
+DEPENDENCIES: react-native (Animated), constants/colors
+
+EXPORTS: BlueOrb
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/components/AmbientBackground.tsx
+-------------------------------------------------------------------
+PURPOSE:
+Full-screen gradient background for screens. Uses expo-linear-gradient.
+Accepts a dim prop to control overlay opacity.
+
+DEPENDENCIES: expo-linear-gradient, react-native
+
+EXPORTS: AmbientBackground
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/components/AnimatedAvatar.tsx
+-------------------------------------------------------------------
+PURPOSE:
+Animated avatar component. Shows Ashley's avatar with idle/speaking
+animation states. Used in voice-call screen.
+
+DEPENDENCIES: react-native (Animated)
+
+EXPORTS: AnimatedAvatar
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/components/KeyboardAwareScrollViewCompat.tsx
+-------------------------------------------------------------------
+PURPOSE:
+Compatibility wrapper around react-native-keyboard-controller's
+KeyboardAwareScrollView for screens that need scroll + keyboard
+avoidance. Provides a consistent cross-platform API.
+
+DEPENDENCIES: react-native-keyboard-controller
+
+EXPORTS: KeyboardAwareScrollViewCompat
+
+-------------------------------------------------------------------
+FILE: artifacts/mobile/constants/colors.ts
+-------------------------------------------------------------------
+PURPOSE:
+Design system colour tokens. navy/dark palette: background #1a1325
+(near-black purple), primary #00B9FF (electric blue), accent
+#d97757 (warm orange), text #E8EDF2, mutedForeground #8890A0, etc.
+Organised under colors.light (single theme, no dark mode toggle
+since the app is dark-only).
+
+EXPORTS: default colors: { light: { background, card, primary,
+  primaryForeground, accent, text, mutedForeground, border, ... } }
+
+KNOWN ISSUES: Named "light" for historical reasons; the app is
+  dark-only. No dark/light toggle.
+
+===================================================================
+END OF ASHLEY-SIDECAR SYSTEM AUDIT
+===================================================================
+
+AUDIT METADATA
+Generated: 2026-06-18
+Scope: Complete nose-to-tail coverage of all source files in:
+  - artifacts/api-server/ (Express 5 backend)
+  - artifacts/mobile/ (Expo SDK 54 React Native app)
+  - artifacts/safeguard/ and artifacts/safeguard-api/ were NOT in
+    scope for this audit pass (separate product).
+
+Blocks completed:
+  Block 1: API server entry points and middleware
+  Block 2: API server core lib (profile, content policy, LLM
+           adapters, image pipeline, proactive scheduler, storage)
+  Block 3: API server routes (health, image, state, memories,
+           proactive, chat, carryover, debug, tickets, improvements,
+           plans, packets, queue, maintainer, systemEvents, document,
+           webSearch, voice-call)
+  Block 4: API server voice pipeline (VoiceOrchestrationService,
+           VoiceSessionRegistry, VoiceContextAssembler,
+           VoiceIntentClassifier, CallSummarisationService,
+           AudioClipRegistry, elevenlabsStream, elevenlabs,
+           deepgramStream, deepgram, textLLM, gemini,
+           ashleyCoreSpec, ashleyPrompt, PersistentSessionStateGuard)
+  Block 5: Mobile app (app screens, lib hooks, components)
+
+Total API surface covered: All production routes under /api mounted
+in artifacts/api-server/src/routes/index.ts.
+
+CROSS-CUTTING KNOWN ISSUES (not file-specific):
+  1. WebSocket voice server-side STT is non-functional: Deepgram
+     stream is never started (index.ts returns immediately on WS
+     upgrade). Binary audio frames arrive but are discarded.
+  2. Two separate auth secrets (API_AUTH_KEY for Bearer/WS outer
+     gate, API_SECRET for X-API-Key inner gate) with different
+     middleware — misconfiguration of either silently breaks
+     different surfaces.
+  3. In-process rate limiter (per-IP, resets on restart) — not
+     persistent, not shared across instances.
+  4. In-process selfie daily cap (selfieCap.ts) — resets on server
+     restart; not durable.
+  5. In-process job registry for selfie jobs — lost on server
+     restart; mobile client has auto-restart logic but only 2
+     retries before erroring.
+  6. No user authentication on the mobile API surface — any request
+     with the correct API key and any device-id can read/write any
+     device's profile, messages, memories, and summaries.
+  7. Proactive scheduler is in-process (60s tick) — not durable
+     across restarts; also accepts an external cron endpoint.
+  8. console.log calls present in production streaming code
+     (useMessages.ts runStream) — leaks internal stream ids and
+     content lengths to device logs.
+  9. sendDocumentIngest in aiClient.ts calls /api/documents/ingest
+     with a double /api prefix (absolute path) — likely a bug.
+  10. Server-side voice WS upgrade handler (index.ts line 302)
+      returns immediately without starting deepgramStream — this is
+      the critical voice pipeline gap described in issue 1 above.
