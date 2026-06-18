@@ -1,0 +1,194 @@
+================================================================================
+ASHLEY PROJECT — FIX BRIEF FOR WREN
+Task: TTS completion race condition — server sending tts_done too early
+Date: 18 June 2026
+Server-side only. No EAS build required.
+================================================================================
+
+DO NOT TOUCH ANYTHING OUTSIDE OF WHAT IS SPECIFIED HERE.
+DO NOT SELF-CORRECT OTHER THINGS YOU NOTICE.
+DO NOT MARK THIS COMPLETE UNTIL THE COMPLETION REPORT IS FILLED AND RETURNED.
+
+================================================================================
+THE PROBLEM
+================================================================================
+
+The server is sending { type: "tts_done" } to the client before all TTS
+audio chunks have finished playing on the client side.
+
+Evidence from debug logs:
+  19:25:12.53  WS tts_done — q=1 running=true
+  19:25:12.53  playNext: skip — already running
+  19:25:12.53  playNext: skip — already running
+
+tts_done is firing while q=1 and running=true — meaning the client audio
+queue still has an item playing. The client receives tts_done, opens the
+mic, and submits a new turn. The server receives that new turn while still
+mid-response from the previous one. It cannot process both. It hangs.
+Ashley gets stuck on "Thinking..." and does not recover.
+
+This is also causing the white bar visible in the chat view after calls —
+a message record written to the DB that never got a response because the
+server was stuck.
+
+================================================================================
+THE FIX
+================================================================================
+
+The server must not send tts_done until it has received confirmation that
+the CLIENT has finished playing all audio — not just that the server has
+finished sending all TTS chunks.
+
+--- OPTION A (preferred): Client-acknowledged completion ---
+
+Instead of the server deciding when playback is done, the client sends a
+message to the server when it has finished playing all audio:
+
+  Client → Server: { type: "playback_complete" }
+
+The server waits for this message before considering the turn fully closed
+and before accepting a new speech_final for processing.
+
+Implementation:
+
+SERVER — VoiceOrchestrationService.ts:
+  - After sending the last TTS chunk, do NOT send tts_done immediately.
+  - Set session.awaitingPlaybackConfirm = true.
+  - Start a safety timeout: if playback_complete is not received within
+    15 seconds, log a warning and reset the session to LISTENING state
+    anyway (prevents permanent hang).
+  - On receiving { type: "playback_complete" } from client:
+      session.awaitingPlaybackConfirm = false
+      send { type: "tts_done" } to client
+      set session state to LISTENING
+  - While awaitingPlaybackConfirm is true: if a speech_final arrives,
+    queue it. Do not process it until playback_complete is received.
+    (One queued item maximum — if a second arrives, discard the first.)
+
+CLIENT — useVoiceCall.ts:
+  - In playNext(), after the final audio track finishes playing AND
+    the queue is empty AND srvDone is true:
+      send { type: "playback_complete" } to server
+  - This replaces or supplements the existing tts_done handling.
+  - Do NOT open the mic until tts_done is received back from server.
+
+NEW SESSION STATE FIELD (VoiceSessionRegistry / VoiceSession interface):
+  awaitingPlaybackConfirm: boolean = false
+
+================================================================================
+WHY NOT OPTION B
+================================================================================
+
+Option B would be a fixed delay on the server before sending tts_done.
+This is NOT acceptable. A fixed delay is a guess. It will be wrong in
+different network conditions and on different devices. Option A is the
+correct architectural solution.
+
+================================================================================
+WHAT NOT TO DO
+================================================================================
+
+- Do not add a setTimeout delay before tts_done. That is not a fix.
+- Do not change the VAD constants. They were set in the previous brief.
+- Do not change any file not listed above.
+- Do not refactor anything while you are in these files.
+
+================================================================================
+DELIVERY
+================================================================================
+
+Server restart only. No EAS build required for the server changes.
+The client change (sending playback_complete) DOES require an EAS build.
+
+Do the server changes first. Confirm server is live.
+Then do the client changes and initiate EAS build.
+Do not mark either as complete until tested.
+
+================================================================================
+COMPLETION REPORT — return as TXT file in the same response as build confirm
+================================================================================
+
+Brief title: TTS Race Condition Fix — 18 June 2026
+Server restarted at: [HH:MM:SS]
+EAS build initiated at: [HH:MM:SS]
+EAS build live at: [HH:MM:SS]
+Replit checkpoint ID: [insert]
+
+CHECKLIST:
+
+ITEM 1: awaitingPlaybackConfirm field added to VoiceSession interface
+Completed at: [HH:MM:SS]
+Test performed: [describe]
+Test result: [PASS / NOT TESTABLE / ESCALATE]
+If NOT TESTABLE or ESCALATE: [explain]
+
+ITEM 2: Server does not send tts_done until playback_complete received
+Completed at: [HH:MM:SS]
+Test performed: [describe]
+Test result: [PASS / NOT TESTABLE / ESCALATE]
+If NOT TESTABLE or ESCALATE: [explain]
+
+ITEM 3: 15-second safety timeout added — resets to LISTENING if no
+playback_complete received
+Completed at: [HH:MM:SS]
+Test performed: [describe]
+Test result: [PASS / NOT TESTABLE / ESCALATE]
+If NOT TESTABLE or ESCALATE: [explain]
+
+ITEM 4: speech_final queued (max 1) while awaitingPlaybackConfirm is true
+Completed at: [HH:MM:SS]
+Test performed: [describe]
+Test result: [PASS / NOT TESTABLE / ESCALATE]
+If NOT TESTABLE or ESCALATE: [explain]
+
+ITEM 5: Client sends { type: "playback_complete" } when queue empty,
+srvDone true, and final track finished
+Completed at: [HH:MM:SS]
+Test performed: [describe]
+Test result: [PASS / NOT TESTABLE / ESCALATE]
+If NOT TESTABLE or ESCALATE: [explain]
+
+ITEM 6: Client does not open mic until tts_done received from server
+Completed at: [HH:MM:SS]
+Test performed: [describe]
+Test result: [PASS / NOT TESTABLE / ESCALATE]
+If NOT TESTABLE or ESCALATE: [explain]
+
+ITEM 7: End-to-end test — three or more consecutive turns without
+Ashley getting stuck on Thinking...
+Completed at: [HH:MM:SS]
+Test performed: [describe — include how many turns completed cleanly]
+Test result: [PASS / NOT TESTABLE / ESCALATE]
+If NOT TESTABLE or ESCALATE: [explain]
+
+---
+
+DEVIATIONS FROM BRIEF:
+[NONE or list each deviation]
+
+ITEMS REMOVED WITHOUT INSTRUCTION:
+[NONE or list each removal with reason]
+
+PROACTIVE ISSUES OBSERVED:
+[NONE or list each issue with file, risk, and severity]
+
+OUTSTANDING ITEMS:
+[NONE or list with reason]
+
+---
+
+Agent: Wren (Replit)
+Report generated at: [HH:MM:SS]
+
+================================================================================
+STANDING RULE REMINDER
+================================================================================
+
+FAIL is not a valid final state. Fix it or escalate it.
+Do not return this report with any item marked incomplete unless it is
+genuinely an ESCALATE situation requiring pipeline review.
+Do not pass Kane a build that fails item 7.
+
+================================================================================
+END OF BRIEF
+================================================================================
