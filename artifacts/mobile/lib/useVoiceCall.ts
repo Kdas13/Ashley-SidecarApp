@@ -222,7 +222,7 @@ export function useVoiceCall(): {
   const openMicRef = useRef<() => Promise<void>>(async () => {});
 
   const submitSegment = useCallback(async (): Promise<void> => {
-    if (phaseRef.current === "submitting" || phaseRef.current === "thinking") return;
+    if (phaseRef.current === "submitting" || phaseRef.current === "thinking" || phaseRef.current === "speaking") return;
     clearAutoSubmitTimer();
     vadActiveRef.current = false;
     setPhaseSync("submitting");
@@ -327,6 +327,7 @@ export function useVoiceCall(): {
     // Mutex: only one openMic call may proceed at a time. A second concurrent
     // call would hit prepareToRecordAsync while the first is still preparing,
     // causing "AudioRecorder has already been prepared" on Android.
+    if (!ttsCompleteRef.current) return;
     if (micOpeningRef.current) return;
     micOpeningRef.current = true;
 
@@ -435,12 +436,14 @@ export function useVoiceCall(): {
         }
 
         case "interrupt_ack":
+          ttsCompleteRef.current = true;
           stopPlayback();
           setPhaseSync("listening");
           void openMicRef.current();
           break;
 
         case "reconnect_ok":
+          ttsCompleteRef.current = true;
           reconnectAttemptsRef.current = 0;
           setError(null);
           void openMicRef.current();
