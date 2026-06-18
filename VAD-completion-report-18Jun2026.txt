@@ -1,0 +1,124 @@
+================================================================================
+ASHLEY PROJECT — VAD FIX COMPLETION REPORT
+Task: VAD threshold correction + intent-based silence threshold
+Date: 18 June 2026
+Commit: 06ddf023774f460c27c96bfb19d5c79481a0f9b0
+================================================================================
+
+PART 1 — VAD THRESHOLD CORRECTION (useVoiceCall.ts)
+--------------------------------------------------------------------------------
+
+[16:10:17 UTC]  SILENCE_DB corrected: -30 → -45
+                File: artifacts/mobile/lib/useVoiceCall.ts line 28
+                Reason: -30 was picking up room noise as speech.
+
+[16:10:17 UTC]  SILENCE_MS corrected: 1200 → 3500
+                File: artifacts/mobile/lib/useVoiceCall.ts line 29
+                Reason: 1200ms was cutting Kane off mid-sentence.
+
+[16:10:17 UTC]  MIN_SPEECH_MS corrected: 200 → 500
+                File: artifacts/mobile/lib/useVoiceCall.ts line 30
+                Reason: 200ms was catching non-speech sounds.
+
+[16:10:17 UTC]  Fallback autoSubmit timer: 3000 → 4000ms
+                File: artifacts/mobile/lib/useVoiceCall.ts line 429
+                Reason: Must be longer than SILENCE_MS (3500) to avoid racing
+                with metering-based VAD.
+
+PART 2 — INTENT-BASED SILENCE THRESHOLD
+--------------------------------------------------------------------------------
+
+[16:10:17 UTC]  nextSilenceThresholdRef added (useRef<number | null>(null))
+                File: artifacts/mobile/lib/useVoiceCall.ts line 144
+                Holds the next threshold sent by the server; consumed and
+                reset to null by openMic() on each listen window open.
+
+[16:10:17 UTC]  activeSilenceMsRef added (useRef<number>(SILENCE_MS))
+                File: artifacts/mobile/lib/useVoiceCall.ts line 145
+                Holds the active threshold for the current listen window.
+                Set in openMic() from nextSilenceThresholdRef, falls back
+                to SILENCE_MS (3500). Auto-resets on next openMic() call.
+
+[16:10:17 UTC]  set_silence_threshold WS case added in handleMessage
+                File: artifacts/mobile/lib/useVoiceCall.ts lines 506-513
+                Receives ms from server, validates it is a positive number,
+                stores in nextSilenceThresholdRef, logs to auditLog.
+
+[16:10:17 UTC]  openMic() updated: sets activeSilenceMsRef from
+                nextSilenceThresholdRef before resetting the ref to null
+                File: artifacts/mobile/lib/useVoiceCall.ts lines 403-405
+
+[16:10:17 UTC]  VAD effect updated: SILENCE_MS hardcoded reference replaced
+                with activeSilenceMsRef.current
+                File: artifacts/mobile/lib/useVoiceCall.ts line 371
+
+[16:10:17 UTC]  isDirectQuestion() exported function added to
+                VoiceIntentClassifier.ts (lines 71-84)
+                Reuses existing DIRECT_QUESTION_PATTERNS and
+                PERSONAL_QUESTION_RE arrays. Separate from classify() so
+                it can be called independently without a ClassificationResult.
+
+[16:10:17 UTC]  VoiceOrchestrationService.ts: isDirectQuestion imported
+                from VoiceIntentClassifier (line 22)
+
+[16:10:17 UTC]  VoiceOrchestrationService.ts: isDirectQuestion check added
+                in handleSpeechFinal() before persistMessage() / LLM pipeline
+                (lines 726-733). Sends set_silence_threshold {ms:800} to
+                client before LLM call starts so client has it ready for the
+                next listen window after Ashley finishes speaking.
+
+================================================================================
+DELIVERY CHECKLIST
+================================================================================
+
+[x] 16:10:17  useVoiceCall.ts — SILENCE_DB, SILENCE_MS, MIN_SPEECH_MS corrected
+[x] 16:10:17  useVoiceCall.ts — fallback autoSubmit timer 3000 → 4000
+[x] 16:10:17  useVoiceCall.ts — nextSilenceThresholdRef and activeSilenceMsRef added
+[x] 16:10:17  useVoiceCall.ts — set_silence_threshold WS message case added
+[x] 16:10:17  useVoiceCall.ts — VAD effect uses activeSilenceMsRef.current
+[x] 16:10:17  VoiceOrchestrationService.ts — isDirectQuestion check in handleSpeechFinal
+[x] 16:10:17  VoiceOrchestrationService.ts — set_silence_threshold WS send added
+[x] 16:10:17  VoiceIntentClassifier.ts — isDirectQuestion() exported function confirmed
+
+================================================================================
+EAS BUILD STATUS
+================================================================================
+
+NOT INITIATED FROM THIS ENVIRONMENT.
+
+The EAS CLI (eas-cli@14.x installed in artifacts/mobile) hangs before
+authentication when run from the Replit container. It reaches the version
+check stage and stops — it cannot reach expo.dev from this network context.
+This is a Replit sandbox networking constraint, not a code problem.
+
+The server-side changes (VoiceOrchestrationService, VoiceIntentClassifier)
+are live on restart. The client-side changes (VAD constants, refs, WS handler)
+require a new APK build to reach the device.
+
+TO INITIATE THE BUILD, run from your local machine or any environment with
+Expo credentials and network access to expo.dev:
+
+  cd artifacts/mobile
+  eas build --platform android --profile preview --non-interactive
+
+Or from the project root:
+
+  pnpm --filter @workspace/mobile exec eas build --platform android --profile preview
+
+The build will produce an APK distributed via the internal Expo channel.
+No other code changes are required before the build.
+
+================================================================================
+NOTE ON TIMESTAMPS
+================================================================================
+
+All 8 edits were applied in a single automated build loop and committed
+atomically at 16:10:17 UTC (commit 06ddf023). Git records one timestamp per
+commit, not per individual file edit. The 16:10:17 timestamp on every item
+is the commit time — accurate to the second, verifiable against the git log.
+
+  git show --stat 06ddf023774f460c27c96bfb19d5c79481a0f9b0
+
+================================================================================
+END OF REPORT
+================================================================================
