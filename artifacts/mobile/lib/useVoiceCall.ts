@@ -119,6 +119,10 @@ export function useVoiceCall(): {
   const playQueueRef = useRef<string[]>([]);
   const playerRef = useRef<AudioPlayer | null>(null);
   const playerUriRef = useRef<string | null>(null);
+  // True from when playNext shifts a URI until the track finishes/errors.
+  // Bridges the gap where playerRef is null between tracks but playback is
+  // still in progress — prevents tts_done from opening the mic too early.
+  const playBusyRef = useRef(false);
 
   const playNextRef = useRef<() => Promise<void>>(async () => {});
   const recorder = useVoiceRecorder();
@@ -148,6 +152,7 @@ export function useVoiceCall(): {
 
   const stopPlayback = useCallback((): void => {
     playQueueRef.current = [];
+    playBusyRef.current = false;
     const p = playerRef.current;
     const u = playerUriRef.current;
     playerRef.current = null;
@@ -165,12 +170,10 @@ export function useVoiceCall(): {
     const uri = playQueueRef.current.shift();
     if (!uri) {
       // Queue drained — only open mic once the server has also sent tts_done
-      // (guards against opening between sentences while more chunks are arriving).
-      // Setting ttsCompleteRef HERE (not on tts_done) ensures the mic gate only
-      // lifts after the device has actually finished playing, not when the server
-      // finished sending — those two events are not the same.
-      addLog(`playNext: drained srvDone=${ttsServerDoneRef.current} phase=${phaseRef.current}`);
-      if (phaseRef.current === "speaking" && ttsServerDoneRef.current) {
+      // AND no track is currently being set up (playBusyRef guards the async gap
+      // between one track ending and the next player being created).
+      addLog(`playNext: drained srvDone=${ttsServerDoneRef.current} busy=${playBusyRef.current} phase=${phaseRef.current}`);
+      if (!playBusyRef.current && phaseRef.current === "speaking" && ttsServerDoneRef.current) {
         ttsCompleteRef.current = true;
         addLog("ttsComplete=true — opening mic");
         setPhaseSync("listening");
@@ -178,6 +181,8 @@ export function useVoiceCall(): {
       }
       return;
     }
+    // Mark busy BEFORE the first await so tts_done cannot see a false-empty window.
+    playBusyRef.current = true;
     try {
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
     } catch { /* non-fatal */ }
@@ -190,6 +195,7 @@ export function useVoiceCall(): {
       player.addListener("playbackStatusUpdate", (status) => {
         if (status.didJustFinish) {
           addLog("player: finished");
+          playBusyRef.current = false; // clear BEFORE playerRef so tts_done sees correct state
           playerRef.current = null;
           playerUriRef.current = null;
           try { player.remove(); } catch { /* ignore */ }
@@ -199,6 +205,7 @@ export function useVoiceCall(): {
       });
       player.play();
     } catch {
+      playBusyRef.current = false;
       FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => { /* ignore */ });
       void playNextRef.current();
     }
@@ -440,10 +447,10 @@ export function useVoiceCall(): {
           const text = (msg["responseText"] as string | undefined) ?? "";
           if (text) setAshleyResponse(text);
           ttsServerDoneRef.current = true;
-          addLog(`WS tts_done — q=${playQueueRef.current.length} playing=${!!playerRef.current}`);
-          // If nothing was queued (silent/empty response), open mic directly.
-          // Otherwise playNext opens mic after the last audio track finishes.
-          if (playQueueRef.current.length === 0 && !playerRef.current) {
+          addLog(`WS tts_done — q=${playQueueRef.current.length} playing=${!!playerRef.current} busy=${playBusyRef.current}`);
+          // Only open mic here if there is truly no audio in flight — queue empty,
+          // no active player, AND playBusyRef is false (not between tracks).
+          if (playQueueRef.current.length === 0 && !playerRef.current && !playBusyRef.current) {
             ttsCompleteRef.current = true;
             addLog("ttsComplete=true (no audio) — opening mic");
             setPhaseSync("listening");
