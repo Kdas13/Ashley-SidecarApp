@@ -283,6 +283,63 @@ export function abortCurrentOutputs(session: VoiceSession): void {
   }
 }
 
+/**
+ * Called when the client sends { type: "playback_complete" }.
+ * Sends tts_done to the client and processes any queued utterance.
+ */
+export function handlePlaybackComplete(session: VoiceSession): void {
+  if (!session.awaitingPlaybackConfirm) {
+    logger.warn(
+      { sessionId: session.sessionId },
+      "VoiceOrch: unexpected playback_complete — not awaiting confirmation",
+    );
+    return;
+  }
+
+  // Clear the safety timeout.
+  if (session.playbackConfirmTimeout) {
+    clearTimeout(session.playbackConfirmTimeout);
+    session.playbackConfirmTimeout = null;
+  }
+
+  session.awaitingPlaybackConfirm = false;
+
+  // Now send tts_done — client has confirmed audio has finished playing.
+  const seqDone = registry.incrementSequence(session);
+  try {
+    session.ws?.send(
+      JSON.stringify({
+        type:                "tts_done",
+        speechId:             session.currentSpeechId,
+        responseText:         session.currentResponseText,
+        sessionId:            session.sessionId,
+        connectionGeneration: session.connectionGeneration,
+        sequenceNumber:       seqDone,
+        timestamp:            Date.now(),
+      }),
+    );
+  } catch {}
+
+  session.currentSpeechId = null;
+  session.state = "listening";
+
+  logger.info(
+    { sessionId: session.sessionId },
+    "VoiceOrch: playback confirmed — tts_done sent — session listening",
+  );
+
+  // Process any queued utterance that arrived during playback.
+  if (session.pendingUtterance && session.pendingUtteranceId) {
+    const u = session.pendingUtterance;
+    const uid = session.pendingUtteranceId;
+    session.pendingUtterance = null;
+    session.pendingUtteranceId = null;
+    void handleSpeechFinal(session, u, uid).catch((err) => {
+      logger.error({ err, sessionId: session.sessionId }, "VoiceOrch: queued utterance failed");
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Interruption (Stage 8A)
 // ---------------------------------------------------------------------------
@@ -562,23 +619,42 @@ async function runLLMAndTTSPipeline(
     session.llmStreamActive = false;
   }
 
-  // ── Send tts_done if we still own the speechId ─────────────────────────
+  // ── Wait for client playback confirmation before sending tts_done ───────
+  // The server has sent all TTS chunks but the client is still playing
+  // buffered audio. We must not send tts_done until the client confirms
+  // playback is complete, otherwise the mic opens while audio is still
+  // playing and causes a race condition.
   if (session.currentSpeechId === speechId) {
-    const seqDone = registry.incrementSequence(session);
-    try {
-      session.ws?.send(
-        JSON.stringify({
-          type:                "tts_done",
-          speechId,
-          responseText:         session.currentResponseText,
-          sessionId:            session.sessionId,
-          connectionGeneration: session.connectionGeneration,
-          sequenceNumber:       seqDone,
-          timestamp:            Date.now(),
-        }),
-      );
-    } catch {}
-    session.currentSpeechId = null;
+    session.awaitingPlaybackConfirm = true;
+
+    // Safety timeout: if client does not confirm within 15 seconds,
+    // reset to listening state anyway to prevent permanent hang.
+    if (session.playbackConfirmTimeout) {
+      clearTimeout(session.playbackConfirmTimeout);
+    }
+    session.playbackConfirmTimeout = setTimeout(() => {
+      if (session.awaitingPlaybackConfirm && session.currentSpeechId === speechId) {
+        logger.warn(
+          { sessionId: session.sessionId },
+          "VoiceOrch: playback_complete not received within 15s — resetting to listening",
+        );
+        session.awaitingPlaybackConfirm = false;
+        session.playbackConfirmTimeout = null;
+        session.currentSpeechId = null;
+        session.state = "listening";
+
+        // If a speech_final arrived during the wait, process it now.
+        if (session.pendingUtterance && session.pendingUtteranceId) {
+          const u = session.pendingUtterance;
+          const uid = session.pendingUtteranceId;
+          session.pendingUtterance = null;
+          session.pendingUtteranceId = null;
+          void handleSpeechFinal(session, u, uid).catch((err) => {
+            logger.error({ err, sessionId: session.sessionId }, "VoiceOrch: pending utterance failed");
+          });
+        }
+      }
+    }, 15_000);
   }
 
   // Store last response for REPEAT_REQUEST.
@@ -674,6 +750,19 @@ export async function handleSpeechFinal(
 ): Promise<void> {
   // Update heartbeat.
   session.lastActiveHeartbeatAt = new Date();
+
+  // Playback guard: if awaiting client playback confirmation, queue this
+  // utterance and return. Only one utterance queued at a time — if a second
+  // arrives, it replaces the first (Kane is still speaking, keep the latest).
+  if (session.awaitingPlaybackConfirm) {
+    logger.info(
+      { sessionId: session.sessionId, utteranceId },
+      "VoiceOrch: speech_final queued — awaiting playback_complete",
+    );
+    session.pendingUtterance = transcript;
+    session.pendingUtteranceId = utteranceId;
+    return;
+  }
 
   // Stage 8A: interruption check.
   if (session.llmStreamActive || session.state === "tts_streaming") {

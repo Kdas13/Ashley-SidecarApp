@@ -106,6 +106,12 @@ export interface VoiceSession {
 
   // Stage 7 — audio
   rollingAudioBuffer: Buffer;
+
+  // Stage 7 — playback confirmation handshake
+  awaitingPlaybackConfirm: boolean;
+  pendingUtterance: string | null;      // queued speech_final during playback
+  pendingUtteranceId: string | null;    // utteranceId for the queued item
+  playbackConfirmTimeout: NodeJS.Timeout | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +193,10 @@ export function create(deviceId: string, ws: WsLike): VoiceSession {
     interruptedAt: null,
     remainingResponse: null,
     rollingAudioBuffer: Buffer.alloc(0),
+    awaitingPlaybackConfirm: false,
+    pendingUtterance: null,
+    pendingUtteranceId: null,
+    playbackConfirmTimeout: null,
   };
 
   sessionsBySessionId.set(session.sessionId, session);
@@ -538,6 +548,10 @@ export async function restoreRecoveringSessions(): Promise<void> {
       interruptedAt: null,
       remainingResponse: null,
       rollingAudioBuffer: Buffer.alloc(0),
+      awaitingPlaybackConfirm: false,
+      pendingUtterance: null,
+      pendingUtteranceId: null,
+      playbackConfirmTimeout: null,
     };
 
     sessionsBySessionId.set(session.sessionId, session);

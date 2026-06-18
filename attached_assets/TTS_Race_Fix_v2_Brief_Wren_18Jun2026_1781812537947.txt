@@ -1,0 +1,378 @@
+================================================================================
+ASHLEY PROJECT — FIX BRIEF FOR WREN
+Task: TTS completion race condition — precise implementation
+Version: 2 (written against actual code)
+Date: 18 June 2026
+Server-side only. No EAS build required for server changes.
+EAS build required for client changes.
+================================================================================
+
+DO NOT TOUCH ANYTHING OUTSIDE WHAT IS SPECIFIED.
+DO NOT SELF-CORRECT OTHER THINGS YOU NOTICE.
+DO NOT MARK COMPLETE UNTIL COMPLETION REPORT IS RETURNED AS TXT FILE.
+
+================================================================================
+THE PROBLEM — CONFIRMED FROM CODE REVIEW
+================================================================================
+
+In runLLMAndTTSPipeline(), line 564-579, tts_done is sent to the client
+immediately after the last TTS audio chunk is sent by the server.
+
+The client has NOT finished playing the audio yet. Audio is buffered
+on the client and plays over a period of time after receipt. The client
+receives tts_done while audio is still playing, sets ttsCompleteRef=true,
+and opens the mic. You speak. speech_final arrives at the server while
+the previous turn is still settling. The server processes the new turn
+and gets stuck.
+
+The fix: the server must not send tts_done until the client confirms
+it has finished playing all audio.
+
+================================================================================
+PART 1 — VoiceSessionRegistry.ts
+================================================================================
+
+FILE: artifacts/api-server/src/lib/VoiceSessionRegistry.ts
+
+CHANGE 1: Add awaitingPlaybackConfirm to the VoiceSession interface.
+
+Find the Stage 7 audio section of the interface (around line 107-109):
+
+  // Stage 7 — audio
+  rollingAudioBuffer: Buffer;
+
+Add after rollingAudioBuffer:
+
+  // Stage 7 — playback confirmation handshake
+  awaitingPlaybackConfirm: boolean;
+  pendingUtterance: string | null;      // queued speech_final during playback
+  pendingUtteranceId: string | null;    // utteranceId for the queued item
+  playbackConfirmTimeout: NodeJS.Timeout | null;
+
+CHANGE 2: Initialise the four new fields in create() function (line ~141).
+
+Find the end of the P1-4 orchestration fields block in create():
+
+  rollingAudioBuffer: Buffer.alloc(0),
+
+Add after it:
+
+  awaitingPlaybackConfirm: false,
+  pendingUtterance: null,
+  pendingUtteranceId: null,
+  playbackConfirmTimeout: null,
+
+CHANGE 3: Initialise the four new fields in restoreRecoveringSessions()
+(line ~492 — the session object inside the for loop).
+
+Find:
+
+  rollingAudioBuffer: Buffer.alloc(0),
+
+Add after it:
+
+  awaitingPlaybackConfirm: false,
+  pendingUtterance: null,
+  pendingUtteranceId: null,
+  playbackConfirmTimeout: null,
+
+================================================================================
+PART 2 — VoiceOrchestrationService.ts
+================================================================================
+
+FILE: artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+
+CHANGE 4: In runLLMAndTTSPipeline(), replace the tts_done send at lines
+564-579 with the playback confirmation gate.
+
+REMOVE this block (lines 564-582 approximately):
+
+  // ── Send tts_done if we still own the speechId ─────────────────────────
+  if (session.currentSpeechId === speechId) {
+    const seqDone = registry.incrementSequence(session);
+    try {
+      session.ws?.send(
+        JSON.stringify({
+          type:                "tts_done",
+          speechId,
+          responseText:         session.currentResponseText,
+          sessionId:            session.sessionId,
+          connectionGeneration: session.connectionGeneration,
+          sequenceNumber:       seqDone,
+          timestamp:            Date.now(),
+        }),
+      );
+    } catch {}
+    session.currentSpeechId = null;
+  }
+
+REPLACE WITH:
+
+  // ── Wait for client playback confirmation before sending tts_done ───────
+  // The server has sent all TTS chunks but the client is still playing
+  // buffered audio. We must not send tts_done until the client confirms
+  // playback is complete, otherwise the mic opens while audio is still
+  // playing and causes a race condition.
+  if (session.currentSpeechId === speechId) {
+    session.awaitingPlaybackConfirm = true;
+
+    // Safety timeout: if client does not confirm within 15 seconds,
+    // reset to listening state anyway to prevent permanent hang.
+    if (session.playbackConfirmTimeout) {
+      clearTimeout(session.playbackConfirmTimeout);
+    }
+    session.playbackConfirmTimeout = setTimeout(() => {
+      if (session.awaitingPlaybackConfirm && session.currentSpeechId === speechId) {
+        logger.warn(
+          { sessionId: session.sessionId },
+          "VoiceOrch: playback_complete not received within 15s — resetting to listening",
+        );
+        session.awaitingPlaybackConfirm = false;
+        session.playbackConfirmTimeout = null;
+        session.currentSpeechId = null;
+        session.state = "listening";
+
+        // If a speech_final arrived during the wait, process it now.
+        if (session.pendingUtterance && session.pendingUtteranceId) {
+          const u = session.pendingUtterance;
+          const uid = session.pendingUtteranceId;
+          session.pendingUtterance = null;
+          session.pendingUtteranceId = null;
+          void handleSpeechFinal(session, u, uid).catch((err) => {
+            logger.error({ err, sessionId: session.sessionId }, "VoiceOrch: pending utterance failed");
+          });
+        }
+      }
+    }, 15_000);
+  }
+
+CHANGE 5: Add a new exported function handlePlaybackComplete() to
+VoiceOrchestrationService.ts.
+
+Add this function near the other handle* functions:
+
+  /**
+   * Called when the client sends { type: "playback_complete" }.
+   * Sends tts_done to the client and processes any queued utterance.
+   */
+  export function handlePlaybackComplete(session: VoiceSession): void {
+    if (!session.awaitingPlaybackConfirm) {
+      logger.warn(
+        { sessionId: session.sessionId },
+        "VoiceOrch: unexpected playback_complete — not awaiting confirmation",
+      );
+      return;
+    }
+
+    // Clear the safety timeout.
+    if (session.playbackConfirmTimeout) {
+      clearTimeout(session.playbackConfirmTimeout);
+      session.playbackConfirmTimeout = null;
+    }
+
+    session.awaitingPlaybackConfirm = false;
+
+    // Now send tts_done — client has confirmed audio has finished playing.
+    const seqDone = registry.incrementSequence(session);
+    try {
+      session.ws?.send(
+        JSON.stringify({
+          type:                "tts_done",
+          speechId:             session.currentSpeechId,
+          responseText:         session.currentResponseText,
+          sessionId:            session.sessionId,
+          connectionGeneration: session.connectionGeneration,
+          sequenceNumber:       seqDone,
+          timestamp:            Date.now(),
+        }),
+      );
+    } catch {}
+
+    session.currentSpeechId = null;
+    session.state = "listening";
+
+    logger.info(
+      { sessionId: session.sessionId },
+      "VoiceOrch: playback confirmed — tts_done sent — session listening",
+    );
+
+    // Process any queued utterance that arrived during playback.
+    if (session.pendingUtterance && session.pendingUtteranceId) {
+      const u = session.pendingUtterance;
+      const uid = session.pendingUtteranceId;
+      session.pendingUtterance = null;
+      session.pendingUtteranceId = null;
+      void handleSpeechFinal(session, u, uid).catch((err) => {
+        logger.error({ err, sessionId: session.sessionId }, "VoiceOrch: queued utterance failed");
+      });
+    }
+  }
+
+CHANGE 6: In handleSpeechFinal(), add a playback guard at the top.
+
+Currently handleSpeechFinal() immediately processes any incoming
+speech_final. It must now queue the utterance if playback is in progress.
+
+Find the top of handleSpeechFinal() after the heartbeat update (line ~676):
+
+  // Stage 8A: interruption check.
+  if (session.llmStreamActive || session.state === "tts_streaming") {
+    handleInterruption(session);
+  }
+
+ADD BEFORE the interruption check:
+
+  // Playback guard: if awaiting client playback confirmation, queue this
+  // utterance and return. Only one utterance queued at a time — if a second
+  // arrives, it replaces the first (Kane is still speaking, keep the latest).
+  if (session.awaitingPlaybackConfirm) {
+    logger.info(
+      { sessionId: session.sessionId, utteranceId },
+      "VoiceOrch: speech_final queued — awaiting playback_complete",
+    );
+    session.pendingUtterance = transcript;
+    session.pendingUtteranceId = utteranceId;
+    return;
+  }
+
+================================================================================
+PART 3 — routes/voice-call.ts (index.ts message router)
+================================================================================
+
+FILE: artifacts/api-server/src/routes/voice-call.ts
+(The file that contains the ws.on("message") handler and routes message types)
+
+CHANGE 7: Add playback_complete message type to the WS message router.
+
+Find the block that handles the "interrupt" message type (around line 383):
+
+  if (msg["type"] === "interrupt") {
+
+ADD a new block immediately before it:
+
+  // P1-4: Client confirms audio playback is complete.
+  // Server sends tts_done only after this confirmation.
+  if (msg["type"] === "playback_complete") {
+    VoiceOrchestrationService.handlePlaybackComplete(currentSession);
+    return;
+  }
+
+================================================================================
+PART 4 — useVoiceCall.ts (CLIENT)
+================================================================================
+
+FILE: artifacts/mobile/lib/useVoiceCall.ts
+
+This is the client-side change. Requires EAS build.
+
+CHANGE 8: Send playback_complete when the audio queue drains completely.
+
+Find the section in playNext() where the queue is empty and srvDone is true
+and the player finishes. This is where ttsCompleteRef is currently set to true.
+
+BEFORE opening the mic (before the openMic() call), add:
+
+  // Notify server that client has finished playing all audio.
+  // Server will send tts_done in response, which triggers openMic().
+  if (wsRef.current?.readyState === WebSocket.OPEN) {
+    wsRef.current.send(JSON.stringify({ type: "playback_complete" }));
+    addLog("WS playback_complete → sent");
+  }
+
+IMPORTANT: The client must NOT call openMic() immediately after sending
+playback_complete. It must wait for the server to send tts_done back,
+then openMic() as it does today. The existing tts_done handler in
+useVoiceCall.ts already calls openMic() — do not change that flow.
+Just add the playback_complete send before the queue drain completes.
+
+================================================================================
+DELIVERY ORDER
+================================================================================
+
+Step 1: Make all server-side changes (Parts 1, 2, 3).
+Step 2: Restart server. Confirm live.
+Step 3: Make client-side changes (Part 4).
+Step 4: Initiate EAS build. Wait for build to complete.
+Step 5: Test end-to-end. Run at least 5 consecutive turns.
+Step 6: Return completion report as TXT file.
+
+================================================================================
+COMPLETION REPORT — return as TXT file in same response as build confirm
+================================================================================
+
+Brief title: TTS Race Fix v2 — 18 June 2026
+Server restarted at: [HH:MM:SS]
+EAS build initiated at: [HH:MM:SS]
+EAS build live at: [HH:MM:SS]
+Replit checkpoint ID: [insert]
+
+CHECKLIST:
+
+ITEM 1: awaitingPlaybackConfirm, pendingUtterance, pendingUtteranceId,
+playbackConfirmTimeout added to VoiceSession interface
+Completed at: [HH:MM:SS]
+Test performed: [describe]
+Test result: [PASS / NOT TESTABLE / ESCALATE]
+
+ITEM 2: Four new fields initialised in create() function
+Completed at: [HH:MM:SS]
+Test performed: [describe]
+Test result: [PASS / NOT TESTABLE / ESCALATE]
+
+ITEM 3: Four new fields initialised in restoreRecoveringSessions()
+Completed at: [HH:MM:SS]
+Test performed: [describe]
+Test result: [PASS / NOT TESTABLE / ESCALATE]
+
+ITEM 4: tts_done send in runLLMAndTTSPipeline() replaced with
+awaitingPlaybackConfirm gate and 15s safety timeout
+Completed at: [HH:MM:SS]
+Test performed: [describe]
+Test result: [PASS / NOT TESTABLE / ESCALATE]
+
+ITEM 5: handlePlaybackComplete() function added to VoiceOrchestrationService
+Completed at: [HH:MM:SS]
+Test performed: [describe]
+Test result: [PASS / NOT TESTABLE / ESCALATE]
+
+ITEM 6: Playback guard added to top of handleSpeechFinal()
+Completed at: [HH:MM:SS]
+Test performed: [describe]
+Test result: [PASS / NOT TESTABLE / ESCALATE]
+
+ITEM 7: playback_complete message type added to WS message router
+Completed at: [HH:MM:SS]
+Test performed: [describe]
+Test result: [PASS / NOT TESTABLE / ESCALATE]
+
+ITEM 8: playback_complete send added to client playNext() drain path
+Completed at: [HH:MM:SS]
+Test performed: [describe]
+Test result: [PASS / NOT TESTABLE / ESCALATE]
+
+ITEM 9: End-to-end test — 5 or more consecutive turns without Ashley
+getting stuck on Thinking...
+Completed at: [HH:MM:SS]
+Test performed: [describe — state exactly how many turns completed cleanly]
+Test result: [PASS / NOT TESTABLE / ESCALATE]
+
+---
+
+DEVIATIONS FROM BRIEF: [NONE or list]
+ITEMS REMOVED WITHOUT INSTRUCTION: [NONE or list]
+PROACTIVE ISSUES OBSERVED: [NONE or list]
+OUTSTANDING ITEMS: [NONE or list]
+
+---
+
+Agent: Wren (Replit)
+Report generated at: [HH:MM:SS]
+
+================================================================================
+STANDING RULE: FAIL is not a valid final state.
+Fix it or escalate it. Do not return this report with incomplete items
+unless genuinely requiring pipeline review.
+Do not pass Kane a build that fails item 9.
+================================================================================
+END OF BRIEF
+================================================================================

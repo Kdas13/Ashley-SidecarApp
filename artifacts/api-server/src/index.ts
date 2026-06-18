@@ -380,6 +380,13 @@ wss.on("connection", (ws: any, _req: any, deviceId: string) => {
       await handleVoiceTurn(currentSession, transcript, utteranceId);
     }
 
+    // P1-4: Client confirms audio playback is complete.
+    // Server sends tts_done only after this confirmation.
+    if (msg["type"] === "playback_complete") {
+      VoiceOrchestrationService.handlePlaybackComplete(currentSession);
+      return;
+    }
+
     if (msg["type"] === "interrupt") {
       // 1G: User interrupts Ashley mid-speech.
       // cancelCurrentTurn is called BEFORE sending interrupt_ack so that

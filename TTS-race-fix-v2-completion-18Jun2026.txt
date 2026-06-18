@@ -1,0 +1,178 @@
+================================================================================
+ASHLEY PROJECT — COMPLETION REPORT
+Brief title: TTS Race Fix v2 — 18 June 2026
+================================================================================
+
+Server restarted at:  20:00:40 UTC (listening confirmed in log)
+EAS build initiated at: NOT INITIATED — see EAS BUILD STATUS below
+EAS build live at:    PENDING
+Replit checkpoint ID: [auto-generated on next loop end]
+
+================================================================================
+CHECKLIST
+================================================================================
+
+ITEM 1: awaitingPlaybackConfirm, pendingUtterance, pendingUtteranceId,
+        playbackConfirmTimeout added to VoiceSession interface
+Completed at: 19:59:51 UTC
+File: artifacts/api-server/src/lib/VoiceSessionRegistry.ts (lines 113-117)
+Test performed: tsc --noEmit on api-server — confirmed no type errors (TSC_EXIT:0)
+Test result: PASS
+
+ITEM 2: Four new fields initialised in create() function
+Completed at: 19:59:51 UTC
+File: artifacts/api-server/src/lib/VoiceSessionRegistry.ts (lines 199-202)
+Test performed: tsc --noEmit — TSC_EXIT:0; fields present in session object
+  literal, TypeScript would error on missing required fields
+Test result: PASS
+
+ITEM 3: Four new fields initialised in restoreRecoveringSessions()
+Completed at: 19:59:51 UTC
+File: artifacts/api-server/src/lib/VoiceSessionRegistry.ts (lines 554-557)
+Test performed: tsc --noEmit — TSC_EXIT:0; same type-completeness guarantee
+Test result: PASS
+
+ITEM 4: tts_done send in runLLMAndTTSPipeline() replaced with
+        awaitingPlaybackConfirm gate and 15s safety timeout
+Completed at: 19:59:51 UTC
+File: artifacts/api-server/src/lib/VoiceOrchestrationService.ts (lines 568-604)
+What changed: removed the immediate tts_done JSON send; replaced with
+  session.awaitingPlaybackConfirm = true and a 15s setTimeout that resets
+  state and processes any pending utterance if playback_complete never arrives.
+Test performed: tsc --noEmit — TSC_EXIT:0
+Test result: PASS (structural — runtime requires device test; see Item 9)
+
+ITEM 5: handlePlaybackComplete() function added to VoiceOrchestrationService
+Completed at: 19:59:51 UTC
+File: artifacts/api-server/src/lib/VoiceOrchestrationService.ts (lines 289-344)
+Function: exported, guards against unexpected calls (logs warn + returns),
+  clears safety timeout, sends tts_done with current speechId/responseText,
+  sets state=listening, processes pendingUtterance if queued.
+Test performed: tsc --noEmit — TSC_EXIT:0; function exported and callable
+Test result: PASS
+
+ITEM 6: Playback guard added to top of handleSpeechFinal()
+Completed at: 19:59:51 UTC
+File: artifacts/api-server/src/lib/VoiceOrchestrationService.ts (lines 757-768)
+Behaviour: if awaitingPlaybackConfirm is true, queues the utterance
+  (replaces any previous pending item — keep latest) and returns immediately.
+  No interruption, no LLM pipeline, no state mutation beyond the two fields.
+Test performed: tsc --noEmit — TSC_EXIT:0
+Test result: PASS
+
+ITEM 7: playback_complete message type added to WS message router
+Completed at: 19:59:51 UTC
+File: artifacts/api-server/src/index.ts (lines 386-391)
+Position: inserted immediately before the "interrupt" case, with early return.
+  Routes to VoiceOrchestrationService.handlePlaybackComplete(currentSession).
+NOTE: The brief cited routes/voice-call.ts as the target file for this change.
+  The WS message handler lives in index.ts, not voice-call.ts. The change was
+  applied to index.ts where the handler actually is. This is not a deviation
+  from the intent — it is the correct file.
+Test performed: tsc --noEmit — TSC_EXIT:0; server live and handling requests
+Test result: PASS
+
+ITEM 8: playback_complete send added to client playNext() drain path
+Completed at: 19:59:51 UTC
+File: artifacts/mobile/lib/useVoiceCall.ts (lines 191-211)
+Implementation: drain section now branches on ttsServerDoneRef.current:
+  - srvDone=true (server safety timeout already sent tts_done): existing path
+    — ttsCompleteRef=true, setPhase("listening"), openMic(). Backward compat.
+  - srvDone=false (normal path, server waiting for confirmation): sends
+    { type: "playback_complete" } to WS and returns WITHOUT calling openMic.
+    The server receives it, sends tts_done. Client tts_done handler sets
+    srvDone=true, calls playNext(), queue empty, srvDone=true, phase="speaking"
+    → openMic() fires. Correct end-to-end.
+Deviation from brief wording: the brief said "find the section where srvDone
+  is true" and add playback_complete before openMic(). This would create a
+  circular deadlock (client waits for tts_done to know srvDone, server waits
+  for playback_complete to send tts_done). The correct path is the else-branch
+  (srvDone=false). The srvDone=true branch is kept for the safety-timeout
+  fallback case. The brief's intent is fully met; the wording pointed at the
+  wrong branch.
+Test performed: tsc --noEmit on mobile — not run (Expo tsconfig differs);
+  change is structurally consistent with existing patterns in the same file
+Test result: NOT TESTABLE without device (requires EAS build)
+
+ITEM 9: End-to-end test — 5 or more consecutive turns without Ashley
+        getting stuck on Thinking...
+Completed at: N/A
+Test performed: NOT TESTABLE from this environment.
+  Requires a device running the new APK (client changes from Item 8).
+  Server-side changes are live. Server confirms awaitingPlaybackConfirm
+  behaviour will only engage once the client sends playback_complete.
+  Until the new APK is installed, the old client (which never sends
+  playback_complete) will experience the 15-second safety timeout on every
+  turn — at which point tts_done is sent and the call continues. This is
+  degraded but not broken. No test can be passed without the new build.
+Test result: ESCALATE — requires EAS build on device
+
+================================================================================
+EAS BUILD STATUS
+================================================================================
+
+NOT INITIATED.
+
+The Replit sandbox blocks EAS CLI at the git-lock stage — same constraint
+documented in the VAD completion report. No workaround is available from
+this environment.
+
+To initiate, run from a machine with Expo credentials and expo.dev access:
+
+  cd artifacts/mobile
+  eas build --platform android --profile preview --non-interactive
+
+Or from the project root:
+
+  pnpm --filter @workspace/mobile exec eas build --platform android \
+    --profile preview --non-interactive
+
+No further code changes are needed before running this command.
+
+================================================================================
+DEVIATIONS FROM BRIEF
+================================================================================
+
+1. Change 7 file target: brief cited routes/voice-call.ts; change applied
+   to src/index.ts — the actual location of the WS message handler. Intent
+   is identical.
+
+2. Change 8 implementation: brief said add playback_complete before the
+   openMic() call in the srvDone=true branch. That branch would deadlock
+   (circular: client needs tts_done for srvDone; server needs playback_complete
+   for tts_done). Implemented as an else-branch (srvDone=false), keeping the
+   srvDone=true branch as a safety fallback for the server timeout path.
+   The stated goal of the fix is fully achieved.
+
+================================================================================
+ITEMS REMOVED WITHOUT INSTRUCTION
+================================================================================
+
+NONE.
+
+================================================================================
+PROACTIVE ISSUES OBSERVED
+================================================================================
+
+1. While awaitingPlaybackConfirm=true, session.state is set to "listening"
+   (line 607 of VoiceOrchestrationService.ts, unchanged from original). The
+   silence monitor's tick() treats "listening" as silence-time. If the client
+   takes longer than the silence warning threshold (30s) to send playback_complete
+   (unlikely in normal use), the monitor may incorrectly speak "Still there?"
+   while Ashley's audio is still playing. The 15s safety timeout fires first
+   (15s < 30s), so in practice this cannot occur. Noted for awareness.
+   Severity: LOW. No action taken per brief rules.
+
+================================================================================
+OUTSTANDING ITEMS
+================================================================================
+
+1. EAS build — blocked by Replit sandbox git-lock. Kane must run from local
+   machine. Command provided above.
+2. Item 9 end-to-end test — requires new APK on device. Cannot pass until
+   EAS build is installed.
+
+================================================================================
+Agent: Wren (Replit)
+Report generated at: 20:01 UTC
+================================================================================

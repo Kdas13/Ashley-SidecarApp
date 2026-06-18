@@ -186,13 +186,23 @@ export function useVoiceCall(): {
 
     const uri = playQueueRef.current.shift();
     if (!uri) {
-      // Queue drained — only open mic once the server has also sent tts_done.
+      // Queue drained.
       addLog(`playNext: drained srvDone=${ttsServerDoneRef.current} phase=${phaseRef.current}`);
-      if (phaseRef.current === "speaking" && ttsServerDoneRef.current) {
-        ttsCompleteRef.current = true;
-        addLog("ttsComplete=true — opening mic");
-        setPhaseSync("listening");
-        void openMicRef.current();
+      if (phaseRef.current === "speaking") {
+        if (ttsServerDoneRef.current) {
+          // tts_done already received (e.g. server safety timeout fired) — open mic.
+          ttsCompleteRef.current = true;
+          addLog("ttsComplete=true — opening mic");
+          setPhaseSync("listening");
+          void openMicRef.current();
+        } else {
+          // Audio done, server has not yet sent tts_done — notify server.
+          // Server will send tts_done in response, which re-triggers playNext → openMic.
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ type: "playback_complete" }));
+            addLog("WS playback_complete → sent");
+          }
+        }
       }
       playNextRunningRef.current = false;
       return;
