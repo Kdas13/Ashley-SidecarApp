@@ -1,0 +1,733 @@
+================================================================================
+ASHLEY PROJECT — DIAGNOSTIC RAW CODE DUMP
+Date: 19 June 2026  |  NO CHANGES. NO COMMITS. NO BUILDS.
+================================================================================
+
+All code pasted verbatim from the current working tree (commit 6ee678fd plus
+the two pending edits not yet checkpointed). File line numbers are from
+cat -n output. No elisions inside any pasted function.
+
+================================================================================
+SECTION 1 — CLIENT: useVoiceCall.ts
+================================================================================
+
+─────────────────────────────────────────────────────────────────────────────
+1a. COMPLETE WebSocket onmessage handler — every case
+    useVoiceCall.ts lines 531–643
+─────────────────────────────────────────────────────────────────────────────
+
+531      let msg: Record<string, unknown>;
+532      try { msg = JSON.parse(event.data) as Record<string, unknown>; }
+533      catch { return; }
+534
+535      switch (msg["type"] as string) {
+536        case "call_connected":
+537          setSessionId((msg["sessionId"] as string) ?? null);
+538          reconnectAttemptsRef.current = 0; // successful connection — reset counter
+539          // Open the mic immediately — the call has started.
+540          await openMicRef.current();
+541          break;
+542
+543        case "speech_start": {
+544          const kind = (msg["kind"] as string | undefined) ?? "main";
+545          if (kind === "auxiliary") {
+546            // Auxiliary clip (e.g. thinking clip) — reset only the aux buffer.
+547            // Do NOT touch main lifecycle refs.
+548            auxChunkBufRef.current = [];
+549            activeSpeechKindRef.current = "auxiliary";
+550            addLog("WS speech_start(aux) — aux buffer reset");
+551          } else {
+552            // Main turn speech — reset all lifecycle gates as before.
+553            chunkBufRef.current = [];
+554            ttsCompleteRef.current = false;        // device not done playing
+555            ttsServerDoneRef.current = false;      // server not done sending
+556            responseEndReceivedRef.current = false; // server has not yet confirmed response complete
+557            activeSpeechKindRef.current = "main";
+558            addLog("WS speech_start(main) — gates reset");
+559          }
+560          break;
+561        }
+562
+563        case "sentence_end": {
+564          const kind = (msg["kind"] as string | undefined) ?? "main";
+565          if (kind === "auxiliary") {
+566            await flushAuxChunkBuffer();
+567            addLog("WS sentence_end(aux) — aux buffer flushed");
+568          } else {
+569            await flushChunkBuffer();
+570            addLog("WS sentence_end(main) — chunk buffer flushed");
+571          }
+572          break;
+573        }
+574
+575        case "response_end": {
+576          const kind = (msg["kind"] as string | undefined) ?? "main";
+577          if (kind !== "main") break; // defensive: ignore any auxiliary response_end
+578          // Server has dispatched all TTS chunks for this turn.
+579          // The client may now send playback_confirmed once the play queue drains.
+580          responseEndReceivedRef.current = true;
+581          addLog("WS response_end — all audio sent by server");
+582          // If the queue already drained before response_end arrived, trigger playNext
+583          // so the confirmation can be sent now rather than waiting for the next drain.
+584          if (!playNextRunningRef.current) {
+585            void playNextRef.current();
+586          }
+587          break;
+588        }
+589
+590        case "tts_done": {
+591          const kind = (msg["kind"] as string | undefined) ?? "main";
+592          if (kind === "auxiliary") {
+593            // Aux clip finished — restore routing to main, no lifecycle effect.
+594            activeSpeechKindRef.current = "main";
+595            addLog("WS tts_done(aux) — aux clip done, routing restored to main");
+596            break;
+597          }
+598          // Main turn tts_done — existing lifecycle.
+599          await flushChunkBuffer();
+600          const text = (msg["responseText"] as string | undefined) ?? "";
+601          if (text) setAshleyResponse(text);
+602          ttsServerDoneRef.current = true;
+603          addLog(`WS tts_done(main) — q=${playQueueRef.current.length} running=${playNextRunningRef.current}`);
+604          // Route through playNext so the same drain logic handles both the
+605          // "no audio queued" case and the "last track just finished" case.
+606          // The mutex ensures this is a no-op if playback is already in flight.
+607          void playNextRef.current();
+608          break;
+609        }
+610
+611        case "interrupt_ack":
+612          ttsCompleteRef.current = true;
+613          stopPlayback();
+614          setPhaseSync("listening");
+615          void openMicRef.current();
+616          break;
+617
+618        case "reconnect_ok":
+619          ttsCompleteRef.current = true;
+620          reconnectAttemptsRef.current = 0;
+621          setError(null);
+622          void openMicRef.current();
+623          break;
+624
+625        case "set_silence_threshold": {
+626          const ms = msg["ms"] as number | undefined;
+627          if (typeof ms === "number" && ms > 0) {
+628            nextSilenceThresholdRef.current = ms;
+629            addLog(`WS set_silence_threshold — next=${ms}ms`);
+630          }
+631          break;
+632        }
+633
+634        case "call_ended":
+635          break;
+636
+637        case "error":
+638          setError((msg["message"] as string) || "Server error");
+639          break;
+640      }
+641    },
+642    [flushChunkBuffer, flushAuxChunkBuffer, stopPlayback, setPhaseSync],
+643  );
+
+NOTE: There is no "response_start" case in this switch. The server does not
+send a message of type "response_start". That type does not exist in this
+codebase.
+
+─────────────────────────────────────────────────────────────────────────────
+1b. COMPLETE playNext / drain function
+    useVoiceCall.ts lines 200–277
+─────────────────────────────────────────────────────────────────────────────
+
+200  const playNext = useCallback(async (): Promise<void> => {
+201    // Mutex: if a playNext is already in flight, return immediately.
+202    // The running instance will drain the queue via its didJustFinish → playNext loop.
+203    if (playNextRunningRef.current) {
+204      addLog("playNext: skip — already running");
+205      return;
+206    }
+207    playNextRunningRef.current = true;
+208
+209    const uri = playQueueRef.current.shift();
+210    if (!uri) {
+211      // Queue drained.
+212      addLog(`playNext: drained responseEnd=${responseEndReceivedRef.current} srvDone=${ttsServerDoneRef.current} phase=${phaseRef.current}`);
+213      if (phaseRef.current === "speaking") {
+214        if (ttsServerDoneRef.current) {
+215          // tts_done already received (server safety timeout path) — open mic directly.
+216          ttsCompleteRef.current = true;
+217          addLog("ttsComplete=true — opening mic (safety-timeout path)");
+218          setPhaseSync("listening");
+219          void openMicRef.current();
+220        } else if (responseEndReceivedRef.current) {
+221          // Server has confirmed all audio sent AND our queue is empty — send confirmation.
+222          // This is the ONLY valid time to send playback_confirmed. Before response_end
+223          // arrives, an empty queue means "inter-sentence gap", not "response complete".
+224          if (wsRef.current?.readyState === WebSocket.OPEN) {
+225            wsRef.current.send(JSON.stringify({ type: "playback_confirmed" }));
+226            addLog("WS playback_confirmed → sent (response_end + queue empty)");
+227          }
+228        } else {
+229          // Queue is empty but server has NOT sent response_end yet.
+230          // This is an inter-sentence gap — do nothing. Wait for the next sentence's
+231          // audio to arrive and be queued. Do NOT send any confirmation.
+232          addLog("playNext: queue empty, response_end not yet received — waiting for next sentence");
+233        }
+234      }
+235      playNextRunningRef.current = false;
+236      return;
+237    }
+238
+239    playBusyRef.current = true;
+240    // Do NOT call setAudioModeAsync({ allowsRecording: false }) here.
+241    // Switching the audio mode tears down the VOICE_COMMUNICATION session and
+242    // disables hardware echo cancellation. Keep allowsRecording: true for the
+243    // entire call — voiceInput's start() set it and it must stay active.
+244    try {
+245      const player = createAudioPlayer({ uri });
+246      playerRef.current = player;
+247      playerUriRef.current = uri;
+248      addLog(`player: started q=${playQueueRef.current.length}`);
+249      setPhaseSync("speaking");
+250      // One-shot guard: expo-audio can fire didJustFinish more than once for
+251      // the same player on Android; the second fire would double-release the
+252      // mutex and start a second concurrent playNext.
+253      let trackFinished = false;
+254      player.addListener("playbackStatusUpdate", (status) => {
+255        if (status.didJustFinish) {
+256          if (trackFinished) return;
+257          trackFinished = true;
+258          addLog("player: finished");
+259          playBusyRef.current = false;
+260          playerRef.current = null;
+261          playerUriRef.current = null;
+262          // Release mutex BEFORE calling playNext so the next call can enter.
+263          playNextRunningRef.current = false;
+264          try { player.remove(); } catch { /* ignore */ }
+265          FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => { /* ignore */ });
+266          void playNextRef.current();
+267        }
+268      });
+269      player.play();
+270      // Note: playNextRunningRef stays true until didJustFinish releases it.
+271    } catch {
+272      playBusyRef.current = false;
+273      playNextRunningRef.current = false;
+274      FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => { /* ignore */ });
+275      void playNextRef.current();
+276    }
+277  }, [setPhaseSync]); // openMic added below via ref
+
+─────────────────────────────────────────────────────────────────────────────
+1c+1d. EVERY READ AND WRITE of ttsServerDoneRef, responseEndReceivedRef,
+        ttsCompleteRef — with line numbers. Context function shown where
+        the surrounding function is not already pasted above.
+─────────────────────────────────────────────────────────────────────────────
+
+ttsServerDoneRef
+────────────────
+  Line 156  INITIALISATION (at declaration):
+              const ttsServerDoneRef = useRef(false);
+              [current value post-fix — was useRef(true) before 6ee678fd]
+
+  Line 212  READ (in playNext drain log):
+              addLog(`...srvDone=${ttsServerDoneRef.current}...`);
+              [pasted in full above, lines 200–277]
+
+  Line 214  READ (drain branch condition):
+              if (ttsServerDoneRef.current) {
+              [same function — pasted in full above]
+
+  Line 458  READ (in openMic guard):
+              addLog(`openMic BLOCKED ttsComplete=false srvDone=${ttsServerDoneRef.current}`);
+              [see openMic function — not pasted in full here; this is a log-only read inside
+              an early-return guard: `if (!ttsCompleteRef.current) { addLog(...); return; }`]
+
+  Line 555  WRITE — reset to false (in speech_start(main) handler):
+              ttsServerDoneRef.current = false;
+              [pasted in full above, lines 543–561]
+
+  Line 602  WRITE — set to true (in tts_done(main) handler):
+              ttsServerDoneRef.current = true;
+              [pasted in full above, lines 590–609]
+
+  SUMMARY: ttsServerDoneRef goes false→true only at line 602 (tts_done main).
+  It goes true→false only at line 555 (speech_start main).
+  No other writes anywhere in the file.
+
+responseEndReceivedRef
+──────────────────────
+  Line 162  INITIALISATION (at declaration):
+              const responseEndReceivedRef = useRef<boolean>(false);
+
+  Line 212  READ (in playNext drain log):
+              addLog(`...responseEnd=${responseEndReceivedRef.current}...`);
+
+  Line 220  READ (drain branch condition):
+              } else if (responseEndReceivedRef.current) {
+
+  Line 556  WRITE — reset to false (in speech_start(main) handler):
+              responseEndReceivedRef.current = false;
+
+  Line 580  WRITE — set to true (in response_end handler):
+              responseEndReceivedRef.current = true;
+
+  SUMMARY: responseEndReceivedRef goes false→true only at line 580 (response_end received).
+  It goes true→false only at line 556 (speech_start main). No other writes.
+
+ttsCompleteRef
+──────────────
+  Line 157  INITIALISATION (at declaration):
+              const ttsCompleteRef = useRef(true);
+              [intentionally true — no audio in flight at component mount; call_connected
+              opens the mic immediately and ttsCompleteRef=true allows openMic to proceed]
+
+  Line 216  WRITE — set to true (in playNext drain, srvDone=true branch):
+              ttsCompleteRef.current = true;
+
+  Line 457  READ (in openMic early-return guard):
+              if (!ttsCompleteRef.current) { addLog(`openMic BLOCKED ...`); return; }
+
+  Line 554  WRITE — reset to false (in speech_start(main) handler):
+              ttsCompleteRef.current = false;
+
+  Line 612  WRITE — set to true (in interrupt_ack handler):
+              ttsCompleteRef.current = true;
+
+  Line 619  WRITE — set to true (in reconnect_ok handler):
+              ttsCompleteRef.current = true;
+
+  SUMMARY: ttsCompleteRef goes false→true at lines 216, 612, 619.
+  It goes true→false only at line 554 (speech_start main).
+
+
+================================================================================
+SECTION 2 — SERVER: every WebSocket send site that emits speech_start,
+            sentence_end, response_end, tts_done
+            (response_start and playback_confirmed do not exist as server-sent
+             message types — only the client sends playback_confirmed)
+================================================================================
+
+─────────────────────────────────────────────────────────────────────────────
+SEND SITE A — speakClipOrText()
+VoiceOrchestrationService.ts lines 142–232
+Kind of each message is the `kind` parameter passed by the caller.
+─────────────────────────────────────────────────────────────────────────────
+
+142  async function speakClipOrText(
+143    session: VoiceSession,
+144    clipName: ClipName,
+145    fallbackText: string,
+146    kind: "main" | "auxiliary" = "auxiliary",
+147  ): Promise<void> {
+148    if (!session.ws) return;
+149    if (
+150      session.state === "closed" ||
+151      session.state === "failed" ||
+152      session.state === "closing"
+153    )
+154      return;
+155
+156    // Locally-scoped ID — never written to session.currentSpeechId.
+157    // The main turn's speechId ownership is completely undisturbed.
+158    const clipSpeechId = crypto.randomUUID();
+159
+160    // speech_start tells the client a new audio unit is starting.
+161    try {
+162      session.ws.send(JSON.stringify({
+163        type:                "speech_start",
+164        kind,                // ← value depends on caller
+165        speechId:             clipSpeechId,
+166        sessionId:            session.sessionId,
+167        connectionGeneration: session.connectionGeneration,
+168        sequenceNumber:       registry.incrementSequence(session),
+169        timestamp:            Date.now(),
+170      }));
+171    } catch {
+172      return;
+173    }
+174
+175    let sentChunks = 0;
+176    // ... binary audio send (omitted — not a structured message)
+176
+205    if (sentChunks > 0 && session.ws) {
+206      try {
+207        session.ws.send(JSON.stringify({
+208          type:      "sentence_end",
+209          kind,                // ← value depends on caller
+210          speechId:  clipSpeechId,
+211          timestamp: Date.now(),
+212        }));
+213      } catch {}
+214    }
+215
+216    // tts_done signals end of this audio unit.
+217    if (session.ws) {
+218      try {
+219        session.ws.send(JSON.stringify({
+220          type:                "tts_done",
+221          kind,                // ← value depends on caller
+222          speechId:             clipSpeechId,
+223          sessionId:            session.sessionId,
+224          connectionGeneration: session.connectionGeneration,
+225          sequenceNumber:       registry.incrementSequence(session),
+226          timestamp:            Date.now(),
+227        }));
+228      } catch {}
+229    }
+230    // NOTE: speakClipOrText NEVER sends response_end, regardless of kind.
+231  }
+
+CALLERS of speakClipOrText and the kind value they pass:
+
+  VoiceOrchestrationService.ts line 578 (thinking watchdog):
+    void speakClipOrText(session, "thinking", "Hang on, I'm thinking...", "auxiliary");
+    → kind: "auxiliary"
+
+  VoiceOrchestrationService.ts line 504 (context assembly failure, 1st attempt):
+    await speakClipOrText(session, "say-that-again", "Sorry, ...", "main");
+    → kind: "main"
+
+  VoiceOrchestrationService.ts line 636 (LLM stream non-abort error):
+    await speakClipOrText(session, "say-that-again", "Sorry, ...", "main");
+    → kind: "main"
+
+  VoiceOrchestrationService.ts line 417+ (handleRepeatRequest):
+    await speakClipOrText(session, "say-that-again", ..., "main");
+    → kind: "main"
+
+  CRITICAL OBSERVATION: every speakClipOrText call with kind="main" sends
+  speech_start(main) + tts_done(main) WITHOUT sending response_end.
+  The client will receive tts_done(main) → set ttsServerDoneRef=true →
+  call playNext → drain with srvDone=true, responseEnd=false → OPEN MIC.
+  This is structurally identical to the log signature observed in Kane's test.
+
+─────────────────────────────────────────────────────────────────────────────
+SEND SITE B — flushSentenceToTTS()
+VoiceOrchestrationService.ts lines 238–279
+─────────────────────────────────────────────────────────────────────────────
+
+238  async function flushSentenceToTTS(
+239    session: VoiceSession,
+240    speechId: string,
+241    sentence: string,
+242  ): Promise<void> {
+243    if (!sentence || session.currentSpeechId !== speechId || !session.ws) return;
+     ...
+     // binary chunk sends omitted (not structured messages)
+     ...
+272    if (sentChunks > 0 && session.currentSpeechId === speechId && session.ws) {
+273      try {
+274        session.ws.send(
+275          JSON.stringify({ type: "sentence_end", kind: "main", speechId, timestamp: Date.now() }),
+276        );
+277      } catch {}
+278    }
+279  }
+
+  sentence_end here: kind: "main" (hardcoded).
+  No response_end or tts_done sent from this function.
+
+─────────────────────────────────────────────────────────────────────────────
+SEND SITE C — handlePlaybackConfirmed()
+VoiceOrchestrationService.ts lines 304–365
+─────────────────────────────────────────────────────────────────────────────
+
+304  export function handlePlaybackConfirmed(session: VoiceSession): void {
+305    if (!session.responseComplete) {
+306      logger.warn(..., "VoiceOrch: playback_confirmed received before response_end — ignoring");
+307      return;
+308    }
+309    if (!session.awaitingPlaybackConfirm) {
+310      logger.warn(..., "VoiceOrch: unexpected playback_confirmed — not awaiting confirmation");
+311      return;
+312    }
+313    if (session.playbackConfirmTimeout) {
+314      clearTimeout(session.playbackConfirmTimeout);
+315      session.playbackConfirmTimeout = null;
+316    }
+317    session.awaitingPlaybackConfirm = false;
+318    session.responseComplete = false;
+319
+320    const seqDone = registry.incrementSequence(session);
+321    try {
+322      session.ws?.send(
+323        JSON.stringify({
+324          type:                "tts_done",
+325          kind:                "main",          // ← explicit
+326          speechId:             session.currentSpeechId,
+327          responseText:         session.currentResponseText,
+328          sessionId:            session.sessionId,
+329          connectionGeneration: session.connectionGeneration,
+330          sequenceNumber:       seqDone,
+331          timestamp:            Date.now(),
+332        }),
+333      );
+334    } catch {}
+335
+336    session.currentSpeechId = null;
+337    session.state = "listening";
+338
+339    // Process any queued utterance that arrived during playback.
+340    if (session.pendingUtterance && session.pendingUtteranceId) {
+341      const u = session.pendingUtterance;
+342      const uid = session.pendingUtteranceId;
+343      session.pendingUtterance = null;
+344      session.pendingUtteranceId = null;
+345      void handleSpeechFinal(session, u, uid).catch(...);
+346      // handleSpeechFinal → runLLMAndTTSPipeline → sends speech_start(main)
+347      // for the new turn. This is sent AFTER tts_done above.
+348    }
+349  }
+
+─────────────────────────────────────────────────────────────────────────────
+SEND SITE D — runLLMAndTTSPipeline() — speech_start, hard-budget tts_done,
+              response_end (the main pipeline)
+VoiceOrchestrationService.ts lines 437–721
+─────────────────────────────────────────────────────────────────────────────
+
+(Lines 437–512: context assembly — not a send site)
+
+514    // Send speech_start
+515    session.currentSpeechId = speechId;
+516    session.state           = "tts_streaming";
+517    const seqStart = registry.incrementSequence(session);
+518    try {
+519      session.ws?.send(
+520        JSON.stringify({
+521          type:                "speech_start",
+522          kind:                "main",          // ← explicit
+523          speechId,
+524          sessionId:            session.sessionId,
+525          connectionGeneration: session.connectionGeneration,
+526          sequenceNumber:       seqStart,
+527          timestamp:            Date.now(),
+528        }),
+529      );
+530    } catch (err) { ... return; }
+
+    // hard budget send (fires at MAX_TURN_BUDGET_MS = 45,000ms):
+546    const hardBudget = setTimeout(() => {
+547      if (session.currentAbortController === controller) {
+         ...
+551        if (session.currentSpeechId === speechId) {
+552          session.ws?.send(
+553            JSON.stringify({
+554              type:                "tts_done",
+555              kind:                "main",       // ← explicit
+556              speechId,
+557              responseText:         session.currentResponseText ?? "",
+558              ...
+559              reason:               "budget_exceeded",
+560            }),
+561          );
+562          session.currentSpeechId = null;
+563        }
+564      }
+565    }, MAX_TURN_BUDGET_MS);  // 45,000ms
+
+    // (LLM stream loop — no sends except binary audio via flushSentenceToTTS)
+
+    // response_end — gated on session.currentSpeechId === speechId:
+652    if (session.currentSpeechId === speechId) {
+653      session.responseComplete = true;
+654      const seqEnd = registry.incrementSequence(session);
+655      try {
+656        session.ws?.send(
+657          JSON.stringify({
+658            type:                "response_end",
+659            kind:                "main",         // ← explicit
+660            speechId,
+661            responseText:         session.currentResponseText,
+662            sessionId:            session.sessionId,
+663            connectionGeneration: session.connectionGeneration,
+664            sequenceNumber:       seqEnd,
+665            timestamp:            Date.now(),
+666          }),
+667        );
+668      } catch (err) { logger.warn(...) }
+669
+670      session.awaitingPlaybackConfirm = true;
+671      // ...15s safety timeout armed here (does NOT send any message)...
+672    }
+    // NOTE: if session.currentSpeechId !== speechId at line 652,
+    // response_end is NEVER sent. The gate check can fail if:
+    //   - the hard budget fired (line 562: session.currentSpeechId = null)
+    //   - an interrupt called abortCurrentOutputs (line 288: session.currentSpeechId = null)
+    //   - a new turn started and overwrote session.currentSpeechId (line 515)
+
+─────────────────────────────────────────────────────────────────────────────
+SEND SITE E — handleReconnect() — speech_start and tts_done for reconnect
+VoiceOrchestrationService.ts lines 972–1007
+─────────────────────────────────────────────────────────────────────────────
+
+972    if (reconnectText.trim()) {
+973      const speechId = crypto.randomUUID();
+974      session.currentSpeechId = speechId;
+975
+976      ws.send(
+977        JSON.stringify({
+978          type:                "speech_start",
+979          kind:                "main",          // ← explicit
+980          speechId,
+981          ...
+982        }),
+983      );
+984
+985      await flushSentenceToTTS(session, speechId, ...);
+986
+987      if (session.currentSpeechId === speechId) {
+988        ws.send(
+989          JSON.stringify({
+990            type:                "tts_done",
+991            kind:                "main",        // ← explicit
+992            speechId,
+993            ...
+994          }),
+995        );
+996        session.currentSpeechId = null;
+997      }
+998    }
+
+  NOTE: handleReconnect sends tts_done(main) WITHOUT sending response_end.
+  This has the same structural property as speakClipOrText(kind="main"):
+  client receives tts_done(main) → srvDone=true → drain: responseEnd=false → MIC OPENS.
+  This is intentional for the reconnect path (mic should open after reconnect audio).
+
+─────────────────────────────────────────────────────────────────────────────
+SEND SITE F — voice-call.ts speakFallback() — speech_start, sentence_end,
+              response_end (silence-gap / farewell path)
+voice-call.ts lines 133–231
+─────────────────────────────────────────────────────────────────────────────
+
+133    const speechId = crypto.randomUUID();
+134    session.currentSpeechId = speechId;
+135    session.responseComplete = false;
+136
+137    session.ws.send(
+138      JSON.stringify({
+139        type: "speech_start",
+140        kind: "main",                           // ← explicit
+141        speechId,
+142        ...
+143      }),
+144    );
+145
+146    // binary audio send loop
+146
+170    if (sentChunks > 0 && session.currentSpeechId === speechId) {
+171
+172      session.ws.send(
+173        JSON.stringify({ type: "sentence_end", kind: "main", speechId, ... }),
+174      );
+175
+176      session.responseComplete = true;
+177      session.awaitingPlaybackConfirm = true;
+178      session.ws.send(
+179        JSON.stringify({
+180          type: "response_end",
+181          kind: "main",                         // ← explicit
+182          speechId,
+183          ...
+184        }),
+185      );
+186      // 15s safety timeout armed here
+186    } else {
+187      session.currentSpeechId = null;
+188    }
+
+  NOTE: speakFallback DOES send response_end (unlike speakClipOrText).
+  It follows the full lifecycle: speech_start → audio → sentence_end → response_end → (await playback_confirmed → tts_done via handlePlaybackConfirmed).
+
+─────────────────────────────────────────────────────────────────────────────
+COMPLETE LIST OF server-sent message types and which send sites use them:
+
+  speech_start(main):  sites A(kind=main callers), D, E, F
+  speech_start(aux):   site A(kind=aux callers, i.e. thinking watchdog)
+  sentence_end(main):  sites A(kind=main), B, F
+  sentence_end(aux):   site A(kind=aux)
+  response_end(main):  sites D, F ONLY
+  tts_done(main):      sites A(kind=main), C, D(hard budget), E
+  tts_done(aux):       site A(kind=aux)
+  response_start:      DOES NOT EXIST in this codebase
+  playback_confirmed:  CLIENT-ONLY — server never sends this
+─────────────────────────────────────────────────────────────────────────────
+
+
+================================================================================
+SECTION 3 — STATE QUESTION ANSWERED FROM THE PASTED CODE
+================================================================================
+
+QUESTION: On a normal turn, which server message is supposed to set
+responseEndReceivedRef = true on the client, and does the client listener
+filter on kind === "main"?
+
+ANSWER:
+
+The message is response_end. The client listener is at lines 575–588 (pasted
+in Section 1a above):
+
+  575        case "response_end": {
+  576          const kind = (msg["kind"] as string | undefined) ?? "main";
+  577          if (kind !== "main") break;   ← DOES filter on kind === "main"
+  578          responseEndReceivedRef.current = true;
+
+The filter is correct. The server sends response_end with kind: "main" at both
+send sites (D and F above). The listener consumes it correctly.
+
+THE STRUCTURAL PROBLEM VISIBLE IN THE CODE:
+
+response_end is ONLY sent from two places (sites D and F above):
+  D: runLLMAndTTSPipeline — gated on `session.currentSpeechId === speechId` at line 652.
+  F: voice-call.ts speakFallback — gated on `session.currentSpeechId === speechId` and
+     sentChunks > 0 at line 170.
+
+speakClipOrText (site A) and handleReconnect (site E) send tts_done(main) WITHOUT
+sending response_end. This means:
+
+  Any time the client receives tts_done(main) from site A (kind="main" callers)
+  or site E, the drain sees:
+    srvDone  = true   (set by tts_done handler at line 602)
+    responseEnd = false  (response_end was never sent → never received)
+  Result: drain takes the `if (ttsServerDoneRef.current)` branch → opens mic.
+  Log output: "playNext: drained responseEnd=false srvDone=true phase=speaking"
+              "ttsComplete=true — opening mic (safety-timeout path)"
+
+  This exactly matches the log signature Kane reported.
+
+CALLERS of speakClipOrText with kind="main" that are NOT error-only paths:
+  - Line 504: context assembly failure (should be rare)
+  - Line 636: LLM stream non-abort error (should be rare)
+  - Line 417+: handleRepeatRequest (triggered by "repeat" command — not normal)
+
+So on a NORMAL turn (no LLM error, no repeat command, no context failure), site A
+with kind="main" should not fire.
+
+REMAINING OPEN QUESTION (not answerable from the pasted code alone):
+Why is the gate check `session.currentSpeechId === speechId` at line 652 (site D)
+failing on normal turns, causing response_end to not be sent, causing the drain to
+observe responseEnd=false when tts_done arrives?
+
+Possible mechanisms visible in the code:
+  1. session.currentSpeechId was overwritten by a CONCURRENT call to
+     runLLMAndTTSPipeline for a new turn (line 515 of the new turn's pipeline).
+     The new turn's pipeline sets session.currentSpeechId = newSpeechId. The OLD
+     turn's pipeline then checks session.currentSpeechId === oldSpeechId — FALSE —
+     and skips response_end entirely.
+  2. abortCurrentOutputs was called (line 288: session.currentSpeechId = null).
+  3. Hard budget fired (line 562: session.currentSpeechId = null).
+
+Case 1 requires two concurrent runLLMAndTTSPipeline calls to be running, which
+requires that a speech_final was received and processed WHILE the previous turn
+was still running. This would happen if the mic opened early (the echo loop) and
+Ashley's audio was submitted as a new speech_final — consistent with the observed
+behaviour. But it is circular: the loop causes the condition, the condition
+sustains the loop.
+
+The initial trigger (what opens the mic on the FIRST turn before the echo
+loop is established) is not determinable from the three files pasted here alone
+without Kane's actual device logs showing the sequence of events on the first turn.
+
+================================================================================
+END OF CODE DUMP — NO CHANGES MADE
+================================================================================

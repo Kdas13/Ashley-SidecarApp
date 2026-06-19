@@ -1,0 +1,80 @@
+================================================================================
+WREN — DIAGNOSTIC RAW CODE DUMP REQUEST
+NO CHANGES. NO COMMITS. NO BUILDS. PASTE CODE ONLY.
+Date: 19 June 2026
+Repo: Kdas13/Ashley-SidecarApp
+================================================================================
+
+CONTEXT
+The production build containing fix 6ee678f (ttsServerDoneRef initialised
+false) plus b198c10 is installed and tested on Kane's device.
+
+The early-mic / echo problem is now reproducing on EVERY turn well into the
+call — device debug logs show the same sequence at roughly 20s, 35s and 41s
+into a single call. This is the "second / sustaining entry point" you yourself
+flagged in the 6ee678f completion report — NOT the mount-time first-turn case
+that fix targeted.
+
+The repeating log signature on each affected turn:
+
+    player: finished
+    playNext: drained  responseEnd=false  srvDone=true  phase=speaking
+    ttsComplete=true — opening mic (safety-timeout path)
+    openMic start  ->  openMic OK — recording
+    autoSubmit fired  phase=listening
+
+INTERPRETATION (to direct your read — confirm or correct it against the
+actual code, do not assume it):
+  - ttsServerDoneRef (srvDone) is TRUE at the drain point on every turn.
+  - responseEndReceivedRef (responseEnd) is FALSE at that same point.
+  - The drain logic checks srvDone BEFORE responseEnd, so the mic opens early
+    via the safety-timeout branch on every turn.
+  - The open question is WHY srvDone is true (or never reset to false) mid-call,
+    and WHY responseEnd never becomes true on a normal turn.
+
+================================================================================
+WHAT I NEED FROM YOU — PASTE ONLY, FIX NOTHING
+================================================================================
+Do NOT edit. Do NOT commit. Do NOT build. Paste the ACTUAL CURRENT file
+contents, verbatim and unsummarised — real code, not a description, not a
+paraphrase, not "this part looks correct." For the functions named below,
+paste them IN FULL — no "// ... unchanged" elisions inside them.
+
+1. CLIENT — useVoiceCall.ts
+   a. The complete WebSocket onmessage handler — every branch/case:
+      speech_start, response_start, sentence_end, response_end / RESPONSE_END,
+      tts_done, playback_confirmed, and any others present.
+   b. The complete playNext / drain function(s), in full.
+   c. Every line that READS or WRITES each of these three refs, shown with its
+      full surrounding function:
+        - ttsServerDoneRef        (srvDone)
+        - responseEndReceivedRef  (responseEnd)
+        - ttsCompleteRef          (ttsComplete)
+   d. Where each of those three refs is INITIALISED, and where (if anywhere)
+      each is RESET back to false at the START of a new turn.
+
+2. SERVER — every WebSocket send site that emits any of:
+   speech_start, response_start, sentence_end, response_end / RESPONSE_END,
+   tts_done, playback_confirmed.
+   For each send, paste the FULL object being sent, so it is visible whether
+   `kind` (e.g. kind: "main") is set explicitly or left to a client-side
+   default.
+
+3. STATE QUESTION (answer in words AFTER pasting the code above — do not guess):
+   On a normal turn, which server message is supposed to set
+   responseEndReceivedRef = true on the client, and does the client listener
+   for that message filter on kind === "main"? If the pasted code shows that
+   this message either (a) isn't sent, (b) isn't tagged kind:"main", or
+   (c) isn't consumed by the listener, say so plainly and point to the exact
+   line(s).
+
+================================================================================
+RULES
+================================================================================
+- Raw code only. Summaries, paraphrases, or reasoning are NOT acceptable
+  substitutes for the actual pasted lines.
+- No fix in this pass. The fix brief — with Standing Completion Template v3.1
+  attached — will be written ONLY after the real code is read. A blind patch
+  is explicitly off the table this round.
+
+— End of request —
