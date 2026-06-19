@@ -1,0 +1,583 @@
+================================================================================
+ASHLEY PROJECT — STANDING COMPLETION REPORT v3.0
+Brief: Separate auxiliary clip lifecycle from main conversation turn lifecycle
+Brief version: 1
+Date: 19 June 2026
+================================================================================
+
+Brief title: Auxiliary Clip Lifecycle Fix — 19 June 2026
+Build deployed at: 10:35:04 UTC (commit timestamp)
+Replit checkpoint ID: 9dd1336f82217a3754de9c0a35f994b86896f023
+GitHub commit hash (full): 9dd1336f82217a3754de9c0a35f994b86896f023
+GitHub repo URL: https://github.com/Kdas13/Ashley-SidecarApp
+
+NOTE ON GITHUB PERMALINKS: All permalinks below follow the pattern
+https://github.com/Kdas13/Ashley-SidecarApp/blob/<hash>/<path>
+They resolve only if this commit has been pushed to the GitHub remote.
+The commit exists in the Replit git repository. Push to GitHub is Kane's
+responsibility or will happen via whatever sync mechanism is in place.
+Kane: verify each permalink before accepting this report per v3.0 STEP 1.
+
+All code changes are in a single commit:
+  9dd1336f82217a3754de9c0a35f994b86896f023
+
+Commit stat summary:
+  artifacts/api-server/src/lib/VoiceOrchestrationService.ts  |  59 ++++--
+  artifacts/api-server/src/routes/voice-call.ts               |   4 +-
+  artifacts/mobile/lib/useVoiceCall.ts                        | 110 ++++++++--
+  6 files changed, 459 insertions(+), 33 deletions(-)
+
+Typechecks:
+  @workspace/api-server — PASS (tsc --noEmit, 10:34 UTC)
+  @workspace/mobile     — PASS (tsc --noEmit, 10:34 UTC)
+
+Server restart: COMPLETE — API Server workflow restarted at 10:35 UTC.
+EAS build: NOT YET STARTED — client changes require EAS build. Kane must
+  trigger this. Until the build is installed, client-side items 4-8 and
+  tests 1-5 cannot be verified on device.
+
+--------------------------------------------------------------------------------
+CHECKLIST
+--------------------------------------------------------------------------------
+
+ITEM 1: kind field added to main-turn messages (server)
+Completed at: 10:34 UTC
+File(s) changed: artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+GitHub permalink:
+  https://github.com/Kdas13/Ashley-SidecarApp/blob/9dd1336f82217a3754de9c0a35f994b86896f023/artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+
+--- git show 9dd1336f82217a3754de9c0a35f994b86896f023 output (relevant hunks) ---
+
+@@ -260,7 +272,7 @@ async function flushSentenceToTTS(
+   if (sentChunks > 0 && session.currentSpeechId === speechId && session.ws) {
+     try {
+       session.ws.send(
+-        JSON.stringify({ type: "sentence_end", speechId, timestamp: Date.now() }),
++        JSON.stringify({ type: "sentence_end", kind: "main", speechId, timestamp: Date.now() }),
+       );
+     } catch {}
+   }
+
+@@ -505,6 +519,7 @@ async function runLLMAndTTSPipeline(
+     session.ws?.send(
+       JSON.stringify({
+         type:                "speech_start",
++        kind:                "main",
+         speechId,
+         ...
+
+@@ -541,6 +556,7 @@ async function runLLMAndTTSPipeline(
+           session.ws?.send(
+             JSON.stringify({
+               type:                "tts_done",
++              kind:                "main",
+               speechId,
+               ...
+
+@@ -642,6 +659,7 @@ async function runLLMAndTTSPipeline(
+       session.ws?.send(
+         JSON.stringify({
+           type:                "response_end",
++          kind:                "main",
+           speechId,
+           ...
+
+@@ -957,6 +976,7 @@ export async function handleReconnect(
+         ws.send(
+           JSON.stringify({
+             type:                "speech_start",
++            kind:                "main",
+             speechId,
+             ...
+
+@@ -974,6 +994,7 @@ export async function handleReconnect(
+           ws.send(
+             JSON.stringify({
+               type:                "tts_done",
++              kind:                "main",
+               speechId,
+               ...
+
+--- end git show output ---
+
+Test performed: Read the full diff; every main-turn send site in
+  VoiceOrchestrationService.ts (main pipeline speech_start, hard-budget
+  tts_done, response_end, handleReconnect speech_start, handleReconnect
+  tts_done, flushSentenceToTTS sentence_end) now carries kind: "main".
+  Typecheck PASS.
+Test result: PASS
+
+
+ITEM 2: kind field added to auxiliary clip messages (server)
+Completed at: 10:34 UTC
+File(s) changed: artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+GitHub permalink:
+  https://github.com/Kdas13/Ashley-SidecarApp/blob/9dd1336f82217a3754de9c0a35f994b86896f023/artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+
+--- git show output (relevant hunks) ---
+
+@@ -141,3 +153,3 @@ async function speakClipOrText(
+-  const savedSpeechId = session.currentSpeechId;
+-  const clipSpeechId  = crypto.randomUUID();
++  const clipSpeechId = crypto.randomUUID();
+
+   try {
+     session.ws.send(JSON.stringify({
+       type:                "speech_start",
++      kind,
+       speechId:             clipSpeechId,
+
+   ...
+
+       session.ws.send(JSON.stringify({
+         type:      "sentence_end",
++        kind,
+         speechId:  clipSpeechId,
+
+   ...
+
+       session.ws.send(JSON.stringify({
+         type:                "tts_done",
++        kind,
+         speechId:             clipSpeechId,
+
+@@ -559,7 +575,7 @@ async function runLLMAndTTSPipeline(
+   firstTokenWatchdog = setTimeout(() => {
+     if (!firstTokenReceived && session.currentTurnId === turnId) {
+-      void speakClipOrText(session, "thinking", "Hang on, I'm thinking...");
++      void speakClipOrText(session, "thinking", "Hang on, I'm thinking...", "auxiliary");
+     }
+   }, FIRST_TOKEN_WATCHDOG_MS);
+
+--- end git show output ---
+
+  speakClipOrText() now accepts a `kind` parameter (default "auxiliary").
+  All three messages it emits (speech_start, sentence_end, tts_done) carry
+  that kind. The thinking clip call site explicitly passes "auxiliary".
+  All error-recovery call sites (say-that-again, call-dropped) pass "main" —
+  those are covered in Item 1's call-site additions.
+Test performed: Diff review + typecheck PASS.
+Test result: PASS
+
+
+ITEM 3: speakClipOrText no longer touches session.currentSpeechId (server)
+Completed at: 10:34 UTC
+File(s) changed: artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+GitHub permalink:
+  https://github.com/Kdas13/Ashley-SidecarApp/blob/9dd1336f82217a3754de9c0a35f994b86896f023/artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+
+--- git show output (relevant hunks) ---
+
+@@ -141,17 +153,17 @@ async function speakClipOrText(
+-  // Save caller's speechId so surrounding pipeline code (e.g. main tts_done)
+-  // still works correctly after this returns.
+-  const savedSpeechId = session.currentSpeechId;
+-  const clipSpeechId  = crypto.randomUUID();
++  // Locally-scoped ID — never written to session.currentSpeechId.
++  // The main turn's speechId ownership is completely undisturbed.
++  const clipSpeechId = crypto.randomUUID();
+
+   ...
+
+-  // Restore the caller's speechId ownership.
+-  session.currentSpeechId = savedSpeechId;
+ }
+
+--- end git show output ---
+
+  Three lines removed: the save of currentSpeechId, the overwrite of
+  currentSpeechId (it was implicit — clipSpeechId was assigned to
+  session.currentSpeechId in the old code via savedSpeechId = ... then
+  restore), and the restore. clipSpeechId is now a pure local variable.
+  session.currentSpeechId is not read or written anywhere in
+  speakClipOrText(). Typecheck PASS.
+Test performed: Diff review confirms the three-line removal. Grepped for
+  "currentSpeechId" in speakClipOrText body — zero remaining reads or writes.
+Test result: PASS
+
+
+ITEM 4: response_end path confirmed unchanged (server)
+Completed at: 10:34 UTC
+File(s) changed: artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+GitHub permalink:
+  https://github.com/Kdas13/Ashley-SidecarApp/blob/9dd1336f82217a3754de9c0a35f994b86896f023/artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+
+--- git show output (relevant hunk) ---
+
+@@ -642,6 +659,7 @@ async function runLLMAndTTSPipeline(
+       session.ws?.send(
+         JSON.stringify({
+           type:                "response_end",
++          kind:                "main",
+           speechId,
+           responseText:         session.currentResponseText,
+           sessionId:            session.sessionId,
+           connectionGeneration: session.connectionGeneration,
+           sequenceNumber:       seqEnd,
+           timestamp:            Date.now(),
+         }),
+       );
+
+--- end git show output ---
+
+  The only change to the response_end block is adding kind: "main". The
+  send logic, speechId, the gate condition (session.currentSpeechId ===
+  speechId), and the safety timeout are unchanged. This matches CHANGE 3
+  in the brief ("confirm response_end continues to use session.currentSpeechId
+  and kind: 'main' exactly as before").
+Test performed: Diff review confirms no structural change to the response_end
+  block beyond the kind field addition. Typecheck PASS.
+Test result: PASS
+
+
+ITEM 5: speech_start handler respects kind, only resets main refs on
+        kind === "main" (client)
+Completed at: 10:34 UTC
+File(s) changed: artifacts/mobile/lib/useVoiceCall.ts
+GitHub permalink:
+  https://github.com/Kdas13/Ashley-SidecarApp/blob/9dd1336f82217a3754de9c0a35f994b86896f023/artifacts/mobile/lib/useVoiceCall.ts
+
+--- git show output (relevant hunk) ---
+
+-        case "speech_start":
+-          chunkBufRef.current = [];
+-          ttsCompleteRef.current = false;
+-          ttsServerDoneRef.current = false;
+-          responseEndReceivedRef.current = false;
+-          addLog("WS speech_start — gates reset");
++        case "speech_start": {
++          const kind = (msg["kind"] as string | undefined) ?? "main";
++          if (kind === "auxiliary") {
++            auxChunkBufRef.current = [];
++            activeSpeechKindRef.current = "auxiliary";
++            addLog("WS speech_start(aux) — aux buffer reset");
++          } else {
++            chunkBufRef.current = [];
++            ttsCompleteRef.current = false;
++            ttsServerDoneRef.current = false;
++            responseEndReceivedRef.current = false;
++            activeSpeechKindRef.current = "main";
++            addLog("WS speech_start(main) — gates reset");
++          }
+           break;
++        }
+
+--- end git show output ---
+
+  Auxiliary path: only auxChunkBufRef and activeSpeechKindRef are reset.
+  ttsCompleteRef, ttsServerDoneRef, responseEndReceivedRef — untouched.
+  undefined kind falls through to main (backward compatibility for any
+  message in flight without a kind field during rollout). Typecheck PASS.
+Test performed: Diff review. Requires production APK for live test.
+Test result: PASS (code review) — device verification pending EAS build.
+
+
+ITEM 6: tts_done handler respects kind (client)
+Completed at: 10:34 UTC
+File(s) changed: artifacts/mobile/lib/useVoiceCall.ts
+GitHub permalink:
+  https://github.com/Kdas13/Ashley-SidecarApp/blob/9dd1336f82217a3754de9c0a35f994b86896f023/artifacts/mobile/lib/useVoiceCall.ts
+
+--- git show output (relevant hunk) ---
+
+         case "tts_done": {
++          const kind = (msg["kind"] as string | undefined) ?? "main";
++          if (kind === "auxiliary") {
++            activeSpeechKindRef.current = "main";
++            addLog("WS tts_done(aux) — aux clip done, routing restored to main");
++            break;
++          }
++          // Main turn tts_done — existing lifecycle.
+           await flushChunkBuffer();
+           const text = (msg["responseText"] as string | undefined) ?? "";
+           if (text) setAshleyResponse(text);
+           ttsServerDoneRef.current = true;
+-          addLog(`WS tts_done — q=...`);
++          addLog(`WS tts_done(main) — q=...`);
+           void playNextRef.current();
+           break;
+         }
+
+--- end git show output ---
+
+  Auxiliary tts_done: only restores activeSpeechKindRef to "main". Does NOT
+  set ttsServerDoneRef=true, does NOT call playNextRef. This is the exact
+  defect site — the old unconditional ttsServerDoneRef=true was the bug.
+  Main tts_done: identical behaviour to before.
+Test performed: Diff review. Device verification pending EAS build.
+Test result: PASS (code review) — device verification pending EAS build.
+
+
+ITEM 7: sentence_end / response_end handlers respect kind (client)
+Completed at: 10:34 UTC
+File(s) changed: artifacts/mobile/lib/useVoiceCall.ts
+GitHub permalink:
+  https://github.com/Kdas13/Ashley-SidecarApp/blob/9dd1336f82217a3754de9c0a35f994b86896f023/artifacts/mobile/lib/useVoiceCall.ts
+
+--- git show output (relevant hunks) ---
+
+-        case "sentence_end":
+-          await flushChunkBuffer();
+-          addLog("WS sentence_end — chunk buffer flushed");
++        case "sentence_end": {
++          const kind = (msg["kind"] as string | undefined) ?? "main";
++          if (kind === "auxiliary") {
++            await flushAuxChunkBuffer();
++            addLog("WS sentence_end(aux) — aux buffer flushed");
++          } else {
++            await flushChunkBuffer();
++            addLog("WS sentence_end(main) — chunk buffer flushed");
++          }
+           break;
++        }
+
+-        case "response_end":
++        case "response_end": {
++          const kind = (msg["kind"] as string | undefined) ?? "main";
++          if (kind !== "main") break;
+           responseEndReceivedRef.current = true;
+           addLog("WS response_end — all audio sent by server");
+           if (!playNextRunningRef.current) {
+             void playNextRef.current();
+           }
+           break;
++        }
+
+--- end git show output ---
+
+  sentence_end routes to flushAuxChunkBuffer (aux) or flushChunkBuffer (main).
+  response_end has a defensive guard that ignores any non-main kind.
+  Currently speakClipOrText() does not send response_end — guard is future-
+  proofing only.
+Test performed: Diff review. Device verification pending EAS build.
+Test result: PASS (code review) — device verification pending EAS build.
+
+
+ITEM 8: Dedicated auxiliary audio playback path added, isolated from
+        main playQueueRef/playNext (client)
+Completed at: 10:34 UTC
+File(s) changed: artifacts/mobile/lib/useVoiceCall.ts
+GitHub permalink:
+  https://github.com/Kdas13/Ashley-SidecarApp/blob/9dd1336f82217a3754de9c0a35f994b86896f023/artifacts/mobile/lib/useVoiceCall.ts
+
+--- git show output (relevant hunks) ---
+
++  const auxChunkBufRef      = useRef<Uint8Array[]>([]);
++  const auxPlayerRef        = useRef<AudioPlayer | null>(null);
++  const activeSpeechKindRef = useRef<"main" | "auxiliary">("main");
+
+   ...
+
++  const flushAuxChunkBuffer = useCallback(async (): Promise<void> => {
++    const chunks = auxChunkBufRef.current;
++    auxChunkBufRef.current = [];
++    if (chunks.length === 0) return;
++    const combined = concatChunks(chunks);
++    const b64 = toBase64(combined);
++    const dir = FileSystem.cacheDirectory;
++    if (!dir) return;
++    const uri = `${dir}vc-aux-${Date.now()}-${Math.random().toString(36).slice(2)}.mp3`;
++    try {
++      await FileSystem.writeAsStringAsync(uri, b64, {
++        encoding: FileSystem.EncodingType.Base64,
++      });
++      const prev = auxPlayerRef.current;
++      auxPlayerRef.current = null;
++      if (prev) {
++        try { prev.pause(); } catch { /* ignore */ }
++        try { prev.remove(); } catch { /* ignore */ }
++      }
++      const player = createAudioPlayer({ uri });
++      auxPlayerRef.current = player;
++      player.addListener("playbackStatusUpdate", (status) => {
++        if (status.didJustFinish) {
++          auxPlayerRef.current = null;
++          try { player.remove(); } catch { /* ignore */ }
++          FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => { /* ignore */ });
++        }
++      });
++      player.play();
++      addLog("aux: playing thinking clip");
++    } catch { /* aux audio lost, call continues */ }
++  }, [addLog]);
+
+   ...
+
+   if (event.data instanceof ArrayBuffer) {
+-    chunkBufRef.current.push(new Uint8Array(event.data));
++    if (activeSpeechKindRef.current === "auxiliary") {
++      auxChunkBufRef.current.push(new Uint8Array(event.data));
++    } else {
++      chunkBufRef.current.push(new Uint8Array(event.data));
++    }
+     return;
+   }
+
+   ...
+
+   // stopPlayback() addition:
++  const ap = auxPlayerRef.current;
++  auxPlayerRef.current = null;
++  if (ap) {
++    try { ap.pause(); } catch { /* ignore */ }
++    try { ap.remove(); } catch { /* ignore */ }
++  }
+
+--- end git show output ---
+
+  flushAuxChunkBuffer: writes to a separate cache file, creates its own
+  AudioPlayer instance (auxPlayerRef), plays it fire-and-forget, cleans up
+  on didJustFinish. It does not touch playQueueRef, playNextRunningRef,
+  playBusyRef, or any phase ref. Binary frame routing branches at the top
+  of the ArrayBuffer handler before any accumulation happens. stopPlayback()
+  also tears down auxPlayerRef so interrupted calls do not leave dangling
+  players. Typecheck PASS.
+Test performed: Diff review. Device verification pending EAS build.
+Test result: PASS (code review) — device verification pending EAS build.
+
+
+ITEM 9: Test 1 — thinking clip fires (>8s Gemini), main response follows,
+        mic does not open until main response fully delivered and confirmed
+Completed at: N/A
+File(s) changed: N/A
+GitHub permalink: N/A
+
+Test performed: NOT RUN. Cannot be run without production APK on Kane's
+  device. Code review shows the mechanism is correct: aux tts_done does not
+  set ttsServerDoneRef, so playNext's safety path cannot open the mic until
+  a main tts_done or main response_end + drain arrives. But this is code
+  reading, not a test run, and I will not present it as one.
+Test result: NOT TESTABLE (by Wren) — requires production APK.
+  Kane must run this test after the EAS build and report the result.
+
+
+ITEM 10: Test 2 — fast response, no clip fires, no regression
+Completed at: N/A
+File(s) changed: N/A
+GitHub permalink: N/A
+
+Test performed: NOT RUN. Requires production APK.
+Test result: NOT TESTABLE (by Wren) — requires production APK.
+  Kane must run this test after the EAS build and report the result.
+
+
+ITEM 11: Test 3 — Kane speaks during auxiliary clip playback (interruption)
+Completed at: N/A
+File(s) changed: N/A
+GitHub permalink: N/A
+
+Test performed: NOT RUN. Requires production APK.
+Note on expected behaviour (not a test result): VAD is inactive while mic
+  is closed in the "thinking" phase, so speech during the clip is not
+  captured. Aux clips are short (≤2s for the thinking clip). The call
+  continues normally when the main response arrives. This is the designed
+  behaviour — document if Kane finds it unacceptable.
+Test result: NOT TESTABLE (by Wren) — requires production APK.
+  Kane must run this test and confirm whether the behaviour is acceptable.
+
+
+ITEM 12: Test 4 — silence check-in (speakFallback, 30s silence) fires
+        while thinking clip is relevant. No interaction or state bleed.
+Completed at: N/A
+File(s) changed: N/A
+GitHub permalink: N/A
+
+Test performed: NOT RUN. Requires production APK.
+Note: speakFallback() now sends kind: "main" (voice-call.ts Item 1). The
+  thinking clip sends kind: "auxiliary". These two code paths are now
+  structurally separate on both server and client, but the interaction
+  between them during simultaneous timing has not been tested on device.
+Test result: NOT TESTABLE (by Wren) — requires production APK.
+  Kane must run this test after the EAS build.
+
+
+ITEM 13: Test 5 — 10+ consecutive turns on production APK, 4+ with
+        thinking clip triggered, zero premature mic-opens, clean transcript
+Completed at: N/A — GATE TEST NOT YET RUN
+File(s) changed: N/A
+GitHub permalink: N/A
+
+Test performed: NOT RUN. This test requires:
+  1. An EAS build of the updated client (not yet triggered).
+  2. Kane on his device with the production APK installed.
+  3. A real call session of 10+ turns, deliberately holding 4+ until
+     Gemini's first token is delayed >8s.
+  4. Real debug logs from that session showing mic-open events and
+     tts_done routing.
+
+Wren cannot run this test. Marking this test PASS based on code reading
+  would be incorrect — that was the error in the previous report.
+
+Test result: NOT TESTABLE (by Wren) — gate test is outstanding.
+  This brief cannot be marked complete until Kane runs item 13 and
+  reports the result.
+
+--------------------------------------------------------------------------------
+DEVIATIONS FROM BRIEF
+--------------------------------------------------------------------------------
+
+1. The brief's CHANGE 4 pseudocode (speech_start handler) checks
+   `kind === "main" || kind === undefined`. The implementation uses
+   `(msg["kind"] as string | undefined) ?? "main"` which normalises
+   undefined to "main" before the if check — functionally identical.
+   Structural difference only, no behavioural deviation.
+
+2. speakClipOrText() default kind parameter is "auxiliary". The brief
+   does not specify a default — this is a safe choice since all call
+   sites that should be "main" have been explicitly updated and the
+   thinking clip should always be auxiliary. If a future call site
+   omits the kind argument it will default to auxiliary, which is the
+   safer default (won't spuriously open the mic).
+
+3. voice-call.ts (speakFallback) also has kind: "main" added. The brief
+   does not explicitly list voice-call.ts in its change list, but
+   speakFallback is a main-turn audio path (silence-gap filler) and
+   leaving it untagged would leave it with undefined kind, which falls
+   back to "main" correctly — but explicit is better than relying on
+   fallback. Added proactively; functionally correct.
+
+--------------------------------------------------------------------------------
+ITEMS REMOVED WITHOUT INSTRUCTION
+--------------------------------------------------------------------------------
+
+NONE.
+
+--------------------------------------------------------------------------------
+PROACTIVE ISSUES
+--------------------------------------------------------------------------------
+
+1. TEST 3 BEHAVIOUR (interruption during aux clip): VAD is inactive
+   during the "thinking" phase (mic is closed). Speech during the
+   thinking clip is lost. This is the correct behaviour given how the
+   call flow works, but it is a user experience decision — if Kane wants
+   speech during the clip to be captured and processed, a separate
+   "listen during aux clip" mechanism would be required. Not a bug,
+   but worth confirming is the intended behaviour.
+
+2. EAS BUILD DEPENDENCY: All five tests and the gate item are blocked
+   on the EAS build. The server is live and correct. Client changes
+   are in the repository but not in any deployed APK. Until the build
+   completes and Kane installs it, the fix is not verifiable end-to-end.
+
+--------------------------------------------------------------------------------
+OUTSTANDING ITEMS
+--------------------------------------------------------------------------------
+
+Items 9, 10, 11, 12, 13 — all five device tests — are outstanding.
+They require an EAS build and Kane's test run on the production APK.
+Item 13 is the gate. This brief is not complete until Kane runs item 13
+and confirms zero premature mic-opens in the 10+ turn soak test.
+
+--------------------------------------------------------------------------------
+================================================================================
+SIGNED
+================================================================================
+
+Agent: Wren (Replit)
+Report generated at: ~10:40 UTC, 19 June 2026
+Build timestamp: 10:35:04 UTC (commit 9dd1336f)
+GitHub commit hash: 9dd1336f82217a3754de9c0a35f994b86896f023
+
+================================================================================
+END OF COMPLETION REPORT — v3.0
+================================================================================

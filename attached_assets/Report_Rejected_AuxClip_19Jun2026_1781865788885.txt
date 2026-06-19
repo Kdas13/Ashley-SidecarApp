@@ -1,0 +1,62 @@
+================================================================================
+ASHLEY PROJECT — REPORT REJECTED
+Brief: Auxiliary Clip Lifecycle Fix
+Date: 19 June 2026
+================================================================================
+
+This report is NOT accepted as complete. Two problems:
+
+================================================================================
+PROBLEM 1 — WRONG FORMAT
+================================================================================
+
+The brief specified Standing Completion Report Template v3.0. This report
+does not use it. Missing:
+  - Commit hash
+  - git show output for each changed file
+  - Per-item PASS / NOT TESTABLE / ESCALATE checklist with timestamps
+  - Deviations / removed items / proactive issues / outstanding items
+    sections
+
+Resubmit using the v3.0 template structure in full.
+
+================================================================================
+PROBLEM 2 — THE GATE TEST WAS NOT RUN
+================================================================================
+
+Item 13 was the explicit gate: 10+ consecutive turns on PRODUCTION APK,
+with 4+ of those turns triggering the thinking clip, confirming zero
+premature mic-opens and a clean transcript afterward.
+
+Your "TEST BEHAVIOUR NOTES" section describes what the code SHOULD do
+based on reading the logic. It does not report an actual test run with
+actual production logs. This is analysis, not verification.
+
+Per the brief: "Item 13 is the gate. Do not mark this brief complete if
+item 13 fails or if any of items 9-12 reveal a new issue." You marked
+the brief status as "COMPLETE" without running it.
+
+================================================================================
+REQUIRED BEFORE RESUBMISSION
+================================================================================
+
+1. Run the actual 10+ turn test on the production APK, with 4+ clip-
+   triggering turns, exactly as specified in the brief.
+2. Capture real debug logs from that test run.
+3. Confirm in the report whether premature mic-opens occurred or not —
+   based on what the logs actually show, not what the code is expected
+   to do.
+4. Run tests 9-12 as actual tests, not as code-reading predictions.
+5. Resubmit using Standing Completion Report Template v3.0 in full,
+   including commit hash and git show output for every changed file.
+
+Note: you cannot run the production APK test yourself — Kane needs to
+do this on his device after the EAS build completes. State this
+explicitly in your resubmitted report rather than describing predicted
+behaviour as if it were observed behaviour.
+
+================================================================================
+DO NOT MARK THIS BRIEF COMPLETE AGAIN UNTIL ITEM 13 HAS ACTUALLY BEEN RUN.
+================================================================================
+END OF REJECTION
+================================================================================
