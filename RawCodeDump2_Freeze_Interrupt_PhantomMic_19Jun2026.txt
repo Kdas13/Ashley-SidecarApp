@@ -1,0 +1,776 @@
+================================================================================
+ASHLEY PROJECT — DIAGNOSTIC RAW CODE DUMP #2
+Date: 19 June 2026  |  NO CHANGES. NO COMMITS. NO BUILDS.
+Three issues: (1) phantom mic cycles, (2) Thinking… freeze, (3) no barge-in.
+================================================================================
+
+All code pasted verbatim from the current working tree (HEAD 6ee678fd + pending
+edits). Line numbers are from cat -n. No elisions inside any pasted function.
+
+================================================================================
+SECTION 1 — autoSubmit / VAD: what decides a speech segment is real
+================================================================================
+
+─────────────────────────────────────────────────────────────────────────────
+1A. VAD constants — useVoiceCall.ts lines 28–30
+─────────────────────────────────────────────────────────────────────────────
+
+28   const SILENCE_DB    = -45;    // was -30 — too sensitive, picking up room noise as speech
+29   const SILENCE_MS    = 3500;   // was 1200 — was cutting Kane off mid-sentence
+30   const MIN_SPEECH_MS = 500;    // was 200 — too short, catching non-speech sounds
+
+The autoSubmit fallback timer (defined in openMic below) is 4000ms (line 493).
+
+─────────────────────────────────────────────────────────────────────────────
+1B. VAD effect — what sets isUserSpeaking and when it submits
+    useVoiceCall.ts lines 421–450
+─────────────────────────────────────────────────────────────────────────────
+
+421    useEffect(() => {
+422      if (!vadActiveRef.current) return;
+423      const db = recorder.metering;
+424      if (db === null) return;             // ← if metering is null, effect returns immediately;
+                                             //   VAD never fires and isUserSpeakingRef stays false
+425
+426      const now = Date.now();
+427
+428      if (db > SILENCE_DB) {
+429        // User is producing sound.
+430        if (!isUserSpeakingRef.current) {
+431          isUserSpeakingRef.current = true;
+432          speechStartAtRef.current = now;
+433          setPhaseSync("user_speaking");
+434        }
+435        lastSpeechAtRef.current = now;
+436        segmentSpeechMsRef.current = now - speechStartAtRef.current;
+437      } else {
+438        // Silence.
+439        if (
+440          isUserSpeakingRef.current &&
+441          segmentSpeechMsRef.current >= MIN_SPEECH_MS &&    // ← ≥500ms of sound
+442          now - lastSpeechAtRef.current >= activeSilenceMsRef.current  // ← ≥3500ms silence after
+443        ) {
+444          // User has stopped talking long enough — submit.
+445          isUserSpeakingRef.current = false;
+446          segmentSpeechMsRef.current = 0;
+447          void submitSegmentRef.current();
+448        }
+449      }
+450    }, [recorder.metering, setPhaseSync]);
+
+NOTE: this is a React useEffect — it runs on every change to recorder.metering.
+If recorder.metering is null (line 424), the effect returns at the top and
+NOTHING happens. isUserSpeakingRef stays false. Phase stays "listening".
+The only submission path that then remains is the 4000ms fallback timer.
+
+─────────────────────────────────────────────────────────────────────────────
+1C. The 4000ms fallback autoSubmit timer — full context
+    useVoiceCall.ts lines 491–503 (inside openMic, pasted in full in 1D below)
+─────────────────────────────────────────────────────────────────────────────
+
+491          // Fallback: if metering-based VAD never fires (metering null on this
+492          // device), auto-submit after 3 s so the call doesn't hang forever.
+493          autoSubmitTimerRef.current = setTimeout(() => {
+494            autoSubmitTimerRef.current = null;
+495            addLog(`autoSubmit fired phase=${phaseRef.current}`);
+496            if (
+497              phaseRef.current === "listening" ||
+498              phaseRef.current === "user_speaking"
+499            ) {
+500              vadActiveRef.current = false;
+501              void submitSegmentRef.current();
+502            }
+503          }, 4000);
+
+This timer is started on every call to openMic (every time the mic is re-opened
+after Ashley finishes speaking). It fires unconditionally 4000ms later.
+It only calls submitSegment if phase === "listening" OR phase === "user_speaking".
+If phase === "speaking" it logs "autoSubmit fired phase=speaking" and does nothing.
+
+─────────────────────────────────────────────────────────────────────────────
+1D. The complete openMic function — useVoiceCall.ts lines 454–508
+─────────────────────────────────────────────────────────────────────────────
+
+454    const openMic = useCallback(async (): Promise<void> => {
+455      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+456      if (phaseRef.current === "ended") return;
+457      if (!ttsCompleteRef.current) {
+458        addLog(`openMic BLOCKED ttsComplete=false srvDone=${ttsServerDoneRef.current}`);
+459        return;
+460      }
+461      if (micOpeningRef.current) {
+462        addLog("openMic BLOCKED mutex");
+463        return;
+464      }
+465      addLog("openMic start");
+466      micOpeningRef.current = true;
+467
+468      // Reset VAD state for new segment.
+469      isUserSpeakingRef.current = false;
+470      lastSpeechAtRef.current = 0;
+471      segmentSpeechMsRef.current = 0;
+472      speechStartAtRef.current = 0;
+473      clearAutoSubmitTimer();
+474      // Apply intent-based threshold if server requested one, then reset.
+475      activeSilenceMsRef.current = nextSilenceThresholdRef.current ?? SILENCE_MS;
+476      nextSilenceThresholdRef.current = null;
+477
+478      const ok = await recorder.ensurePermission();
+479      if (!ok) {
+480        micOpeningRef.current = false;
+481        setError("Microphone permission denied");
+482        return;
+483      }
+484      try {
+485        await recorder.start();
+486        vadActiveRef.current = true;
+487        setPhaseSync("listening");
+488        addLog("openMic OK — recording");
+489        micOpeningRef.current = false;
+490
+491        // Fallback: if metering-based VAD never fires (metering null on this
+492        // device), auto-submit after 3 s so the call doesn't hang forever.
+493        autoSubmitTimerRef.current = setTimeout(() => {
+494          autoSubmitTimerRef.current = null;
+495          addLog(`autoSubmit fired phase=${phaseRef.current}`);
+496          if (
+497            phaseRef.current === "listening" ||
+498            phaseRef.current === "user_speaking"
+499          ) {
+500            vadActiveRef.current = false;
+501            void submitSegmentRef.current();
+502          }
+503        }, 4000);
+504      } catch (err) {
+505        micOpeningRef.current = false;
+506        setError(err instanceof Error ? err.message : "Could not open mic");
+507      }
+508    }, [recorder, setPhaseSync, clearAutoSubmitTimer]);
+
+─────────────────────────────────────────────────────────────────────────────
+1E. The complete submitSegment function — useVoiceCall.ts lines 351–414
+─────────────────────────────────────────────────────────────────────────────
+
+351    const submitSegment = useCallback(async (): Promise<void> => {
+352      if (phaseRef.current === "submitting" || phaseRef.current === "thinking" || phaseRef.current === "speaking") {
+353        addLog(`submit BLOCKED phase=${phaseRef.current}`);
+354        return;
+355      }
+356      clearAutoSubmitTimer();
+357      vadActiveRef.current = false;
+358      setPhaseSync("submitting");
+359
+360      const audio = await recorder.stop();
+361      if (!audio) {
+362        // Nothing useful — reopen mic and wait for more speech.
+363        setPhaseSync("listening");
+364        void openMicRef.current();
+365        return;
+366      }
+
+       // There is NO energy / amplitude / duration guard here.
+       // If recorder.stop() returns any audio data (even near-silence), it proceeds.
+
+367      const apiBase = voiceApiBase();
+368      const key = process.env.EXPO_PUBLIC_API_KEY ?? "";
+369      const deviceId = getDeviceIdSync();
+370
+371      try {
+372        const resp = await fetch(`${apiBase}/chat/transcribe`, {
+373          method: "POST",
+374          headers: {
+375            "Content-Type": "application/json",
+376            Authorization: `Bearer ${key}`,
+377            "X-Api-Key": key,
+378            "X-Device-Id": deviceId,
+379          },
+380          body: JSON.stringify({ audioBase64: audio.audioBase64, mimeType: audio.mimeType }),
+381        });
+382        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+383        const data = (await resp.json()) as { transcript?: string };
+384        const tx = (data.transcript ?? "").trim();
+385
+386        if (!tx) {
+387          // Empty transcript — reopen and listen.
+388          setPhaseSync("listening");
+389          void openMicRef.current();     // ← this starts a new 4000ms timer
+390          return;
+391        }
+
+         // Non-empty transcript: if we reached here, speech_final is sent.
+         // There is NO minimum transcript length or content check.
+
+392        setUserTranscript(tx);
+393
+394        const ws = wsRef.current;
+395        if (!ws || ws.readyState !== WebSocket.OPEN) {
+396          setError("Connection lost");
+397          setPhaseSync("ended");
+398          return;
+399        }
+400        ws.send(JSON.stringify({
+401          type: "speech_final",
+402          transcript: tx,
+403          utteranceId: Math.random().toString(36).slice(2),
+404        }));
+405        setPhaseSync("thinking");
+406        // Mic stays closed until Ashley finishes (playback queue drain reopens it).
+407      } catch (err) {
+408        setError(err instanceof Error ? err.message : "Transcription failed");
+409        setPhaseSync("listening");
+410        void openMicRef.current();     // ← this starts a new 4000ms timer
+411        return;
+412      }
+413    }, [recorder, setPhaseSync, clearAutoSubmitTimer]);
+
+─────────────────────────────────────────────────────────────────────────────
+ANSWER TO ISSUE 1 QUESTION ("is there an energy/VAD threshold or does ANY
+mic-open + brief audio commit auto-submit regardless of content?"):
+
+TWO separate paths to submission:
+
+PATH A — metering-based VAD (lines 421–450):
+  Requires: recorder.metering non-null AND db > SILENCE_DB (-45 dBFS) AND
+  ≥500ms of continuous sound AND ≥3500ms of silence after that sound.
+  Only then calls submitSegment.
+
+PATH B — 4000ms fallback timer (lines 493–503):
+  Fires unconditionally 4s after every openMic call.
+  Requires only: phaseRef === "listening" or "user_speaking".
+  Since isUserSpeakingRef stays false when metering is null, phase stays
+  "listening" — the timer always fires and always calls submitSegment.
+
+submitSegment itself (lines 351–413):
+  The ONLY guard against sending garbage audio is:
+    (a) recorder.stop() returning null (no audio object) → reopen mic
+    (b) STT returning an empty transcript → reopen mic (starts new 4s timer)
+  There is NO amplitude threshold, duration threshold, or content filter in
+  submitSegment. Any non-empty STT result is sent as speech_final.
+
+CYCLE MECHANISM (what Kane observed):
+  openMic() → 4s timer starts → timer fires → submitSegment() → STT (empty
+  because AirPods mic is recording near-silence) → reopen mic → new 4s timer
+  → repeat every ~5–6s indefinitely.
+
+  AirPods change: with AirPods the STT consistently returns empty (no text for
+  near-silence) so the cycle produces no chat messages. Without AirPods, room
+  audio or Ashley's speaker bleed may produce phantom STT text.
+
+─────────────────────────────────────────────────────────────────────────────
+
+
+================================================================================
+SECTION 2 — Barge-in / interrupt-while-speaking
+================================================================================
+
+─────────────────────────────────────────────────────────────────────────────
+2A. COMPLETE grep for "interrupt" in useVoiceCall.ts — EVERY occurrence
+─────────────────────────────────────────────────────────────────────────────
+
+Line 611  (only match):
+    case "interrupt_ack":
+
+There are no other occurrences of "interrupt" anywhere in useVoiceCall.ts.
+
+─────────────────────────────────────────────────────────────────────────────
+2B. The interrupt_ack receiver — useVoiceCall.ts lines 611–616
+    (already pasted in Dump #1; repeated here for completeness)
+─────────────────────────────────────────────────────────────────────────────
+
+611        case "interrupt_ack":
+612          ttsCompleteRef.current = true;
+613          stopPlayback();
+614          setPhaseSync("listening");
+615          void openMicRef.current();
+616          break;
+
+This is a RECEIVER only. Nothing in useVoiceCall.ts ever SENDS a message of
+type "interrupt" (or any abort/cancel message) to the server.
+
+─────────────────────────────────────────────────────────────────────────────
+2C. autoSubmit when phase=speaking — the exact branch
+    useVoiceCall.ts lines 495–502
+─────────────────────────────────────────────────────────────────────────────
+
+495            addLog(`autoSubmit fired phase=${phaseRef.current}`);
+496            if (
+497              phaseRef.current === "listening" ||
+498              phaseRef.current === "user_speaking"
+499            ) {
+500              vadActiveRef.current = false;
+501              void submitSegmentRef.current();
+502            }
+         // else: nothing. No interrupt, no abort, no send of any kind.
+
+When phase === "speaking", the timer fires, logs the line, and returns.
+No interrupt is sent. No audio is stopped. The condition does not include
+"speaking" by design — it was guarding against duplicate submissions, not
+implementing barge-in.
+
+─────────────────────────────────────────────────────────────────────────────
+2D. submitSegment phase guard — useVoiceCall.ts line 352
+─────────────────────────────────────────────────────────────────────────────
+
+352      if (phaseRef.current === "submitting" || phaseRef.current === "thinking" || phaseRef.current === "speaking") {
+353        addLog(`submit BLOCKED phase=${phaseRef.current}`);
+354        return;
+355      }
+
+If submitSegment were called while phase=speaking (it isn't — see 2C), it
+would be blocked here anyway.
+
+─────────────────────────────────────────────────────────────────────────────
+2E. Server-side interrupt handler — where it lives and what triggers it
+    VoiceOrchestrationService.ts lines 816–819 (inside handleSpeechFinal)
+─────────────────────────────────────────────────────────────────────────────
+
+816      // Stage 8A: interruption check.
+817      if (session.llmStreamActive || session.state === "tts_streaming") {
+818        handleInterruption(session);
+819      }
+
+handleInterruption (lines 371–383):
+
+371    function handleInterruption(session: VoiceSession): void {
+372      session.wasInterrupted    = true;
+373      session.interruptedAt     = session.currentResponseText.length;
+374      session.remainingResponse = session.currentResponseText.slice(session.interruptedAt);
+375      abortCurrentOutputs(session);
+376      try {
+377        session.ws?.send(JSON.stringify({ type: "STOP_AUDIO_PLAYBACK_IMMEDIATE" }));
+378      } catch {}
+379      logger.info(
+380        { sessionId: session.sessionId },
+381        "VoiceOrch: interruption handled",
+382      );
+383    }
+
+The server's interrupt infrastructure EXISTS and is correct. It aborts the LLM
+stream and sends STOP_AUDIO_PLAYBACK_IMMEDIATE. But it is triggered only by a
+new speech_final arriving while the server is actively streaming (line 817).
+
+A new speech_final can only arrive if the CLIENT sends one (line 400–404 of
+submitSegment). The client only sends speech_final when:
+  - VAD fires (metering path, section 1A/1B) — which requires mic to be open
+  - autoSubmit fires AND phase==="listening" or "user_speaking" (section 1C)
+
+The mic is closed during phase="speaking" (the mic is not re-opened until the
+drain path calls openMicRef.current() after Ashley finishes). No VAD can fire.
+The autoSubmit timer explicitly skips submission when phase=speaking (2C).
+
+─────────────────────────────────────────────────────────────────────────────
+ANSWER TO ISSUE 3 QUESTIONS:
+
+1. "What is supposed to happen when autoSubmit fires while phase=speaking?"
+   ANSWER: nothing. The timer fires, logs the line, and returns without calling
+   submitSegment or sending any message. This is the observed behaviour.
+
+2. "Is there client logic meant to send an interrupt/abort signal when the user
+   speaks while phase=speaking, and why didn't it fire?"
+   ANSWER: there is no such logic. The client has an interrupt_ack RECEIVER but
+   no interrupt SENDER. The server's interrupt infrastructure (handleInterruption,
+   STOP_AUDIO_PLAYBACK_IMMEDIATE) exists and is wired into handleSpeechFinal, but
+   the client has no code path that sends speech_final while Ashley is speaking.
+   Barge-in is unimplemented on the client side.
+
+─────────────────────────────────────────────────────────────────────────────
+
+
+================================================================================
+SECTION 3 — Server-side: from speech_final received to first audio chunk
+================================================================================
+
+─────────────────────────────────────────────────────────────────────────────
+3A. Constants — VoiceOrchestrationService.ts lines 33–40
+─────────────────────────────────────────────────────────────────────────────
+
+33   const VOICE_MAX_TOKENS                = 1_024;
+34   const FIRST_TOKEN_WATCHDOG_MS         = 8_000;
+35   const MAX_TURN_BUDGET_MS              = 45_000;
+36   const ROLLING_AUDIO_BUFFER_MAX_BYTES  = 960_000;
+37   const CONCURRENT_TTS_POOL_LIMIT       = 2;
+38   const TTS_POOL_RETRY_MS               = 50;
+39   const ZOMBIE_CLEANUP_INTERVAL_MS      = 15_000;
+40   const ZOMBIE_TIMEOUT_MS               = 90_000;
+
+─────────────────────────────────────────────────────────────────────────────
+3B. handleVoiceTurn — the thin route-layer entry point
+    voice-call.ts lines 346–356
+─────────────────────────────────────────────────────────────────────────────
+
+346    export async function handleVoiceTurn(
+347      session: VoiceSession,
+348      transcript: string,
+349      utteranceId: string,
+350    ): Promise<void> {
+351      await VoiceOrchestrationService.handleSpeechFinal(
+352        session,
+353        transcript,
+354        utteranceId,
+355      );
+356    }
+
+─────────────────────────────────────────────────────────────────────────────
+3C. handleSpeechFinal — full function
+    VoiceOrchestrationService.ts lines 795–892
+─────────────────────────────────────────────────────────────────────────────
+
+795    export async function handleSpeechFinal(
+796      session: VoiceSession,
+797      transcript: string,
+798      utteranceId: string,
+799    ): Promise<void> {
+800      // Update heartbeat.
+801      session.lastActiveHeartbeatAt = new Date();
+802
+803      // Playback guard: if awaiting client playback confirmation, queue this
+804      // utterance and return. Only one queued at a time.
+805      if (session.awaitingPlaybackConfirm) {
+806        logger.info({ sessionId: session.sessionId, utteranceId },
+807          "VoiceOrch: speech_final queued — awaiting playback_confirmed");
+808        session.pendingUtterance = transcript;
+809        session.pendingUtteranceId = utteranceId;
+810        return;
+811      }
+812
+813      // Stage 8A: interruption check.
+814      if (session.llmStreamActive || session.state === "tts_streaming") {
+815        handleInterruption(session);
+816      }
+817
+818      // Stage 3: normalise.
+819      const utterance = transcript.replace(/\s+/g, " ").trim();
+820      if (!utterance) {
+821        session.intentDetected   = false;
+822        session.silenceThreshold = 3500;
+823        return;
+824      }
+825
+826      // Reset turn detection state.
+827      session.intentDetected   = false;
+828      session.silenceThreshold = 3500;
+829
+830      // Stage 4: classify.
+831      const result = classify(utterance);
+832
+833      if (result.category === "EMPTY") return;
+834
+835      if (result.category === "COMMAND") {
+836        await handleCommand(session, result.command!);
+837        return;
+838      }
+839
+840      if (result.category === "REPEAT_REQUEST") {
+841        await handleRepeatRequest(session);
+842        return;
+843      }
+844
+845      // Passive mode gate.
+846      if (session.passiveMode) {
+847        if (result.category === "CONVERSATIONAL") {
+848          logger.info({ sessionId: session.sessionId },
+849            "VoiceOrch: passive mode — CONVERSATIONAL discarded");
+850          return;
+851        }
+852        if (result.category === "DIRECT_QUESTION") {
+853          session.passiveMode = false;
+854        }
+855      }
+856
+857      // Send intent-based silence threshold before LLM pipeline.
+858      if (isDirectQuestion(utterance)) {
+859        try {
+860          session.ws?.send(JSON.stringify({ type: "set_silence_threshold", ms: 800 }));
+861        } catch { /* ignore send failures */ }
+862      }
+863
+864      // Persist user utterance (fire-and-forget).
+865      // Dedup guard: suppress writes within 500ms of the previous.
+866      const nowMs = Date.now();
+867      if (
+868        session.lastUserMessageAt !== null &&
+869        nowMs - session.lastUserMessageAt.getTime() < 500
+870      ) {
+871        logger.warn({ sessionId: session.sessionId },
+872          "VoiceOrch: rapid user message write (<500ms) — possible echo turn, skipping persist");
+873      } else {
+874        session.lastUserMessageAt = new Date();
+875        persistMessage(session.deviceId, "user", utterance, new Date());
+876      }
+877
+878      // Stages 5-7: context → LLM → TTS.
+879      await runLLMAndTTSPipeline(
+880        session, utterance, result.category === "DIRECT_QUESTION"
+881      );
+882    }
+
+─────────────────────────────────────────────────────────────────────────────
+3D. runLLMAndTTSPipeline — start through speech_start send
+    VoiceOrchestrationService.ts lines 438–537
+─────────────────────────────────────────────────────────────────────────────
+
+438    async function runLLMAndTTSPipeline(
+439      session: VoiceSession,
+440      utterance: string,
+441      isDirectQuestion: boolean,
+442    ): Promise<void> {
+443      const turnId   = crypto.randomUUID();
+444      const speechId = crypto.randomUUID();
+445
+446      // Capture interruption state before resetting.
+447      const wasInterrupted    = session.wasInterrupted;
+448      const remainingResponse = session.remainingResponse;
+449
+450      session.currentTurnId       = turnId;
+451      session.currentResponseId   = crypto.randomUUID();
+452      session.currentResponseText = "";
+453      session.llmStreamActive     = true;
+454      session.state               = "llm_pending";     // ← state during context assembly
+455      session.wasInterrupted      = false;
+456      session.remainingResponse   = null;
+457      session.interruptedAt       = null;
+458      session.responseComplete    = false;
+459
+460      // P1-1: persist turn start.
+461      PersistentSessionStateGuard.queue({ ... });
+462
+463      // ── Stage 5: Context Assembly ──────────────────────────────────────────
+464      let ctx: { systemPrompt: string; messages: { role: "user" | "assistant"; content: string }[] };
+465      try {
+466        ctx = await VoiceContextAssembler.assemble({
+467          sessionId:        session.sessionId,
+468          deviceId:         session.deviceId,
+469          callStartTime:    session.callStartTime,
+470          currentUtterance: utterance,
+471          reconnectCount:   session.reconnectAttempts,
+472          isDirectQuestion,
+473          wasInterrupted,
+474          remainingResponse,
+475          passiveMode:      session.passiveMode,
+476        });
+477        session.consecutiveContextFailures = 0;
+478      } catch (err) {
+479        // context assembly failure — handled with speakClipOrText(kind="main")
+480        // (pasted in Dump #1, lines 487–511). Returns early. speech_start is
+480        // NEVER sent if context assembly throws.
+481        ...
+482        return;
+483      }
+
+       // speech_start is only sent AFTER context assembly resolves.
+
+484      // ── Send speech_start ──────────────────────────────────────────────────
+485      session.currentSpeechId = speechId;
+486      session.state           = "tts_streaming";
+487
+488      const seqStart = registry.incrementSequence(session);
+489      try {
+490        session.ws?.send(JSON.stringify({
+491          type:     "speech_start",
+492          kind:     "main",
+493          speechId,
+494          ...
+495        }));
+496      } catch (err) { ... return; }
+
+       // ── Stage 6: LLM streaming with watchdogs ──────────────────────────────
+
+497      const controller = new AbortController();
+498      session.currentAbortController = controller;
+
+499      let firstTokenReceived         = false;
+500      let firstTokenWatchdog: NodeJS.Timeout | null = null;
+
+501      const hardBudget = setTimeout(() => {   // ← armed HERE, after speech_start
+502        if (session.currentAbortController === controller) {
+503          registry.cancelCurrentTurn(session, "hard_budget_exceeded");
+504          session.llmStreamActive = false;
+505          if (session.currentSpeechId === speechId) {
+506            session.ws?.send(JSON.stringify({
+507              type: "tts_done", kind: "main", speechId, reason: "budget_exceeded", ...
+508            }));
+509            session.currentSpeechId = null;
+510          }
+511        }
+512      }, MAX_TURN_BUDGET_MS);   // 45,000ms from speech_start being sent
+
+513      firstTokenWatchdog = setTimeout(() => {
+514        if (!firstTokenReceived && session.currentTurnId === turnId) {
+515          logger.info(..., "VoiceOrch: first-token watchdog — playing thinking clip");
+516          void speakClipOrText(session, "thinking", "Hang on, I'm thinking...", "auxiliary");
+517        }
+518      }, FIRST_TOKEN_WATCHDOG_MS);   // 8,000ms — plays auxiliary "thinking" clip
+                                      // auxiliary clip does NOT affect main lifecycle
+
+─────────────────────────────────────────────────────────────────────────────
+3E. The LLM call and its failure paths — lines 585–650
+─────────────────────────────────────────────────────────────────────────────
+
+519      let sentenceBuffer = "";
+
+520      try {
+521        const stream = streamChatText({
+522          system:        ctx.systemPrompt,
+523          messages:      ctx.messages,
+524          maxTokens:     VOICE_MAX_TOKENS,
+525          forceProvider: "gemini",
+526          signal:        controller.signal,
+527        });
+
+528        for await (const chunk of stream) {
+529          if (session.currentTurnId !== turnId || !session.llmStreamActive) break;
+
+530          if (!firstTokenReceived) {
+531            firstTokenReceived = true;
+532            if (firstTokenWatchdog) {
+533              clearTimeout(firstTokenWatchdog);
+534              firstTokenWatchdog = null;
+535            }
+536          }
+
+537          session.currentResponseText += chunk;
+538          sentenceBuffer              += chunk;
+
+539          // Flush complete sentences to TTS as they arrive.
+540          let extracted = extractSentence(sentenceBuffer);
+541          while (extracted) {
+542            if (session.currentSpeechId !== speechId) break;
+543            const { sentence, remainder } = extracted;
+544            sentenceBuffer = remainder;
+545            const clean = stripMarkdown(sentence);
+546            if (clean) {
+547              await flushSentenceToTTS(session, speechId, clean);
+548            }
+549            extracted = extractSentence(sentenceBuffer);
+550          }
+551        }
+
+552        // Flush any trailing partial sentence.
+553        const trail = sentenceBuffer.trim();
+554        if (trail && session.currentSpeechId === speechId) {
+555          await flushSentenceToTTS(session, speechId, stripMarkdown(trail));
+556        }
+
+557      } catch (err: unknown) {
+558        const isAbort =
+559          err instanceof Error &&
+560          (err.name === "AbortError" || err.name === "APIUserAbortError");
+561        if (!isAbort) {
+562          logger.error({ err, ... }, "VoiceOrch: LLM stream error");
+563          await speakClipOrText(
+564            session, "say-that-again",
+565            "Sorry, I've lost my train of thought. What were you saying?",
+566            "main",
+567          );                     // ← sends speech_start(main)+tts_done(main) without response_end
+                                   //   → mic opens via srvDone=true, responseEnd=false path
+568        }
+569        // if isAbort: catch block exits silently — no message sent to client
+570      } finally {
+571        clearTimeout(hardBudget);
+572        if (firstTokenWatchdog) clearTimeout(firstTokenWatchdog);
+573        if (session.currentAbortController === controller) {
+574          session.currentAbortController = null;
+575        }
+576        session.llmStreamActive = false;
+577      }
+
+       // response_end sent here only if session.currentSpeechId === speechId
+       // (pasted in Dump #1, lines 652–706).
+
+─────────────────────────────────────────────────────────────────────────────
+ANSWER TO ISSUE 2 QUESTIONS:
+
+"After speech_start, what is the server doing before the first TTS chunk?"
+  The server is inside streamChatText's for-await loop, waiting for the first
+  LLM token. This is a network call to the Gemini API (forceProvider: "gemini").
+  If Gemini is slow, the loop just waits.
+
+"Is there a budget/timeout on the LLM call itself, separate from MAX_TURN_BUDGET_MS?"
+  There are TWO timers, both started AFTER speech_start is sent:
+
+  FIRST_TOKEN_WATCHDOG_MS = 8,000ms:
+    If no first token within 8s, plays the "Hang on, I'm thinking..." auxiliary
+    clip. This does NOT terminate the LLM call — it just plays a filler clip.
+    The LLM call continues waiting. The watchdog is cancelled on first token.
+
+  MAX_TURN_BUDGET_MS = 45,000ms:
+    If the full turn (including TTS) hasn't completed within 45s, the hard budget
+    fires, cancels the LLM stream via AbortController, and sends tts_done(main)
+    to the client. This is the ONLY automatic recovery from a hung LLM call.
+
+  There is NO timeout on VoiceContextAssembler.assemble() (Stage 5, before
+  speech_start). If the DB query hangs, speech_start is never sent, the hard
+  budget is never armed, and nothing is ever sent to the client. In that case
+  the client would stay in "thinking..." phase with no recovery.
+
+  In Kane's Issue 2 log, speech_start(main) WAS received, so the context
+  assembly succeeded. The freeze is during the LLM streaming phase (Stage 6).
+
+"If the LLM call hangs or errors silently, does anything get sent back?"
+  Three failure paths, in code order:
+    (a) AbortError / APIUserAbortError: catch block exits silently.
+        No message sent to client. The finally block runs.
+        Then the response_end block runs — but only if session.currentSpeechId === speechId.
+        If the abort came from the hard budget (which also sets currentSpeechId=null at line 509),
+        response_end is skipped. The hard budget already sent tts_done directly.
+        Net: client gets tts_done(main) from hard budget. Lifecycle resumes.
+
+    (b) Non-abort error (Gemini HTTP error, network error, etc.):
+        speakClipOrText(kind="main") plays "say-that-again" clip.
+        Client gets speech_start(main)+tts_done(main) without response_end.
+        Mic opens via srvDone=true, responseEnd=false path.
+        NOTE: this also calls the response_end block immediately after,
+        but session.currentSpeechId was NOT changed by speakClipOrText, so
+        response_end IS sent. Both tts_done (from speakClipOrText) and then
+        response_end arrive at the client. Client already opened mic at tts_done.
+
+    (c) LLM stream hangs forever (no error, no abort):
+        streamChatText's for-await loop waits forever.
+        Hard budget fires at 45,000ms → sends tts_done(main) → lifecycle resumes.
+        Between speech_start and 45s: client shows "Thinking..." with no feedback
+        except the 8s thinking clip (auxiliary, doesn't change phase).
+
+  If Kane's freeze lasted a visible time but recovered without user action after
+  ~45s: scenario (c). If it never recovered: either the WS connection dropped
+  during the 45s window, or session.currentSpeechId was null when the hard
+  budget fired (gate check at line 505 failed) → tts_done was not sent.
+
+─────────────────────────────────────────────────────────────────────────────
+
+
+================================================================================
+SECTION 4 — Client-side timeout for stuck "Thinking…" state
+================================================================================
+
+─────────────────────────────────────────────────────────────────────────────
+Full grep for any timeout/recovery tied to the "thinking" phase in useVoiceCall.ts:
+─────────────────────────────────────────────────────────────────────────────
+
+From grep results:
+  Line  40:  | "thinking"      // speech_final sent, LLM running   ← type definition
+  Line 352:  if (phaseRef.current === ... || phaseRef.current === "thinking" || ...) ← submit guard
+  Line 407:  setPhaseSync("thinking");                             ← set on speech_final send
+
+No other references to "thinking" in useVoiceCall.ts.
+
+ANSWER: there is NO client-side timeout for the thinking phase. Once the client
+enters phase="thinking" (after sending speech_final at line 407), it has no timer,
+no watchdog, and no recovery mechanism of its own. The client stays in "thinking"
+phase until a WS message from the server changes its state:
+  - speech_start(main) → transitions to "speaking" (or stays in "thinking" until
+    audio queue starts; the phase is set to "speaking" inside playNext when a
+    track starts playing at line 249)
+  - tts_done(main) arriving without prior speech_start (safety path) → sets
+    ttsServerDoneRef=true, triggers drain, mic opens, phase → "listening"
+  - WS close (onclose handler at lines 677–699) → either reconnect or "ended"
+
+If the server hangs for 45s and then sends tts_done via the hard budget, the
+client recovers. If the WS connection drops during that window and reconnect
+fails, the client reaches "ended" state. If neither happens (hang with open WS,
+hard budget gate failing), the client is stuck in "thinking" indefinitely.
+
+There is no UI timeout that would show an error after N seconds of thinking.
+
+================================================================================
+END OF CODE DUMP — NO CHANGES MADE
+================================================================================

@@ -395,3 +395,9 @@ id = "zzZ0bXJyEq5flvWzRMoZR"
 uri = "file://RawCodeDump_EchoLoop_19Jun2026.txt"
 type = "text"
 title = "RawCodeDump_EchoLoop_19Jun2026.txt"
+
+[[outputs]]
+id = "KY4C-icvvz6cEtdJ_ekya"
+uri = "file://RawCodeDump2_Freeze_Interrupt_PhantomMic_19Jun2026.txt"
+type = "text"
+title = "RawCodeDump2_Freeze_Interrupt_PhantomMic_19Jun2026.txt"

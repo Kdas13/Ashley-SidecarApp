@@ -1,0 +1,112 @@
+================================================================================
+WREN — DIAGNOSTIC RAW CODE DUMP REQUEST #2
+NO CHANGES. NO COMMITS. NO BUILDS. PASTE CODE ONLY.
+Date: 19 June 2026
+Repo: Kdas13/Ashley-SidecarApp
+================================================================================
+
+CONTEXT
+response_end now fires correctly on the dev server (confirmed via Expo Go,
+prior diagnostic round). That bug is closed. THREE SEPARATE issues have now
+been confirmed live, with AirPods in (ruling out simple speaker-to-mic bleed
+as the sole cause):
+
+--------------------------------------------------------------------------
+ISSUE 1 — Mic still opens/cycles with no real speech, even with AirPods in
+--------------------------------------------------------------------------
+Device log, one continuous call, AirPods connected, user silent:
+    18:24:41.09 autoSubmit fired phase=listening
+    18:24:42.62 openMic start
+    18:24:42.73 openMic OK — recording
+    18:24:46.73 autoSubmit fired phase=listening
+    18:24:48.13 openMic start
+    18:24:48.24 openMic OK — recording
+    18:24:52.24 autoSubmit fired phase=listening
+    18:24:53.46 openMic start
+    18:24:53.59 openMic OK — recording
+Three full open/submit cycles in ~12 seconds. No new line appeared in the
+chat from these (unlike before AirPods, where this pattern produced invented
+text like "8." or "Still there."). So whatever VAD/silence-detection logic
+decides "user started speaking" is still firing without real speech — AirPods
+only changed the downstream STT result, not the trigger.
+
+QUESTION: what client-side logic decides a speech segment is real and worth
+auto-submitting? Is there an energy/VAD threshold, or does ANY mic-open +
+brief audio commit auto-submit regardless of content?
+
+--------------------------------------------------------------------------
+ISSUE 2 — Mid-call freeze on "Thinking…", no recovery
+--------------------------------------------------------------------------
+Device log, stuck state, never recovered without user re-prompting:
+    18:24:10.85 WS speech_start(main) — gates reset
+    18:24:09.23 autoSubmit fired phase=listening
+    18:24:05.21 openMic OK — recording
+    18:24:04.91 openMic start
+[no further log lines — UI shows "Thinking…" indefinitely]
+
+So: speech_start(main) was received (gates reset client-side), meaning the
+server acknowledged the turn began. Then nothing else arrived on the socket
+that the client logged. UI never timed out, never errored, never recovered.
+
+QUESTION: after speech_start, what is the server doing before the first TTS
+chunk goes out? Is there a budget/timeout on the LLM call itself, separate
+from the 45s MAX_TURN_BUDGET_MS hard-budget already known about? If the LLM
+call hangs or errors silently, does ANYTHING get sent back to the client, or
+does the session simply go quiet with no recovery path?
+
+--------------------------------------------------------------------------
+ISSUE 3 — Barge-in / interrupt does not work
+--------------------------------------------------------------------------
+Device log, user attempted to speak over Ashley mid-response:
+    18:25:05.18 playNext: drained responseEnd=true srvDone=false phase=listening
+    18:25:05.18 player: started q=0
+    18:25:05.18 WS sentence_end(main) — chunk buffer flushed
+    18:25:08.18 autoSubmit fired phase=speaking   ← user spoke WHILE Ashley was mid-playback
+    18:25:08.21 player: finished
+    18:25:08.21 playNext: drained responseEnd=true srvDone=false phase=speaking
+    18:25:08.21 WS playback_confirmed → sent (response_end + queue e[mpty])
+
+autoSubmit fired with phase=speaking — the system detected the user trying to
+talk over her — but no interrupt occurred. No "interrupt_ack" appears
+anywhere in this sequence. Ashley's audio just kept playing to completion.
+
+QUESTION: what is SUPPOSED to happen when autoSubmit fires while
+phase=speaking? Is there client logic meant to send an interrupt/abort signal
+to the server in this case, and if so, where is it, and why didn't it fire
+here? Or was interrupt-while-speaking never actually wired into autoSubmit's
+behaviour at all?
+
+================================================================================
+WHAT TO PASTE — RAW CODE ONLY, NO SUMMARIES
+================================================================================
+
+1. The complete autoSubmit function/handler — what decides a speech segment
+   is "real" and triggers submission. Include any VAD, energy threshold, or
+   minimum-duration logic.
+
+2. Everything related to barge-in / interrupt-while-speaking:
+   - Any code path that is supposed to detect "user spoke while phase=speaking"
+     and send an interrupt to the server.
+   - The "interrupt_ack" handler already known (already pasted in the prior
+     dump) — but now also: what is supposed to SEND the interrupt request in
+     the first place, and does autoSubmit call it when phase=speaking?
+
+3. Server-side: the full sequence from receiving a submitted utterance through
+   to the FIRST speech_start/audio chunk being sent — specifically, anywhere
+   the LLM call could hang, throw, or return nothing, and whether any of those
+   failure paths send a message back to the client (error, fallback, retry) or
+   silently do nothing.
+
+4. Whether there is a CLIENT-SIDE timeout that's supposed to recover from a
+   stuck "Thinking…" state (e.g., "if no response after Nms, show an error or
+   retry") — paste it if it exists, or confirm if it doesn't.
+
+RULES
+- Raw code only, full functions, no elisions inside them.
+- No fix this round. Diagnose first — these are three separate symptoms and
+  may have three separate causes; do not propose a single combined fix
+  without first showing the code that explains each one.
+- If you don't know without checking the actual running file, say so — do not
+  reason from memory of what the code "should" do.
+
+— End of request —
