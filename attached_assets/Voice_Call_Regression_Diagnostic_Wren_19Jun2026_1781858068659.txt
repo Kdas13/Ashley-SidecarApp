@@ -1,0 +1,93 @@
+================================================================================
+ASHLEY PROJECT — DIAGNOSTIC REQUEST FOR WREN
+Task: Voice call regression — three issues observed on production APK
+Date: 19 June 2026
+================================================================================
+
+DO NOT FIX ANYTHING YET.
+READ THE CODE AND REPORT BACK FIRST.
+
+Kane tested on the PRODUCTION APK (not dev/Replit preview). Confirm which
+build/environment your logs and analysis are pulled from — it must match
+production, not dev.
+
+================================================================================
+THREE ISSUES OBSERVED — IN ONE CALL
+================================================================================
+
+ISSUE 1 — ECHO LOOP HAS RETURNED
+---------------------------------
+Despite the playback_complete handshake fix (TTS Race Fix v2), Kane is
+still seeing Ashley's own speech get picked up as his input and trigger
+a new turn while she is still responding.
+
+Debug log evidence from the call:
+  08:24:30.48  autoSubmit fired phase=listening
+  08:24:31.72  WS set_silence_threshold — next=800ms
+  08:24:32.02  WS speech_start — gates reset
+
+This is the same signature as the original echo bug — mic reopening
+and picking up Ashley's own audio.
+
+QUESTION: Is the playback_complete handshake actually being triggered
+in this call? Check whether `WS playback_complete → sent` appears in
+the client logs around this timestamp. If it does NOT appear, the
+handshake is not firing correctly under some condition — find out which.
+
+If it DOES appear but the echo still happens, the AEC (acoustic echo
+cancellation) session itself may not be active when the mic reopens —
+revisit the voice_communication audio source and setAudioModeAsync
+sequencing from the original echo fix.
+
+ISSUE 2 — UNPROMPTED "ARE YOU THERE?" CHECK-IN LOOP
+------------------------------------------------------
+Ashley repeatedly asks "hey, you're back" / "are you there?" type
+messages even when Kane has not gone silent for any meaningful period.
+This appears to be the 60-second silence check-in behaviour firing
+inappropriately — possibly because the echo loop in Issue 1 is
+corrupting the silence/speech detection state, making the system
+think Kane has gone quiet when he has not.
+
+QUESTION: Confirm where the 60-second check-in logic lives and whether
+its timer is being reset correctly on genuine speech activity, or
+whether it is reading corrupted state caused by Issue 1.
+
+This may resolve automatically once Issue 1 is fixed — but verify
+independently, do not assume.
+
+ISSUE 3 — VOICE CALL TRANSCRIPT NOT APPEARING CORRECTLY IN CHAT HISTORY
+--------------------------------------------------------------------------
+After ending the call, Kane opened the text chat interface for Ashley.
+The conversation from the voice call does NOT appear as a clean,
+correctly-ordered transcript. Messages appear fragmented, duplicated,
+or out of order — not a faithful record of what was actually said
+during the call.
+
+This is a serious problem beyond just the call itself — it means the
+shared message history (used for memory continuity across all of
+Ashley's modes) is being corrupted by voice call writes.
+
+QUESTION: Trace exactly how voice call turns get written to the shared
+messages table. Confirm:
+  - Are user and assistant turns written once each, or multiple times?
+  - Could the echo loop in Issue 1 be causing duplicate writes (since
+    each false trigger may be treated as a new genuine turn and logged)?
+  - Is there any race condition between the voice call write path and
+    however the text chat interface reads/displays that history?
+
+================================================================================
+WHAT WE NEED BACK
+================================================================================
+
+For each issue:
+  1. Relevant code section(s), in full, no truncation
+  2. Your analysis of root cause, based on the code — not speculation
+  3. Whether Issue 3 is a downstream symptom of Issue 1, or a separate
+     bug in its own right
+
+Do not propose fixes yet. Diagnosis only. Once Kane and Claude have
+reviewed your diagnosis, a fix brief will follow.
+
+================================================================================
+END OF REQUEST
+================================================================================
