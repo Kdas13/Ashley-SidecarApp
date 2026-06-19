@@ -401,3 +401,9 @@ id = "KY4C-icvvz6cEtdJ_ekya"
 uri = "file://RawCodeDump2_Freeze_Interrupt_PhantomMic_19Jun2026.txt"
 type = "text"
 title = "RawCodeDump2_Freeze_Interrupt_PhantomMic_19Jun2026.txt"
+
+[[outputs]]
+id = "qPPk7uOP6szaTYvhdPiad"
+uri = "file://VoiceCall_Options_19Jun2026.txt"
+type = "text"
+title = "VoiceCall_Options_19Jun2026.txt"

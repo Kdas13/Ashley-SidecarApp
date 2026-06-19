@@ -1,0 +1,203 @@
+================================================================================
+VOICE CALL — OPTIONS FOR KANE'S REVIEW
+Date: 19 June 2026
+Commitment 1 Standard: pick a direction in writing before any code.
+================================================================================
+
+ISSUE 2 DIAGNOSIS (from production logs — no action required from Kane)
+ISSUE 1 OPTIONS — phantom mic cycling
+ISSUE 3 OPTIONS — barge-in
+
+================================================================================
+ISSUE 2 — FREEZE ON "THINKING…": FULLY DIAGNOSED FROM LOGS
+================================================================================
+
+The hard budget (45s) never fired. No log line for it exists.
+
+What the logs show (session 7830bba9, Kane's test call):
+
+  18:24:56 UTC  [info]  first-token watchdog fired (8s — no first token yet)
+  18:24:56 UTC  [error] LLM stream error: RATELIMIT_EXCEEDED (HTTP 429) — Gemini
+  18:25:07 UTC  [warn]  playback_confirmed not received within 15s — resetting
+  18:25:09 UTC  [info]  first-token watchdog fired (next turn)
+  18:25:09 UTC  [error] LLM stream error: RATELIMIT_EXCEEDED — again
+  18:25:17 UTC  [info]  speech_final queued — awaiting playback_confirmed
+  18:25:24 UTC  [warn]  playback_confirmed not received within 15s — resetting
+  18:25:44 UTC  [warn]  playback_confirmed not received within 15s — resetting
+
+Every turn during Kane's test call hit Gemini's rate limit. The 429 throws
+before any token is streamed (within ~1s of the LLM call), so the 45s budget
+was never relevant. The server recovered each time via the say-that-again clip,
+but the phantom mic cycling (Issue 1) was continuously queuing new speech_finals,
+which then hit the rate limit again. The two issues were compounding each other.
+
+Answers to the three sub-questions from the brief:
+
+1. Hard budget fired? No. No log line. Moot for Kane's session.
+
+2. Gate check failure scenario: session.currentSpeechId === speechId can fail
+   when a new pipeline call (from a queued utterance, fired after the 15s
+   playback_confirmed timeout) overwrites session.currentSpeechId before the
+   old budget timer runs. On a genuine 45s LLM hang this would cause tts_done
+   to never be sent and the client to hang permanently. This is a latent hole,
+   not what happened here, but worth noting for a future fix pass.
+
+3. Gemini abort signal: on a 429 the SDK throws before streaming starts — the
+   AbortController is irrelevant. For a genuine hang (slow first token, no
+   error), whether the abort is honoured mid-stream depends on whether
+   @google/genai 1.52.0 checks the signal between yielded chunks. Unknown
+   without testing. The hard budget log line would confirm it fired regardless.
+
+ROOT CAUSE OF KANE'S FREEZE: Gemini rate limiting during rapid repeated turns,
+caused by the phantom mic cycling (Issue 1) driving more turns per minute than
+the integration allows. Fix Issue 1 and the rate limit problem largely goes
+away. No server-side code change needed for Issue 2 now.
+
+================================================================================
+ISSUE 1 — PHANTOM MIC CYCLING: THREE OPTIONS
+================================================================================
+
+CONFIRMED CAUSE: the 4000ms autoSubmit fallback timer starts on every openMic()
+call and fires unconditionally 4s later. On devices where recorder.metering is
+non-null, the timer fires alongside a working VAD — if 4s of silence passes
+mid-listen, the timer submits near-nothing. On AirPods, metering is null so the
+VAD never fires at all and the 4s timer owns all submissions, cycling every ~5s.
+
+────────────────────────────────────────────────────────────────────────────────
+OPTION A — Gate the fallback to null-metering only
+────────────────────────────────────────────────────────────────────────────────
+
+Mechanism: after mic opens, wait 500ms and check whether recorder.metering has
+been non-null at any point in that window. If yes, VAD is working — skip arming
+the fallback timer entirely and let VAD own submission. If metering stayed null
+for the full 500ms, arm the 4s timer as a true device-fallback.
+
+Tradeoff:
+  False-submit risk: zero on working devices. Timer never fires at all.
+  Hang risk: if a device returns metering for 500ms then goes null mid-listen
+    (unusual), VAD is disarmed and no fallback exists. Call hangs until speech.
+  Complexity: moderate. Requires an observation window and shared flag between
+    openMic and the VAD effect. Two places need to stay in sync.
+
+────────────────────────────────────────────────────────────────────────────────
+OPTION B — Extend fallback to 8000ms (past SILENCE_MS)
+────────────────────────────────────────────────────────────────────────────────
+
+Mechanism: single constant change — 4000 → 8000ms. SILENCE_MS is 3500ms, so
+any genuine speech triggers a VAD-based submission first (3500ms silence after
+500ms sound = ~4000ms total from speech start). The fallback at 8000ms only
+fires if nothing at all has been submitted in 8s — a genuine stuck state.
+
+Tradeoff:
+  False-submit risk: much lower. An 8s genuine silence mid-listen is unusual;
+    if it happens the call was already stuck.
+  Hang risk: on null-metering devices, user waits 8s not 4s before the cycle
+    fires. The cycle continues, just slower — 8s intervals instead of 5s.
+    Does not eliminate the phantom cycle on AirPods, only slows it.
+  Complexity: trivial. One constant.
+
+────────────────────────────────────────────────────────────────────────────────
+OPTION C — Reset the fallback timer on every detected sound (recommended)
+────────────────────────────────────────────────────────────────────────────────
+
+Mechanism: inside the VAD effect, whenever db > SILENCE_DB (sound detected),
+restart the autoSubmit timer (clear and re-arm it at 4000ms). The timer now
+only fires after 4000ms of silence following the last detected sound — not 4s
+from mic open. In a quiet room with no sound at all, the timer still fires at
+4s (same as today, correct fallback). With any real sound, the timer resets and
+only fires after 4s of genuine post-sound silence.
+
+Tradeoff:
+  False-submit risk: near-zero. A real sound must be detected before the timer
+    can fire. Near-silence from mic open can never trigger it alone.
+  Hang risk: quiet room still gets the 4s fallback, same as today.
+    Null-metering devices: VAD effect never fires, reset never runs, behaviour
+    is identical to today (4s fallback). No regression on AirPods.
+  Complexity: moderate. The timer clear/re-arm moves into the VAD effect, which
+    runs frequently (each metering update). The logic is cheap but the coupling
+    between openMic and the VAD effect increases slightly.
+
+================================================================================
+ISSUE 3 — BARGE-IN: THREE OPTIONS
+================================================================================
+
+CONFIRMED CAUSE: the client never sends an interrupt message during
+phase="speaking". The mic is closed during playback. The autoSubmit timer
+explicitly does nothing when phase==="speaking". The server's interrupt
+infrastructure (handleInterruption, STOP_AUDIO_PLAYBACK_IMMEDIATE) is correctly
+wired and works — it triggers when a speech_final arrives while the server is
+mid-stream. The missing piece is entirely client-side.
+
+────────────────────────────────────────────────────────────────────────────────
+OPTION A — Keep mic open during speaking, submit on real speech
+────────────────────────────────────────────────────────────────────────────────
+
+Mechanism: don't close the mic when Ashley starts speaking. Keep VAD running
+with a raised energy threshold during speaking phase (e.g., -30 instead of
+-45 dBFS). When VAD fires during speaking: stop local playback immediately,
+send speech_final to the server (which triggers handleInterruption on the
+server), transition normally through submitting → thinking → speaking.
+
+Echo cancellation risk (stated plainly): this is the main risk. The call
+already keeps allowsRecording: true throughout for hardware AEC. With AirPods,
+bleed is reduced but not zero — bone conduction and high-volume playback can
+produce signals above any threshold we set. A false barge-in mid-sentence cuts
+Ashley off, submits empty or phantom audio, and plays the say-that-again clip.
+Less catastrophic than today's phantom cycle, but noticeable and potentially
+frequent depending on volume and environment. Threshold would need tuning
+per-device and the right value is not knowable without live testing.
+
+────────────────────────────────────────────────────────────────────────────────
+OPTION B — Tap-to-interrupt button (recommended)
+────────────────────────────────────────────────────────────────────────────────
+
+Mechanism: show a visible "tap to interrupt" button in the call UI while
+Ashley is speaking. On tap: stop local playback, send { type: "interrupt" }
+to the server. The server routes this to handleInterruption, which aborts the
+LLM stream and sends interrupt_ack. The interrupt_ack receiver already exists
+on the client (line 611) and already does exactly the right thing: stopPlayback,
+setPhaseSync("listening"), openMic. The server-side routing of the new "interrupt"
+message type is a small addition to index.ts.
+
+Echo cancellation risk: none. Mic only opens after the tap stops playback.
+Tradeoff: requires a deliberate tap — not true voice barge-in. The user cannot
+simply start talking over Ashley. For most use cases (headphones + conversation)
+a tap is a natural enough affordance. Simple to implement, reliable, zero new
+failure modes. Can be shipped and validated in Expo Go before anything else.
+
+────────────────────────────────────────────────────────────────────────────────
+OPTION C — Periodic sample windows during long responses
+────────────────────────────────────────────────────────────────────────────────
+
+Mechanism: during speaking phase, open the recorder briefly every 3–4s for a
+300–400ms sample window. If energy exceeds a threshold during that window,
+treat it as a barge-in: stop playback, open mic fully, proceed as Option A.
+
+Echo cancellation risk: lower than Option A (not continuous), but present on
+each sample window — each is a moment when Ashley's audio and the mic overlap.
+The current implementation keeps allowsRecording: true throughout to avoid
+tearing down the VOICE_COMMUNICATION audio session; short recorder start/stop
+during playback does not require a mode switch, so that part is safe.
+Tradeoff: on Android devices without good echo suppression, each sample window
+risks capturing Ashley's audio and triggering a false barge-in. Mechanically
+more complex than Option B (timer management, recorder start/stop cadence,
+phase tracking across the sample cycle). Higher risk, higher complexity, and
+the false-positive failure mode is the same as Option A — just less frequent.
+
+================================================================================
+SUMMARY TABLE
+================================================================================
+
+Issue 1:
+  Option A — Gate to null-metering     Clean on working devices, complexity+, hang risk on edge case
+  Option B — Extend to 8000ms          Trivial, still cycles on AirPods, just slower
+  Option C — Reset on detected sound   Best of both: false-submit gone, fallback preserved, moderate complexity  ← my recommendation
+
+Issue 3:
+  Option A — Mic open during speaking  True barge-in, echo risk, threshold unknown
+  Option B — Tap-to-interrupt button   Zero echo risk, reliable, not true voice barge-in  ← my recommendation
+  Option C — Periodic samples          Middle ground, false-positive risk same as A, more complexity than B
+
+================================================================================
+AWAITING KANE'S WRITTEN DIRECTION. NO CODE UNTIL THEN.
+================================================================================
