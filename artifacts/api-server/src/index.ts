@@ -380,10 +380,10 @@ wss.on("connection", (ws: any, _req: any, deviceId: string) => {
       await handleVoiceTurn(currentSession, transcript, utteranceId);
     }
 
-    // P1-4: Client confirms audio playback is complete.
+    // Client confirms audio playback is complete after receiving response_end.
     // Server sends tts_done only after this confirmation.
-    if (msg["type"] === "playback_complete") {
-      VoiceOrchestrationService.handlePlaybackComplete(currentSession);
+    if (msg["type"] === "playback_confirmed") {
+      VoiceOrchestrationService.handlePlaybackConfirmed(currentSession);
       return;
     }
 

@@ -109,9 +109,13 @@ export interface VoiceSession {
 
   // Stage 7 — playback confirmation handshake
   awaitingPlaybackConfirm: boolean;
+  responseComplete: boolean;            // true once response_end has been sent for the current turn
   pendingUtterance: string | null;      // queued speech_final during playback
   pendingUtteranceId: string | null;    // utteranceId for the queued item
   playbackConfirmTimeout: NodeJS.Timeout | null;
+
+  // Deduplication
+  lastUserMessageAt: Date | null;       // guards against rapid echo-turn writes (<500ms)
 }
 
 // ---------------------------------------------------------------------------
@@ -194,9 +198,12 @@ export function create(deviceId: string, ws: WsLike): VoiceSession {
     remainingResponse: null,
     rollingAudioBuffer: Buffer.alloc(0),
     awaitingPlaybackConfirm: false,
+    responseComplete: false,
     pendingUtterance: null,
     pendingUtteranceId: null,
     playbackConfirmTimeout: null,
+
+    lastUserMessageAt: null,
   };
 
   sessionsBySessionId.set(session.sessionId, session);
@@ -549,9 +556,12 @@ export async function restoreRecoveringSessions(): Promise<void> {
       remainingResponse: null,
       rollingAudioBuffer: Buffer.alloc(0),
       awaitingPlaybackConfirm: false,
+      responseComplete: false,
       pendingUtterance: null,
       pendingUtteranceId: null,
       playbackConfirmTimeout: null,
+
+      lastUserMessageAt: null,
     };
 
     sessionsBySessionId.set(session.sessionId, session);

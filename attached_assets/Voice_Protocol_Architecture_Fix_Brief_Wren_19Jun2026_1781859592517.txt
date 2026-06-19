@@ -1,0 +1,344 @@
+================================================================================
+ASHLEY PROJECT — FIX BRIEF FOR WREN
+Task: Voice call protocol redesign — explicit response lifecycle
+Version: 1
+Date: 19 June 2026
+================================================================================
+
+THIS IS NOT A PATCH. THIS IS AN ARCHITECTURE FIX.
+
+Your diagnosis (19 June) and an independent review both concluded the same
+thing: the current protocol infers "Ashley is done talking" from indirect
+side effects (queue empty, tts_done, audio frame absence). This is why
+every previous fix has broken in a new way — we keep patching symptoms of
+a signal that is structurally the wrong shape.
+
+This brief replaces that signal with an explicit, server-authoritative
+response lifecycle. Do not attempt to patch the existing playback_complete
+timing again. Implement the new protocol described below.
+
+================================================================================
+PART 1 — NEW PROTOCOL: EXPLICIT RESPONSE LIFECYCLE
+================================================================================
+
+CURRENT (BROKEN) MODEL:
+  Server sends sentence chunks → client infers completion from queue state
+  → ambiguous between "between sentences" and "response over"
+
+NEW MODEL — four explicit states, server-authoritative:
+
+  1. RESPONSE_START   — server begins generating a response
+  2. SENTENCE_END      — server has sent one complete sentence's audio
+                          (fires once per sentence, client may start
+                          playing immediately — no change to streaming)
+  3. RESPONSE_END      — server has sent ALL audio for this response.
+                          No more chunks will be sent for this turn.
+                          THIS IS THE NEW SIGNAL THAT DISTINGUISHES
+                          "between sentences" from "fully done".
+  4. PLAYBACK_CONFIRMED — client has finished PLAYING all audio it
+                           received. Sent by client only after it has
+                           received RESPONSE_END AND its play queue is
+                           fully drained AND the player is not active.
+
+THE KEY FIX: RESPONSE_END is sent ONCE, after the LLM stream itself ends
+and the final sentence has been flushed to TTS — not after each sentence's
+queue drain. The client now has an unambiguous signal for "no more audio
+is coming" that is structurally distinct from "the queue is briefly empty
+between sentences".
+
+The client must NOT send PLAYBACK_COMPLETE (renamed to PLAYBACK_CONFIRMED
+for clarity — see below) until it has received RESPONSE_END. Before
+RESPONSE_END, an empty queue means "waiting for more sentences", not
+"response complete" — full stop, no exceptions, no timing heuristics.
+
+================================================================================
+PART 2 — SERVER CHANGES
+================================================================================
+
+FILE: artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+
+CHANGE 1: Add session state field.
+  responseComplete: boolean   // true once RESPONSE_END has been sent
+                                // for the current turn
+
+Initialise to false at the start of every new response generation
+(wherever currentSpeechId is assigned for a new turn).
+
+CHANGE 2: Send SENTENCE_END after each sentence flush (informational
+only — client already handles per-sentence streaming, this is now an
+explicit named event instead of relying on chunk boundaries).
+
+  After each sentence's TTS chunks are sent:
+    session.ws?.send(JSON.stringify({
+      type: "sentence_end",
+      speechId,
+      sequenceNumber: registry.incrementSequence(session),
+      timestamp: Date.now(),
+    }));
+
+CHANGE 3: Send RESPONSE_END once, after the LLM stream completes AND
+the final sentence has been fully flushed to TTS — replacing the
+current premature playback_complete request logic.
+
+  This is the single most important change. Locate the point where the
+  LLM stream loop ends (the `for await` over the LLM response, or
+  equivalent) and the final sentence buffer has been flushed. After
+  that point, and only after that point:
+
+    session.responseComplete = true;
+    session.ws?.send(JSON.stringify({
+      type: "response_end",
+      speechId,
+      responseText: session.currentResponseText,
+      sequenceNumber: registry.incrementSequence(session),
+      timestamp: Date.now(),
+    }));
+
+  Do NOT send this from within the per-sentence flush path. It must
+  only fire once per turn, after the LLM has finished generating AND
+  all TTS chunks have been dispatched to the client.
+
+CHANGE 4: Replace the playback_complete handler logic.
+
+  Rename the inbound message type the server listens for from
+  "playback_complete" to "playback_confirmed" (matches new terminology,
+  avoids any ambiguity with the old broken signal name).
+
+  handlePlaybackConfirmed() should now simply:
+    - Verify session.responseComplete === true. If false, log a
+      warning ("playback_confirmed received before response_end —
+      ignoring, client should not be able to reach this state") and
+      ignore the message. Do not send tts_done in this case.
+    - If true: proceed exactly as the old handlePlaybackComplete()
+      did — clear the safety timeout, send tts_done, set state to
+      listening, process any queued utterance.
+
+CHANGE 5: Fix the safety timeout reference point.
+  The 15-second safety timeout (from the original TTS Race Fix) should
+  now start when RESPONSE_END is sent, not when the last chunk is sent.
+  Move the setTimeout call to CHANGE 3's block, immediately after
+  sending response_end.
+
+CHANGE 6: Fix speakFallback() to use the same gate (resolves Issue 2
+Cause A from the diagnosis).
+
+FILE: artifacts/api-server/src/routes/voice-call.ts
+
+  speakFallback() currently sends tts_done immediately with no
+  confirmation gate. This must be brought into the same lifecycle:
+
+  Replace the immediate tts_done send (lines ~165-179) with:
+    1. Send response_end (not tts_done) once the fallback audio
+       (e.g. "Still there?") has been fully dispatched.
+    2. Set session.responseComplete = true.
+    3. Set session.awaitingPlaybackConfirm = true.
+    4. Apply the same 15-second safety timeout pattern as CHANGE 5.
+    5. Do NOT send tts_done directly. Let the client's eventual
+       playback_confirmed message trigger tts_done via the normal
+       handlePlaybackConfirmed() path.
+
+  This ensures EVERY path that plays audio to the client — LLM
+  responses AND fallback/check-in messages — goes through the same
+  lifecycle and the same gate. No more bypass paths.
+
+CHANGE 7: Fix the silence monitor coupling (resolves Issue 2 Cause B).
+
+FILE: artifacts/api-server/src/index.ts
+
+  lastAudioReceivedAt currently only updates on binary mic frames.
+  This causes the silence clock to run during the period the client
+  is playing audio and the mic is legitimately closed.
+
+  Add a guard to the silence monitor (wherever silenceMs is calculated
+  and compared against the warning/check-in threshold):
+
+    Do not evaluate or act on the silence threshold if
+    session.state !== "listening" OR session.awaitingPlaybackConfirm
+    is true.
+
+  The silence clock should only be meaningfully measuring "Kane has
+  gone quiet while we are actively listening for him" — not measuring
+  time while Ashley is speaking or while waiting for playback
+  confirmation. This is a conceptual fix: silence detection must be
+  scoped to genuine listening windows only.
+
+================================================================================
+PART 3 — CLIENT CHANGES
+================================================================================
+
+FILE: artifacts/mobile/lib/useVoiceCall.ts
+
+CHANGE 8: Add new state ref.
+  const responseEndReceivedRef = useRef<boolean>(false);
+
+  Reset to false whenever a new response begins (wherever the client
+  currently resets per-turn state, e.g. on receiving the first chunk
+  of a new speechId).
+
+CHANGE 9: Add handler for new "sentence_end" message type.
+  Informational only for now — log it, no state change required
+  beyond what already happens on each chunk.
+
+CHANGE 10: Add handler for new "response_end" message type (replaces
+reliance on inferring completion from chunk/queue state).
+
+  case "response_end": {
+    responseEndReceivedRef.current = true;
+    addLog("WS response_end received — all audio sent by server");
+    break;
+  }
+
+CHANGE 11: Rewrite the drain condition in playNext() (lines 187-208,
+the section your diagnosis identified as the root cause).
+
+  REMOVE the current logic that sends playback_complete whenever the
+  queue is empty and phase === "speaking" regardless of completion state.
+
+  REPLACE with:
+
+    const uri = playQueueRef.current.shift();
+    if (!uri) {
+      if (phaseRef.current === "speaking") {
+        if (responseEndReceivedRef.current) {
+          // Genuinely done — server has confirmed no more audio coming
+          // AND our local queue is empty AND nothing is playing.
+          wsRef.current?.send(JSON.stringify({ type: "playback_confirmed" }));
+          addLog("WS playback_confirmed → sent (response_end + queue empty)");
+        } else {
+          // Queue is empty but server has NOT said it's done.
+          // This is the inter-sentence gap. Do nothing. Wait for the
+          // next sentence's audio to arrive and be queued.
+          addLog("playNext: queue empty, response not yet complete — waiting");
+        }
+      }
+      playNextRunningRef.current = false;
+      return;
+    }
+
+CHANGE 12: Confirm no other code path sends "playback_complete" (old
+message type name). Search the full file for any remaining references
+and update them to "playback_confirmed" to match the server rename in
+CHANGE 4.
+
+================================================================================
+PART 4 — MESSAGE HISTORY DEDUPLICATION (resolves Issue 3)
+================================================================================
+
+FILE: artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+
+CHANGE 13: Add a deduplication guard on user turn writes, not just
+assistant turns.
+
+  Currently (line 822):
+    persistMessage(session.deviceId, "user", utterance, new Date());
+
+  This has no guard at all. Even with the Part 1-3 fixes preventing
+  NEW false turns, this should be hardened defensively.
+
+  Add a minimum-gap check: do not persist a user message if the
+  previous user message for this session was written less than 500ms
+  ago. This is a backstop, not the primary fix — the primary fix is
+  Parts 1-3 preventing false turns from being generated at all. But
+  defence in depth matters given how costly this bug was.
+
+  Track session.lastUserMessageAt: Date | null. Before writing:
+    if (session.lastUserMessageAt &&
+        Date.now() - session.lastUserMessageAt.getTime() < 500) {
+      logger.warn({ sessionId: session.sessionId },
+        "Suspiciously rapid user message write — possible echo, skipping");
+      return; // do not persist
+    }
+    session.lastUserMessageAt = new Date();
+    persistMessage(...)
+
+CHANGE 14: Add source filtering capability to history reads (does not
+need to be applied everywhere immediately, but the capability must
+exist for future debugging).
+
+FILE: artifacts/api-server/src/routes/voice-call.ts
+
+  The history read query (lines 79-83) currently has no source filter.
+  Add an optional source column check capability — confirm whether
+  messagesTable already has a column distinguishing voice_call vs
+  text_chat origin. If it does not, add one:
+
+    source: text('source').notNull().default('text_chat')
+            // or 'voice_call'
+
+  Tag every persistMessage() call from the voice call path with
+  source: 'voice_call' explicitly. This does not need to change
+  display behaviour today, but gives Kane and Claude the ability to
+  audit and filter history by origin going forward — essential for
+  diagnosing any future corruption quickly rather than the multi-hour
+  trace this required today.
+
+================================================================================
+WHAT NOT TO DO
+================================================================================
+
+- Do not reintroduce any timing-based heuristic ("wait X ms then assume
+  done"). The whole point of this brief is to replace timing guesses
+  with explicit signals.
+- Do not leave any audio-sending code path (LLM response OR fallback
+  messages) outside the new lifecycle. Every path must go through
+  RESPONSE_START → SENTENCE_END* → RESPONSE_END → PLAYBACK_CONFIRMED.
+- Do not change VAD constants (SILENCE_DB, SILENCE_MS, MIN_SPEECH_MS) —
+  not in scope for this brief.
+- Do not touch the intent classification or context assembly logic —
+  not in scope for this brief.
+
+================================================================================
+DELIVERY
+================================================================================
+
+Server changes (Parts 1, 2, 4) — no EAS build required, restart only.
+Client changes (Part 3) — EAS build required.
+
+Step 1: All server changes. Restart. Confirm live.
+Step 2: All client changes. Initiate EAS build.
+Step 3: Test end-to-end on production APK — minimum 10 consecutive
+        turns, INCLUDING at least 3 multi-sentence Ashley responses
+        (the specific case that broke before), AND a deliberate
+        30+ second silence to trigger and verify the check-in path
+        no longer causes a self-triggered loop.
+Step 4: Open the text chat interface after the call. Confirm the
+        transcript is clean — correct order, no duplicates, matches
+        what was actually said.
+Step 5: Return completion report per Standing Template v3.0 — every
+        item needs git show output AND, once pushed, a working
+        GitHub permalink.
+
+================================================================================
+COMPLETION REPORT — use Standing Completion Report Template v3.0
+================================================================================
+
+Apply the full v3.0 template. Checklist items for this brief:
+
+ITEM 1: responseComplete field added to session state (server)
+ITEM 2: sentence_end message sent per sentence (server)
+ITEM 3: response_end message sent once per turn, after LLM stream
+        + final sentence flush complete (server) — THE CORE FIX
+ITEM 4: playback_confirmed handler replaces playback_complete handler,
+        gated on responseComplete === true (server)
+ITEM 5: Safety timeout moved to fire alongside response_end (server)
+ITEM 6: speakFallback() brought into the same lifecycle — no more
+        direct tts_done bypass (server)
+ITEM 7: Silence monitor scoped to state === "listening" only (server)
+ITEM 8: responseEndReceivedRef added and reset per turn (client)
+ITEM 9: sentence_end handler added (client)
+ITEM 10: response_end handler added (client)
+ITEM 11: playNext() drain logic rewritten per CHANGE 11 (client) —
+         THE CORE CLIENT-SIDE FIX
+ITEM 12: All playback_complete references renamed/updated to
+         playback_confirmed (client)
+ITEM 13: User message write dedup guard (500ms minimum gap) added
+ITEM 14: source column added/confirmed on messagesTable, voice call
+         writes tagged explicitly
+ITEM 15: End-to-end test — 10+ turns, 3+ multi-sentence responses,
+         1+ deliberate 30s silence, transcript verified clean after
+
+Item 15 is the gate. Do not mark this brief complete if item 15 fails.
+
+================================================================================
+END OF BRIEF
+================================================================================

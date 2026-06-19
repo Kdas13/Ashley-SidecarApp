@@ -347,3 +347,9 @@ id = "JaXWSw5X7Ay-Q9E3LT6Ef"
 uri = "file://voice-call-regression-diagnosis-19Jun2026.txt"
 type = "text"
 title = "Voice Call Regression Diagnosis — 19 Jun 2026"
+
+[[outputs]]
+id = "_-D-3TIK8D6duzHtT8IA7"
+uri = "file://voice-protocol-fix-completion-19Jun2026.txt"
+type = "text"
+title = "Voice Protocol Fix — Completion Report (19 Jun 2026)"

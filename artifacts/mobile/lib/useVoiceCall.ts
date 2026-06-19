@@ -152,6 +152,11 @@ export function useVoiceCall(): {
   // "server finished sending" and "device finished playing".
   const ttsServerDoneRef    = useRef(true);
   const ttsCompleteRef      = useRef(true);
+  // responseEndReceivedRef: true once the server has sent "response_end" for
+  // the current turn. The client MUST NOT send playback_confirmed until this
+  // is true — prevents inter-sentence queue drains from triggering premature
+  // confirmation.
+  const responseEndReceivedRef = useRef<boolean>(false);
   // Mutex: prevents two concurrent openMic calls from both calling
   // prepareToRecordAsync — the second call would throw "already been prepared".
   const micOpeningRef       = useRef(false);
@@ -187,21 +192,27 @@ export function useVoiceCall(): {
     const uri = playQueueRef.current.shift();
     if (!uri) {
       // Queue drained.
-      addLog(`playNext: drained srvDone=${ttsServerDoneRef.current} phase=${phaseRef.current}`);
+      addLog(`playNext: drained responseEnd=${responseEndReceivedRef.current} srvDone=${ttsServerDoneRef.current} phase=${phaseRef.current}`);
       if (phaseRef.current === "speaking") {
         if (ttsServerDoneRef.current) {
-          // tts_done already received (e.g. server safety timeout fired) — open mic.
+          // tts_done already received (server safety timeout path) — open mic directly.
           ttsCompleteRef.current = true;
-          addLog("ttsComplete=true — opening mic");
+          addLog("ttsComplete=true — opening mic (safety-timeout path)");
           setPhaseSync("listening");
           void openMicRef.current();
-        } else {
-          // Audio done, server has not yet sent tts_done — notify server.
-          // Server will send tts_done in response, which re-triggers playNext → openMic.
+        } else if (responseEndReceivedRef.current) {
+          // Server has confirmed all audio sent AND our queue is empty — send confirmation.
+          // This is the ONLY valid time to send playback_confirmed. Before response_end
+          // arrives, an empty queue means "inter-sentence gap", not "response complete".
           if (wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(JSON.stringify({ type: "playback_complete" }));
-            addLog("WS playback_complete → sent");
+            wsRef.current.send(JSON.stringify({ type: "playback_confirmed" }));
+            addLog("WS playback_confirmed → sent (response_end + queue empty)");
           }
+        } else {
+          // Queue is empty but server has NOT sent response_end yet.
+          // This is an inter-sentence gap — do nothing. Wait for the next sentence's
+          // audio to arrive and be queued. Do NOT send any confirmation.
+          addLog("playNext: queue empty, response_end not yet received — waiting for next sentence");
         }
       }
       playNextRunningRef.current = false;
@@ -474,13 +485,27 @@ export function useVoiceCall(): {
 
         case "speech_start":
           chunkBufRef.current = [];
-          ttsCompleteRef.current = false;   // device not done playing
-          ttsServerDoneRef.current = false; // server not done sending
+          ttsCompleteRef.current = false;        // device not done playing
+          ttsServerDoneRef.current = false;      // server not done sending
+          responseEndReceivedRef.current = false; // server has not yet confirmed response complete
           addLog("WS speech_start — gates reset");
           break;
 
         case "sentence_end":
           await flushChunkBuffer();
+          addLog("WS sentence_end — chunk buffer flushed");
+          break;
+
+        case "response_end":
+          // Server has dispatched all TTS chunks for this turn.
+          // The client may now send playback_confirmed once the play queue drains.
+          responseEndReceivedRef.current = true;
+          addLog("WS response_end — all audio sent by server");
+          // If the queue already drained before response_end arrived, trigger playNext
+          // so the confirmation can be sent now rather than waiting for the next drain.
+          if (!playNextRunningRef.current) {
+            void playNextRef.current();
+          }
           break;
 
         case "tts_done": {

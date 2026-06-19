@@ -1,0 +1,313 @@
+================================================================================
+ASHLEY PROJECT — COMPLETION REPORT
+Brief: Voice Protocol Architecture Fix (Explicit Response Lifecycle)
+Brief version: 1, Date: 19 June 2026
+Report version: Standing Template v3.0
+================================================================================
+
+COMMIT HASH
+Hash for this work: assigned by platform checkpoint at end of this session.
+Previous HEAD at time of writing: 3d2e6fa
+GitHub permalink: Kane to provide after push.
+
+git diff --stat HEAD (all changes in working tree at time of report):
+
+  artifacts/api-server/src/index.ts                  |   6 +-
+  artifacts/api-server/src/lib/VoiceOrchestrationService.ts | 73 ++++++++++----
+  artifacts/api-server/src/lib/VoiceSessionRegistry.ts      | 10 +++
+  artifacts/api-server/src/routes/voice-call.ts             | 69 +++++++++++--
+  artifacts/mobile/lib/useVoiceCall.ts                       | 45 +++++++---
+  5 files changed, 166 insertions(+), 37 deletions(-)
+
+================================================================================
+DELIVERY STATUS
+================================================================================
+
+Server changes: COMPLETE. API server restarted and running. No EAS build needed.
+Client changes: COMPLETE in code. EAS build required before production testing.
+
+Kane must run:
+  pnpm --filter @workspace/mobile exec eas build --platform android --profile preview
+
+================================================================================
+CHECKLIST — all 15 items
+================================================================================
+
+ITEM 1: responseComplete field added to session state (server)
+STATUS: DONE
+
+  Added to VoiceSession interface:
+    responseComplete: boolean;   // true once response_end has been sent
+
+  Initialised to false in both create() and restoreRecoveringSessions().
+  Reset to false at start of every new turn in runLLMAndTTSPipeline().
+  Also reset in handlePlaybackConfirmed() and safety timeout paths.
+
+--------------------------------------------------------------------------------
+
+ITEM 2: sentence_end message sent per sentence (server)
+STATUS: PRE-EXISTING — no change required
+
+  sentence_end was already sent per sentence in flushSentenceToTTS()
+  (VoiceOrchestrationService.ts line 262) and in speakClipOrText()
+  (line 195). The client already had a sentence_end handler. No new code
+  needed for this item.
+
+--------------------------------------------------------------------------------
+
+ITEM 3: response_end message sent once per turn, after LLM stream +
+        final sentence flush complete (server) — THE CORE FIX
+STATUS: DONE
+
+  In runLLMAndTTSPipeline(), after the LLM stream try/catch/finally block,
+  replaced the old comment block ("Wait for client playback confirmation")
+  with:
+
+    session.responseComplete = true;
+    session.ws?.send(JSON.stringify({
+      type: "response_end",
+      speechId, responseText, sessionId,
+      connectionGeneration, sequenceNumber, timestamp
+    }));
+    session.awaitingPlaybackConfirm = true;
+    // safety timeout follows immediately
+
+  This fires ONCE per turn, AFTER the LLM stream ends and ALL sentences
+  have been flushed to TTS. It is the authoritative "no more audio coming"
+  signal. Before this change there was no such signal — the client inferred
+  completion from queue state alone, causing premature playback_complete
+  on inter-sentence drains.
+
+--------------------------------------------------------------------------------
+
+ITEM 4: playback_confirmed handler replaces playback_complete handler,
+        gated on responseComplete === true (server)
+STATUS: DONE
+
+  VoiceOrchestrationService.ts:
+    handlePlaybackComplete() renamed to handlePlaybackConfirmed()
+    Added responseComplete guard at top of function:
+      if (!session.responseComplete) { log warning; return; }
+    session.responseComplete reset to false on confirmation.
+
+  index.ts:
+    msg["type"] === "playback_complete" → "playback_confirmed"
+    VoiceOrchestrationService.handlePlaybackComplete → .handlePlaybackConfirmed
+
+--------------------------------------------------------------------------------
+
+ITEM 5: Safety timeout moved to fire alongside response_end (server)
+STATUS: DONE
+
+  The setTimeout() call (15 seconds) now appears immediately after the
+  response_end send inside the same if block. Previously it was attached
+  to the awaitingPlaybackConfirm = true assignment. The ordering and
+  timing are now aligned with when the explicit signal is sent.
+
+  Safety timeout log message updated:
+    "playback_complete not received within 15s" →
+    "playback_confirmed not received within 15s"
+  responseComplete also reset to false in the safety timeout path.
+
+--------------------------------------------------------------------------------
+
+ITEM 6: speakFallback() brought into the same lifecycle (server)
+STATUS: DONE
+
+  voice-call.ts speakFallback() previously sent tts_done directly with
+  no confirmation gate — the bypass path for Issue 2 Cause A.
+
+  Replaced with the full lifecycle:
+    1. Send sentence_end to flush the client's chunk buffer.
+    2. Set session.responseComplete = true, session.awaitingPlaybackConfirm = true.
+    3. Send response_end (no tts_done).
+    4. Set up 15-second safety timeout (same pattern as ITEM 5).
+    5. Do NOT clear session.currentSpeechId — it stays set until
+       playback_confirmed arrives via handlePlaybackConfirmed().
+    6. If sentChunks === 0 or cancelled: clean up immediately (old path
+       remains for the no-audio case).
+
+  Safety timeout in speakFallback calls
+  VoiceOrchestrationService.handleSpeechFinal for any pending utterance
+  (voice-call.ts already imports VoiceOrchestrationService, no circular dep).
+
+--------------------------------------------------------------------------------
+
+ITEM 7: Silence monitor scoped to genuine listening windows only (server)
+STATUS: DONE
+
+  voice-call.ts startSilenceMonitor tick(), changed the guard condition
+  from:
+    if (session.state === "listening" || session.state === "active")
+  to:
+    if (
+      (session.state === "listening" || session.state === "active") &&
+      !session.awaitingPlaybackConfirm
+    )
+
+  Silence clock now pauses during the response_end → playback_confirmed
+  wait, eliminating the Issue 2 Cause B path where the silence counter
+  accumulated while the client was legitimately playing Ashley's audio.
+
+--------------------------------------------------------------------------------
+
+ITEM 8: responseEndReceivedRef added and reset per turn (client)
+STATUS: DONE
+
+  useVoiceCall.ts:
+    const responseEndReceivedRef = useRef<boolean>(false);
+
+  Reset in speech_start case handler alongside the other per-turn resets:
+    responseEndReceivedRef.current = false;
+
+--------------------------------------------------------------------------------
+
+ITEM 9: sentence_end handler (client)
+STATUS: PRE-EXISTING — log line added
+
+  The sentence_end case already existed (flushChunkBuffer()). Added an
+  addLog() call for completeness:
+    addLog("WS sentence_end — chunk buffer flushed")
+
+--------------------------------------------------------------------------------
+
+ITEM 10: response_end handler added (client)
+STATUS: DONE
+
+  New case in the WS message switch:
+    case "response_end":
+      responseEndReceivedRef.current = true;
+      addLog("WS response_end — all audio sent by server");
+      // If the queue already drained before response_end arrived,
+      // trigger playNext so confirmation can be sent immediately.
+      if (!playNextRunningRef.current) {
+        void playNextRef.current();
+      }
+      break;
+
+  The playNextRef() call handles the race where response_end arrives after
+  the queue has already drained (response_end was late relative to playback).
+
+--------------------------------------------------------------------------------
+
+ITEM 11: playNext() drain logic rewritten (client) — THE CORE CLIENT FIX
+STATUS: DONE
+
+  Replaced the old drain condition in playNext():
+
+  OLD:
+    } else {
+      // fires on every inter-sentence queue drain — root cause of Issue 1
+      wsRef.current.send(JSON.stringify({ type: "playback_complete" }));
+    }
+
+  NEW:
+    } else if (responseEndReceivedRef.current) {
+      // Server confirmed all audio sent AND queue is empty — ONLY valid trigger.
+      wsRef.current.send(JSON.stringify({ type: "playback_confirmed" }));
+      addLog("WS playback_confirmed → sent (response_end + queue empty)");
+    } else {
+      // Inter-sentence gap — do nothing. Wait for next sentence's audio.
+      addLog("playNext: queue empty, response_end not yet received — waiting for next sentence");
+    }
+
+  The ttsServerDoneRef safety path (for the 15s server timeout case) is
+  retained: if tts_done is received without going through response_end
+  (only happens on the 15-second server safety timeout), the mic opens
+  directly as before.
+
+--------------------------------------------------------------------------------
+
+ITEM 12: All playback_complete references updated to playback_confirmed (client)
+STATUS: DONE
+
+  Grep confirmed the only remaining reference was the send in playNext()
+  drain, which is now replaced with playback_confirmed (ITEM 11).
+  No other playback_complete references exist in the client codebase.
+
+--------------------------------------------------------------------------------
+
+ITEM 13: User message write dedup guard (500ms minimum gap) added
+STATUS: DONE
+
+  VoiceOrchestrationService.ts handleSpeechFinal(), immediately before
+  the persistMessage() call:
+
+    const nowMs = Date.now();
+    if (session.lastUserMessageAt !== null &&
+        nowMs - session.lastUserMessageAt.getTime() < 500) {
+      logger.warn({ sessionId }, "rapid user message write — possible echo, skipping persist");
+    } else {
+      session.lastUserMessageAt = new Date();
+      persistMessage(session.deviceId, "user", utterance, new Date());
+    }
+
+  session.lastUserMessageAt: Date | null added to VoiceSession interface
+  and initialised to null in create() and restoreRecoveringSessions().
+
+--------------------------------------------------------------------------------
+
+ITEM 14: source column confirmed on messagesTable, voice call writes tagged
+STATUS: PRE-EXISTING — confirmed, no change required
+
+  persistMessage() in VoiceOrchestrationService.ts line 113 already
+  inserts source: "voice_call" on every voice call message write.
+  TypeScript compiles cleanly, confirming the schema column exists.
+  All voice call writes (user turns and assistant turns) are already
+  tagged with source: "voice_call".
+
+--------------------------------------------------------------------------------
+
+ITEM 15: End-to-end test — 10+ turns, 3+ multi-sentence responses,
+         1+ deliberate 30s silence, transcript verified clean after
+STATUS: PENDING EAS BUILD
+
+  Kane must initiate the EAS build:
+    pnpm --filter @workspace/mobile exec eas build --platform android --profile preview
+
+  Then test against production server per brief Step 3 and 4:
+  - Minimum 10 consecutive turns.
+  - At least 3 multi-sentence Ashley responses.
+  - At least one deliberate 30+ second silence (verify check-in fires once,
+    does not self-loop, mic does not open during "Still there?" playback).
+  - Open text chat after call. Confirm no duplicates, correct order.
+
+  Item 15 is the gate per brief. Report is not complete until Kane confirms.
+
+================================================================================
+TYPECHECK STATUS
+================================================================================
+
+Server (api-server):    CLEAN — tsc --noEmit exit 0
+Client (mobile):        CLEAN — tsc --noEmit exit 0
+API server:             RUNNING — started cleanly at 09:08:36, /api/healthz 200
+
+================================================================================
+WHAT CHANGED AND WHY (protocol summary)
+================================================================================
+
+Old protocol (broken):
+  speech_start → chunks → sentence_end* → tts_done → [client sends playback_complete]
+  → server sends tts_done → client opens mic
+
+  Bug: client sent playback_complete whenever queue drained, including
+  between sentences. Inter-sentence drain was indistinguishable from
+  end-of-response drain.
+
+New protocol (this brief):
+  speech_start → chunks → sentence_end* → response_end → [client sends playback_confirmed]
+  → server sends tts_done → client opens mic
+
+  Fix: response_end is a server-authoritative signal meaning "no more audio
+  for this turn". Client only sends playback_confirmed after receiving both
+  response_end AND observing a queue drain. Inter-sentence drains are
+  silently ignored (new log line: "waiting for next sentence").
+
+All audio paths now follow the same lifecycle:
+  LLM responses:  runLLMAndTTSPipeline() → response_end
+  Silence check:  speakFallback() → response_end
+  Farewell:       speakFarewell() → speakFallback() → response_end → session finalised
+
+================================================================================
+END OF COMPLETION REPORT
+================================================================================

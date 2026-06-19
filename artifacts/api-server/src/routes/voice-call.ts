@@ -111,9 +111,12 @@ export function stripMarkdown(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// speakFallback — send a short spoken fallback to the client using the TTS
-// ownership protocol. Used for the silence lifecycle and context-load
-// failures that arise outside the main turn pipeline.
+// speakFallback — send a short spoken fallback to the client using the full
+// response lifecycle. Used for the silence lifecycle ("Still there?") and
+// context-load failures outside the main turn pipeline.
+//
+// Uses the same response_end → playback_confirmed → tts_done lifecycle as the
+// main LLM pipeline. No direct tts_done bypass.
 // ---------------------------------------------------------------------------
 async function speakFallback(
   session: VoiceSession,
@@ -129,6 +132,7 @@ async function speakFallback(
 
   const speechId = crypto.randomUUID();
   session.currentSpeechId = speechId;
+  session.responseComplete = false;
 
   const seqStart = registry.incrementSequence(session);
   try {
@@ -163,22 +167,66 @@ async function speakFallback(
   }
 
   if (sentChunks > 0 && session.currentSpeechId === speechId) {
-    const seqDone = registry.incrementSequence(session);
+    // Flush the client's chunk buffer so the audio plays immediately.
+    try {
+      session.ws.send(
+        JSON.stringify({ type: "sentence_end", speechId, timestamp: Date.now() }),
+      );
+    } catch {}
+
+    // Send response_end — all audio dispatched. Client must confirm before
+    // mic opens. Same lifecycle as the main LLM pipeline.
+    session.responseComplete = true;
+    session.awaitingPlaybackConfirm = true;
+    const seqEnd = registry.incrementSequence(session);
     try {
       session.ws.send(
         JSON.stringify({
-          type: "tts_done",
+          type: "response_end",
           speechId,
           sessionId: session.sessionId,
           connectionGeneration: session.connectionGeneration,
-          sequenceNumber: seqDone,
+          sequenceNumber: seqEnd,
           timestamp: Date.now(),
         }),
       );
     } catch {}
-  }
 
-  session.currentSpeechId = null;
+    // Safety timeout: if playback_confirmed never arrives, reset to listening.
+    if (session.playbackConfirmTimeout) clearTimeout(session.playbackConfirmTimeout);
+    session.playbackConfirmTimeout = setTimeout(() => {
+      if (session.awaitingPlaybackConfirm && session.currentSpeechId === speechId) {
+        logger.warn(
+          { deviceId: session.deviceId },
+          "voice: speakFallback safety timeout — resetting to listening",
+        );
+        session.awaitingPlaybackConfirm = false;
+        session.responseComplete = false;
+        session.playbackConfirmTimeout = null;
+        session.currentSpeechId = null;
+        session.state = "listening";
+
+        if (session.pendingUtterance && session.pendingUtteranceId) {
+          const u = session.pendingUtterance;
+          const uid = session.pendingUtteranceId;
+          session.pendingUtterance = null;
+          session.pendingUtteranceId = null;
+          void VoiceOrchestrationService.handleSpeechFinal(session, u, uid).catch((err) => {
+            logger.error(
+              { err, deviceId: session.deviceId },
+              "voice: fallback safety timeout pending utterance failed",
+            );
+          });
+        }
+      }
+    }, 15_000);
+
+    // session.currentSpeechId stays set until playback_confirmed arrives via
+    // handlePlaybackConfirmed(). Do NOT clear it here.
+  } else {
+    // No chunks sent or turn cancelled — clean up immediately.
+    session.currentSpeechId = null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -231,7 +279,10 @@ export function startSilenceMonitor(session: VoiceSession): void {
       return;
     }
 
-    if (session.state === "listening" || session.state === "active") {
+    if (
+      (session.state === "listening" || session.state === "active") &&
+      !session.awaitingPlaybackConfirm
+    ) {
       const ref = session.lastAudioReceivedAt ?? session.callStartTime;
       const silenceMs = Date.now() - ref.getTime();
 

@@ -284,14 +284,24 @@ export function abortCurrentOutputs(session: VoiceSession): void {
 }
 
 /**
- * Called when the client sends { type: "playback_complete" }.
- * Sends tts_done to the client and processes any queued utterance.
+ * Called when the client sends { type: "playback_confirmed" }.
+ * Gated on responseComplete — ignores stale confirmations sent before
+ * response_end was received by the client. Sends tts_done and processes
+ * any queued utterance.
  */
-export function handlePlaybackComplete(session: VoiceSession): void {
+export function handlePlaybackConfirmed(session: VoiceSession): void {
+  if (!session.responseComplete) {
+    logger.warn(
+      { sessionId: session.sessionId },
+      "VoiceOrch: playback_confirmed received before response_end — ignoring",
+    );
+    return;
+  }
+
   if (!session.awaitingPlaybackConfirm) {
     logger.warn(
       { sessionId: session.sessionId },
-      "VoiceOrch: unexpected playback_complete — not awaiting confirmation",
+      "VoiceOrch: unexpected playback_confirmed — not awaiting confirmation",
     );
     return;
   }
@@ -303,6 +313,7 @@ export function handlePlaybackComplete(session: VoiceSession): void {
   }
 
   session.awaitingPlaybackConfirm = false;
+  session.responseComplete = false;
 
   // Now send tts_done — client has confirmed audio has finished playing.
   const seqDone = registry.incrementSequence(session);
@@ -430,6 +441,7 @@ async function runLLMAndTTSPipeline(
   session.wasInterrupted      = false;
   session.remainingResponse   = null;
   session.interruptedAt       = null;
+  session.responseComplete    = false;
 
   // P1-1: persist turn start.
   PersistentSessionStateGuard.queue({
@@ -619,16 +631,33 @@ async function runLLMAndTTSPipeline(
     session.llmStreamActive = false;
   }
 
-  // ── Wait for client playback confirmation before sending tts_done ───────
-  // The server has sent all TTS chunks but the client is still playing
-  // buffered audio. We must not send tts_done until the client confirms
-  // playback is complete, otherwise the mic opens while audio is still
-  // playing and causes a race condition.
+  // ── Send response_end — explicit signal that all TTS chunks are dispatched ──
+  // This is the authoritative "all audio sent" signal. The client MUST NOT
+  // send playback_confirmed until it has received this. Replaces the old
+  // implicit inference from queue drain state (the root cause of Issue 1).
   if (session.currentSpeechId === speechId) {
+    session.responseComplete = true;
+    const seqEnd = registry.incrementSequence(session);
+    try {
+      session.ws?.send(
+        JSON.stringify({
+          type:                "response_end",
+          speechId,
+          responseText:         session.currentResponseText,
+          sessionId:            session.sessionId,
+          connectionGeneration: session.connectionGeneration,
+          sequenceNumber:       seqEnd,
+          timestamp:            Date.now(),
+        }),
+      );
+    } catch (err) {
+      logger.warn({ err, sessionId: session.sessionId }, "VoiceOrch: failed to send response_end");
+    }
+
     session.awaitingPlaybackConfirm = true;
 
-    // Safety timeout: if client does not confirm within 15 seconds,
-    // reset to listening state anyway to prevent permanent hang.
+    // Safety timeout: starts alongside response_end. If playback_confirmed
+    // does not arrive within 15 seconds, reset to listening to prevent hang.
     if (session.playbackConfirmTimeout) {
       clearTimeout(session.playbackConfirmTimeout);
     }
@@ -636,9 +665,10 @@ async function runLLMAndTTSPipeline(
       if (session.awaitingPlaybackConfirm && session.currentSpeechId === speechId) {
         logger.warn(
           { sessionId: session.sessionId },
-          "VoiceOrch: playback_complete not received within 15s — resetting to listening",
+          "VoiceOrch: playback_confirmed not received within 15s — resetting to listening",
         );
         session.awaitingPlaybackConfirm = false;
+        session.responseComplete = false;
         session.playbackConfirmTimeout = null;
         session.currentSpeechId = null;
         session.state = "listening";
@@ -650,7 +680,7 @@ async function runLLMAndTTSPipeline(
           session.pendingUtterance = null;
           session.pendingUtteranceId = null;
           void handleSpeechFinal(session, u, uid).catch((err) => {
-            logger.error({ err, sessionId: session.sessionId }, "VoiceOrch: pending utterance failed");
+            logger.error({ err, sessionId: session.sessionId }, "VoiceOrch: pending utterance from safety timeout failed");
           });
         }
       }
@@ -757,7 +787,7 @@ export async function handleSpeechFinal(
   if (session.awaitingPlaybackConfirm) {
     logger.info(
       { sessionId: session.sessionId, utteranceId },
-      "VoiceOrch: speech_final queued — awaiting playback_complete",
+      "VoiceOrch: speech_final queued — awaiting playback_confirmed",
     );
     session.pendingUtterance = transcript;
     session.pendingUtteranceId = utteranceId;
@@ -819,7 +849,20 @@ export async function handleSpeechFinal(
   }
 
   // Persist user utterance (fire-and-forget) before LLM call.
-  persistMessage(session.deviceId, "user", utterance, new Date());
+  // Dedup guard: suppress writes within 500ms of the previous to backstop echo turns.
+  const nowMs = Date.now();
+  if (
+    session.lastUserMessageAt !== null &&
+    nowMs - session.lastUserMessageAt.getTime() < 500
+  ) {
+    logger.warn(
+      { sessionId: session.sessionId },
+      "VoiceOrch: rapid user message write (<500ms) — possible echo turn, skipping persist",
+    );
+  } else {
+    session.lastUserMessageAt = new Date();
+    persistMessage(session.deviceId, "user", utterance, new Date());
+  }
 
   // Stages 5-7: context → LLM → TTS.
   await runLLMAndTTSPipeline(
