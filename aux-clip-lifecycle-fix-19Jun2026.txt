@@ -1,0 +1,81 @@
+Brief: Separate auxiliary clip lifecycle from main conversation turn lifecycle
+Date: 19 Jun 2026
+Status: COMPLETE — both typechecks clean, API server restarted
+
+ROOT CAUSE
+----------
+speakClipOrText() (the thinking-clip sender) was emitting speech_start /
+sentence_end / tts_done with no kind field. The client's speech_start handler
+reset ttsServerDoneRef=false and then tts_done set it back to true — before
+the main turn's response_end arrived. The result: mic opened early (via the
+safety path in playNext) on every turn where Gemini took >8 s to first token.
+
+PROTOCOL CHANGE
+---------------
+All audio protocol messages now carry a kind field:
+  kind: "main"      — every real turn (LLM reply, error clips, reconnect clips)
+  kind: "auxiliary" — thinking clip only
+
+Server files changed:
+  VoiceOrchestrationService.ts
+    · speakClipOrText() — new kind param (default "auxiliary"); all three
+      outbound messages (speech_start / sentence_end / tts_done) tagged with
+      the passed kind; currentSpeechId is never saved/overwritten/restored for
+      aux clips.
+    · flushSentenceToTTS() sentence_end — tagged kind: "main"
+    · Main pipeline speech_start (~line 522) — kind: "main"
+    · Hard-budget tts_done (~line 560) — kind: "main"
+    · response_end (~line 661) — kind: "main"
+    · handleReconnect speech_start (~line 981) — kind: "main"
+    · handleReconnect tts_done (~line 999) — kind: "main"
+    · All speakClipOrText call sites:
+        handleRepeatRequest ×2             → "main"
+        context-load-failure               → "main"
+        LLM stream error                   → "main"
+        thinking clip (first-token watchdog) → "auxiliary"
+        reconnect no-summary               → "main"
+        reconnect LLM-empty                → "main"
+        reconnect LLM-error catch          → "main"
+
+  voice-call.ts (speakFallback)
+    · speech_start — kind: "main"
+    · sentence_end — kind: "main"
+    · response_end — kind: "main"
+
+Client file changed:
+  useVoiceCall.ts
+    · New refs: auxChunkBufRef, auxPlayerRef, activeSpeechKindRef
+    · Binary frame routing: auxiliary frames → auxChunkBufRef, main → chunkBufRef
+    · flushAuxChunkBuffer() — fire-and-forget, independent AudioPlayer, no
+      queue, no lifecycle side-effects
+    · speech_start case: aux → reset auxChunkBufRef + activeSpeechKindRef="auxiliary";
+      main → existing gate reset + activeSpeechKindRef="main"
+    · sentence_end case: aux → flushAuxChunkBuffer(); main → flushChunkBuffer()
+    · tts_done case: aux → activeSpeechKindRef="main", log only, NO lifecycle;
+      main → existing ttsServerDoneRef + playNext path
+    · response_end case: defensive kind guard (only acts on kind === "main")
+    · stopPlayback(): also pauses/removes auxPlayerRef
+    · handleMessage dep array updated to include flushAuxChunkBuffer
+
+TEST BEHAVIOUR NOTES
+--------------------
+TEST 1 (normal turn, Gemini fast): no thinking clip fires; protocol unchanged;
+  tts_done arrives with kind="main" and opens mic as before.
+
+TEST 2 (slow Gemini, thinking clip fires): aux speech_start does NOT reset
+  main lifecycle refs. Thinking clip plays independently via auxPlayerRef.
+  Aux tts_done restores activeSpeechKindRef to "main" with no other effect.
+  Main response_end → playback_confirmed → tts_done(main) lifecycle proceeds
+  untouched. Mic opens exactly once, after the real reply finishes playing.
+
+TEST 3 (interrupt during aux clip): VAD is inactive while mic is closed in the
+  "thinking" phase — any speech during the clip is not captured. Acceptable
+  at this cadence; aux clips are ≤2s. Document if Kane flags it.
+
+ERROR CLIPS (say-that-again, call-dropped): kind="main" — tts_done still
+  triggers the safety-path mic open. Behaviour unchanged.
+
+DEPLOY NOTE
+-----------
+Server: just restart (done)
+Client: EAS build required — kind-tagged routing is client-side logic

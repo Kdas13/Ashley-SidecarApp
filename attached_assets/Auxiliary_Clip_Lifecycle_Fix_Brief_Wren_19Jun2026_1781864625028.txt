@@ -1,0 +1,232 @@
+================================================================================
+ASHLEY PROJECT — FIX BRIEF FOR WREN
+Task: Separate auxiliary clip lifecycle from main conversation turn lifecycle
+Version: 1
+Date: 19 June 2026
+================================================================================
+
+ROOT CAUSE (confirmed by your diagnosis + independent review):
+
+The "thinking" filler clip and the main LLM response share the same
+client-side lifecycle signals (speech_start, tts_done). The client cannot
+tell "auxiliary clip finished" apart from "main response finished". When
+the thinking clip's tts_done arrives, the client wrongly closes out the
+entire turn and opens the mic before Ashley's real reply has even started
+generating.
+
+THIS IS NOT A TIMING BUG. IT IS A MISSING DISTINCTION. The fix gives
+auxiliary audio (thinking clip, and any future filler clips) its own
+identity that the client recognises and ignores for turn-completion
+purposes, while still playing it audibly and promptly.
+
+================================================================================
+REQUIREMENTS (carried over from your diagnosis — all six apply)
+================================================================================
+
+REQ-1: Client lifecycle gates (ttsServerDoneRef, responseEndReceivedRef,
+        phase transitions) must not be affected by non-main-turn audio.
+REQ-2: Thinking clip must still play audibly and promptly.
+REQ-3: Server decides what is "main" vs "auxiliary" — client must not
+        hard-code speechId knowledge.
+REQ-4: 15-second safety timeout remains a backstop for genuine lost-
+        connection cases only — not the normal path.
+REQ-5: Must work whether the thinking clip fires or not. No client-side
+        special-casing on "did the watchdog fire".
+REQ-6: The existing response_end → playback_confirmed → tts_done lifecycle
+        for the MAIN turn is preserved without modification.
+
+================================================================================
+THE FIX — explicit audio kind tagging
+================================================================================
+
+Every message that carries or announces audio gets a new field: `kind`.
+
+  kind: "main"        — the actual conversation response (LLM-generated)
+  kind: "auxiliary"    — filler audio: thinking clip, future check-ins,
+                          any clip that is NOT the conversational answer
+
+The client uses `kind` to decide whether a given speech_start / tts_done
+pair is allowed to touch the main lifecycle refs. Auxiliary audio plays
+through its own lightweight, isolated path that never touches
+ttsServerDoneRef, responseEndReceivedRef, or phase.
+
+================================================================================
+PART 1 — SERVER CHANGES
+================================================================================
+
+FILE: artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+
+CHANGE 1: Add `kind` to every speech_start, sentence_end, tts_done, and
+response_end message.
+
+  Main turn messages (speech_start at line ~500-514, response_end at
+  line ~638, and the per-sentence sentence_end sends): add `kind: "main"`.
+
+  speakClipOrText() messages (lines 131-220, used for the thinking clip
+  and any other pre-loaded clip): add `kind: "auxiliary"`.
+
+CHANGE 2: Stop speakClipOrText() from touching session.currentSpeechId
+at all.
+
+  Currently speakClipOrText() saves currentSpeechId, temporarily
+  overwrites it with a clip-specific ID, then restores it. This was the
+  mechanism that allowed the clip to interfere with gate checks elsewhere
+  in the codebase.
+
+  Remove this save/overwrite/restore pattern entirely. speakClipOrText()
+  should use its own locally-scoped speechId for the clip's messages
+  (e.g. a fresh UUID generated at call time) and must NEVER assign to
+  session.currentSpeechId. The main turn's currentSpeechId stays
+  untouched throughout — there is no longer any reason for the clip to
+  borrow or interact with it, since the client will now distinguish by
+  `kind`, not by speechId matching.
+
+CHANGE 3: Confirm response_end (line ~638) continues to use
+session.currentSpeechId and kind: "main" exactly as before. No other
+change needed here — this path was already correct per your diagnosis.
+
+================================================================================
+PART 2 — CLIENT CHANGES
+================================================================================
+
+FILE: artifacts/mobile/lib/useVoiceCall.ts
+
+CHANGE 4: speech_start handler (lines ~483-509) — only reset main
+lifecycle refs when kind === "main".
+
+  case "speech_start": {
+    const kind = msg["kind"] as string | undefined;
+    if (kind === "main" || kind === undefined) {
+      // undefined fallback: treat as main for backward compatibility
+      // during rollout, remove fallback once server is confirmed always
+      // sending kind.
+      ttsServerDoneRef.current = false;
+      responseEndReceivedRef.current = false;
+      phaseRef.current = "speaking";
+      // ... existing main-path logic unchanged
+    } else {
+      // auxiliary clip — do not touch any main lifecycle ref.
+      addLog(`WS speech_start (auxiliary, kind=${kind}) — playing without affecting main lifecycle`);
+    }
+    break;
+  }
+
+CHANGE 5: tts_done handler (lines ~511-521) — only set
+ttsServerDoneRef when kind === "main".
+
+  case "tts_done": {
+    const kind = msg["kind"] as string | undefined;
+    if (kind === "main" || kind === undefined) {
+      ttsServerDoneRef.current = true;
+      void playNextRef.current();
+    } else {
+      addLog(`WS tts_done (auxiliary, kind=${kind}) — ignored for main lifecycle`);
+      // Auxiliary clip audio itself must still have already been queued
+      // and played via its own playback path — see CHANGE 7.
+    }
+    break;
+  }
+
+CHANGE 6: sentence_end and response_end handlers — same kind check
+pattern. Only act on main-lifecycle refs (responseEndReceivedRef, etc.)
+when kind === "main". Auxiliary sentence_end/response_end (if ever sent
+for a clip) should be logged and otherwise ignored for lifecycle purposes.
+
+CHANGE 7: Auxiliary clip audio playback path.
+
+  Auxiliary clip binary audio must still be queued and played — REQ-2
+  requires it plays audibly and promptly. Use a SEPARATE, simple playback
+  mechanism for auxiliary clips that does not route through the main
+  playQueueRef / playNext() state machine at all.
+
+  Recommended: a lightweight dedicated player instance for auxiliary
+  clips (e.g. auxPlayerRef), fired immediately on receipt of auxiliary
+  binary audio, fire-and-forget, no queue, no draining logic, no
+  interaction with phase or any *Ref used by the main lifecycle.
+
+  This guarantees REQ-1 structurally — auxiliary audio physically cannot
+  touch main lifecycle state because it does not go through the same
+  code path at all.
+
+================================================================================
+PART 3 — TESTING REQUIREMENTS (answers Atlas's flagged risks)
+================================================================================
+
+The completion report for this brief must include explicit test results
+for ALL of the following, not just the basic happy path:
+
+TEST 1: Single thinking clip fires (slow Gemini response > 8s), followed
+by main response. Confirm mic does not open until main response is fully
+delivered and confirmed.
+
+TEST 2: Fast response, thinking clip does NOT fire. Confirm main
+lifecycle works identically to before — no regression for the common case.
+
+TEST 3: Thinking clip plays, and Kane speaks WHILE it is playing
+(interruption during auxiliary audio). Confirm this does not corrupt
+main lifecycle state and is handled sensibly (either ignored or treated
+as a genuine interruption — state explicitly which behaviour was
+implemented and why).
+
+TEST 4: Silence check-in (speakFallback, 30s silence) fires during a
+period where a thinking clip might also be relevant. Confirm no
+interaction or state bleed between the two auxiliary paths.
+
+TEST 5: 10+ consecutive conversation turns on production APK, deliberately
+including at least 4 turns where Gemini takes long enough to trigger the
+thinking clip. Confirm zero premature mic-opens, zero fragmented capture,
+clean transcript in text chat afterward.
+
+================================================================================
+WHAT NOT TO DO
+================================================================================
+
+- Do not special-case based on speechId matching/comparison on the
+  client — REQ-3 explicitly forbids this. Use the `kind` field only.
+- Do not route auxiliary clip audio through playQueueRef or playNext().
+- Do not touch the main response_end / playback_confirmed lifecycle
+  logic — it is confirmed working correctly per your diagnosis.
+- Do not adjust the 8-second watchdog timing or 15-second safety timeout
+  values as a workaround — this brief fixes the structural cause, not
+  the timing.
+
+================================================================================
+DELIVERY
+================================================================================
+
+Server changes — restart only, no EAS build.
+Client changes — EAS build required.
+
+Step 1: Server changes. Restart. Confirm live.
+Step 2: Client changes. EAS build.
+Step 3: Run ALL FIVE tests from Part 3 on production APK. Document each
+        result explicitly in the completion report.
+Step 4: Return completion report per Standing Template v3.0 — git show
+        output for every item, GitHub permalink once pushed.
+
+================================================================================
+COMPLETION REPORT CHECKLIST
+================================================================================
+
+ITEM 1: kind field added to main-turn messages (server)
+ITEM 2: kind field added to auxiliary clip messages (server)
+ITEM 3: speakClipOrText no longer touches session.currentSpeechId (server)
+ITEM 4: response_end path confirmed unchanged (server)
+ITEM 5: speech_start handler respects kind, only resets main refs on
+        kind === "main" (client)
+ITEM 6: tts_done handler respects kind (client)
+ITEM 7: sentence_end / response_end handlers respect kind (client)
+ITEM 8: Dedicated auxiliary audio playback path added, isolated from
+        main playQueueRef/playNext (client)
+ITEM 9: Test 1 — thinking clip + main response, no premature mic open
+ITEM 10: Test 2 — fast response, no clip, no regression
+ITEM 11: Test 3 — interruption during auxiliary clip playback
+ITEM 12: Test 4 — silence check-in + thinking clip interaction
+ITEM 13: Test 5 — 10+ turn production soak test, 4+ with clip triggered
+
+Item 13 is the gate. Do not mark this brief complete if item 13 fails
+or if any of items 9-12 reveal a new issue.
+
+================================================================================
+END OF BRIEF
+================================================================================

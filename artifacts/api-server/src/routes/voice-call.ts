@@ -139,6 +139,7 @@ async function speakFallback(
     session.ws.send(
       JSON.stringify({
         type: "speech_start",
+        kind: "main",
         speechId,
         sessionId: session.sessionId,
         connectionGeneration: session.connectionGeneration,
@@ -170,7 +171,7 @@ async function speakFallback(
     // Flush the client's chunk buffer so the audio plays immediately.
     try {
       session.ws.send(
-        JSON.stringify({ type: "sentence_end", speechId, timestamp: Date.now() }),
+        JSON.stringify({ type: "sentence_end", kind: "main", speechId, timestamp: Date.now() }),
       );
     } catch {}
 
@@ -183,6 +184,7 @@ async function speakFallback(
       session.ws.send(
         JSON.stringify({
           type: "response_end",
+          kind: "main",
           speechId,
           sessionId: session.sessionId,
           connectionGeneration: session.connectionGeneration,

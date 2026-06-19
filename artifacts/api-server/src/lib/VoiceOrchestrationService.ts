@@ -127,11 +127,23 @@ function persistMessage(
  * Send a pre-generated audio clip if available, otherwise synthesise the
  * fallback text via ElevenLabs. Both paths are best-effort — errors logged,
  * not thrown.
+ *
+ * kind: "main"      — treated as part of the main conversation turn lifecycle
+ *                     (tts_done opens the mic via the safety path).  Use for
+ *                     error-recovery clips (say-that-again, call-dropped).
+ * kind: "auxiliary" — isolated from the main lifecycle; client plays audio
+ *                     through a separate path that does not touch
+ *                     ttsServerDoneRef / responseEndReceivedRef / phase.
+ *                     Use for mid-turn filler clips (thinking watchdog).
+ *
+ * This function never touches session.currentSpeechId — it uses a locally-
+ * scoped clipSpeechId so the main turn's speechId ownership is undisturbed.
  */
 async function speakClipOrText(
   session: VoiceSession,
   clipName: ClipName,
   fallbackText: string,
+  kind: "main" | "auxiliary" = "auxiliary",
 ): Promise<void> {
   if (!session.ws) return;
   if (
@@ -141,17 +153,17 @@ async function speakClipOrText(
   )
     return;
 
-  // Save caller's speechId so surrounding pipeline code (e.g. main tts_done)
-  // still works correctly after this returns.
-  const savedSpeechId = session.currentSpeechId;
-  const clipSpeechId  = crypto.randomUUID();
+  // Locally-scoped ID — never written to session.currentSpeechId.
+  // The main turn's speechId ownership is completely undisturbed.
+  const clipSpeechId = crypto.randomUUID();
 
-  // Send speech_start so the client sets ttsCompleteRef=false and clears its
-  // chunk buffer. Without this the clip binary gets concatenated with whatever
-  // is already buffered (e.g. a previous clip) and plays as one mangled audio.
+  // speech_start tells the client a new audio unit is starting and what kind
+  // it is. kind="auxiliary" → client routes to its isolated aux player and does
+  // not reset any main lifecycle refs. kind="main" → normal lifecycle reset.
   try {
     session.ws.send(JSON.stringify({
       type:                "speech_start",
+      kind,
       speechId:             clipSpeechId,
       sessionId:            session.sessionId,
       connectionGeneration: session.connectionGeneration,
@@ -188,24 +200,27 @@ async function speakClipOrText(
     }
   }
 
-  // sentence_end flushes the chunk buffer immediately so the clip plays on its
-  // own rather than sitting in the buffer until the next sentence_end/tts_done.
+  // sentence_end flushes the client's chunk buffer so the clip plays promptly
+  // rather than sitting buffered until the next boundary signal.
   if (sentChunks > 0 && session.ws) {
     try {
       session.ws.send(JSON.stringify({
         type:      "sentence_end",
+        kind,
         speechId:  clipSpeechId,
         timestamp: Date.now(),
       }));
     } catch {}
   }
 
-  // tts_done signals end of this audio unit. Client sets ttsCompleteRef=true
-  // and reopens the mic once playback drains.
+  // tts_done signals end of this audio unit.
+  // For kind="main": client sets ttsServerDoneRef=true and opens mic via safety path.
+  // For kind="auxiliary": client ignores for main lifecycle, restores context to "main".
   if (session.ws) {
     try {
       session.ws.send(JSON.stringify({
         type:                "tts_done",
+        kind,
         speechId:             clipSpeechId,
         sessionId:            session.sessionId,
         connectionGeneration: session.connectionGeneration,
@@ -214,9 +229,6 @@ async function speakClipOrText(
       }));
     } catch {}
   }
-
-  // Restore the caller's speechId ownership.
-  session.currentSpeechId = savedSpeechId;
 }
 
 /**
@@ -260,7 +272,7 @@ async function flushSentenceToTTS(
   if (sentChunks > 0 && session.currentSpeechId === speechId && session.ws) {
     try {
       session.ws.send(
-        JSON.stringify({ type: "sentence_end", speechId, timestamp: Date.now() }),
+        JSON.stringify({ type: "sentence_end", kind: "main", speechId, timestamp: Date.now() }),
       );
     } catch {}
   }
@@ -405,6 +417,7 @@ async function handleRepeatRequest(session: VoiceSession): Promise<void> {
       session,
       "say-that-again",
       "Sorry, say that again?",
+      "main",
     );
     return;
   }
@@ -413,7 +426,7 @@ async function handleRepeatRequest(session: VoiceSession): Promise<void> {
     session.ws?.send(session.rollingAudioBuffer);
   } catch (err) {
     logger.warn({ err, sessionId: session.sessionId }, "VoiceOrch: repeat replay failed");
-    await speakClipOrText(session, "say-that-again", "Sorry, say that again?");
+    await speakClipOrText(session, "say-that-again", "Sorry, say that again?", "main");
   }
 }
 
@@ -491,6 +504,7 @@ async function runLLMAndTTSPipeline(
         session,
         "say-that-again",
         "Sorry, I lost my thread for a second. Try that again?",
+        "main",
       );
     }
     return;
@@ -505,6 +519,7 @@ async function runLLMAndTTSPipeline(
     session.ws?.send(
       JSON.stringify({
         type:                "speech_start",
+        kind:                "main",
         speechId,
         sessionId:            session.sessionId,
         connectionGeneration: session.connectionGeneration,
@@ -541,6 +556,7 @@ async function runLLMAndTTSPipeline(
           session.ws?.send(
             JSON.stringify({
               type:                "tts_done",
+              kind:                "main",
               speechId,
               responseText:         session.currentResponseText ?? "",
               sessionId:            session.sessionId,
@@ -559,7 +575,7 @@ async function runLLMAndTTSPipeline(
   firstTokenWatchdog = setTimeout(() => {
     if (!firstTokenReceived && session.currentTurnId === turnId) {
       logger.info({ sessionId: session.sessionId, turnId }, "VoiceOrch: first-token watchdog — playing thinking clip");
-      void speakClipOrText(session, "thinking", "Hang on, I'm thinking...");
+      void speakClipOrText(session, "thinking", "Hang on, I'm thinking...", "auxiliary");
     }
   }, FIRST_TOKEN_WATCHDOG_MS);
 
@@ -620,6 +636,7 @@ async function runLLMAndTTSPipeline(
         session,
         "say-that-again",
         "Sorry, I've lost my train of thought. What were you saying?",
+        "main",
       );
     }
   } finally {
@@ -642,6 +659,7 @@ async function runLLMAndTTSPipeline(
       session.ws?.send(
         JSON.stringify({
           type:                "response_end",
+          kind:                "main",
           speechId,
           responseText:         session.currentResponseText,
           sessionId:            session.sessionId,
@@ -918,6 +936,7 @@ export async function handleReconnect(
       session,
       "call-dropped",
       "Sorry about that — looks like we dropped. Where were we?",
+      "main",
     );
     return;
   }
@@ -957,6 +976,7 @@ export async function handleReconnect(
         ws.send(
           JSON.stringify({
             type:                "speech_start",
+            kind:                "main",
             speechId,
             sessionId:            session.sessionId,
             connectionGeneration: session.connectionGeneration,
@@ -974,6 +994,7 @@ export async function handleReconnect(
           ws.send(
             JSON.stringify({
               type:                "tts_done",
+              kind:                "main",
               speechId,
               sessionId:            session.sessionId,
               connectionGeneration: session.connectionGeneration,
@@ -985,11 +1006,11 @@ export async function handleReconnect(
         session.currentSpeechId = null;
       }
     } else {
-      await speakClipOrText(session, "call-dropped", "Sorry about that — looks like we dropped. Where were we?");
+      await speakClipOrText(session, "call-dropped", "Sorry about that — looks like we dropped. Where were we?", "main");
     }
   } catch (err) {
     logger.warn({ err, sessionId: session.sessionId }, "VoiceOrch: handleReconnect LLM failed — falling back to clip");
-    await speakClipOrText(session, "call-dropped", "Sorry about that — looks like we dropped. Where were we?");
+    await speakClipOrText(session, "call-dropped", "Sorry about that — looks like we dropped. Where were we?", "main");
   } finally {
     if (session.currentAbortController) {
       session.currentAbortController = null;

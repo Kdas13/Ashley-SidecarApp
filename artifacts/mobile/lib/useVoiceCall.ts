@@ -161,6 +161,13 @@ export function useVoiceCall(): {
   // prepareToRecordAsync — the second call would throw "already been prepared".
   const micOpeningRef       = useRef(false);
 
+  // ── Auxiliary audio (thinking clips, non-turn clips) ──────────────────────
+  // These messages carry kind="auxiliary" and must not touch main lifecycle refs.
+  const auxChunkBufRef      = useRef<Uint8Array[]>([]);
+  const auxPlayerRef        = useRef<AudioPlayer | null>(null);
+  // "auxiliary" while receiving an aux clip's binary frames; "main" otherwise.
+  const activeSpeechKindRef = useRef<"main" | "auxiliary">("main");
+
   // ── Audio playback queue ──────────────────────────────────────────────────
 
   const stopPlayback = useCallback((): void => {
@@ -177,6 +184,13 @@ export function useVoiceCall(): {
     }
     if (u) {
       FileSystem.deleteAsync(u, { idempotent: true }).catch(() => { /* ignore */ });
+    }
+    // Also stop any in-flight auxiliary clip.
+    const ap = auxPlayerRef.current;
+    auxPlayerRef.current = null;
+    if (ap) {
+      try { ap.pause(); } catch { /* ignore */ }
+      try { ap.remove(); } catch { /* ignore */ }
     }
   }, []);
 
@@ -281,6 +295,42 @@ export function useVoiceCall(): {
       void playNextRef.current();
     } catch { /* audio lost, call continues */ }
   }, []);
+
+  // Fire-and-forget: decode and play the current aux chunk buffer independently
+  // of the main playback queue, with no lifecycle side-effects.
+  const flushAuxChunkBuffer = useCallback(async (): Promise<void> => {
+    const chunks = auxChunkBufRef.current;
+    auxChunkBufRef.current = [];
+    if (chunks.length === 0) return;
+    const combined = concatChunks(chunks);
+    const b64 = toBase64(combined);
+    const dir = FileSystem.cacheDirectory;
+    if (!dir) return;
+    const uri = `${dir}vc-aux-${Date.now()}-${Math.random().toString(36).slice(2)}.mp3`;
+    try {
+      await FileSystem.writeAsStringAsync(uri, b64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      // Stop any previous aux clip before starting the new one.
+      const prev = auxPlayerRef.current;
+      auxPlayerRef.current = null;
+      if (prev) {
+        try { prev.pause(); } catch { /* ignore */ }
+        try { prev.remove(); } catch { /* ignore */ }
+      }
+      const player = createAudioPlayer({ uri });
+      auxPlayerRef.current = player;
+      player.addListener("playbackStatusUpdate", (status) => {
+        if (status.didJustFinish) {
+          auxPlayerRef.current = null;
+          try { player.remove(); } catch { /* ignore */ }
+          FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => { /* ignore */ });
+        }
+      });
+      player.play();
+      addLog("aux: playing thinking clip");
+    } catch { /* aux audio lost, call continues */ }
+  }, [addLog]);
 
   // ── Mic open / submit / reopen cycle ──────────────────────────────────────
 
@@ -466,7 +516,11 @@ export function useVoiceCall(): {
   const handleMessage = useCallback(
     async (event: MessageEvent): Promise<void> => {
       if (event.data instanceof ArrayBuffer) {
-        chunkBufRef.current.push(new Uint8Array(event.data));
+        if (activeSpeechKindRef.current === "auxiliary") {
+          auxChunkBufRef.current.push(new Uint8Array(event.data));
+        } else {
+          chunkBufRef.current.push(new Uint8Array(event.data));
+        }
         return;
       }
       if (typeof event.data !== "string") return;
@@ -483,20 +537,41 @@ export function useVoiceCall(): {
           await openMicRef.current();
           break;
 
-        case "speech_start":
-          chunkBufRef.current = [];
-          ttsCompleteRef.current = false;        // device not done playing
-          ttsServerDoneRef.current = false;      // server not done sending
-          responseEndReceivedRef.current = false; // server has not yet confirmed response complete
-          addLog("WS speech_start — gates reset");
+        case "speech_start": {
+          const kind = (msg["kind"] as string | undefined) ?? "main";
+          if (kind === "auxiliary") {
+            // Auxiliary clip (e.g. thinking clip) — reset only the aux buffer.
+            // Do NOT touch main lifecycle refs.
+            auxChunkBufRef.current = [];
+            activeSpeechKindRef.current = "auxiliary";
+            addLog("WS speech_start(aux) — aux buffer reset");
+          } else {
+            // Main turn speech — reset all lifecycle gates as before.
+            chunkBufRef.current = [];
+            ttsCompleteRef.current = false;        // device not done playing
+            ttsServerDoneRef.current = false;      // server not done sending
+            responseEndReceivedRef.current = false; // server has not yet confirmed response complete
+            activeSpeechKindRef.current = "main";
+            addLog("WS speech_start(main) — gates reset");
+          }
           break;
+        }
 
-        case "sentence_end":
-          await flushChunkBuffer();
-          addLog("WS sentence_end — chunk buffer flushed");
+        case "sentence_end": {
+          const kind = (msg["kind"] as string | undefined) ?? "main";
+          if (kind === "auxiliary") {
+            await flushAuxChunkBuffer();
+            addLog("WS sentence_end(aux) — aux buffer flushed");
+          } else {
+            await flushChunkBuffer();
+            addLog("WS sentence_end(main) — chunk buffer flushed");
+          }
           break;
+        }
 
-        case "response_end":
+        case "response_end": {
+          const kind = (msg["kind"] as string | undefined) ?? "main";
+          if (kind !== "main") break; // defensive: ignore any auxiliary response_end
           // Server has dispatched all TTS chunks for this turn.
           // The client may now send playback_confirmed once the play queue drains.
           responseEndReceivedRef.current = true;
@@ -507,13 +582,22 @@ export function useVoiceCall(): {
             void playNextRef.current();
           }
           break;
+        }
 
         case "tts_done": {
+          const kind = (msg["kind"] as string | undefined) ?? "main";
+          if (kind === "auxiliary") {
+            // Aux clip finished — restore routing to main, no lifecycle effect.
+            activeSpeechKindRef.current = "main";
+            addLog("WS tts_done(aux) — aux clip done, routing restored to main");
+            break;
+          }
+          // Main turn tts_done — existing lifecycle.
           await flushChunkBuffer();
           const text = (msg["responseText"] as string | undefined) ?? "";
           if (text) setAshleyResponse(text);
           ttsServerDoneRef.current = true;
-          addLog(`WS tts_done — q=${playQueueRef.current.length} running=${playNextRunningRef.current}`);
+          addLog(`WS tts_done(main) — q=${playQueueRef.current.length} running=${playNextRunningRef.current}`);
           // Route through playNext so the same drain logic handles both the
           // "no audio queued" case and the "last track just finished" case.
           // The mutex ensures this is a no-op if playback is already in flight.
@@ -552,7 +636,7 @@ export function useVoiceCall(): {
           break;
       }
     },
-    [flushChunkBuffer, stopPlayback, setPhaseSync],
+    [flushChunkBuffer, flushAuxChunkBuffer, stopPlayback, setPhaseSync],
   );
 
   // ── Connect ───────────────────────────────────────────────────────────────

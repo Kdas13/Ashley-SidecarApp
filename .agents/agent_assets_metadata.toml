@@ -359,3 +359,9 @@ id = "fEaXbciYvhb8-TkZ7-O-S"
 uri = "file://voice-protocol-thinking-clip-diagnosis-19Jun2026.txt"
 type = "text"
 title = "Voice Protocol Diagnosis — Thinking Clip Lifecycle Collision (19 Jun 2026)"
+
+[[outputs]]
+id = "Wxcz3VyoahNbHa_jZdTz4"
+uri = "file://aux-clip-lifecycle-fix-19Jun2026.txt"
+type = "text"
+title = "aux-clip-lifecycle-fix-19Jun2026.txt"
