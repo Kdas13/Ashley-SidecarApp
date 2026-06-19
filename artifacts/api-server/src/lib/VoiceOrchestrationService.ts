@@ -333,6 +333,7 @@ export function handlePlaybackConfirmed(session: VoiceSession): void {
     session.ws?.send(
       JSON.stringify({
         type:                "tts_done",
+        kind:                "main",
         speechId:             session.currentSpeechId,
         responseText:         session.currentResponseText,
         sessionId:            session.sessionId,

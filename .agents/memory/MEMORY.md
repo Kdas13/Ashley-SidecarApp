@@ -9,3 +9,5 @@
 - [Ashley design system](ashley-design-system.md) — navy/blue palette (#0B0F18 bg, #00B9FF accent); user bubbles dark+glow, Ashley bubbles warm grey; no purple anywhere.
 - [Image context continuity fix](image-context-continuity.md) — image_description column on messages; VISUAL tag extraction; all three history builders combine caption AND description in placeholder.
 - [Replit Gemini integration model names](replit-gemini-models.md) — only gemini-2.5-flash is confirmed supported; do not assume Google public model names work; verify against existing working code before adding any model override.
+- [Voice call echo loop root cause](voice-echo-loop.md) — ttsServerDoneRef initialized true in useVoiceCall.ts; drain branch checks it before responseEndReceivedRef, opening mic on first drain.
+- [EAS build sandbox constraint](eas-build-constraint.md) — `eas build` cannot be run from Replit main agent; it does a destructive git op that the sandbox blocks. Kane must run it from the Shell tab.

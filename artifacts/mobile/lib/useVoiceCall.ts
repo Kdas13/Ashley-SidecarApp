@@ -150,7 +150,10 @@ export function useVoiceCall(): {
   // Both must be true before openMic is allowed to run.
   // Separating them prevents the mic from opening during the gap between
   // "server finished sending" and "device finished playing".
-  const ttsServerDoneRef    = useRef(true);
+  // Starts false — there is no audio in flight until the server sends
+  // speech_start for a real turn. Defaulting to true previously caused
+  // the mic to open before the first turn's lifecycle had begun.
+  const ttsServerDoneRef    = useRef(false);
   const ttsCompleteRef      = useRef(true);
   // responseEndReceivedRef: true once the server has sent "response_end" for
   // the current turn. The client MUST NOT send playback_confirmed until this

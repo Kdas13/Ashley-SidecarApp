@@ -1,0 +1,146 @@
+================================================================================
+ASHLEY PROJECT — FIX BRIEF FOR WREN
+Task: ttsServerDoneRef incorrectly initialised to true
+Version: 1
+Date: 19 June 2026
+================================================================================
+
+ROOT CAUSE — found via your own code dump, Request 3:
+
+  useVoiceCall.ts, line 153:
+    const ttsServerDoneRef = useRef(true);
+
+  This should be useRef(false). Initialising to true means that before
+  any speech_start(main) has ever fired — at component mount, at the
+  very start of a call — the client believes "the server has finished
+  sending audio" when nothing has been sent yet. Combined with the
+  drain logic's ordering (ttsServerDoneRef checked BEFORE
+  responseEndReceivedRef), this allows the mic to open prematurely on
+  or near the very first turn of a call, before the real lifecycle
+  signals have had a chance to govern behaviour correctly.
+
+  This is consistent with what Kane observed: echo/self-response loops
+  beginning almost immediately in a call, not specifically tied to
+  multi-sentence responses or the thinking clip — because the bug is a
+  startup-state defect, not a mid-conversation timing defect.
+
+This is a ONE-LINE fix. The brief below is mostly about how it is
+tested and reported, not the size of the change.
+
+================================================================================
+THE FIX
+================================================================================
+
+FILE: artifacts/mobile/lib/useVoiceCall.ts
+
+CHANGE 1: Line 153.
+
+  BEFORE:
+    const ttsServerDoneRef = useRef(true);
+
+  AFTER:
+    const ttsServerDoneRef = useRef(false);
+
+CHANGE 2: Add a one-line comment explaining why, so this cannot silently
+regress again:
+
+    // Starts false — there is no audio in flight until the server sends
+    // speech_start for a real turn. Defaulting to true previously caused
+    // the mic to open before the first turn's lifecycle had begun.
+    const ttsServerDoneRef = useRef(false);
+
+================================================================================
+SECONDARY ITEM — found in your own Request 1 observation
+================================================================================
+
+FILE: artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+
+handlePlaybackConfirmed() sends tts_done without a kind field (lines
+333-343 per your dump). It currently works correctly because the client
+defaults missing kind to "main" — but this is fragile and exactly the
+kind of implicit behaviour that caused today's confusion. Make it
+explicit:
+
+  Add kind: "main" to the tts_done object sent in handlePlaybackConfirmed,
+  matching every other main-lifecycle send site.
+
+This change has no functional effect today (the default already produces
+correct behaviour) but removes an inconsistency that would confuse any
+future debugging session the same way it slowed this one down.
+
+================================================================================
+TESTING REQUIREMENT — READ CAREFULLY, THIS IS NOT OPTIONAL
+================================================================================
+
+Under Standing Template v3.1, there is no "NOT TESTED" option, and
+"PASS" requires an ACTUAL EXECUTED TEST with ACTUAL OUTPUT — not a
+description of expected behaviour.
+
+You CAN test the core logic of this fix yourself, server-side, without
+needing Kane's device, by writing and running a small standalone script
+or test that:
+
+  1. Imports or replicates the exact drain logic from playNext() (the
+     if/else-if/else block checking ttsServerDoneRef, responseEndReceivedRef,
+     and phase).
+  2. Simulates the ref starting at its INITIAL value (false, post-fix)
+     before any speech_start has fired.
+  3. Confirms that with ttsServerDoneRef=false and responseEndReceivedRef
+     =false and phase="speaking" at queue-drain time, the mic-open branch
+     is NOT taken — the "waiting for next sentence" branch is taken instead.
+  4. Paste the ACTUAL output of running this test/script — not a
+     description of what it would do.
+
+If you genuinely cannot construct any form of standalone test for this
+(state explicitly why not, in detail, before falling back to this),
+the item is NOT TESTABLE BY WREN and must say so explicitly, naming
+exactly what device-level step Kane must perform instead.
+
+Do not write "this should fix it" as a substitute for either of the
+above. That is exactly the failure mode that was just identified and
+formally noted as a violation.
+
+================================================================================
+DELIVERY
+================================================================================
+
+Server change (kind field) — restart only.
+Client change (useRef fix) — EAS build required.
+
+Step 1: Make both changes.
+Step 2: Run whatever self-executable test you can construct per the
+        Testing Requirement above. Paste real output.
+Step 3: Restart server. Confirm live.
+Step 4: Initiate EAS build.
+Step 5: Return completion report per Standing Template v3.1. PASS only
+        with real executed output. NOT TESTABLE BY WREN for anything
+        requiring Kane's device, with exact instructions for what Kane
+        must do.
+
+Kane will then run the actual production test: 10+ turns, normal
+conversation, paying specific attention to whether the FIRST turn or
+early turns in the call show any premature mic-open — since this bug's
+signature is most likely to appear early in a call, not deep into one.
+
+================================================================================
+COMPLETION REPORT CHECKLIST
+================================================================================
+
+ITEM 1: ttsServerDoneRef initial value changed from true to false,
+        with explanatory comment (client)
+ITEM 2: kind: "main" added to handlePlaybackConfirmed's tts_done send
+        (server)
+ITEM 3: Self-executable test of the drain logic constructed and run,
+        real output pasted — OR explicit explanation of why this is
+        not possible, with NOT TESTABLE BY WREN and exact Kane
+        instructions
+ITEM 4: Server restarted, confirmed live
+ITEM 5: EAS build initiated
+
+Kane's own production test (item 6, run by Kane after EAS build) is the
+final gate, as with every voice call fix today. This brief is not
+considered closed by Wren's report alone.
+
+================================================================================
+END OF BRIEF
+================================================================================

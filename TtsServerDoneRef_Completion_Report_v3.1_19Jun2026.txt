@@ -1,0 +1,267 @@
+================================================================================
+ASHLEY PROJECT — STANDING COMPLETION REPORT v3.1
+Brief: ttsServerDoneRef incorrectly initialised to true
+Brief version: 1
+Date: 19 June 2026
+================================================================================
+
+Brief title: ttsServerDoneRef initialisation fix + handlePlaybackConfirmed kind field
+Build deployed at: 12:47:04 UTC (server restart timestamp from log)
+Parent commit (HEAD at time of edits): e8c8edba5158ceafa393b17ee566d63bf3584d6b
+Commit hash for these changes: PENDING — assigned automatically at session
+  checkpoint. Run `git log --oneline -1` after this session to confirm.
+GitHub repo URL: https://github.com/Kdas13/Ashley-SidecarApp
+
+NOTE: Changes are in the working tree against HEAD e8c8edba. The diff is
+provided in full below in place of git show output (Rule 10) because the
+commit hash is not yet assigned. The diff is the authoritative record
+of exactly what changed.
+
+Typechecks:
+  @workspace/api-server — PASS (tsc --noEmit, 12:46 UTC)
+  @workspace/mobile     — PASS (tsc --noEmit, 12:46 UTC)
+
+Server restart: COMPLETE — API Server workflow restarted 12:47 UTC.
+  Confirmed live: GET /api/healthz → 200 at 12:47:09 UTC (log line shown in
+  Item 4 below).
+EAS build: NOT TESTABLE BY WREN — see Item 5.
+
+--------------------------------------------------------------------------------
+CHECKLIST
+--------------------------------------------------------------------------------
+
+ITEM 1: ttsServerDoneRef initial value changed from true to false,
+        with explanatory comment (client)
+Completed at: 12:46 UTC
+File(s) changed: artifacts/mobile/lib/useVoiceCall.ts
+
+--- git diff HEAD output ---
+
+diff --git a/artifacts/mobile/lib/useVoiceCall.ts b/artifacts/mobile/lib/useVoiceCall.ts
+index d659ba8..4997363 100644
+--- a/artifacts/mobile/lib/useVoiceCall.ts
++++ b/artifacts/mobile/lib/useVoiceCall.ts
+@@ -150,7 +150,10 @@ export function useVoiceCall(): {
+   // Both must be true before openMic is allowed to run.
+   // Separating them prevents the mic from opening during the gap between
+   // "server finished sending" and "device finished playing".
+-  const ttsServerDoneRef    = useRef(true);
++  // Starts false — there is no audio in flight until the server sends
++  // speech_start for a real turn. Defaulting to true previously caused
++  // the mic to open before the first turn's lifecycle had begun.
++  const ttsServerDoneRef    = useRef(false);
+
+--- end git diff ---
+
+Test performed: TypeScript typecheck — command and output:
+
+  $ pnpm --filter @workspace/mobile run typecheck
+
+  > @workspace/mobile@0.0.0 typecheck /home/runner/workspace/artifacts/mobile
+  > tsc -p tsconfig.json --noEmit
+
+  (exit code 0, no errors)
+
+Test result: PASS
+
+
+ITEM 2: kind: "main" added to handlePlaybackConfirmed's tts_done send (server)
+Completed at: 12:46 UTC
+File(s) changed: artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+
+--- git diff HEAD output ---
+
+diff --git a/artifacts/api-server/src/lib/VoiceOrchestrationService.ts b/artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+index a72f97d..8728e6a 100644
+--- a/artifacts/api-server/src/lib/VoiceOrchestrationService.ts
++++ b/artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+@@ -333,6 +333,7 @@ export function handlePlaybackConfirmed(session: VoiceSession): void {
+     session.ws?.send(
+       JSON.stringify({
+         type:                "tts_done",
++        kind:                "main",
+         speechId:             session.currentSpeechId,
+         responseText:         session.currentResponseText,
+
+--- end git diff ---
+
+Test performed: TypeScript typecheck — command and output:
+
+  $ pnpm --filter @workspace/api-server run typecheck
+
+  > @workspace/api-server@0.0.0 typecheck /home/runner/workspace/artifacts/api-server
+  > tsc -p tsconfig.json --noEmit
+
+  (exit code 0, no errors)
+
+Test result: PASS
+
+
+ITEM 3: Self-executable test of drain logic constructed and run
+Completed at: 12:46 UTC
+
+Test script: standalone Node.js (no imports required — the drain logic is a
+pure if/else-if/else branch; the exact block was copied from useVoiceCall.ts
+lines 196-210 and wrapped in a test harness). Script run directly with `node`.
+
+The test covers:
+  Case 1 — initial state POST-FIX (ttsServerDone=false, responseEnd=false):
+    confirms the "waiting for next sentence" branch is taken (WAIT), NOT mic-open.
+  Case 2 — initial state PRE-FIX (ttsServerDone=true, responseEnd=false):
+    confirms the mic-open branch was taken (OPEN_MIC) — this was the bug.
+  Case 3 — inter-sentence gap (ttsServerDone=false, responseEnd=false):
+    confirms WAIT is taken mid-response.
+  Case 4 — response_end received, queue drained (ttsServerDone=false, responseEnd=true):
+    confirms playback_confirmed is sent.
+  Case 5 — tts_done received, queue drained (ttsServerDone=true, responseEnd=false):
+    confirms mic opens (this is the CORRECT end-of-turn path via the round-trip).
+  Case 6 — phase=listening (drain while not in speaking phase):
+    confirms the speaking gate blocks all branches.
+
+ACTUAL OUTPUT of running the script (unmodified):
+
+  === playNext drain logic test ===
+
+  Case 1 — initial state post-fix (ttsServerDone=false, responseEnd=false):
+    PASS  phase=speaking → WAIT: got "WAIT"
+
+  Case 2 — initial state pre-fix (ttsServerDone=true, responseEnd=false) [was the bug]:
+    PASS  phase=speaking → OPEN_MIC (this was wrong): got "OPEN_MIC"
+
+  Case 3 — inter-sentence gap (ttsServerDone=false, responseEnd=false):
+    PASS  phase=speaking → WAIT: got "WAIT"
+
+  Case 4 — response_end received, queue drained (ttsServerDone=false, responseEnd=true):
+    PASS  phase=speaking → SEND_PLAYBACK_CONFIRMED: got "SEND_PLAYBACK_CONFIRMED"
+
+  Case 5 — tts_done received, queue drained (ttsServerDone=true, responseEnd=false after reset):
+    PASS  phase=speaking → OPEN_MIC: got "OPEN_MIC"
+    NOTE: responseEnd is false here because speech_start(main) for a new
+    turn resets it. This is the echo-loop-sustaining path once started.
+    The fix prevents the FIRST premature entry into this path.
+
+  Case 6 — phase=listening (drain while not in speaking phase):
+    PASS  phase=listening → NOT_SPEAKING: got "NOT_SPEAKING"
+
+  === RESULTS ===
+  PASS: 6  FAIL: 0
+  All assertions passed.
+
+Test result: PASS — 6/6 assertions. Script exited with code 0.
+
+
+ITEM 4: Server restarted, confirmed live
+Completed at: 12:47 UTC
+
+  $ restart_workflow "artifacts/api-server: API Server"
+  (Restarted successfully)
+
+Actual server log output confirming live state:
+
+  [12:47:04.761] INFO (718): Server listening
+      port: 8080
+  [12:47:04.822] INFO (718): AudioClipRegistry: initialised
+      loaded: 4
+      total: 4
+  [12:47:09.992] INFO (718): request completed
+      req: {"id": 1, "method": "GET", "url": "/api/healthz"}
+      res: {"statusCode": 200}
+      responseTime: 7
+
+Test result: PASS — server listening, healthz 200 confirmed.
+
+
+ITEM 5: EAS build initiated
+Completed at: N/A
+
+Test performed: Attempted to run:
+  $ pnpm --filter @workspace/mobile exec eas build --platform android --non-interactive
+
+Actual output (relevant lines):
+
+  ✔ Using remote Android credentials (Expo server)
+  ✔ Using Keystore from configuration: Build Credentials t_ccFfGccm (default)
+  Compressing project files and uploading to EAS Build.
+  Destructive git operations are not allowed in the main agent.
+
+The EAS CLI performs a destructive git operation (archiving the working tree)
+as part of the build submission. The Replit main agent sandbox blocks all
+destructive git operations. This is a platform constraint, not a code problem.
+
+Test result: NOT TESTABLE BY WREN
+
+What Kane must do:
+  1. Open a shell in the Replit workspace (Shell tab or a terminal session).
+  2. Run:
+       pnpm --filter @workspace/mobile exec eas build --platform android
+  3. Wait for the build to complete on EAS (typically 10-20 minutes).
+  4. Install the resulting APK on the test device.
+  5. Run the production soak test (Item 6 below).
+
+--------------------------------------------------------------------------------
+DEVIATIONS FROM BRIEF
+--------------------------------------------------------------------------------
+
+1. Commit hash cannot be provided at report time because the Replit platform
+   assigns commit hashes at automatic checkpoint creation (end of session),
+   not at the point of editing. The diff against HEAD e8c8edba is provided in
+   full in Items 1 and 2 as the authoritative record. Kane: run
+   `git log --oneline -1` after this session ends to get the hash, then verify
+   the GitHub permalink resolves.
+
+2. EAS build: unable to initiate from the main agent due to sandbox restriction
+   (destructive git operation blocked). Declared in Item 5 with exact Kane
+   instructions. This is not a deferral — it is a genuine NOT TESTABLE BY WREN.
+
+--------------------------------------------------------------------------------
+ITEMS REMOVED WITHOUT INSTRUCTION
+--------------------------------------------------------------------------------
+
+NONE.
+
+--------------------------------------------------------------------------------
+PROACTIVE ISSUES
+--------------------------------------------------------------------------------
+
+1. ttsCompleteRef is initialized to true at line 160 (just below the fix):
+     const ttsCompleteRef = useRef(true);
+   This ref is the DEVICE playback completion guard. Initializing to true means
+   the device is considered "done playing" before any audio has played. This is
+   governed by the call_connected handler (line 537), which opens the mic
+   immediately on connection — the initial true is intentional there (no audio
+   to play before the first turn). The fix to ttsServerDoneRef is the relevant
+   change; ttsCompleteRef's initialization is consistent with its existing logic.
+   Noting it here because a future reader might ask the same question.
+
+2. The full-cycle echo loop (once started, sustaining itself) is not addressed
+   by this fix. Case 5 in the drain test shows the sustaining path
+   (srvDone=true, responseEnd=false after speech_start reset) still takes
+   OPEN_MIC. This fix removes the condition that caused the FIRST premature
+   mic-open (the initialization defect). If the echo loop has a second entry
+   point, this fix does not close it. Kane's soak test will determine whether
+   a second entry point exists.
+
+--------------------------------------------------------------------------------
+OUTSTANDING ITEMS
+--------------------------------------------------------------------------------
+
+Item 5 (EAS build): Kane must run from a shell.
+Item 6 (production soak test — Kane's gate): 10+ turns, normal conversation,
+  specific attention to whether the FIRST turn or early turns show any premature
+  mic-open. The signature of the initialization bug is most likely to appear on
+  the first turn. Kane reports the result to close this brief.
+
+--------------------------------------------------------------------------------
+================================================================================
+SIGNED
+================================================================================
+
+Agent: Wren (Replit)
+Report generated at: ~12:55 UTC, 19 June 2026
+Server build timestamp: 12:47:04 UTC
+Parent commit: e8c8edba5158ceafa393b17ee566d63bf3584d6b
+Commit hash for this change: pending checkpoint
+
+================================================================================
+END OF COMPLETION REPORT — v3.1
+================================================================================
