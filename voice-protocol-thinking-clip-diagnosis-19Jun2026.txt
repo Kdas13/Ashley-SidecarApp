@@ -1,0 +1,234 @@
+================================================================================
+ASHLEY PROJECT — VOICE PROTOCOL DIAGNOSIS
+Issue: responseEnd=false / srvDone=true on every turn
+Date: 19 June 2026
+Status: ROOT CAUSE CONFIRMED — no fix in this document per brief
+================================================================================
+
+ANSWERING THE FOUR BRIEF QUESTIONS IN ORDER
+
+================================================================================
+Q1. Does the response_end server log line fire at all?
+================================================================================
+
+YES. response_end IS being sent server-side.
+
+No extra log line is needed to confirm this. The gate at line 638 of
+VoiceOrchestrationService.ts:
+
+    if (session.currentSpeechId === speechId) {
+      session.responseComplete = true;
+      ...send response_end...
+
+PASSES on every normal turn. Here is why it passes:
+
+  - Line 500 sets session.currentSpeechId = speechId (the main turn's ID).
+  - speakClipOrText (the thinking clip) saves that value into savedSpeechId,
+    temporarily sets currentSpeechId = clipSpeechId, then at line 219
+    SYNCHRONOUSLY restores session.currentSpeechId = savedSpeechId (= speechId).
+  - Because hasClip("thinking") is TRUE (clip is pre-loaded as a binary buffer),
+    speakClipOrText has NO await in its body — it runs entirely synchronously in
+    the watchdog setTimeout callback and returns before any LLM I/O runs.
+  - Therefore, by the time the for-await LLM loop exits and reaches line 638,
+    session.currentSpeechId === speechId. The gate passes. response_end is sent.
+
+Adding a log line before the send would confirm this, but the analysis below
+makes clear that the send itself is not the problem.
+
+================================================================================
+Q2. Does response_end arrive at the client?
+================================================================================
+
+YES, but too late to matter.
+
+response_end IS received by the client. The response_end handler sets
+responseEndReceivedRef.current = true and calls playNextRef.current(). But by
+the time it arrives, the client has ALREADY opened the mic and is in
+phase="listening". The playNext() drain condition requires phase === "speaking"
+to act — it is a no-op in "listening" phase. playback_confirmed is never sent.
+The server's 15-second safety timeout then fires and sends tts_done directly.
+
+There is no connectionGeneration or sequenceNumber mismatch causing silent
+client-side rejection. The message is received and processed correctly; it just
+arrives after the client has already left the "speaking" phase.
+
+================================================================================
+Q3. Does the LLM stream exit early / skip the response_end block?
+================================================================================
+
+NO. The for-await LLM loop completes normally. The finally block at line 625
+runs, session.llmStreamActive is set to false, and execution reaches line 638.
+The gate passes (see Q1). response_end is sent.
+
+There is no early return between the stream completing and the send. The catch
+at line 611 only fires on abort/stream errors; on normal Gemini completions the
+try body finishes cleanly.
+
+================================================================================
+Q4. Is the server running the latest build?
+================================================================================
+
+YES. Server start timestamp from the restart log: 09:08:36 on 19 Jun 2026.
+Commit 12c0ed3 (the protocol fix checkpoint) was created at the end of the
+previous task session, same date. The server was restarted after that commit
+and is confirmed running the new code (build artefact from post-commit source).
+
+================================================================================
+ROOT CAUSE — the thinking clip corrupts the client-side lifecycle gates
+================================================================================
+
+The bug is NOT in the response_end send path. It is a design collision between
+the speakClipOrText "thinking" clip and the new explicit lifecycle protocol.
+
+EXACT SEQUENCE on every turn where Gemini takes > 8 seconds to first token
+(FIRST_TOKEN_WATCHDOG_MS = 8000):
+
+  Server:
+    t=0ms     speech_start(speechId) sent                   [line 500-514]
+    t=8000ms  firstTokenWatchdog fires
+              void speakClipOrText(session, "thinking", ...) [line 562]
+                — hasClip("thinking") is TRUE (pre-loaded binary)
+                — entire speakClipOrText body is SYNCHRONOUS (no await)
+                — sends: speech_start(clipSpeechId)
+                — sends: clip binary buffer
+                — sends: sentence_end(clipSpeechId)
+                — sends: tts_done(clipSpeechId)             ← KEY PROBLEM
+                — restores session.currentSpeechId = speechId
+
+  Client (in order of receipt):
+
+    Receives speech_start(speechId):
+      ttsServerDoneRef = false
+      responseEndReceivedRef = false
+      phase → "speaking"
+
+    Receives speech_start(clipSpeechId):   ← RESETS ALL GATES A SECOND TIME
+      ttsServerDoneRef = false
+      responseEndReceivedRef = false
+      (phase stays "speaking")
+
+    Receives clip binary → queued for playback
+    Receives sentence_end(clipSpeechId)   → flushChunkBuffer → clip plays
+
+    Receives tts_done(clipSpeechId):
+      ttsServerDoneRef = true              ← THE CORRUPTING WRITE
+      calls playNextRef.current()
+
+    Clip audio drains. playNext() drain fires:
+      responseEndReceivedRef = false
+      ttsServerDoneRef = true
+      phase = "speaking"
+      → SAFETY PATH: opens mic
+      → logs: "playNext: drained responseEnd=false srvDone=true phase=speaking"
+      → logs: "ttsComplete=true — opening mic (safety-timeout path)"
+
+  Client is now in phase="listening". Mic is open.
+
+  Server (LLM eventually returns first token, some time after watchdog):
+    Sentences flushed to TTS via flushSentenceToTTS — currentSpeechId === speechId
+    (restored), so sentences ARE sent correctly.
+    Line 638 gate passes → response_end(speechId) sent.
+
+  Client receives main response sentences → queues and plays.
+  Client receives response_end(speechId):
+    responseEndReceivedRef = true
+    calls playNextRef.current()
+    drain fires, but phaseRef.current === "listening" (not "speaking")
+    → no-op. playback_confirmed never sent.
+
+  Server: 15-second safety timeout fires.
+    Sends tts_done(speechId) directly.
+    Client sets ttsServerDoneRef = true again. (Already in listening phase.)
+
+  Ashley's audio plays over the open mic → echo / cut-off speech capture.
+
+================================================================================
+WHY THE OLD PROTOCOL DID NOT SURFACE THIS
+================================================================================
+
+The old protocol's drain condition was:
+
+    if (ttsServerDoneRef.current) {
+      open mic
+    } else {
+      send playback_complete   ← fire and forget, server replies with tts_done
+    }
+
+The thinking clip's tts_done set ttsServerDoneRef = true in the old protocol
+too. The mic opened early in the old protocol too. However:
+
+  1. Gemini 2.5 Flash has higher first-token latency than Claude Sonnet on the
+     voice workload. The 8-second watchdog was tuned when Claude was the
+     provider. With Gemini, the watchdog fires on nearly every production turn.
+     The bug existed before but was rare enough not to be noticed.
+
+  2. The old protocol's logs did not capture the exact drain state. The new
+     protocol's drain log ("responseEnd=false srvDone=true") made the failure
+     mode unambiguous and impossible to miss.
+
+  3. With the old protocol, even after the mic opened early, the server's
+     subsequent playback_complete → tts_done round-trip could partially
+     recover the turn. With the new protocol, playback_confirmed is gated on
+     phase === "speaking", so once the mic opens there is NO recovery path
+     — the server's safety timeout is the only way out.
+
+================================================================================
+WHAT THE FIX MUST SOLVE — REQUIREMENTS, NOT IMPLEMENTATION
+================================================================================
+
+The fix must satisfy all of the following:
+
+  REQ-1: The client's lifecycle gates (ttsServerDoneRef, responseEndReceivedRef,
+          phase transitions) must not be affected by audio units that are NOT
+          the main turn response (i.e. the thinking clip, silence check-ins,
+          and any future mid-turn clips).
+
+  REQ-2: The thinking clip must still play audibly and play promptly (no
+          buffering with the main response sentences).
+
+  REQ-3: The fix must not require the client to hard-code knowledge of which
+          speechIds are "main" vs "clip" — that distinction belongs on the
+          server side (the server knows what it is sending).
+
+  REQ-4: The server safety timeout (15s) must remain as a backstop for genuine
+          lost-connection cases only. It must not be the normal playback path.
+
+  REQ-5: The fix must work correctly when the thinking clip fires AND when it
+          does not fire (fast-first-token turns). No special-casing on the
+          client for "did the watchdog fire?".
+
+  REQ-6: The existing response_end → playback_confirmed → tts_done lifecycle
+          for the main turn must be preserved without modification.
+
+================================================================================
+FILES IMPLICATED
+================================================================================
+
+  Server:
+    artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+      Lines 131-220  speakClipOrText — sends speech_start + tts_done
+      Lines 559-564  firstTokenWatchdog — void speakClipOrText call site
+      Lines 638-700  response_end send + safety timeout (working correctly)
+
+  Client:
+    artifacts/mobile/lib/useVoiceCall.ts
+      Lines 483-509  speech_start case — resets all three lifecycle refs
+      Lines 511-521  tts_done case — sets ttsServerDoneRef unconditionally
+      Lines 195-222  playNext() drain — acts on ttsServerDoneRef
+
+================================================================================
+WHAT IS NOT THE CAUSE
+================================================================================
+
+  - The response_end send at line 638 is NOT broken.
+  - The gate session.currentSpeechId === speechId at line 638 is NOT failing.
+  - There is no connectionGeneration or sequenceNumber rejection on the client.
+  - The LLM stream is NOT exiting early.
+  - The server is NOT running stale code.
+  - The speakFallback() rewrite (voice-call.ts) is NOT implicated — speakFallback
+    is the silence check-in path, which fires only after 30s of silence. The
+    "15+ second delay before every reply" is the thinking clip path, not silence.
+
+================================================================================
+END OF DIAGNOSIS
+================================================================================

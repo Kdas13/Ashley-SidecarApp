@@ -353,3 +353,9 @@ id = "_-D-3TIK8D6duzHtT8IA7"
 uri = "file://voice-protocol-fix-completion-19Jun2026.txt"
 type = "text"
 title = "Voice Protocol Fix — Completion Report (19 Jun 2026)"
+
+[[outputs]]
+id = "fEaXbciYvhb8-TkZ7-O-S"
+uri = "file://voice-protocol-thinking-clip-diagnosis-19Jun2026.txt"
+type = "text"
+title = "Voice Protocol Diagnosis — Thinking Clip Lifecycle Collision (19 Jun 2026)"

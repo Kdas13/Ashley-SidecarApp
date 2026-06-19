@@ -1,0 +1,56 @@
+================================================================================
+ASHLEY PROJECT — URGENT FOLLOW-UP FOR WREN
+Task: response_end is never being sent — every turn falls through to the
+      15-second safety timeout
+Date: 19 June 2026
+================================================================================
+
+PRODUCTION TEST RESULT — Voice Protocol Architecture Fix
+
+Every single turn in production logs shows:
+  "ttsComplete=true — opening mic (safety-timeout path)"
+  "playNext: drained responseEnd=false srvDone=true phase=speaking"
+
+responseEnd is FALSE on every observed turn. This means response_end is
+never reaching the client. The client is falling through to the 15-second
+safety timeout on every turn, which then opens the mic with NO playback
+confirmation gate — the original race condition, just delayed by 15s.
+
+This explains:
+  - 15+ second "Thinking..." delay before every Ashley reply
+  - Fragmented/cut-off speech capture ("Still there? Yeah. I'm" — cut mid
+    sentence, same signature as the original echo bug)
+  - Chat history not loading correctly after the call
+
+================================================================================
+WHAT WE NEED — DIAGNOSIS ONLY, NO FIX YET
+================================================================================
+
+1. Confirm response_end is actually being sent server-side. Add a log
+   line immediately before the response_end ws.send() call in
+   runLLMAndTTSPipeline() if one is not already there, and check server
+   logs from a fresh test call — does that log line fire at all?
+
+2. If it fires but the client never receives it: check connectionGeneration
+   and sequenceNumber on the response_end payload against what the client
+   expects. A mismatch could cause silent client-side rejection.
+
+3. If it does NOT fire: trace exactly why. Possibilities to check:
+   - Is the LLM stream's for-await loop actually completing normally,
+     or throwing/exiting early in a way that skips the post-loop block?
+   - Is there an early return somewhere between the stream completing
+     and the response_end send that bypasses it under normal conditions?
+   - Is response_end being sent from inside a try block whose catch
+     swallows an error before reaching the send?
+
+4. Confirm: was this server restarted with the latest code after the
+   last completion report, or is the server possibly running an older
+   build? State the server start timestamp and confirm it is AFTER
+   the commit timestamp for this fix.
+
+================================================================================
+DO NOT ATTEMPT A FIX UNTIL THE ROOT CAUSE IS CONFIRMED.
+We do not want another patch on top of an unconfirmed assumption.
+================================================================================
+END OF REQUEST
+================================================================================
