@@ -1,0 +1,62 @@
+================================================================================
+ASHLEY PROJECT — URGENT TECHNICAL QUESTION FOR WREN
+Date: 18 June 2026
+================================================================================
+
+DO NOT ATTEMPT TO PUSH. DO NOT MAKE ANY CHANGES.
+READ THE GIT STATE AND REPORT BACK ONLY.
+
+================================================================================
+THE CONTRADICTION
+================================================================================
+
+GitHub repo Kdas13/Ashley-SidecarApp is confirmed EMPTY (GitHub itself
+says "Cannot fork because repository is empty").
+
+But the push from Replit's Git pane fails with:
+  "PUSH_REJECTED — the remote has commits that aren't in the local
+   repository."
+
+An empty remote cannot have commits the local repo doesn't have.
+These two facts cannot both be true. Something else is going on.
+
+================================================================================
+WHAT WE NEED YOU TO CHECK — read-only, report back
+================================================================================
+
+Run these commands and paste the FULL raw output for each, no summarising:
+
+1. git remote -v
+
+2. git branch -a
+
+3. git log --oneline -5
+
+4. git ls-remote origin
+   (or whatever the remote is actually named per command 1)
+
+5. git status
+
+6. If command 4 fails or hangs — confirm how long it took and what
+   the exact output/error was.
+
+================================================================================
+SPECIFIC THINGS TO LOOK FOR
+================================================================================
+
+- Is there more than one remote configured (e.g. 'origin' AND something
+  pointing at the same GitHub URL under a different name)?
+- Does the remote URL in git remote -v actually match
+  https://github.com/Kdas13/Ashley-SidecarApp exactly?
+- Is the local branch actually named 'main', or something else
+  (e.g. 'replit-agent', 'subrepl-1hogf9hp')?
+- Does GitHub's default branch (visible on github.com) say 'main' or
+  something else, like 'master'? An empty repo's default branch name
+  can mismatch the local branch name and cause exactly this kind of
+  rejection.
+
+================================================================================
+DO NOT GUESS. DO NOT THEORISE. PASTE RAW COMMAND OUTPUT ONLY.
+================================================================================
+END OF REQUEST
+================================================================================
