@@ -371,3 +371,9 @@ id = "tDd8nfdFQaJQj113x9QNI"
 uri = "file://AuxClip_Completion_Report_v3_19Jun2026.txt"
 type = "text"
 title = "AuxClip_Completion_Report_v3_19Jun2026.txt"
+
+[[outputs]]
+id = "kFUa4XhQbxDnYXB5vSD39"
+uri = "file://EchoLoop_Audit_Response_19Jun2026.txt"
+type = "text"
+title = "EchoLoop_Audit_Response_19Jun2026.txt"

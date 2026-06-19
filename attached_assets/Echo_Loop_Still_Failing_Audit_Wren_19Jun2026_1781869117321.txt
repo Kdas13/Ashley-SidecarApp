@@ -1,0 +1,61 @@
+================================================================================
+ASHLEY PROJECT — CODE AUDIT REQUEST FOR WREN
+Task: Production test FAILED — echo loop still occurring on MAIN lifecycle
+Date: 19 June 2026
+================================================================================
+
+DO NOT FIX ANYTHING. SHOW THE ACTUAL CODE AS IT EXISTS RIGHT NOW.
+
+================================================================================
+TEST RESULT
+================================================================================
+
+Production APK tested after the auxiliary clip lifecycle fix. Result: FAIL.
+
+Every single mic-open in the test logs goes through:
+  "ttsComplete=true — opening mic (safety-timeout path)"
+  "playNext: drained responseEnd=false srvDone=true phase=speaking"
+
+This is NOT the thinking clip. Kane said one sentence ("Hey, Ashley.") and
+the debug log then shows MULTIPLE player:started / player:finished /
+tts_done(main) / sentence_end(main) events firing in sequence with NO
+corresponding new input from Kane — meaning Ashley's own audio is being
+picked up by the mic and treated as a new turn. This is the original
+echo loop, happening on the kind="main" path, not auxiliary.
+
+The auxiliary clip fix was implemented correctly per your diagnosis and
+did not regress anything — but it did not fix this, because this was
+never about the thinking clip. response_end for the MAIN response itself
+is still not reaching the client before the mic reopens.
+
+================================================================================
+WHAT WE NEED — PASTE ACTUAL CODE, NOT A DESCRIPTION
+================================================================================
+
+1. Paste the COMPLETE current contents of the function that sends
+   response_end for the main turn (runLLMAndTTSPipeline, the block
+   around the old line ~638-661). Full function, not a snippet.
+
+2. Paste the COMPLETE current contents of the 15-second safety timeout
+   setTimeout block — the exact duration value as it appears in the code
+   right now (not what you remember it being set to). Confirm the exact
+   number in milliseconds.
+
+3. Paste the COMPLETE client-side playNext() drain logic as it currently
+   exists in useVoiceCall.ts — the real file, not a summary of what it
+   does.
+
+4. Explain, using ONLY what is shown in items 1-3 above, why response_end
+   for the MAIN turn would not reach the client before 15 seconds elapses
+   on a normal-length Gemini response. Do not speculate beyond what the
+   pasted code actually shows.
+
+5. State plainly: was the actual production test (10+ turns, 4+ clip
+   triggers) ever run by you, or only by Kane? If you ran any test
+   yourself, state exactly what you tested and on what build/environment.
+
+================================================================================
+NO FIX. NO SPECULATION BEYOND THE PASTED CODE. SHOW THE WORK.
+================================================================================
+END OF REQUEST
+================================================================================
