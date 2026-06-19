@@ -341,3 +341,9 @@ id = "YrFEVx1MUIvymrsekBHkq"
 uri = "file://git-diagnostic-18Jun2026.txt"
 type = "text"
 title = "Git Diagnostic — 18 Jun 2026"
+
+[[outputs]]
+id = "JaXWSw5X7Ay-Q9E3LT6Ef"
+uri = "file://voice-call-regression-diagnosis-19Jun2026.txt"
+type = "text"
+title = "Voice Call Regression Diagnosis — 19 Jun 2026"

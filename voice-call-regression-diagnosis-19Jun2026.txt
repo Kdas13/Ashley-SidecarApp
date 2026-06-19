@@ -1,0 +1,252 @@
+================================================================================
+ASHLEY PROJECT — VOICE CALL REGRESSION DIAGNOSIS
+Date: 19 June 2026
+Issues observed: three (echo loop, check-in loop, transcript corruption)
+Source: code analysis of artifacts/api-server and artifacts/mobile/lib
+Note: server code is what ran in production. Device logs are not accessible
+      from this environment — findings below are code-derived. Points that
+      require device log confirmation are flagged explicitly.
+================================================================================
+
+
+================================================================================
+ISSUE 1 — ECHO LOOP: PREMATURE playback_complete
+================================================================================
+
+VERDICT: The playback_complete handshake has a structural gap.
+         The v2 fix assumed the queue drains exactly once — after the final
+         sentence. It does not. The queue drains between every sentence.
+
+TRACE — multi-sentence response path:
+
+  1. Server streams sentence 1 chunks → sentence_end → flushChunkBuffer() →
+     URI pushed to queue → playNext() called → track starts, phase="speaking".
+
+  2. Sentence 1 finishes playing → didJustFinish fires →
+     playNextRunningRef=false → playNextRef.current() called again.
+
+  3. playNext() enters drain check. Queue may be empty — sentence 2 chunks
+     not yet flushed from the chunk buffer. phase="speaking",
+     ttsServerDoneRef=false → playback_complete is sent.
+
+  4. Server receives playback_complete → sends tts_done →
+     client opens mic → Ashley is still mid-response.
+
+The client has no way to distinguish "queue empty between sentences"
+from "queue empty at end of response". The only signal that previously
+meant "all audio is done" was tts_done (old protocol). That signal was
+removed in v2 and replaced with waiting for playback_complete — which
+now fires too early.
+
+RELEVANT CODE:
+
+  artifacts/mobile/lib/useVoiceCall.ts, lines 187-208
+  — the drain condition that fires playback_complete:
+
+    const uri = playQueueRef.current.shift();
+    if (!uri) {
+      if (phaseRef.current === "speaking") {
+        if (ttsServerDoneRef.current) { ... }
+        else {
+          // fires here — but queue can be empty mid-response between sentences
+          wsRef.current.send(JSON.stringify({ type: "playback_complete" }));
+        }
+      }
+      playNextRunningRef.current = false;
+      return;
+    }
+
+  artifacts/mobile/lib/useVoiceCall.ts, lines 226-238
+  — didJustFinish path that calls playNext() between sentences:
+
+    player.addListener("playbackStatusUpdate", (status) => {
+      if (status.didJustFinish) {
+        if (trackFinished) return;
+        trackFinished = true;
+        playNextRunningRef.current = false;
+        ...
+        void playNextRef.current();  // triggers drain check prematurely
+      }
+    });
+
+WHY autoSubmit fired phase=listening FITS THIS:
+
+  openMic() ran (passed all guards), set phase to "listening", started the
+  4-second autoSubmit timer. Ashley's remaining audio then played, was
+  partially captured by the mic (AEC cannot fully suppress simultaneous
+  speaker output at close range), and after 4 seconds autoSubmit fired.
+
+AEC STATUS:
+
+  The hardware AEC path is correctly configured. voiceInput.ts line 62 sets
+  audioSource: "voice_communication" with VOICE_CALL_PRESET. playNext()
+  deliberately does not call setAudioModeAsync so the AEC session stays live
+  across turns (useVoiceCall.ts lines 212-215). AEC is engaged. But AEC is
+  not perfect when the mic opens during speaker output. The premature
+  playback_complete is the primary root cause; AEC limitation is secondary.
+
+DEVICE LOG CONFIRMATION NEEDED:
+
+  Check whether "WS playback_complete → sent" appears more than once per
+  Ashley response. One per sentence boundary (rather than once per complete
+  response) confirms the premature drain is firing.
+
+
+================================================================================
+ISSUE 2 — UNPROMPTED "ARE YOU THERE?" LOOP
+================================================================================
+
+Two independent causes. Cause A reproduces without Issue 1 present.
+
+--------------------------------------------------------------------------------
+CAUSE A — speakFallback() bypasses the playback confirmation gate
+          (independent bug, exists with or without Issue 1)
+--------------------------------------------------------------------------------
+
+artifacts/api-server/src/routes/voice-call.ts, lines 165-179
+— speakFallback() sends tts_done immediately after the last chunk,
+  without setting awaitingPlaybackConfirm:
+
+    if (sentChunks > 0 && session.currentSpeechId === speechId) {
+      session.ws.send(JSON.stringify({ type: "tts_done", ... }));
+    }
+    session.currentSpeechId = null;
+
+When the 30-second silence monitor fires "Still there?" (line 272), it calls
+speakFallback(). The client receives tts_done, ttsServerDoneRef=true, calls
+playNext(), queue is empty at that point, srvDone=true → ttsCompleteRef=true
+→ openMic(). Mic opens immediately on tts_done receipt — no playback gate,
+no confirmation handshake. The original race condition is fully intact in
+this code path.
+
+Result: "Still there?" plays through the speaker. Mic opens during playback.
+Audio captured and submitted. Deepgram transcribes "Still there?" as Kane's
+speech. Server starts a new LLM turn. Response plays. speakFallback sends
+tts_done immediately again. Loop continues.
+
+--------------------------------------------------------------------------------
+CAUSE B — silence timer measures silence during awaitingPlaybackConfirm
+          (amplified by Issue 1)
+--------------------------------------------------------------------------------
+
+artifacts/api-server/src/lib/VoiceOrchestrationService.ts, line 669
+— session.state is set to "listening" immediately after the TTS pipeline
+  completes, BEFORE playback_complete is received:
+
+    session.state = "listening";
+
+artifacts/api-server/src/routes/voice-call.ts, lines 234-236
+— silence monitor measures when state === "listening":
+
+    const ref = session.lastAudioReceivedAt ?? session.callStartTime;
+    const silenceMs = Date.now() - ref.getTime();
+
+While the server waits for playback_complete, state is already "listening".
+The client is playing audio and NOT sending binary mic frames (mic is closed),
+so lastAudioReceivedAt is not advancing.
+
+artifacts/api-server/src/index.ts, lines 300-301
+— lastAudioReceivedAt only updates on binary (mic audio) frames:
+
+    currentSession.lastAudioReceivedAt = new Date();
+    currentSession.silenceWarningSent = false;
+
+These do not run on JSON control messages (speech_final, playback_complete,
+etc.). The server's silence clock does not advance while Kane is speaking
+but the mic frames aren't arriving — which happens during every Ashley
+response and the playback confirmation wait.
+
+If Issue 1's false turns keep the mic opening briefly then closing, real
+audio frame density drops. The silence accumulator runs faster than it
+should relative to Kane's actual activity.
+
+CONCLUSION ON ISSUE 2:
+
+  Cause A is an independent bug. It reproduces in a clean call with no
+  echo loop if the caller goes quiet for 30 seconds. Fixing Issue 1 reduces
+  Cause B but does not touch Cause A.
+
+
+================================================================================
+ISSUE 3 — TRANSCRIPT CORRUPTION IN TEXT CHAT
+================================================================================
+
+VERDICT: Both a downstream symptom of Issue 1 AND an independent structural
+         bug in its own right.
+
+--------------------------------------------------------------------------------
+USER TURN WRITES HAVE NO DEDUPLICATION GUARD
+--------------------------------------------------------------------------------
+
+artifacts/api-server/src/lib/VoiceOrchestrationService.ts, line 822:
+
+    persistMessage(session.deviceId, "user", utterance, new Date());
+
+No guard. Every call to handleSpeechFinal() that passes the intent filter
+writes a user row. Every false echo turn from Issue 1 writes its own user row.
+No mechanism exists to mark a turn as false or to retract it.
+
+--------------------------------------------------------------------------------
+ASSISTANT TURN GUARD IS PER-TURN, NOT GLOBAL
+--------------------------------------------------------------------------------
+
+artifacts/api-server/src/lib/VoiceOrchestrationService.ts, lines 664-666:
+
+    if (session.currentResponseText.trim() && !session.completedTurnIds.has(turnId)) {
+      session.completedTurnIds.add(turnId);
+      persistMessage(session.deviceId, "ashley", session.currentResponseText, new Date());
+    }
+
+completedTurnIds prevents the same turnId from writing twice (protects
+against retry within a single turn). It does not prevent ten distinct false
+turns — each with its own turnId — from each writing an assistant row.
+Ten echo turns write ten user rows and ten assistant rows.
+
+--------------------------------------------------------------------------------
+HOW THE HISTORY IS READ
+--------------------------------------------------------------------------------
+
+artifacts/api-server/src/routes/voice-call.ts, lines 79-83:
+
+    db.select().from(messagesTable)
+      .where(eq(messagesTable.deviceId, deviceId))
+      .orderBy(desc(messagesTable.createdAt))
+      .limit(HISTORY_WINDOW),
+
+No filter on source. Voice call rows, echo rows, and text chat rows all
+appear together ordered by createdAt. The createdAt on voice rows is
+new Date() at persist time (server wall clock). Multiple false turns written
+in rapid succession via fire-and-forget async DB writes have no guaranteed
+serial ordering relative to each other or to real turns. This produces the
+out-of-order and fragmented appearance Kane observed in text chat.
+
+ISSUE 3 VERDICT:
+
+  Fragmentation and duplication are directly caused by Issue 1's false turns
+  writing rows. The structural absence of a deduplication guard on user turns
+  and the lack of a source filter on history reads means that even a single
+  echo loop fully corrupts the history visible in text chat.
+
+
+================================================================================
+CROSS-ISSUE SUMMARY
+================================================================================
+
+ISSUE 1 — Echo loop
+  Root cause: playback_complete fires on inter-sentence queue drain, not final
+  drain. No "all chunks sent" signal exists in the new protocol.
+  Independent of Issue 1? — (this IS Issue 1)
+
+ISSUE 2 — "Are you there?" loop
+  Root cause A: speakFallback() bypasses awaitingPlaybackConfirm gate.
+  Root cause B: silence timer measures during confirmation wait.
+  Independent of Issue 1? YES (Cause A is fully independent)
+
+ISSUE 3 — Transcript corruption
+  Root cause: no dedup guard on user turns; echo turns each write distinct
+  rows; history read has no source filter.
+  Independent of Issue 1? Downstream symptom PLUS independent structural bug.
+
+================================================================================
+END OF DIAGNOSIS — no fixes proposed here, per brief instruction
+================================================================================
