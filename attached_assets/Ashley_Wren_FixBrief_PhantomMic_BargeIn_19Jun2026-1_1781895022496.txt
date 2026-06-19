@@ -1,0 +1,101 @@
+================================================================================
+WREN — FIX BRIEF: PHANTOM MIC CYCLING + BARGE-IN
+Date: 19 June 2026
+Commitment 1 Standard applies: THREE OPTIONS BEFORE ANY CODE. Written
+approval required before implementation. One job per message.
+================================================================================
+
+Both root causes below are CONFIRMED from your own raw code dump #2 — this is
+not a guess, you found these. Issue 2 (freeze) is excluded from this brief
+pending one fact from Kane about whether it self-recovered at ~45s.
+
+================================================================================
+ISSUE 1 — PHANTOM MIC CYCLING
+================================================================================
+
+CONFIRMED CAUSE (your dump, Section 1):
+useVoiceCall.ts line 493 — the 4000ms autoSubmit fallback timer is started
+unconditionally on every openMic() call and fires unconditionally 4s later,
+regardless of whether metering-based VAD is working. It was written as a
+fallback for devices where recorder.metering returns null, but nothing gates
+it to ONLY apply in that situation. Result: on a working device, any silence
+longer than 4s mid-listen forces a submission of near-nothing, which loops.
+
+GIVE ME THREE OPTIONS, e.g. (your judgement on the real three, not mine):
+  - Gate the fallback timer so it only arms when metering is actually null
+    (i.e. true device-fallback only), vs.
+  - Keep it unconditional but extend it well past SILENCE_MS (3500ms) so it
+    only ever acts as a last-resort, e.g. 6500ms+, vs.
+  - Reset/restart the 4000ms timer on every detected sound (not just at
+    openMic), so it only fires after genuine prolonged silence regardless of
+    which detection path is active.
+State the tradeoff of each plainly (false-submit risk vs. hang risk vs.
+complexity) so Kane can pick.
+
+================================================================================
+ISSUE 3 — NO BARGE-IN (CLIENT-SIDE FEATURE MISSING, NOT A BUG)
+================================================================================
+
+CONFIRMED CAUSE (your dump, Section 2):
+The server's interrupt handling (handleInterruption, STOP_AUDIO_PLAYBACK_IMMEDIATE)
+is complete and correctly wired to fire when a new speech_final arrives while
+the server is mid-stream. But the client never sends speech_final during
+phase="speaking" — the mic is closed during playback, and the one place that
+could submit during that phase (the autoSubmit timer) explicitly skips it.
+So the server-side trigger is never reached. This is a missing client
+capability, not a broken one.
+
+GIVE ME THREE OPTIONS for how the client could detect and signal an
+interruption while Ashley is talking, e.g.:
+  - Keep the mic open throughout phase="speaking" (lower-confidence VAD
+    threshold during playback, since echo/cancellation risk is higher), and
+    submit immediately + send speech_final the moment real speech is detected,
+    vs.
+  - A dedicated "push-to-interrupt" affordance (e.g. tap a button or speak a
+    short trigger) rather than continuous listening during playback, vs.
+  - Open the mic briefly at fixed intervals during long responses to sample
+    for interruption attempts, rather than continuously.
+Flag the echo-cancellation risk explicitly for the first option, since the
+phone mic picking up Ashley's own voice as a "barge-in" attempt would be a
+new and worse version of Issue 1.
+
+================================================================================
+ISSUE 2 — MID-CALL FREEZE ON "THINKING…" — UNTIMED, QUERY ONLY
+================================================================================
+
+Kane could not reliably tell whether the freeze cleared at/around the 45s
+hard-budget mark or never cleared at all before he ended the call. Don't
+guess from that — answer this from the code/logs instead, no live test needed
+from Kane's side:
+
+1. Server-side: is there any logging around the hard budget firing (line
+   ~509, "if session.currentSpeechId === speechId" inside the 45s setTimeout)?
+   If so, pull the server logs from around the time of Kane's test call
+   (screenshots were timestamped ~18:24:04–18:24:10 BST, 19 June 2026) and
+   check whether the hard budget actually fired for that turn, and whether
+   the gate check passed or failed.
+
+2. If the gate check FAILED (session.currentSpeechId was already null/changed
+   by the time the 45s timer ran) — explain under what circumstance that
+   happens on a normal turn, since that would mean tts_done never gets sent
+   and the client hangs forever with no recovery at all.
+
+3. Separately: do you see any reason the LLM call itself (Gemini, via
+   streamChatText) could hang well past 45s without the AbortController
+   actually cancelling it — e.g. an abort signal not being honoured deep
+   inside the SDK/fetch call? If so flag it, even if you can't fully confirm
+   it from code alone.
+
+No fix proposal needed yet for this one — diagnosis only, from logs/code,
+no further live testing required from Kane.
+
+================================================================================
+RULES
+================================================================================
+- No code yet. Options and tradeoffs only, per Commitment 1 Standard.
+- Kane will pick a direction in writing before anything is implemented.
+- Once approved, client-side logic changes can be tested live via Expo Go —
+  no EAS/APK build needed for iteration. A production APK build is only
+  needed once the approach is confirmed working in dev.
+
+— End of brief —
