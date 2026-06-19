@@ -1,0 +1,177 @@
+================================================================================
+ASHLEY PROJECT — GIT DIAGNOSTIC OUTPUT
+Date: 18 June 2026
+================================================================================
+
+================================================================================
+1. git remote -v
+================================================================================
+
+gitsafe-backup    git://gitsafe:5418/backup.git (fetch)
+gitsafe-backup    git://gitsafe:5418/backup.git (push)
+subrepl-1hogf9hp  https://github.com/Kdas13/Ashley-SidecarApp (fetch)
+subrepl-1hogf9hp  https://github.com/Kdas13/Ashley-SidecarApp (push)
+subrepl-2xgij8gf  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-2xgij8gf  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-3xpomffs  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-3xpomffs  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-3y3weh5w  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-3y3weh5w  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-5ni97qbc  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-5ni97qbc  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-6ipq3vnw  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-6ipq3vnw  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-cwl8tnfi  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-cwl8tnfi  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-ftbmwckq  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-ftbmwckq  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-g45ut9ab  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-g45ut9ab  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-geh9dhox  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-geh9dhox  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-hxcmwxdn  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-hxcmwxdn  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-iq9s91uf  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-iq9s91uf  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-kb208a9l  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-kb208a9l  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-kij8u5pz  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-kij8u5pz  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-nrv1dz9t  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-nrv1dz9t  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-okcbwes0  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-okcbwes0  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-q1cxclst  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-q1cxclst  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-qn023qnp  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-qn023qnp  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-v013r8i1  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-v013r8i1  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-wepl5mht  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-wepl5mht  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-ydw9posf  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-ydw9posf  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+subrepl-ywp6lst6  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (fetch)
+subrepl-ywp6lst6  git+ssh://git@ssh.picard.replit.dev:/home/runner/workspace (push)
+
+NOTE: There is no remote named "origin".
+NOTE: Only ONE remote points at GitHub: subrepl-1hogf9hp.
+NOTE: All other subrepl-* remotes point at ssh.picard.replit.dev (Replit internal).
+
+================================================================================
+2. git branch -a
+================================================================================
+
+* main
+  replit-agent
+  subrepl-1hogf9hp
+  subrepl-2xgij8gf
+  subrepl-3xpomffs
+  subrepl-3y3weh5w
+  subrepl-5ni97qbc
+  subrepl-6ipq3vnw
+  subrepl-cwl8tnfi
+  subrepl-ftbmwckq
+  subrepl-g45ut9ab
+  subrepl-geh9dhox
+  subrepl-hxcmwxdn
+  subrepl-iq9s91uf
+  subrepl-kb208a9l
+  subrepl-kij8u5pz
+  subrepl-nrv1dz9t
+  subrepl-okcbwes0
+  subrepl-q1cxclst
+  subrepl-qn023qnp
+  subrepl-v013r8i1
+  subrepl-wepl5mht
+  subrepl-ydw9posf
+  subrepl-ywp6lst6
+  remotes/gitsafe-backup/HEAD -> gitsafe-backup/main
+  remotes/gitsafe-backup/main
+
+NOTE: subrepl-1hogf9hp appears as a LOCAL branch, not a remote-tracking branch.
+NOTE: There is no remotes/subrepl-1hogf9hp/... entry anywhere.
+NOTE: The only remote-tracking branches in the repo are gitsafe-backup/HEAD
+      and gitsafe-backup/main (Replit internal backup, not GitHub).
+
+================================================================================
+3. git log --oneline -5
+================================================================================
+
+85ba129 (HEAD -> main, gitsafe-backup/main, gitsafe-backup/HEAD) Update documentation and clarify git push capabilities
+a639ce9 Add playback confirmation to prevent microphone opening during audio playback
+31ecac6 Update voice call handling to queue speech during playback confirmation
+84abad4 Add safety timeout and queuing for audio playback confirmation
+87453ad Improve TTS playback handling to prevent client-side hangs
+
+NOTE: HEAD is on local branch "main".
+NOTE: No ref shows the GitHub remote (subrepl-1hogf9hp) tracking any commit.
+NOTE: gitsafe-backup/main tracks the same commit as HEAD — Replit internal
+      backup is current.
+
+================================================================================
+4. git ls-remote subrepl-1hogf9hp
+================================================================================
+
+[no output — zero bytes returned]
+Exit code: 0
+
+NOTE: Exit 0 with no output = GitHub accepted the connection and returned an
+      empty refs list. The repository has no commits, no branches, no tags.
+      GitHub's UI is correct: the repo is empty.
+NOTE: Command completed within the 15-second timeout (no hang this time).
+      Previous session saw a 30s timeout/hang; this run completed cleanly.
+
+================================================================================
+5. git status
+================================================================================
+
+On branch main
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+        attached_assets/Git_Push_Contradiction_Wren_18Jun2026-1_1781854161565.txt
+
+nothing added to commit but untracked files present (use "git add" to track)
+
+================================================================================
+ANALYSIS OF THE CONTRADICTION
+================================================================================
+
+The contradiction resolves as follows:
+
+- ls-remote exit 0 with no output confirms GitHub is genuinely empty.
+  There are no commits on the remote for git to reject against.
+
+- The "PUSH_REJECTED — remote has commits the local repo doesn't have"
+  error from the Replit Git pane is NOT produced by git itself against
+  the GitHub remote. It is a Replit Git pane UI error.
+
+- There is no remote named "origin". The Git pane's concept of "the remote"
+  is separate from the git remotes listed above. The pane is likely attempting
+  to push to one of the subrepl-* SSH remotes (ssh.picard.replit.dev) or is
+  misinterpreting the local branch named subrepl-1hogf9hp as a conflict
+  indicator. The exact pane logic is not visible from the shell.
+
+- The local branch named subrepl-1hogf9hp (not a remote-tracking ref) is
+  unusual. It is a local branch that shadows the remote name. This could
+  cause the Git pane to misread the push state.
+
+================================================================================
+WHAT A WORKING PUSH WOULD REQUIRE
+================================================================================
+
+From the shell (if network access were available):
+
+  git push subrepl-1hogf9hp main:main
+
+This pushes local "main" to the "main" branch on the GitHub remote.
+Since the repo is empty, there is no divergence — no force-push needed.
+
+From Kane's local machine (after pulling from Replit or cloning):
+
+  git remote add github https://github.com/Kdas13/Ashley-SidecarApp
+  git push github main
+
+================================================================================
+END OF DIAGNOSTIC
+================================================================================
