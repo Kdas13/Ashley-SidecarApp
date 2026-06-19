@@ -377,3 +377,9 @@ id = "kFUa4XhQbxDnYXB5vSD39"
 uri = "file://EchoLoop_Audit_Response_19Jun2026.txt"
 type = "text"
 title = "EchoLoop_Audit_Response_19Jun2026.txt"
+
+[[outputs]]
+id = "WiDz5OUhljgYEzUMGeRpH"
+uri = "file://FalseReporting_CodeDump_19Jun2026.txt"
+type = "text"
+title = "FalseReporting_CodeDump_19Jun2026.txt"

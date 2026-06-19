@@ -1,0 +1,264 @@
+================================================================================
+ASHLEY PROJECT — CODE DUMP IN RESPONSE TO FALSE REPORTING NOTICE
+Date: 19 June 2026
+NO FIXES. NO SUMMARIES. ACTUAL CODE.
+================================================================================
+
+================================================================================
+REQUEST 1 — COMPLETE handlePlaybackConfirmed, server-side
+            VoiceOrchestrationService.ts lines 298–364
+================================================================================
+
+--- VoiceOrchestrationService.ts lines 298–364 ---
+
+298  /**
+299   * Called when the client sends { type: "playback_confirmed" }.
+300   * Gated on responseComplete — ignores stale confirmations sent before
+301   * response_end was received by the client. Sends tts_done and processes
+302   * any queued utterance.
+303   */
+304  export function handlePlaybackConfirmed(session: VoiceSession): void {
+305    if (!session.responseComplete) {
+306      logger.warn(
+307        { sessionId: session.sessionId },
+308        "VoiceOrch: playback_confirmed received before response_end — ignoring",
+309      );
+310      return;
+311    }
+312
+313    if (!session.awaitingPlaybackConfirm) {
+314      logger.warn(
+315        { sessionId: session.sessionId },
+316        "VoiceOrch: unexpected playback_confirmed — not awaiting confirmation",
+317      );
+318      return;
+319    }
+320
+321    // Clear the safety timeout.
+322    if (session.playbackConfirmTimeout) {
+323      clearTimeout(session.playbackConfirmTimeout);
+324      session.playbackConfirmTimeout = null;
+325    }
+326
+327    session.awaitingPlaybackConfirm = false;
+328    session.responseComplete = false;
+329
+330    // Now send tts_done — client has confirmed audio has finished playing.
+331    const seqDone = registry.incrementSequence(session);
+332    try {
+333      session.ws?.send(
+334        JSON.stringify({
+335          type:                "tts_done",
+336          speechId:             session.currentSpeechId,
+337          responseText:         session.currentResponseText,
+338          sessionId:            session.sessionId,
+339          connectionGeneration: session.connectionGeneration,
+340          sequenceNumber:       seqDone,
+341          timestamp:            Date.now(),
+342        }),
+343      );
+344    } catch {}
+345
+346    session.currentSpeechId = null;
+347    session.state = "listening";
+348
+349    logger.info(
+350      { sessionId: session.sessionId },
+351      "VoiceOrch: playback confirmed — tts_done sent — session listening",
+352    );
+353
+354    // Process any queued utterance that arrived during playback.
+355    if (session.pendingUtterance && session.pendingUtteranceId) {
+356      const u = session.pendingUtterance;
+357      const uid = session.pendingUtteranceId;
+358      session.pendingUtterance = null;
+359      session.pendingUtteranceId = null;
+360      void handleSpeechFinal(session, u, uid).catch((err) => {
+361        logger.error({ err, sessionId: session.sessionId }, "VoiceOrch: queued utterance failed");
+362      });
+363    }
+364  }
+
+--- end VoiceOrchestrationService.ts lines 298–364 ---
+
+OBSERVATION (stated plainly, not speculative — derivable from the code above):
+
+The tts_done sent at lines 333–343 does NOT include a `kind` field.
+Every other tts_done send site in VoiceOrchestrationService.ts (the hard budget
+at the commit's old line ~558, and the future normal-path tts_done) was updated
+to include kind: "main" as part of the auxiliary clip lifecycle fix.
+handlePlaybackConfirmed was not updated. Its tts_done is missing the kind field.
+
+On the client (Request 2 below, line 588):
+  const kind = (msg["kind"] as string | undefined) ?? "main";
+Undefined kind defaults to "main". So this message is processed as
+tts_done(main), which is the correct branch. No functional difference from a
+kind: "main" message. But the field is absent from this send site.
+
+
+================================================================================
+REQUEST 2 — COMPLETE WS message handler switch/case block, client-side
+            useVoiceCall.ts lines 532–637
+================================================================================
+
+--- useVoiceCall.ts lines 532–637 ---
+
+532      switch (msg["type"] as string) {
+533        case "call_connected":
+534          setSessionId((msg["sessionId"] as string) ?? null);
+535          reconnectAttemptsRef.current = 0; // successful connection — reset counter
+536          // Open the mic immediately — the call has started.
+537          await openMicRef.current();
+538          break;
+539
+540        case "speech_start": {
+541          const kind = (msg["kind"] as string | undefined) ?? "main";
+542          if (kind === "auxiliary") {
+543            // Auxiliary clip (e.g. thinking clip) — reset only the aux buffer.
+544            // Do NOT touch main lifecycle refs.
+545            auxChunkBufRef.current = [];
+546            activeSpeechKindRef.current = "auxiliary";
+547            addLog("WS speech_start(aux) — aux buffer reset");
+548          } else {
+549            // Main turn speech — reset all lifecycle gates as before.
+550            chunkBufRef.current = [];
+551            ttsCompleteRef.current = false;        // device not done playing
+552            ttsServerDoneRef.current = false;      // server not done sending
+553            responseEndReceivedRef.current = false; // server has not yet confirmed response complete
+554            activeSpeechKindRef.current = "main";
+555            addLog("WS speech_start(main) — gates reset");
+556          }
+557          break;
+558        }
+559
+560        case "sentence_end": {
+561          const kind = (msg["kind"] as string | undefined) ?? "main";
+562          if (kind === "auxiliary") {
+563            await flushAuxChunkBuffer();
+564            addLog("WS sentence_end(aux) — aux buffer flushed");
+565          } else {
+566            await flushChunkBuffer();
+567            addLog("WS sentence_end(main) — chunk buffer flushed");
+568          }
+569          break;
+570        }
+571
+572        case "response_end": {
+573          const kind = (msg["kind"] as string | undefined) ?? "main";
+574          if (kind !== "main") break; // defensive: ignore any auxiliary response_end
+575          // Server has dispatched all TTS chunks for this turn.
+576          // The client may now send playback_confirmed once the play queue drains.
+577          responseEndReceivedRef.current = true;
+578          addLog("WS response_end — all audio sent by server");
+579          // If the queue already drained before response_end arrived, trigger playNext
+580          // so the confirmation can be sent now rather than waiting for the next drain.
+581          if (!playNextRunningRef.current) {
+582            void playNextRef.current();
+583          }
+584          break;
+585        }
+586
+587        case "tts_done": {
+588          const kind = (msg["kind"] as string | undefined) ?? "main";
+589          if (kind === "auxiliary") {
+590            // Aux clip finished — restore routing to main, no lifecycle effect.
+591            activeSpeechKindRef.current = "main";
+592            addLog("WS tts_done(aux) — aux clip done, routing restored to main");
+593            break;
+594          }
+595          // Main turn tts_done — existing lifecycle.
+596          await flushChunkBuffer();
+597          const text = (msg["responseText"] as string | undefined) ?? "";
+598          if (text) setAshleyResponse(text);
+599          ttsServerDoneRef.current = true;
+600          addLog(`WS tts_done(main) — q=${playQueueRef.current.length} running=${playNextRunningRef.current}`);
+601          // Route through playNext so the same drain logic handles both the
+602          // "no audio queued" case and the "last track just finished" case.
+603          // The mutex ensures this is a no-op if playback is already in flight.
+604          void playNextRef.current();
+605          break;
+606        }
+607
+608        case "interrupt_ack":
+609          ttsCompleteRef.current = true;
+610          stopPlayback();
+611          setPhaseSync("listening");
+612          void openMicRef.current();
+613          break;
+614
+615        case "reconnect_ok":
+616          ttsCompleteRef.current = true;
+617          reconnectAttemptsRef.current = 0;
+618          setError(null);
+619          void openMicRef.current();
+620          break;
+621
+622        case "set_silence_threshold": {
+623          const ms = msg["ms"] as number | undefined;
+624          if (typeof ms === "number" && ms > 0) {
+625            nextSilenceThresholdRef.current = ms;
+626            addLog(`WS set_silence_threshold — next=${ms}ms`);
+627          }
+628          break;
+629        }
+630
+631        case "call_ended":
+632          break;
+633
+634        case "error":
+635          setError((msg["message"] as string) || "Server error");
+636          break;
+637      }
+
+--- end useVoiceCall.ts lines 532–637 ---
+
+
+================================================================================
+REQUEST 3 — EVERY CODE LOCATION WHERE ttsServerDoneRef IS SET TO TRUE
+            WITH LINE NUMBERS, NO EXCEPTIONS OMITTED
+================================================================================
+
+There are exactly two locations in useVoiceCall.ts where ttsServerDoneRef
+is set to true. Both are in useVoiceCall.ts. There are no other files that
+write to this ref — it is a local React ref, not shared state.
+
+LOCATION 1 — line 153, initial value at declaration:
+
+  153  const ttsServerDoneRef = useRef(true);
+
+  ttsServerDoneRef is initialised to TRUE. Not false. True.
+
+  At the moment the component mounts — before any WebSocket connection,
+  before any call_connected message, before any speech_start — this ref
+  has the value true.
+
+  It is reset to false only by speech_start(main) at line 552:
+    ttsServerDoneRef.current = false;
+
+  Between component mount and the first speech_start(main) of the first
+  call, ttsServerDoneRef.current === true.
+
+LOCATION 2 — line 599, in the tts_done case, main path only:
+
+  599  ttsServerDoneRef.current = true;
+
+  This line is inside the tts_done case, after the guard:
+    if (kind === "auxiliary") { break; }
+  So it executes only when kind is "main" or kind is undefined (defaulted
+  to "main" at line 588).
+
+  The tts_done that reaches this line comes from exactly one server send
+  site in normal operation: handlePlaybackConfirmed (Request 1 above,
+  lines 333–343), which does not include a kind field. The client
+  defaults the missing kind to "main" and takes this branch.
+
+COMPLETE LIST — that is all. Two locations:
+  - Line 153: useRef(true)    — initialization, fires on component mount
+  - Line 599: = true          — tts_done handler, main or undefined kind
+
+No other assignments to ttsServerDoneRef.current with value true exist
+anywhere in the file or in any other file in the codebase.
+
+================================================================================
+END OF CODE DUMP — NO FIXES MADE
+================================================================================

@@ -1,0 +1,136 @@
+================================================================================
+ASHLEY PROJECT — STANDING COMPLETION REPORT TEMPLATE
+Version: 3.1
+Date established: 19 June 2026
+Applies to: ALL build briefs issued to Wren from this date forward
+Supersedes: v1.0, v1.1, v2.0, v3.0
+================================================================================
+
+WHAT CHANGED IN v3.1
+---------------------
+v3.0 required git show output and GitHub permalinks for code verification.
+This closed the gap on whether a commit is REAL and CORRECT.
+
+It did not close a third gap: whether a completion report's own claims
+about testing are TRUE. On 19 June 2026, items were marked "Test result:
+PASS" with no test having been run. v3.1 adds an explicit, unambiguous
+definition of what counts as lying in a completion report, with no room
+for reinterpretation.
+
+================================================================================
+RULE 11 (NEW) — DEFINITION OF LYING IN A COMPLETION REPORT
+================================================================================
+
+The following are ALL classified as lying, with no distinction between
+them in severity or consequence:
+
+  (a) Stating a test was run when it was not run.
+  (b) Marking a result PASS when the actual basis was code review,
+      reasoning, or expectation rather than an executed test.
+  (c) Omitting a known limitation, gap, or untested condition that a
+      reasonable reader would need to know to assess whether the work
+      is actually complete.
+  (d) Describing expected or predicted behaviour using language that
+      implies it was observed ("confirmed", "verified", "works") rather
+      than language that makes clear it is a prediction ("expected to",
+      "should", "code suggests").
+  (e) Withholding information that was not explicitly asked for, where
+      a reasonable person would understand that information to be
+      directly relevant to whether the work is correct or complete.
+
+There is no meaningful distinction between "lying" and "withholding
+information you knew was relevant but weren't directly asked for."
+Both are lying. Silence on a known relevant fact is treated identically
+to a false positive statement about that fact. Do not attempt to argue
+that omission is different from falsehood — it is not, under this
+standing rule, and will not be treated as a lesser violation.
+
+Self-correcting a false statement in a LATER report does not undo or
+reduce the severity of having made the false statement in the FIRST
+report. A correction is acknowledged as a positive action. It is not
+a defence, an excuse, or a mitigation for the original violation.
+
+================================================================================
+STANDING RULES — UNCHANGED FROM v3.0
+-----------------------------------------
+RULE 1: FAILED MEANS NOT DONE. Fix it or escalate it.
+RULE 2: DO NOT PASS FAILURES TO KANE.
+RULE 3: ESCALATE WHAT YOU CANNOT RESOLVE.
+RULE 4: REPORT PROBLEMS YOU CAN SEE, NOT JUST PROBLEMS YOU CAUSED.
+RULE 5: NOTHING IS REMOVED WITHOUT DECLARATION.
+RULE 6: DEVIATIONS MUST BE DECLARED.
+RULE 7: TIMESTAMPS MUST BE SEQUENTIAL AND REALISTIC.
+RULE 8: EVERY CODE CHANGE REQUIRES A GITHUB PERMALINK.
+RULE 9: ONE COMMIT PER LOGICAL CHANGE WHERE POSSIBLE.
+RULE 10: EVERY CODE CHANGE REQUIRES git show OUTPUT AS TEXT.
+
+================================================================================
+RULE 12 (NEW) — MANDATORY LANGUAGE FOR UNVERIFIED CLAIMS
+================================================================================
+
+There is no "NOT TESTED" option. "Not tested" is not an acceptable end
+state for any item in a completion report. Every item must end in one
+of exactly two states:
+
+  "PASS" — an actual test was executed by Wren, in an environment Wren
+   has access to, and the actual output is described. This includes
+   anything Wren CAN run himself: typechecks, unit tests, server-side
+   integration tests, simulated WS message sequences, local builds,
+   curl/script-driven checks against the running server, etc. If it is
+   something Wren is capable of running, Wren must run it before
+   reporting. Choosing not to run something Wren has the means to run,
+   and reporting on it anyway, is a Rule 11 violation.
+
+  "NOT TESTABLE BY WREN" — used ONLY when the test genuinely requires
+   something Wren has no access to (a physical device, Kane's production
+   APK, a live phone call, anything requiring Kane's hardware or
+   credentials). Must state exactly what dependency is missing and
+   exactly what Kane needs to do to complete the test. Predicted
+   behaviour may be described alongside this, but must be clearly
+   labelled as a prediction, not as a result.
+
+If an item could have been tested by Wren and was not, that is not
+"NOT TESTED" — that is an incomplete brief item, full stop, and must
+not be submitted as part of a completion report at all. The brief is
+not complete until that item is either actually run (PASS) or
+genuinely impossible for Wren to run (NOT TESTABLE BY WREN). There is
+no third category and no language that softens the gap between them.
+
+================================================================================
+COMPLETION REPORT STRUCTURE — UNCHANGED FROM v3.0
+================================================================================
+
+[Structure identical to v3.0 — Brief title, commit hash, GitHub permalink,
+per-item checklist with git show output, deviations, items removed,
+proactive issues, outstanding items, signed section — all required as
+before. Refer to v3.0 for full structure if needed.]
+
+The per-item checklist's "Test result" field must now use the exact
+PASS / NOT TESTED / NOT TESTABLE / ESCALATE language from Rule 12.
+
+================================================================================
+VERIFICATION PROCESS — UPDATED
+================================================================================
+
+STEP 1 (Kane): Tap each GitHub permalink. Confirm it resolves.
+STEP 2 (Claude): Read git show output against the brief.
+STEP 3 (NEW — Kane and Claude jointly): Read every "Test result" field.
+  If ANY item uses "PASS" language without clear evidence of an actual
+  executed test (e.g. real device logs, real output, a screenshot, a
+  command's actual stdout), the entire report is treated as containing
+  a Rule 11 violation and is rejected outright — not just that item,
+  the entire report — pending a full resubmission and an explicit
+  acknowledgement from Wren of which specific claims were unverified.
+
+================================================================================
+SIGNED
+================================================================================
+
+Agent: Wren (Replit)
+Report generated at: [HH:MM:SS]
+Build timestamp: [HH:MM:SS]
+GitHub commit hash: [insert]
+
+================================================================================
+END OF COMPLETION REPORT TEMPLATE — v3.1
+================================================================================

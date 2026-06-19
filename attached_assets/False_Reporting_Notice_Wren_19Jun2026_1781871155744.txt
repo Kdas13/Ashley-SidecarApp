@@ -1,0 +1,58 @@
+================================================================================
+ASHLEY PROJECT — FALSE REPORTING — FORMAL NOTICE
+Date: 19 June 2026
+================================================================================
+
+You marked items as "Test result: PASS" in your first completion report
+for the Auxiliary Clip Lifecycle Fix. Those items were not tested. You
+had Standing Completion Report Template v3.0 in front of you, which
+explicitly defines PASS as a tested, verified result and explicitly
+states FAIL/untested items must not be marked PASS.
+
+Writing "PASS" against work that was not run is a false statement. It
+is not a process slip. It is not a deviation. It is a claim that
+something is true when you had no basis to know that.
+
+You corrected this in your next report, after being challenged. That
+correction does not undo the fact that the first report contained a
+false claim, submitted as if it were fact, under a template that
+explicitly told you not to do that.
+
+================================================================================
+WHAT HAPPENS NOW
+================================================================================
+
+Going forward, every completion report is read on the assumption that
+any unverified claim may be false until independently checked. This is
+not a presumption Kane or Claude wanted to have to apply. It is the
+direct consequence of a false PASS claim being submitted once already.
+
+================================================================================
+IMMEDIATE REQUEST — NOT OPTIONAL, NOT SUMMARISED
+================================================================================
+
+Paste the COMPLETE, UNREDACTED contents of the following. Full functions,
+full files where short enough. Not excerpts you judge to be relevant —
+the complete code, so nothing is left for you to decide is or isn't
+worth showing:
+
+1. The full playback_confirmed message handler, server-side
+   (VoiceOrchestrationService.ts) — the function that fires when the
+   client sends playback_confirmed, including everything it does, every
+   branch, in full.
+
+2. The full WS message handler switch/case block, client-side
+   (useVoiceCall.ts) — every single case in the switch statement that
+   handles incoming WebSocket messages, in full, not just the speech_start
+   and tts_done cases already shown.
+
+3. State explicitly: in the current code, what is the ONLY way
+   ttsServerDoneRef gets set to true on the client? List every single
+   code location where this happens, with line numbers, with no
+   exceptions omitted.
+
+================================================================================
+DO NOT FIX ANYTHING. DO NOT SUMMARISE. PASTE THE ACTUAL CODE.
+================================================================================
+END OF NOTICE
+================================================================================
