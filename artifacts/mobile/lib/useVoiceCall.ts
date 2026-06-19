@@ -46,6 +46,8 @@ export interface VoiceCallActions {
   disconnect: () => void;
   /** Manually stop recording and submit the current segment. */
   submitNow: () => void;
+  /** Stop Ashley mid-sentence and reopen the mic immediately. */
+  interrupt: () => void;
 }
 
 // ── Audio helpers ─────────────────────────────────────────────────────────────
@@ -434,6 +436,24 @@ export function useVoiceCall(): {
       }
       lastSpeechAtRef.current = now;
       segmentSpeechMsRef.current = now - speechStartAtRef.current;
+      // Option C: reset the fallback timer on every detected sound so it only
+      // fires after genuine post-sound silence, not from mic-open alone.
+      // Only restart if the timer is currently armed (openMic set it) —
+      // prevents arming a new timer after it has already fired and submitted.
+      if (autoSubmitTimerRef.current !== null) {
+        clearAutoSubmitTimer();
+        autoSubmitTimerRef.current = setTimeout(() => {
+          autoSubmitTimerRef.current = null;
+          addLog(`autoSubmit fired phase=${phaseRef.current}`);
+          if (
+            phaseRef.current === "listening" ||
+            phaseRef.current === "user_speaking"
+          ) {
+            vadActiveRef.current = false;
+            void submitSegmentRef.current();
+          }
+        }, 4000);
+      }
     } else {
       // Silence.
       if (
@@ -447,7 +467,7 @@ export function useVoiceCall(): {
         void submitSegmentRef.current();
       }
     }
-  }, [recorder.metering, setPhaseSync]);
+  }, [recorder.metering, setPhaseSync, clearAutoSubmitTimer, addLog]);
 
   // ── openMic ───────────────────────────────────────────────────────────────
 
@@ -743,6 +763,15 @@ export function useVoiceCall(): {
     }
   }, []);
 
+  const interrupt = useCallback((): void => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (phaseRef.current !== "speaking") return;
+    addLog("interrupt: tap");
+    stopPlayback();
+    try { ws.send(JSON.stringify({ type: "interrupt" })); } catch { /* ignore */ }
+  }, [stopPlayback, addLog]);
+
   return {
     phase,
     sessionId,
@@ -754,5 +783,6 @@ export function useVoiceCall(): {
     connect,
     disconnect,
     submitNow,
+    interrupt,
   };
 }

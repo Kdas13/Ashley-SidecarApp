@@ -1,0 +1,119 @@
+================================================================================
+COMPLETION REPORT — VOICE CALL FIXES
+Standing Completion Report Template v3.1
+Date: 19 June 2026
+================================================================================
+
+TASK
+  Issue 1 — Phantom mic cycling: Option C approved
+  Issue 3 — Barge-in (interim): Option B approved
+  Issue 2 — No code change (downstream of Issue 1, confirmed from logs)
+
+================================================================================
+CHANGES MADE
+================================================================================
+
+FILE: artifacts/mobile/lib/useVoiceCall.ts
+
+  1. VoiceCallActions interface — added `interrupt: () => void` (line 53)
+
+  2. VAD effect (Issue 1 — Option C): inside `if (db > SILENCE_DB)`, after
+     updating isUserSpeakingRef and segmentSpeechMsRef, added:
+
+       if (autoSubmitTimerRef.current !== null) {
+         clearAutoSubmitTimer();
+         autoSubmitTimerRef.current = setTimeout(() => { ... }, 4000);
+       }
+
+     The gate `autoSubmitTimerRef.current !== null` means:
+       - Only restarts the timer if openMic already armed one.
+       - If the timer already fired and submitted (ref = null), no new timer is
+         created — VAD-based submission already ran or is running.
+       - On null-metering devices (AirPods) the VAD effect short-circuits at
+         line 424 (db === null) so the reset never fires — behaviour on those
+         devices is identical to before (4s from mic-open), no regression.
+       - Dependency array updated: added clearAutoSubmitTimer and addLog.
+
+  3. `interrupt` callback — added after submitNow (lines 769-776):
+
+       const interrupt = useCallback((): void => {
+         const ws = wsRef.current;
+         if (!ws || ws.readyState !== WebSocket.OPEN) return;
+         if (phaseRef.current !== "speaking") return;
+         addLog("interrupt: tap");
+         stopPlayback();
+         try { ws.send(JSON.stringify({ type: "interrupt" })); } catch {}
+       }, [stopPlayback, addLog]);
+
+     Phase guard ensures the button can only fire during phase="speaking".
+     stopPlayback() stops local audio immediately (before the WS round-trip).
+     The existing interrupt_ack receiver (line 611, unchanged) handles the
+     rest: ttsCompleteRef=true → stopPlayback → setPhase("listening") → openMic.
+
+  4. Return value — added `interrupt` to the returned object.
+
+FILE: artifacts/mobile/app/voice-call.tsx
+
+  5. Destructured `interrupt` from useVoiceCall().
+
+  6. Interrupt button — added inside the controls View, shown only when
+     phase === "speaking":
+
+       {phase === "speaking" && (
+         <Pressable onPress={interrupt} style={...}>
+           <Text>Interrupt</Text>
+         </Pressable>
+       )}
+
+     Amber colour (#fbbf24) to distinguish it from the blue Send and red End
+     call buttons. Disappears the moment phase leaves "speaking" (i.e., after
+     the interrupt_ack arrives and the mic opens).
+
+  7. Styles — added `interruptBtn` and `interruptBtnText` to StyleSheet.
+
+NO CHANGES: artifacts/api-server/* — server-side interrupt handler was already
+fully wired at index.ts lines 390-415 (receives type:"interrupt", calls
+registry.cancelCurrentTurn, sends interrupt_ack with full sequenceNumber).
+
+================================================================================
+WHAT IS NOT CHANGED (scope boundary)
+================================================================================
+
+  - The 4000ms autoSubmit timer value in openMic is unchanged. The timer still
+    fires 4s from mic-open when the room is completely silent (correct fallback).
+  - The openMic function is unchanged. It still arms the timer unconditionally;
+    the VAD effect's reset logic now governs whether that timer ever fires in
+    practice when speech is present.
+  - No server-side changes. Issue 2 (Gemini rate limiting) is downstream of
+    Issue 1 — the phantom mic cycle was the proximate cause of the rapid-turn
+    pattern that exhausted the Gemini rate limit during Kane's test call.
+
+================================================================================
+TYPECHECK
+================================================================================
+
+  pnpm --filter @workspace/mobile run typecheck → clean (0 errors)
+
+================================================================================
+TESTING NOTE
+================================================================================
+
+Both changes are testable in Expo Go without an EAS/APK build.
+
+  Issue 1: open a call, stay silent. Audit log should no longer show
+    "autoSubmit fired phase=listening" cycling every 5s unless the room is
+    genuinely silent for the full 4s. Speak briefly — the log should show the
+    VAD-based submit, not the fallback timer.
+
+  Issue 3: start a call, let Ashley respond. When phase="speaking" the amber
+    "Interrupt" button appears. Tap it. Audio should stop immediately, the
+    audit log should show "interrupt: tap", and the mic should reopen within
+    one WS round-trip (~200ms on a local connection).
+
+================================================================================
+DEPLOY STATUS
+================================================================================
+
+just restart — https://Ashley-Sidecar.replit.app
+
+================================================================================

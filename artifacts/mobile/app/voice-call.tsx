@@ -130,6 +130,7 @@ export default function VoiceCallScreen(): React.JSX.Element {
     connect,
     disconnect,
     submitNow,
+    interrupt,
   } = useVoiceCall();
 
   const micOpen = phase === "listening" || phase === "user_speaking";
@@ -210,6 +211,19 @@ export default function VoiceCallScreen(): React.JSX.Element {
               ]}
             >
               <Text style={styles.sendBtnText}>Send ▶</Text>
+            </Pressable>
+          )}
+
+          {/* Interrupt — tap to cut Ashley off mid-sentence */}
+          {phase === "speaking" && (
+            <Pressable
+              onPress={interrupt}
+              style={({ pressed }) => [
+                styles.interruptBtn,
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Text style={styles.interruptBtnText}>Interrupt</Text>
             </Pressable>
           )}
 
@@ -350,6 +364,19 @@ const styles = StyleSheet.create({
   },
   sendBtnText: {
     color: "#60a5fa",
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+  },
+  interruptBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 36,
+    backgroundColor: "rgba(251,191,36,0.12)",
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(251,191,36,0.4)",
+  },
+  interruptBtnText: {
+    color: "#fbbf24",
     fontSize: 14,
     fontFamily: "Inter_500Medium",
   },
