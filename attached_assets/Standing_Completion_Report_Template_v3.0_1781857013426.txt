@@ -1,0 +1,153 @@
+================================================================================
+ASHLEY PROJECT — STANDING COMPLETION REPORT TEMPLATE
+Version: 3.0
+Date established: 19 June 2026
+Applies to: ALL build briefs issued to Wren from this date forward
+Supersedes: v1.0, v1.1, v2.0
+================================================================================
+
+WHAT CHANGED IN v3.0
+---------------------
+v2.0 required a GitHub permalink per change. That proves a commit is REAL —
+it exists on GitHub, unfakeable by Wren. It does NOT prove the commit is
+CORRECT — a link resolving only shows something was committed, not that
+it does what the brief asked.
+
+v3.0 adds a second, independent layer: the actual diff content, via
+`git show <hash>`, pasted as text into the report. This lets Claude read
+the real code change and verify it against the brief — not just confirm
+a commit exists.
+
+Two layers, two purposes:
+  1. Permalink resolves          → proves the commit is real (Kane checks)
+  2. git show output matches brief → proves the commit is correct (Claude checks)
+
+Neither layer alone is sufficient. Both are required.
+
+================================================================================
+STANDING RULES — UNCHANGED FROM v2.0, READ BEFORE EVERY BUILD
+-----------------------------------------
+RULE 1: FAILED MEANS NOT DONE. Fix it or escalate it.
+RULE 2: DO NOT PASS FAILURES TO KANE.
+RULE 3: ESCALATE WHAT YOU CANNOT RESOLVE.
+RULE 4: REPORT PROBLEMS YOU CAN SEE, NOT JUST PROBLEMS YOU CAUSED.
+RULE 5: NOTHING IS REMOVED WITHOUT DECLARATION.
+RULE 6: DEVIATIONS MUST BE DECLARED.
+RULE 7: TIMESTAMPS MUST BE SEQUENTIAL AND REALISTIC.
+RULE 8: EVERY CODE CHANGE REQUIRES A GITHUB PERMALINK.
+RULE 9: ONE COMMIT PER LOGICAL CHANGE WHERE POSSIBLE.
+
+================================================================================
+RULE 10 (NEW): EVERY CODE CHANGE REQUIRES git show OUTPUT AS TEXT
+================================================================================
+
+For each commit referenced in the completion report, run:
+
+  git show <commit-hash>
+
+Paste the FULL raw output into the completion report as plain text,
+directly below that item's permalink. Do not summarise it. Do not
+describe what it does instead of showing it. Paste the actual diff.
+
+If the diff is very long (e.g. a large new file), paste it in full
+regardless of length. Do not truncate. If genuinely too long for one
+message, split across multiple messages and say so explicitly.
+
+This output will be read directly by Claude and compared against the
+brief's exact instructions for that item. If the diff does not match
+what the brief specified, the item is not considered complete — even
+if the permalink resolves and even if you marked it PASS.
+
+================================================================================
+COMPLETION REPORT
+================================================================================
+
+Brief title: [insert brief name and date]
+Build deployed at: [HH:MM:SS]
+Replit checkpoint ID: [insert]
+GitHub commit hash (full, not abbreviated): [insert]
+GitHub repo URL: [insert]
+
+--------------------------------------------------------------------------------
+CHECKLIST
+--------------------------------------------------------------------------------
+
+For each item in the brief, complete the following block:
+
+  ITEM [N]: [copy the item description from the brief exactly]
+  Completed at: [HH:MM:SS — must be later than previous item]
+  File(s) changed: [path]
+  GitHub permalink: [full URL to file at specific commit]
+
+  --- git show <hash> output (paste in full below) ---
+  [PASTE RAW DIFF TEXT HERE — no summarising, no truncation]
+  --- end git show output ---
+
+  Test performed: [describe what you did to verify this item works]
+  Test result: [PASS / NOT TESTABLE / ESCALATE]
+  If NOT TESTABLE: [explain why it cannot be tested in isolation]
+  If ESCALATE: [describe what you tried, what failed, why you cannot
+                resolve it without pipeline review]
+
+FAIL is not a valid final state. Fix it or escalate it.
+Every item with a code change MUST have BOTH a permalink AND git show output.
+Items with no code change (e.g. "ran a test", "restarted server") do
+not require either — state N/A and explain why.
+
+Repeat for every item. Do not skip any item.
+
+--------------------------------------------------------------------------------
+DEVIATIONS FROM BRIEF
+--------------------------------------------------------------------------------
+List any deviation, however minor, with reasoning. If none: write NONE.
+
+--------------------------------------------------------------------------------
+ITEMS REMOVED WITHOUT INSTRUCTION
+--------------------------------------------------------------------------------
+For each removal: what, why, confirmed safe how. If none: write NONE.
+
+--------------------------------------------------------------------------------
+PROACTIVE ISSUES
+--------------------------------------------------------------------------------
+Any risk or issue observed, anywhere, related to this brief or not.
+If none: write NONE.
+
+--------------------------------------------------------------------------------
+OUTSTANDING ITEMS
+--------------------------------------------------------------------------------
+Items not completed. Must be ESCALATE or genuinely NOT POSSIBLE with
+explanation. If none: write NONE.
+
+================================================================================
+VERIFICATION PROCESS — HOW THIS REPORT GETS CHECKED
+================================================================================
+
+STEP 1 (Kane): Tap each GitHub permalink. Confirm it resolves and is not
+a 404. This proves the commit is real and not fabricated.
+
+STEP 2 (Claude): Read the git show output for each item. Compare it
+directly against the brief's instructions for that item. Confirm the
+actual code change matches what was specified — correct logic, correct
+file, correct approach. This proves the commit is correct, not just real.
+
+If STEP 1 fails (link 404s): the report is rejected outright, treated
+as a falsified report.
+
+If STEP 2 fails (diff doesn't match brief): the item is marked incomplete
+and sent back, even though the commit itself is genuine. A real commit
+that does the wrong thing is still not done.
+
+Only when BOTH steps pass is an item considered verified complete.
+
+================================================================================
+SIGNED
+================================================================================
+
+Agent: Wren (Replit)
+Report generated at: [HH:MM:SS]
+Build timestamp: [HH:MM:SS]
+GitHub commit hash: [insert — repeated here for convenience]
+
+================================================================================
+END OF COMPLETION REPORT — v3.0
+================================================================================
