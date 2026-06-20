@@ -437,3 +437,9 @@ id = "uPw-aKgkx2BbccJ6MQVbV"
 uri = "file://RawCodeDump4_VADSettleTimeout_20Jun2026.txt"
 type = "text"
 title = "RawCodeDump4_VADSettleTimeout_20Jun2026.txt"
+
+[[outputs]]
+id = "MtZXZPJ2AD7TLJ1BZkIAz"
+uri = "file://VoiceCall_CompletionReport_v4_20Jun2026.txt"
+type = "text"
+title = "VoiceCall_CompletionReport_v4_20Jun2026.txt"

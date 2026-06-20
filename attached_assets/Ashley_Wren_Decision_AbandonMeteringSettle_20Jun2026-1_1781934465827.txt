@@ -1,0 +1,43 @@
+================================================================================
+WREN — DECISION: ABANDON METERING-BASED SETTLE, CONFIRM SCOPE GAP
+Date: 20 June 2026
+================================================================================
+
+CONFIRMED FROM YOUR DIAGNOSIS: SILENCE_DB (-45) is unreachable during real
+ambient silence on this device due to AGC in VOICE_COMMUNICATION mode. The
+settle gate has been a non-functional flat 600ms delay since it was written.
+Calibrating a correct absolute threshold isn't possible without first logging
+real dBFS values during quiet, which doesn't exist yet. Chasing that number
+live, tonight, is not a good use of time.
+
+DECISION (approved, go ahead and build):
+
+1. REMOVE the metering-confirmation attempt entirely. Replace with a plain,
+   honestly-labelled time delay before vadActiveRef goes true after mic open
+   — no false pretense of "confirming" anything. Set it to 500ms as a
+   starting point (covers the 300-400ms Bluetooth tail you identified, with
+   some margin) — this is a known, named heuristic, not a calibrated
+   measurement, and should be logged as such (e.g. "VAD delay: 500ms elapsed
+   — active" rather than implying confirmation happened).
+
+2. SCOPE QUESTION — ANSWER DIRECTLY: was the minimum energy/duration
+   threshold (the second item approved last round, meant to catch STT
+   returning filler phrases like "still there" on near-silent input) actually
+   implemented in this commit? It is not mentioned anywhere in dump #4.
+   If it was not built, say so plainly — that may mean tonight's repeat
+   "Still there." had nothing to do with the settle gate at all, and was
+   the OTHER unfixed half of the problem the whole time. If it was built,
+   point to where, since it's not visible in what's been pasted so far.
+
+3. INTERRUPT DOUBLE-TAP (flagged, not yet approved for a fix — give me
+   options next round per Commitment 1, don't build yet): add a simple
+   in-flight guard so a second tap while an interrupt is already processing
+   is a no-op, rather than firing a fresh stopPlayback + WS send on every
+   tap regardless of state.
+
+DELIVERABLE: implement item 1 and confirm/build item 2. Leave item 3 for a
+separate options round. Resubmit per Standing v3.1 — verdicts, permalinks,
+timestamps, and be explicit in the report about whether item 2 was newly
+built this round or already existed.
+
+— End of request —

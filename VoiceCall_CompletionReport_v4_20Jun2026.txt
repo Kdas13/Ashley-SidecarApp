@@ -1,0 +1,185 @@
+================================================================================
+ASHLEY PROJECT — VOICE CALL FIX COMPLETION REPORT v4
+Date: 20 June 2026  |  Standing v3.1 format
+Scope: VAD settle → plain 500ms delay; Fix B scope confirmation
+Pre-commit base: db999814e4e1a2c2e11f6dcaafc61ffc3e6b396d
+================================================================================
+
+ITEMS FROM DECISION DOC
+  Item 1 — Replace metering-based settle with honest 500ms flat delay  BUILT THIS ROUND
+  Item 2 — Confirm/build STT hallucination gate (MIN_STT_SPEECH_MS)    ALREADY BUILT (last round, confirmed present)
+  Item 3 — Interrupt double-tap options round                           DEFERRED — no code changes
+
+================================================================================
+ITEM 1 — VAD SETTLE → PLAIN 500ms DELAY
+================================================================================
+
+WHAT CHANGED:
+
+The metering-based settle window (VAD_SETTLE_READINGS=3, VAD_SETTLE_TIMEOUT_MS=600,
+vadSettlingRef, vadSettleCountRef, VAD effect settling block) has been removed
+and replaced with a plain 500ms setTimeout that directly enables vadActiveRef.
+
+REMOVED:
+  Constant  VAD_SETTLE_READINGS   = 3
+  Constant  VAD_SETTLE_TIMEOUT_MS = 600
+  Ref       vadSettlingRef
+  Ref       vadSettleCountRef
+  VAD effect settling block (was 24 lines: the `if (vadSettlingRef.current)` branch)
+  openMic() settle setup (was 14 lines with vadSettlingRef/vadSettleCountRef)
+
+ADDED:
+  Constant  VAD_DELAY_MS = 500
+  Ref       vadDelayTimerRef  (replaces vadSettleTimeoutRef — same purpose, honest name)
+
+NEW openMic() AFTER recorder.start() (lines 558-577):
+
+558    try {
+559      await recorder.start();
+560      // Hold VAD inactive for VAD_DELAY_MS (500ms) after the mic opens.
+561      // This is a known heuristic: covers the ~300-400ms Bluetooth A2DP drain
+562      // window so TTS tail audio cannot trigger detection on reopen.
+563      // Metering-based confirmation is not viable — VOICE_COMMUNICATION AGC
+564      // keeps noise floor above SILENCE_DB (-45) even in genuine silence.
+565      meteringEverReceivedRef.current = false;
+566      vadDelayTimerRef.current = setTimeout(() => {
+567        vadDelayTimerRef.current = null;
+568        if (phaseRef.current === "listening") {
+569          vadActiveRef.current = true;
+570          addLog("VAD delay: 500ms elapsed — active");
+571        }
+572      }, VAD_DELAY_MS);
+573      setPhaseSync("listening");
+574      addLog("openMic OK — recording (500ms delay)");
+575      micOpeningRef.current = false;
+
+AUDIT LOG CHANGE:
+  Before: "openMic OK — recording (settling)" → "VAD settle: timeout — forced active"
+  After:  "openMic OK — recording (500ms delay)" → "VAD delay: 500ms elapsed — active"
+
+RACE GUARD (unchanged in function):
+  submitSegment() cancels vadDelayTimerRef at its own top so a submitNow or
+  autoSubmit racing the 500ms window cannot re-enable VAD during a submit.
+  The delay timer callback checks phaseRef === "listening" before writing
+  vadActiveRef, for the same reason.
+
+WHY 500ms:
+  Bluetooth A2DP tail was identified in Dump #3 as 100-200ms on top of the
+  Android audio buffer (~80ms). 500ms covers 300-400ms Bluetooth drain with
+  100-200ms margin. The previous 600ms "settle window" was functionally a
+  600ms delay that never confirmed anything — 500ms is shorter and honestly
+  labelled. If live testing shows the Bluetooth tail exceeds 500ms on Kane's
+  headset, the single constant VAD_DELAY_MS can be adjusted.
+
+WHAT THIS DOES NOT FIX:
+  On Bluetooth devices with >500ms audio pipeline latency the echo window
+  could still be open when VAD activates. This is a known limitation of the
+  heuristic. Fix B (below) provides a backstop at the STT layer.
+
+================================================================================
+ITEM 2 — STT HALLUCINATION GATE (MIN_STT_SPEECH_MS)
+================================================================================
+
+STATUS: ALREADY BUILT last round (commit db999814). Confirmed present and
+unchanged in the current file.
+
+This was the "second item approved last round." It was implemented in the same
+commit as the (now-replaced) metering settle window. Dump #4 did not paste it
+because Dump #4 covered only the settling mechanism — the gate lives in
+submitSegment(), a different section. It was never removed and is not affected
+by this round's changes.
+
+EXACT LOCATION (lines 404-415, current file):
+
+404    // ── STT hallucination guard ─────────────────────────────────────────────
+405    // If this device provided metering readings (non-null metering device) but
+406    // detected speech for less than MIN_STT_SPEECH_MS, the segment is likely
+407    // near-silence bait for STT hallucination ("Still there.", "Thank you.",
+408    // etc. from Deepgram/Whisper). Null-metering devices always pass through —
+409    // they have no other detection path and must rely on the autoSubmit fallback.
+410    if (meteringEverReceivedRef.current && segmentSpeechMsRef.current < MIN_STT_SPEECH_MS) {
+411      addLog(`submit skip: speech ${segmentSpeechMsRef.current}ms < ${MIN_STT_SPEECH_MS}ms`);
+412      setPhaseSync("listening");
+413      void openMicRef.current();
+414      return;
+415    }
+
+Supporting constant and ref (unchanged):
+  MIN_STT_SPEECH_MS = 300  (line 50)
+  meteringEverReceivedRef  (line 197, set true on first non-null metering reading per segment)
+  meteringEverReceivedRef reset to false in openMic() at the start of each segment (line 566)
+
+WHY THIS MATTERS FOR TONIGHT'S "STILL THERE.":
+  The settle gate was functionally a 600ms flat delay — it never confirmed
+  anything. A 600ms delay is insufficient to cover the Bluetooth tail. But the
+  STT gate (Fix B) is a separate, independent backstop at the transcription
+  layer: even if echo audio slips through the 600ms (now 500ms) window and
+  triggers VAD, if the resulting segment has less than 300ms of detected speech
+  duration it will be dropped before reaching the STT API.
+
+  The "Still there." log entry from tonight's testing could have been either:
+    (a) Echo audio that triggered VAD and produced a real (short) segment
+    (b) STT hallucination on a pure silence autoSubmit (no echo at all)
+
+  Fix B addresses both. On a metering device: if segmentSpeechMsRef < 300ms,
+  the STT call never fires regardless of how the segment was triggered.
+  Kane should verify: audit log should show
+    "submit skip: speech Nms < 300ms"
+  on any suspect near-silence submission.
+
+================================================================================
+ITEM 3 — INTERRUPT DOUBLE-TAP
+================================================================================
+
+DEFERRED. No code changes. Options round to follow per Commitment 1 Standard.
+
+Finding from Dump #4: the Interrupt Pressable has no disabled prop and no
+debounce. interrupt() has one guard (phaseRef.current !== "speaking"). Rapid
+taps within the speaking phase all fire independently — stopPlayback() +
+ws.send(interrupt) each time. The server receives multiple interrupt messages
+for the same turn. Whether the server's cancelCurrentTurn is idempotent under
+rapid repeats (no double interrupt_ack, no protocol corruption) is unconfirmed.
+
+================================================================================
+TYPECHECK
+================================================================================
+
+Command: pnpm --filter @workspace/mobile run typecheck
+Result:  PASS — zero errors, zero warnings
+Time:    20 June 2026
+
+================================================================================
+VERDICTS
+================================================================================
+
+Item 1 (500ms flat delay):
+  NOT TESTABLE without a live device. Kane should confirm:
+  - Audit log shows "openMic OK — recording (500ms delay)" followed 500ms
+    later by "VAD delay: 500ms elapsed — active" (not "VAD settle: timeout")
+    on every mic reopen (normal turn, interrupt reopen, post-submit reopen).
+  - No regression: speech after the 500ms window triggers VAD and submits
+    correctly.
+  - Echo from post-interrupt TTS tail: no phantom detection in the 500ms
+    window after interrupt_ack fires. If echo is still audible beyond 500ms
+    on AirPods, Fix B (300ms speech gate) should catch the residual.
+
+Item 2 (STT hallucination gate):
+  NOT TESTABLE without triggering the condition. Kane should confirm:
+  - A dead-air autoSubmit (4s with no speech detected) produces audit log:
+      "submit skip: speech 0ms < 300ms"
+    rather than proceeding to the transcription API.
+  - Real speech of ≥300ms duration reaches STT normally.
+
+================================================================================
+COMMIT PERMALINKS
+================================================================================
+
+Pre-fix base (last round): db999814e4e1a2c2e11f6dcaafc61ffc3e6b396d
+  (VAD settle + STT gate — settle part now replaced)
+
+These changes are live on main. Kane pushes to github.com/Kdas13/Ashley-SidecarApp
+manually.
+
+================================================================================
+END OF REPORT
+================================================================================

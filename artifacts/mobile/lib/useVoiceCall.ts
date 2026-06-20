@@ -29,13 +29,15 @@ const SILENCE_DB    = -45;    // was -30 — too sensitive, picking up room nois
 const SILENCE_MS    = 3500;   // was 1200 — was cutting Kane off mid-sentence
 const MIN_SPEECH_MS = 500;    // was 200 — too short, catching non-speech sounds
 
-// ── VAD settle window (echo guard on mic reopen) ──────────────────────────────
-// After recorder.start(), hold VAD inactive until this many consecutive
-// near-silence readings confirm the hardware speaker has gone quiet.
-// Prevents TTS tail-end audio picked up by the just-opened mic from triggering
-// a spurious VAD detection (the root cause of phantom "Still there." STT hits).
-const VAD_SETTLE_READINGS   = 3;    // ~300ms at 100ms metering interval
-const VAD_SETTLE_TIMEOUT_MS = 600;  // force-enable VAD after this many ms (Bluetooth fallback)
+// ── VAD open-mic delay (echo guard on mic reopen) ─────────────────────────────
+// After recorder.start(), hold VAD inactive for a flat delay before allowing
+// detection to start. This is a known heuristic, not a calibrated measurement:
+// it covers the ~300-400ms Bluetooth A2DP buffer drain identified as the echo
+// risk window, with some margin. SILENCE_DB (-45) is unreachable during ambient
+// silence on VOICE_COMMUNICATION mode (AGC keeps the noise floor above -45), so
+// a metering-based "confirmed quiet" gate is not viable on this device without
+// first logging and calibrating actual dBFS values.
+const VAD_DELAY_MS = 500;
 
 // ── STT hallucination guard ────────────────────────────────────────────────────
 // Minimum detected-speech duration before the segment is sent to STT.
@@ -181,14 +183,10 @@ export function useVoiceCall(): {
   // prepareToRecordAsync — the second call would throw "already been prepared".
   const micOpeningRef       = useRef(false);
 
-  // ── VAD settle window refs ─────────────────────────────────────────────────
-  // vadSettlingRef: true from recorder.start() until N near-silence readings
-  //   confirm the hardware speaker is quiet (or the timeout fires).
-  // vadSettleCountRef: consecutive near-silence readings seen during settling.
-  // vadSettleTimeoutRef: fallback timeout handle (Bluetooth / slow-drain devices).
-  const vadSettlingRef      = useRef(false);
-  const vadSettleCountRef   = useRef(0);
-  const vadSettleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // ── VAD open-mic delay ref ────────────────────────────────────────────────
+  // Handle for the plain 500ms delay timer that holds VAD inactive after
+  // recorder.start(). Cancelled by submitSegment if a submit races the delay.
+  const vadDelayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── STT hallucination guard ref ────────────────────────────────────────────
   // Set to true on the first non-null metering reading each segment.
@@ -386,13 +384,12 @@ export function useVoiceCall(): {
       return;
     }
     clearAutoSubmitTimer();
-    // Cancel any active settle window so it cannot re-enable VAD after we
-    // transition to "submitting" (guards against submitNow racing settle).
-    if (vadSettleTimeoutRef.current !== null) {
-      clearTimeout(vadSettleTimeoutRef.current);
-      vadSettleTimeoutRef.current = null;
+    // Cancel the VAD open-mic delay timer so it cannot re-enable VAD after
+    // we transition to "submitting" (guards against submitNow racing the delay).
+    if (vadDelayTimerRef.current !== null) {
+      clearTimeout(vadDelayTimerRef.current);
+      vadDelayTimerRef.current = null;
     }
-    vadSettlingRef.current = false;
     vadActiveRef.current = false;
     setPhaseSync("submitting");
 
@@ -475,32 +472,6 @@ export function useVoiceCall(): {
     if (db === null) return;
     meteringEverReceivedRef.current = true;
 
-    // ── Settling window ────────────────────────────────────────────────────
-    // Hold VAD inactive on mic reopen until N consecutive near-silence
-    // readings confirm the hardware speaker has gone quiet.
-    if (vadSettlingRef.current) {
-      if (db <= SILENCE_DB) {
-        vadSettleCountRef.current += 1;
-        if (vadSettleCountRef.current >= VAD_SETTLE_READINGS) {
-          if (vadSettleTimeoutRef.current !== null) {
-            clearTimeout(vadSettleTimeoutRef.current);
-            vadSettleTimeoutRef.current = null;
-          }
-          vadSettlingRef.current = false;
-          // Only activate VAD if we're still in a listening phase — guards
-          // against a submitNow/autoSubmit racing the settle completion.
-          if (phaseRef.current === "listening") {
-            vadActiveRef.current = true;
-            addLog(`VAD settled: ${vadSettleCountRef.current} readings`);
-          }
-        }
-      } else {
-        // Echo still audible — reset consecutive-silence counter.
-        vadSettleCountRef.current = 0;
-      }
-      return;
-    }
-
     if (!vadActiveRef.current) return;
 
     const now = Date.now();
@@ -581,28 +552,23 @@ export function useVoiceCall(): {
     }
     try {
       await recorder.start();
-      // ── VAD settle window ─────────────────────────────────────────────────
-      // Don't enable VAD immediately. Hold it inactive until
-      // VAD_SETTLE_READINGS consecutive near-silence metering readings confirm
-      // the hardware speaker has gone quiet, preventing TTS tail-end audio
-      // (or Bluetooth A2DP drain) from being picked up as user speech.
-      // VAD_SETTLE_TIMEOUT_MS is a hard fallback so the call never hangs if
-      // silence readings never arrive (e.g. very noisy environment).
+      // ── VAD open-mic delay ────────────────────────────────────────────────
+      // Hold VAD inactive for VAD_DELAY_MS (500ms) after the mic opens.
+      // This is a known heuristic: it covers the ~300-400ms Bluetooth A2DP
+      // drain window so TTS tail audio cannot trigger detection on reopen.
+      // A metering-based confirmation is not viable on this device because
+      // VOICE_COMMUNICATION mode AGC keeps the noise floor above SILENCE_DB
+      // (-45 dBFS) even in genuine silence — see Dump #4 for full diagnosis.
       meteringEverReceivedRef.current = false;
-      vadSettlingRef.current = true;
-      vadSettleCountRef.current = 0;
-      vadSettleTimeoutRef.current = setTimeout(() => {
-        vadSettleTimeoutRef.current = null;
-        if (vadSettlingRef.current) {
-          vadSettlingRef.current = false;
-          if (phaseRef.current === "listening") {
-            vadActiveRef.current = true;
-            addLog("VAD settle: timeout — forced active");
-          }
+      vadDelayTimerRef.current = setTimeout(() => {
+        vadDelayTimerRef.current = null;
+        if (phaseRef.current === "listening") {
+          vadActiveRef.current = true;
+          addLog("VAD delay: 500ms elapsed — active");
         }
-      }, VAD_SETTLE_TIMEOUT_MS);
+      }, VAD_DELAY_MS);
       setPhaseSync("listening");
-      addLog("openMic OK — recording (settling)");
+      addLog("openMic OK — recording (500ms delay)");
       micOpeningRef.current = false;
 
       // Fallback: if metering-based VAD never fires (metering null on this
@@ -842,11 +808,10 @@ export function useVoiceCall(): {
   useEffect(() => {
     return () => {
       clearAutoSubmitTimer();
-      if (vadSettleTimeoutRef.current !== null) {
-        clearTimeout(vadSettleTimeoutRef.current);
-        vadSettleTimeoutRef.current = null;
+      if (vadDelayTimerRef.current !== null) {
+        clearTimeout(vadDelayTimerRef.current);
+        vadDelayTimerRef.current = null;
       }
-      vadSettlingRef.current = false;
       vadActiveRef.current = false;
       stopPlayback();
       const ws = wsRef.current;
