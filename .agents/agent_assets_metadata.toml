@@ -527,3 +527,9 @@ id = "DhDZ34l9DWMZFI2TerthK"
 uri = "file://VoiceCall_InterruptLoopDiagnosis_20Jun2026.txt"
 type = "text"
 title = "VoiceCall_InterruptLoopDiagnosis_20Jun2026.txt"
+
+[[outputs]]
+id = "Wbbq7WvdWyK25T9_YtRUi"
+uri = "file://VoiceCall_OptionB_PlaybackConfirmedOnceGuard_20Jun2026.txt"
+type = "text"
+title = "VoiceCall_OptionB_PlaybackConfirmedOnceGuard_20Jun2026.txt"

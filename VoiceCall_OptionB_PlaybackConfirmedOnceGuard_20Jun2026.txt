@@ -1,0 +1,149 @@
+================================================================================
+VOICE CALL — OPTION B: PLAYBACK_CONFIRMED ONE-SHOT GUARD
+Standing v3.1 Completion Report
+Date: 20 June 2026
+================================================================================
+
+VERDICT: COMPLETE — typecheck passes, not testable without live device.
+
+ITEM: Interrupt double-send of playback_confirmed
+APPROVED BY: Kane (written approval, 20 Jun 2026)
+ROOT CAUSE (from diagnosis): interrupt() → void playNextRef.current() drain
+kick fires after stopPlayback() with responseEndReceivedRef still true,
+causing a second playNext() drain to send a second playback_confirmed in the
+same JS tick that the normal player:finished drain already sent the first.
+
+================================================================================
+WHAT CHANGED (3 edits, useVoiceCall.ts)
+================================================================================
+
+1. NEW REF — declared alongside responseEndReceivedRef (~line 239):
+
+   const alreadyConfirmedRef = useRef<boolean>(false);
+
+   One-shot flag, scoped to the current turn. True once playback_confirmed
+   has been sent. Reset to false in speech_start(main) only.
+
+2. SEND GATE — playNext() drain branch (~line 339):
+
+   BEFORE:
+     } else if (responseEndReceivedRef.current) {
+       if (wsRef.current?.readyState === WebSocket.OPEN) {
+         wsRef.current.send(JSON.stringify({ type: "playback_confirmed" }));
+         addLog("WS playback_confirmed → sent ...");
+       }
+     }
+
+   AFTER:
+     } else if (responseEndReceivedRef.current) {
+       if (!alreadyConfirmedRef.current) {
+         if (wsRef.current?.readyState === WebSocket.OPEN) {
+           alreadyConfirmedRef.current = true;
+           wsRef.current.send(JSON.stringify({ type: "playback_confirmed" }));
+           addLog("WS playback_confirmed → sent ...");
+         }
+       } else {
+         addLog("WS playback_confirmed → suppressed (already sent this turn)");
+       }
+     }
+
+   First drain: finds alreadyConfirmedRef=false, sets it true, sends.
+   Second drain (interrupt kick): finds alreadyConfirmedRef=true, suppresses
+   and logs. The suppression line is auditable in the live audit log.
+
+3. RESET — speech_start(main) handler (~line 821):
+
+   alreadyConfirmedRef.current = false;  // Option B: new turn, allow one playback_confirmed
+
+   Added alongside the four existing gate resets (ttsCompleteRef,
+   ttsServerDoneRef, responseEndReceivedRef, and turnGenRef++).
+
+================================================================================
+RACE ANALYSIS — CAN THE RESET ITSELF RACE?
+(Kane's specific question: "can the flag still be true if a genuinely new
+turn starts unusually fast?")
+================================================================================
+
+The answer is NO, and the reason is network ordering.
+
+The risk scenario would be:
+
+  1. Old turn drain fires: alreadyConfirmedRef set true, playback_confirmed sent
+  2. Server immediately processes it, starts new turn, sends speech_start(main)
+  3. Client receives speech_start(main): alreadyConfirmedRef reset to false
+  4. Interrupt drain kick (from the same interrupt() call as step 0) now finds
+     alreadyConfirmedRef=false and sends a second playback_confirmed for the old
+     turn, treating it as a fresh new-turn send.
+
+This cannot happen. Here is why:
+
+  Step 1 and the interrupt() drain kick (step 4) both execute SYNCHRONOUSLY
+  in the same JavaScript event loop task (or in the microtask queue of that
+  same task). There is no await between:
+    - alreadyConfirmedRef.current = true  (step 1)
+    - void playNextRef.current()          (the drain kick, inside interrupt())
+
+  These two execute in the same callstack. No WS message can arrive between
+  them — the WS message handler runs in a separate event loop task, which can
+  only be scheduled after the current task completes.
+
+  Step 3 (receiving speech_start(main) from the server) requires at minimum
+  one full network round trip: client sends playback_confirmed → server
+  processes it → server sends tts_done → client opens mic → user speaks →
+  client sends speech_final → server runs LLM → server sends speech_start.
+  That is several seconds of elapsed wall-clock time, not a same-tick event.
+
+  EXCEPTION — pendingUtterance fast path: if the user spoke during Ashley's
+  response, the server queues the utterance and processes it immediately after
+  handlePlaybackConfirmed, sending tts_done and then speech_start(main) in
+  quick succession on the same WS connection. Even here, WebSocket guarantees
+  in-order delivery on a single connection: tts_done arrives before
+  speech_start(main). More importantly, both arrive in separate WS message
+  events — each one is a separate event loop task. The interrupt() drain
+  kick ran synchronously to completion (alreadyConfirmedRef already true)
+  long before either of those events is dequeued.
+
+CONCLUSION: By the time speech_start(main) for any new turn arrives and resets
+alreadyConfirmedRef to false, all in-flight same-tick drain calls from the
+interrupt() that triggered the double-send concern have already completed and
+found alreadyConfirmedRef=true (correctly suppressed). The reset is race-safe
+under all delivery orderings.
+
+================================================================================
+TESTABILITY
+================================================================================
+
+Not testable without live device. The fix targets a same-tick race between
+player:finished → playNext drain and interrupt:tap → playNext drain kick.
+Reproducing this requires real audio playback completing simultaneously with
+a physical tap — not reproducible in the Replit preview or via curl.
+
+What to look for in live logs after this change:
+
+  NORMAL TURN (should still work):
+    playNext: drained responseEnd=true srvDone=false phase=speaking
+    WS playback_confirmed → sent (response_end + queue empty)
+    [no "suppressed" line]
+
+  INTERRUPT AT PLAYER FINISH (the fixed case):
+    WS playback_confirmed → sent (response_end + queue empty)   ← first drain
+    interrupt: tap
+    WS playback_confirmed → suppressed (already sent this turn) ← drain kick
+    [loop does NOT follow]
+
+  NEW TURN AFTER INTERRUPT (flag reset sanity):
+    WS speech_start(main) — gates reset
+    [subsequent turn eventually produces "→ sent" not "→ suppressed"]
+
+================================================================================
+FILES CHANGED
+================================================================================
+
+artifacts/mobile/lib/useVoiceCall.ts — 3 hunks, no server changes required.
+
+No new dependencies. No schema changes. No API contract changes.
+Restart mobile workflow to pick up the change.
+
+================================================================================
+END OF REPORT
+================================================================================

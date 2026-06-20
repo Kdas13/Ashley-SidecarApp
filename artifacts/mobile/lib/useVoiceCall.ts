@@ -233,6 +233,13 @@ export function useVoiceCall(): {
   // is true — prevents inter-sentence queue drains from triggering premature
   // confirmation.
   const responseEndReceivedRef = useRef<boolean>(false);
+  // alreadyConfirmedRef: true once playback_confirmed has been sent for the
+  // current turn. Reset to false in the speech_start(main) handler — the
+  // only point at which a new turn's lifecycle begins on the client.
+  // This is the one-shot guard (Option B) that stops the interrupt() drain
+  // kick from sending a second playback_confirmed after the normal player
+  // drain already sent the first one. See VoiceCall_InterruptLoopDiagnosis.
+  const alreadyConfirmedRef = useRef<boolean>(false);
   // Mutex: prevents two concurrent openMic calls from both calling
   // prepareToRecordAsync — the second call would throw "already been prepared".
   const micOpeningRef       = useRef(false);
@@ -326,9 +333,16 @@ export function useVoiceCall(): {
           // Server has confirmed all audio sent AND our queue is empty — send confirmation.
           // This is the ONLY valid time to send playback_confirmed. Before response_end
           // arrives, an empty queue means "inter-sentence gap", not "response complete".
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(JSON.stringify({ type: "playback_confirmed" }));
-            addLog("WS playback_confirmed → sent (response_end + queue empty)");
+          if (!alreadyConfirmedRef.current) {
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              alreadyConfirmedRef.current = true;
+              wsRef.current.send(JSON.stringify({ type: "playback_confirmed" }));
+              addLog("WS playback_confirmed → sent (response_end + queue empty)");
+            }
+          } else {
+            // Second drain reached this branch (e.g. interrupt() drain kick) —
+            // playback_confirmed was already sent for this turn. Suppress.
+            addLog("WS playback_confirmed → suppressed (already sent this turn)");
           }
         } else {
           // Queue is empty but server has NOT sent response_end yet.
@@ -801,6 +815,7 @@ export function useVoiceCall(): {
             ttsCompleteRef.current = false;        // device not done playing
             ttsServerDoneRef.current = false;      // server not done sending
             responseEndReceivedRef.current = false; // server has not yet confirmed response complete
+            alreadyConfirmedRef.current = false;   // Option B: new turn, allow one playback_confirmed
             activeSpeechKindRef.current = "main";
             // New generation: re-arms flushChunkBuffer and openMic for the
             // new turn, invalidating any stale in-flight calls from the
