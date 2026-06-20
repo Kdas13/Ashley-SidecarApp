@@ -394,6 +394,27 @@ wss.on("connection", (ws: any, _req: any, deviceId: string) => {
       registry.cancelCurrentTurn(currentSession, "user_interrupt");
       currentSession.state = "listening";
 
+      // Clear the full playback gate so a queued utterance is not stranded.
+      // cancelCurrentTurn clears currentSpeechId but does NOT touch
+      // awaitingPlaybackConfirm — without this block the 15s safety timeout
+      // fires but its `currentSpeechId === speechId` guard fails silently
+      // (speechId is now null), leaving the gate permanently true and every
+      // subsequent speech_final queued forever.
+      if (currentSession.playbackConfirmTimeout) {
+        clearTimeout(currentSession.playbackConfirmTimeout);
+        currentSession.playbackConfirmTimeout = null;
+      }
+      currentSession.awaitingPlaybackConfirm = false;
+      currentSession.responseComplete = false;
+
+      // Drain any utterance that arrived during the frozen playback window.
+      // Process it after interrupt_ack so the client is already in listening
+      // state when the LLM reply starts streaming.
+      const drainUtterance   = currentSession.pendingUtterance;
+      const drainUtteranceId = currentSession.pendingUtteranceId;
+      currentSession.pendingUtterance   = null;
+      currentSession.pendingUtteranceId = null;
+
       const seq = registry.incrementSequence(currentSession);
       try {
         ws.send(
@@ -412,6 +433,20 @@ wss.on("connection", (ws: any, _req: any, deviceId: string) => {
         { deviceId, sessionId: currentSession.sessionId },
         "voice: interrupt handled",
       );
+
+      if (drainUtterance && drainUtteranceId) {
+        logger.info(
+          { deviceId, sessionId: currentSession.sessionId, utteranceId: drainUtteranceId },
+          "voice: interrupt — draining queued utterance",
+        );
+        void VoiceOrchestrationService.handleSpeechFinal(
+          currentSession,
+          drainUtterance,
+          drainUtteranceId,
+        ).catch((err) =>
+          logger.error({ err, deviceId }, "voice: interrupt drain failed"),
+        );
+      }
     }
   });
 

@@ -1,0 +1,126 @@
+================================================================================
+ASHLEY PROJECT — VOICE CALL FIX COMPLETION REPORT v6
+Date: 20 June 2026  |  Standing v3.1 format
+Scope: Finding 2 — interrupt handler playback gate fix (Option A)
+Commit base: ad5af2297a0af05f25a94406b6df371c7c0a0d89406
+================================================================================
+
+ITEM IN THIS ROUND:
+  Finding 2 — Interrupt handler: clear playback gate + drain pending utterance   BUILT
+
+================================================================================
+FINDING 2 — INTERRUPT HANDLER PLAYBACK GATE FIX (Option A)
+================================================================================
+
+FILE: artifacts/api-server/src/index.ts (interrupt case)
+
+WHAT CHANGED:
+
+Three additions to the interrupt handler, between cancelCurrentTurn and the
+interrupt_ack send:
+
+1. CLEAR THE PLAYBACK GATE:
+
+  if (currentSession.playbackConfirmTimeout) {
+    clearTimeout(currentSession.playbackConfirmTimeout);
+    currentSession.playbackConfirmTimeout = null;
+  }
+  currentSession.awaitingPlaybackConfirm = false;
+  currentSession.responseComplete = false;
+
+2. CAPTURE AND CLEAR THE PENDING UTTERANCE (before interrupt_ack):
+
+  const drainUtterance   = currentSession.pendingUtterance;
+  const drainUtteranceId = currentSession.pendingUtteranceId;
+  currentSession.pendingUtterance   = null;
+  currentSession.pendingUtteranceId = null;
+
+3. DRAIN (after interrupt_ack is sent):
+
+  if (drainUtterance && drainUtteranceId) {
+    logger.info(..., "voice: interrupt — draining queued utterance");
+    void VoiceOrchestrationService.handleSpeechFinal(
+      currentSession, drainUtterance, drainUtteranceId,
+    ).catch((err) =>
+      logger.error({ err, deviceId }, "voice: interrupt drain failed"),
+    );
+  }
+
+WHY THE ORDER MATTERS:
+
+  cancelCurrentTurn first  — clears currentSpeechId so in-flight TTS sees null
+  gate clear second        — clears awaitingPlaybackConfirm before interrupt_ack
+  interrupt_ack third      — client transitions to listening state
+  drain fourth (void/async)— LLM starts only after client is in listening state
+
+WHAT THIS FIXES IN THE LOG SEQUENCE (from the 59s freeze):
+
+  Before fix:
+    T+9.8s  interrupt handled
+            awaitingPlaybackConfirm: still true
+    T+15.1s "Sorry." speech_final → queued — awaiting playback_confirmed
+    T+~23s  15s safety timeout fires, guard fails silently (currentSpeechId=null)
+    T+74.4s call_end — "Sorry." was never processed
+
+  After fix:
+    T+9.8s  interrupt handled
+            awaitingPlaybackConfirm = false  ← CLEARED
+            drainUtterance captured
+            interrupt_ack sent
+            handleSpeechFinal("Sorry.") starts immediately
+    T+~10s  LLM reply begins — call recovers in < 1 second
+
+WHAT THIS DOES NOT FIX:
+
+  The 15s safety timeout's guard (`currentSpeechId === speechId`) remains
+  vulnerable to the same failure mode from any other path that clears
+  currentSpeechId before the timeout fires. Option B (drop the speechId check
+  from the guard) should be done as a follow-up hardening pass. Today it is
+  belt-and-suspenders; after this fix it is no longer the last line of defence.
+
+TYPECHECK: PASS (pnpm --filter @workspace/api-server run typecheck — 0 errors)
+
+================================================================================
+VERDICTS
+================================================================================
+
+Finding 2 (interrupt handler gate fix):
+  NOT TESTABLE without a live voice call that reproduces the exact failure mode:
+    LLM error (e.g. Gemini 429) → error clip sent → interrupt pressed → second
+    speech_final while in the playback window.
+  
+  Kane should confirm:
+  - After an interrupt during/after an LLM error, the next speech_final is
+    processed immediately (not queued). Server log should show:
+      "voice: interrupt handled"
+      "voice: interrupt — draining queued utterance"  (if something was queued)
+    rather than "speech_final queued — awaiting playback_confirmed".
+  - Normal interrupt (mid-speech, no error): no change to existing behaviour.
+    interrupt_ack fires, mic opens, next turn processes. The drain block is a
+    no-op when pendingUtterance is null (the common case).
+  - No regression on clean turns: response_end → playback_confirmed →
+    tts_done → openMic chain is unchanged.
+
+================================================================================
+OUTSTANDING ITEMS
+================================================================================
+
+Finding 3 (openMic reentrancy — duplicate timers):
+  OPTIONS provided in RawCodeDump6. Not urgent. Awaiting decision on which
+  option to implement or whether to defer to a hardening round.
+
+Finding 2 follow-up hardening (Option B — safety timeout guard):
+  Recommended but not urgent after Option A lands. The 15s safety timeout's
+  `currentSpeechId === speechId` guard is still fragile against any other
+  future interrupt path that clears currentSpeechId.
+
+================================================================================
+COMMIT PERMALINKS
+================================================================================
+
+Base: ad5af2297a0af05f25a94406b6df371c7c0a0d89406
+Changes: artifacts/api-server/src/index.ts only
+
+================================================================================
+END OF REPORT
+================================================================================

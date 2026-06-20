@@ -467,3 +467,9 @@ id = "vgmZ7xyZSg7YFcIf7MOaN"
 uri = "file://VoiceCall_Finding2_FixOptions_20Jun2026.txt"
 type = "text"
 title = "VoiceCall_Finding2_FixOptions_20Jun2026.txt"
+
+[[outputs]]
+id = "oUDz9IPd0reOm_qciy4zb"
+uri = "file://VoiceCall_CompletionReport_v6_20Jun2026.txt"
+type = "text"
+title = "VoiceCall_CompletionReport_v6_20Jun2026.txt"
