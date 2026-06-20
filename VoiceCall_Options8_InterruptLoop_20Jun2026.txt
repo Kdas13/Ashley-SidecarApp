@@ -1,0 +1,149 @@
+================================================================================
+ASHLEY PROJECT — OPTIONS: INTERRUPT LOOP (in-flight audio re-arms "speaking")
+Date: 20 June 2026  |  Commitment 1 Standard — options only, no implementation
+Confirmed root cause: RawCodeDump7_InterruptLoop_20Jun2026.txt
+================================================================================
+
+ARE THEY THE SAME GAP? (interrupt loop + Finding 3 / duplicate openMic)
+
+Yes — same principle. Both stem from the client having no way to say "this
+event belongs to a turn I've already moved past." For the loop it is stale
+audio chunks arriving and being played. For Finding 3 it is stale lifecycle
+signals (openMic calls) arriving and executing. A single generation counter
+can address both.
+
+That said: they are not the same implementation problem. The loop manifests
+in flushChunkBuffer — an async function with an await gap between receiving
+audio and queuing it. Finding 3 manifests in openMic — an async function
+whose micOpeningRef mutex is released at line 590 before all its async work
+is done (autoSubmit timer setup is after the release), leaving a window for
+a second concurrent call to enter. You can fix the loop without touching
+Finding 3, and vice versa. Recommending Option A if the goal is to stop the
+bleeding now; Option B if the goal is one clean pass that closes both.
+
+================================================================================
+OPTION A — Client "playback interrupted" flag (loop only, Finding 3 deferred)
+================================================================================
+
+WHAT IT DOES:
+  A single playbackInterruptedRef = useRef(false) on the client.
+
+  Set to true in interrupt() immediately after stopPlayback().
+
+  Checked in two places:
+    1. flushChunkBuffer() after the async file write — drop the URI, delete
+       the temp file, return without pushing to queue.
+    2. playNext() drain branch before the playback_confirmed send — skip the
+       send, return.
+
+  Cleared in the speech_start(main) WS handler — the correct reset point
+  because the server sends speech_start before any new audio chunks.
+
+SIDE EFFECT FIX:
+  The explicit void playNextRef.current() call in interrupt() currently sends
+  playback_confirmed unconditionally when responseEndReceivedRef=true. With
+  this option, that call still runs but the drain branch sees
+  playbackInterrupted=true and skips the send. Removes the spurious
+  handlePlaybackConfirmed trigger entirely, not just its consequences.
+
+TRADEOFFS:
+  + Minimal surface: ~10–12 lines changed, client only, no protocol changes,
+    no WS message changes.
+  + speech_start(main) is the correct reset boundary: server sends it before
+    any new audio chunks, so new audio from a subsequent turn passes through
+    cleanly.
+  - Does NOT fix Finding 3. Duplicate openMic calls from concurrent
+    interrupt_ack and tts_done-path playNext remain possible, handled only
+    by the existing micOpeningRef mutex (which has the early-release bug at
+    line 590).
+  Risk: near zero. If the flag is set and no new turn ever starts (e.g. call
+  ends), the flag stays true but the call is ending anyway.
+
+================================================================================
+OPTION B — Unified client generation counter (loop + Finding 3 together)
+================================================================================
+
+WHAT IT DOES:
+  Replace the flag with turnGenRef = useRef(0). Two increment sites,
+  client only:
+
+    1. interrupt() increments it.
+       Marks "old turn is dead." Every async path in flight before this
+       increment is now stale.
+
+    2. speech_start(main) handler increments it.
+       Marks "new turn is live." Clears the way for the new turn's audio.
+
+  flushChunkBuffer() captures turnGenRef.current before
+  await FileSystem.writeStringAsync, checks after. If the gen changed during
+  the write, deletes the temp file and returns without queuing.
+
+  openMic() captures gen before its first await (recorder.ensurePermission()),
+  checks after. If changed, clears micOpeningRef and returns. Same check after
+  recorder.start(). Also: move micOpeningRef.current = false to after the
+  autoSubmit timer setup (line 604), not before it — closes the
+  mutex-release-too-early gap that allows a second concurrent openMic to enter.
+
+TIMING SAFETY FOR openMic:
+  interrupt() bumps gen to N+1.
+  interrupt_ack fires openMic(), which captures gen=N+1.
+  speech_start(main) bumps gen to N+2 only after the user speaks and the LLM
+  responds — seconds later, long after openMic has completed. No false drop.
+
+TRADEOFFS:
+  + Fixes the loop (same mechanism as Option A) and hardens Finding 3 (gen
+    check inside openMic + correct mutex release point).
+  + Still client-only, no protocol changes.
+  - More lines changed: flushChunkBuffer, openMic, interrupt(), speech_start
+    handler. Roughly 20–25 lines across four sites.
+  - The gen-increment sequencing must be right: interrupt() invalidates,
+    speech_start(main) re-validates. If either site is missed or misplaced
+    the gate is wrong. Straightforward to test but requires care.
+  + The gen check in openMic makes the Finding 3 fix explicit rather than
+    relying entirely on the mutex — which matters if a duplicate call arrives
+    after the first openMic completes (mutex is clear by then).
+
+================================================================================
+OPTION C — Server speechId tagging on sentence_end (protocol-level)
+================================================================================
+
+WHAT IT DOES:
+  Server adds the current speechId to every sentence_end (and optionally
+  every binary chunk) WS message. Client tracks activeSpeechIdRef, set on
+  speech_start(main) (which already carries the speechId), cleared to null
+  in interrupt(). flushChunkBuffer() receives the speechId from the
+  sentence_end that triggered it; drops if it does not match
+  activeSpeechIdRef.current. tts_done and interrupt_ack include the relevant
+  speechId; openMic callers check the id before opening.
+
+TRADEOFFS:
+  + Most precise: every piece of audio is explicitly tied to its originating
+    turn. No timing race possible — even if a sentence_end from the old turn
+    arrives microseconds after a speech_start from the new turn, the id
+    mismatch catches it.
+  - Requires server-side changes to the WS message protocol and the
+    sentence_end send in VoiceOrchestrationService.ts.
+  - flushChunkBuffer needs the speechId threaded in from the WS handler,
+    which currently calls it with no arguments — structural change.
+  - Most invasive: touches at least four or five sites across both server
+    and client.
+  - Fixes both loop and Finding 3 cleanly, but the payoff over Option B
+    does not justify the scope for a single-user mobile app.
+
+================================================================================
+RECOMMENDATION
+================================================================================
+
+Option B in one pass. The increment logic is simple, it is still entirely
+client-side, and it closes both the confirmed 13-second failure and the
+latent Finding 3 gap in one coherent change rather than two separate patches.
+The risk is low — the two increment sites (interrupt() and speech_start(main))
+are the same two places you would already touch for Option A, plus the openMic
+hardening which is a few lines.
+
+Option A is right if you want to ship tonight and come back to Finding 3
+separately. Option B is cleaner if you are doing it in this sitting anyway.
+
+================================================================================
+END OF OPTIONS — NO CHANGES MADE
+================================================================================

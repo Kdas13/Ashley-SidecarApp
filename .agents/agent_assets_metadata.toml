@@ -479,3 +479,9 @@ id = "jLJqqG8KaWb_UMLmymsEF"
 uri = "file://RawCodeDump7_InterruptLoop_20Jun2026.txt"
 type = "text"
 title = "RawCodeDump7_InterruptLoop_20Jun2026.txt"
+
+[[outputs]]
+id = "b-kUJm7YIj1WjDvgjzDNa"
+uri = "file://VoiceCall_Options8_InterruptLoop_20Jun2026.txt"
+type = "text"
+title = "VoiceCall_Options8_InterruptLoop_20Jun2026.txt"
