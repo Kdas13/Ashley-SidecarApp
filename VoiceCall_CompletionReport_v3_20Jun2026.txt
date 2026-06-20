@@ -1,0 +1,161 @@
+================================================================================
+ASHLEY PROJECT — VOICE CALL FIX COMPLETION REPORT v3
+Date: 20 June 2026  |  Standing v3.1 format
+Scope: Echo race after interrupt — two independent fixes committed
+Pre-commit base: 2bcf6e5eda233ecd761208a414b3e3de050bfea0f
+================================================================================
+
+SUMMARY
+-------
+Two independent fixes applied to artifacts/mobile/lib/useVoiceCall.ts:
+
+  Fix A — VAD settle window (echo guard on mic reopen)
+  Fix B — STT hallucination gate (minimum speech duration before transcribe)
+
+These are completely independent code paths. Either can be reverted without
+affecting the other. They address the two root causes identified in Dump #3
+Section 5: (a) hardware audio echo triggering VAD on mic reopen, and (b) STT
+returning phantom text on near-silence audio.
+
+================================================================================
+FIX A — VAD SETTLE WINDOW
+================================================================================
+
+ROOT CAUSE ADDRESSED:
+  After recorder.start(), vadActiveRef was set true immediately. Any audio
+  still draining through the hardware speaker (TTS tail, Bluetooth A2DP buffer
+  of 100-200ms) would score as db > SILENCE_DB on the first metering reading,
+  triggering VAD and eventually a phantom STT submission.
+
+MECHANISM:
+  openMic() now starts a settle window instead of enabling VAD immediately.
+  During settling, the VAD effect monitors metering but only counts consecutive
+  readings at or below SILENCE_DB. Once VAD_SETTLE_READINGS (3) consecutive
+  silence readings are observed (~300ms at 100ms metering interval), the settle
+  window clears and vadActiveRef becomes true. A VAD_SETTLE_TIMEOUT_MS (600ms)
+  fallback forces VAD active if silence readings never arrive (very noisy
+  environment, or the settle logic never fires on a particular device).
+
+CONSTANTS:
+  VAD_SETTLE_READINGS   = 3    (≈300ms at 100ms interval)
+  VAD_SETTLE_TIMEOUT_MS = 600  (fallback for Bluetooth / slow-drain devices)
+
+RACE GUARDS:
+  - settle timeout and submitSegment both check phaseRef.current === "listening"
+    before enabling vadActiveRef, so a concurrent submitNow or autoSubmit
+    cannot re-enable VAD during or after a transition to "submitting".
+  - submitSegment cancels the settle timeout and clears vadSettlingRef at its
+    own top (lines 394-398) before recorder.stop(), eliminating the race where
+    settle completion fires after submit has already started.
+  - Unmount cleanup clears vadSettleTimeoutRef and resets vadSettlingRef.
+
+APPLIES TO: ALL openMic() calls (initial connect, post-Ashley reopen, post-
+  interrupt reopen, post-submitSegment error reopen). Not restricted to the
+  interrupt path — also helps Issue 1's original phantom-mic problem on call
+  connect and on normal turn reopens.
+
+FILES CHANGED:
+  artifacts/mobile/lib/useVoiceCall.ts
+    - Added constants VAD_SETTLE_READINGS, VAD_SETTLE_TIMEOUT_MS (lines 40-41)
+    - Added refs vadSettlingRef, vadSettleCountRef, vadSettleTimeoutRef (192-194)
+    - VAD effect: settling-window prefix before regular VAD logic (461-485)
+    - openMic(): settle window replaces vadActiveRef.current = true (566-589)
+    - submitSegment(): cancel-settle block at top (394-398)
+    - Unmount cleanup: vadSettleTimeoutRef cleared (848-851)
+
+================================================================================
+FIX B — STT HALLUCINATION GATE
+================================================================================
+
+ROOT CAUSE ADDRESSED:
+  Deepgram and Whisper STT APIs are documented to hallucinate coherent phrases
+  ("Still there.", "Thank you.", etc.) when fed near-silence or very short audio
+  segments. The autoSubmit fallback (4s timer) was submitting these segments
+  without any energy/duration gate, resulting in phantom turns.
+
+MECHANISM:
+  A new meteringEverReceivedRef flag is set on the first non-null metering
+  reading per segment (reset in openMic()). In submitSegment(), before the
+  transcription fetch, a guard checks: if metering was received (non-null
+  metering device) AND detected speech duration < MIN_STT_SPEECH_MS (300ms),
+  skip the STT call, log the skip, and reopen the mic.
+  Null-metering devices (meteringEverReceivedRef=false) always pass through
+  unchanged — they have no VAD detection path and must rely on autoSubmit.
+
+CONSTANT:
+  MIN_STT_SPEECH_MS = 300ms
+
+THRESHOLD REASONING:
+  MIN_SPEECH_MS (500ms) is the VAD silence-path gate — a segment submitted via
+  silence VAD has already cleared 500ms. MIN_STT_SPEECH_MS (300ms) is looser,
+  catching only autoSubmit segments with no credible speech (0ms) or very brief
+  echo fragments (<300ms) while still allowing genuine short utterances that
+  the silence path would otherwise submit.
+
+FILES CHANGED:
+  artifacts/mobile/lib/useVoiceCall.ts
+    - Added constant MIN_STT_SPEECH_MS (line 48)
+    - Added ref meteringEverReceivedRef (line 200)
+    - VAD effect: meteringEverReceivedRef.current = true on non-null reading (459)
+    - openMic(): meteringEverReceivedRef.current = false on segment reset (574)
+    - submitSegment(): hallucination gate before fetch (410-421)
+
+================================================================================
+TYPECHECK
+================================================================================
+
+Command: pnpm --filter @workspace/mobile run typecheck
+Result:  PASS — zero errors, zero warnings
+Time:    20 June 2026
+
+================================================================================
+VERDICTS
+================================================================================
+
+Fix A (VAD settle window):
+  NOT TESTABLE without a live device to verify metering cadence and settle
+  completion timing. The logic is mechanically correct (refs, guards, cleanup
+  all verified). Kane must confirm:
+    - Audit log shows "openMic OK — recording (settling)" followed by
+      "VAD settled: N readings" (not "timeout — forced active") on a normal
+      turn reopen, indicating metering readings are arriving frequently enough
+      for the settle path to complete within ~600ms.
+    - No regression: normal speech after a turn reopen still triggers VAD and
+      submits correctly after silence.
+    - Interrupt cycle: no phantom audio detection in the 300ms window after
+      interrupt_ack fires.
+
+Fix B (STT hallucination gate):
+  NOT TESTABLE without triggering a hallucination scenario. Kane must confirm:
+    - When a segment submits via autoSubmit with no detected speech (e.g. mic
+      reopens, nobody talks for 4s), the audit log shows:
+        "submit skip: speech 0ms < 300ms"
+      instead of proceeding to the transcription API.
+    - No regression: real speech of ≥300ms duration still reaches STT normally.
+
+Interaction — important edge case:
+  If the settle window is still active when the autoSubmit 4s timer fires:
+    - autoSubmit calls submitSegment
+    - submitSegment cancels the settle window (lines 394-398)
+    - segmentSpeechMsRef = 0 (no VAD activity during settling)
+    - meteringEverReceivedRef = false (settle window starts by resetting it)
+    - Hallucination gate: meteringEverReceivedRef is false → passes through
+    - The STT call runs with 4s of near-silence audio
+  This is correct: if metering never fired during a 4s window, the device may
+  be null-metering — the autoSubmit is the only path. The settle timeout (600ms)
+  should have resolved and set meteringEverReceivedRef long before 4s on a
+  metering-capable device. Kane should verify no regression here.
+
+================================================================================
+COMMIT PERMALINKS
+================================================================================
+
+Pre-fix base: 2bcf6e5eda233ecd761208a414b3e3de050bfea0f
+  (Path C stuck-state close — previous session)
+
+These changes are live on main. Kane pushes to github.com/Kdas13/Ashley-SidecarApp
+manually after review.
+
+================================================================================
+END OF REPORT
+================================================================================

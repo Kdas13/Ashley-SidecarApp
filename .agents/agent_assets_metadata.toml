@@ -425,3 +425,9 @@ id = "HodOzUjduaxnURKncp-Fl"
 uri = "file://RawCodeDump3_InterruptEchoRace_20Jun2026.txt"
 type = "text"
 title = "RawCodeDump3_InterruptEchoRace_20Jun2026.txt"
+
+[[outputs]]
+id = "rGWERGOs8kQjdk4vZnX08"
+uri = "file://VoiceCall_CompletionReport_v3_20Jun2026.txt"
+type = "text"
+title = "VoiceCall_CompletionReport_v3_20Jun2026.txt"
