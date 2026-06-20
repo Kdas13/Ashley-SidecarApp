@@ -1,0 +1,117 @@
+================================================================================
+ASHLEY PROJECT — DIAGNOSTIC DUMP #9
+Date: 20 June 2026  |  NO CHANGES. NO COMMITS. NO BUILDS.
+Issue: Mid-utterance cutoff ~3s into a continuous sentence.
+================================================================================
+
+================================================================================
+QUESTION 1 — two distinct paths or one generic log?
+================================================================================
+
+Two genuinely distinct call paths. One completely generic log string.
+
+PATH A — openMic 4-second fallback (set once at lines 610-618):
+
+  autoSubmitTimerRef.current = setTimeout(() => {
+    autoSubmitTimerRef.current = null;
+    addLog(`autoSubmit fired phase=${phaseRef.current}`);
+    ...void submitSegmentRef.current();
+  }, 4000);
+
+  This fires if the user never produces sound above SILENCE_DB within 4s of
+  mic open. Purpose: null-metering devices with no other submission path.
+
+PATH B — VAD metering reset timer (reset on every sound tick > SILENCE_DB,
+lines 513-526):
+
+  if (autoSubmitTimerRef.current !== null) {
+    clearAutoSubmitTimer();
+    autoSubmitTimerRef.current = setTimeout(() => {
+      autoSubmitTimerRef.current = null;
+      addLog(`autoSubmit fired phase=${phaseRef.current}`);  // IDENTICAL STRING
+      ...void submitSegmentRef.current();
+    }, 4000);
+  }
+
+Both produce: "autoSubmit fired phase=…"
+Same ref, same text, indistinguishable in the log.
+
+DOES THE 4s TIMER RESET ON EVERY CONTINUED SOUND, OR ONLY ONCE?
+
+It resets on EVERY sound tick above SILENCE_DB, as long as
+autoSubmitTimerRef.current !== null at that moment. Path A sets the initial
+timer; Path B replaces it on first detected sound and continues resetting it
+on every subsequent detected sound. For continuous speech the timer is
+continuously pushed out 4s from the last detected sound.
+
+The comment at line 509 documents this explicitly:
+  "Option C: reset the fallback timer on every detected sound so it only
+   fires after genuine post-sound silence, not from mic-open alone."
+
+It is NOT a hard cap on utterance length. For continuous speech, neither
+Path A nor Path B should fire at ~3s.
+
+================================================================================
+QUESTION 2 — is segmentSpeechMsRef.current logged at submission time?
+================================================================================
+
+NO. There is no log line at entry to submitSegment() recording speech ms.
+
+The only place it appears in a log is the SKIP path:
+
+  // line 432 — fires only when skipping, not when actually submitting
+  addLog(`submit skip: speech ${segmentSpeechMsRef.current}ms < ${MIN_STT_SPEECH_MS}ms`);
+
+Worse: the silence-gate path ZEROES the ref before calling submitSegment:
+
+  isUserSpeakingRef.current = false;
+  segmentSpeechMsRef.current = 0;     // ← zeroed here
+  void submitSegmentRef.current();    // ref is already 0 when submitSegment runs
+
+So even adding a log at the top of submitSegment would always read 0 for
+silence-gate submissions. The value must be captured at the call site before
+the zero, not inside submitSegment.
+
+WHAT THIS MEANS FOR THE 3s CUTOFF:
+
+Based on the code, neither path should fire at ~3s of continuous speech.
+Path B fires 4s after the last sound tick, not 4s from mic open. The silence
+gate fires only after SILENCE_MS (3500ms) or SILENCE_MS_SHORT (4500ms) of
+contiguous sub-threshold metering.
+
+A 3s mid-utterance cutoff is not explained by a timer expiring on schedule.
+The most likely cause is metering dropping below SILENCE_DB (-45 dBFS)
+intermittently mid-sentence — possibly VOICE_COMMUNICATION mode AGC
+suppressing Kane's voice at certain pitch/volume points — and accumulating
+enough contiguous silence time to trip the silence gate. Without logging
+segmentSpeechMsRef at submission time and tagging which path fired, this
+cannot be confirmed from a screenshot.
+
+================================================================================
+SUGGESTED LOGGING IMPROVEMENT (not implementing — awaiting approval)
+================================================================================
+
+Two additions, no behaviour change.
+
+1. Differentiate the two timer paths with distinct labels:
+
+   Path A (openMic timer):
+     addLog(`submit: autoSubmit-initial speechMs=${segmentSpeechMsRef.current} phase=${phaseRef.current}`);
+
+   Path B (metering reset timer):
+     addLog(`submit: autoSubmit-sound-reset speechMs=${segmentSpeechMsRef.current} phase=${phaseRef.current}`);
+
+2. Log speech ms at the silence-gate call site, before the zero:
+
+   const speechMs = segmentSpeechMsRef.current;
+   segmentSpeechMsRef.current = 0;
+   addLog(`submit: silence-gate speechMs=${speechMs}`);
+   void submitSegmentRef.current();
+
+Together these make every submission self-describing in the log:
+which mechanism fired, and how much speech was detected when it did.
+This question would be answerable from a screenshot alone next time.
+
+================================================================================
+END OF DUMP — NO CHANGES MADE
+================================================================================
