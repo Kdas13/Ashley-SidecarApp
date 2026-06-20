@@ -443,3 +443,9 @@ id = "MtZXZPJ2AD7TLJ1BZkIAz"
 uri = "file://VoiceCall_CompletionReport_v4_20Jun2026.txt"
 type = "text"
 title = "VoiceCall_CompletionReport_v4_20Jun2026.txt"
+
+[[outputs]]
+id = "qUTJBhK_lUcTaVASzpQwC"
+uri = "file://RawCodeDump5_ThreeFindings_20Jun2026.txt"
+type = "text"
+title = "RawCodeDump5_ThreeFindings_20Jun2026.txt"

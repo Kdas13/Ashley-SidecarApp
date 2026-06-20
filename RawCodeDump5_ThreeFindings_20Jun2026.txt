@@ -1,0 +1,286 @@
+================================================================================
+ASHLEY PROJECT — DIAGNOSTIC RAW CODE DUMP #5
+Date: 20 June 2026  |  NO CHANGES. NO COMMITS. NO BUILDS.
+Issues: (1) SILENCE_MS tuning; (2) freeze > 45s; (3) openMic reentrancy
+Commit examined: 6d9b66a6b0c9160a617ec408a8168042ab9424a1 (current HEAD)
+================================================================================
+
+================================================================================
+FINDING 1 — SILENCE_MS: constant, usage, adaptive options
+================================================================================
+
+THE CONSTANT (line 29, useVoiceCall.ts):
+
+    const SILENCE_MS = 3500;   // was 1200 — was cutting Kane off mid-sentence
+
+That is the only definition. 3500ms.
+
+WHERE IT IS USED:
+
+In openMic() at line 544:
+    activeSilenceMsRef.current = nextSilenceThresholdRef.current ?? SILENCE_MS;
+    nextSilenceThresholdRef.current = null;
+
+activeSilenceMsRef is read in the VAD effect (lines 508-517):
+    } else {
+      // Silence.
+      if (
+        isUserSpeakingRef.current &&
+        segmentSpeechMsRef.current >= MIN_SPEECH_MS &&
+        now - lastSpeechAtRef.current >= activeSilenceMsRef.current   // ← 3500ms
+      ) {
+        // User has stopped talking long enough — submit.
+        isUserSpeakingRef.current = false;
+        segmentSpeechMsRef.current = 0;
+        void submitSegmentRef.current();
+      }
+    }
+
+Submission fires only when:
+  a) isUserSpeakingRef.current === true  (speech was detected this segment)
+  b) segmentSpeechMsRef.current >= 500ms  (MIN_SPEECH_MS — minimum speech duration)
+  c) silence has lasted >= 3500ms since last detected sound
+
+SECONDARY SILENCE PATH: the server can push a custom silence threshold before a
+turn via { type: "set_silence_threshold", ms: N }. This already exists (line 711):
+    nextSilenceThresholdRef.current = ms;
+    addLog(`WS set_silence_threshold — next=${ms}ms`)
+openMic() picks it up and resets to SILENCE_MS after using it. It is unused today
+in practice (the server doesn't currently send this message).
+
+"HEY, ACTUALLY." AND "SORRY.":
+Both are genuine, short sentences followed by a natural thinking pause ≥3.5s.
+They are real speech, correctly detected — not phantoms, not hallucinations.
+The 3500ms ceiling catches them because the pause after "Hey, actually." or
+"Sorry." is a conversational thinking pause, not an end-of-utterance pause.
+
+ADAPTIVE OPTIONS (sensible in principle, not proposed as fixes here):
+
+Option A — Static increase (e.g. 5000ms): simple, no complexity. Risk: longer
+  wait before every submission fires. The original problem (Issue 1) was
+  caused by a different mechanism (unconditional autoSubmit fallback), not
+  SILENCE_MS alone, so an increase is safer than it was at SILENCE_MS=1200.
+
+Option B — Scale with segment speech duration: use a longer silence tolerance
+  once significant speech has been detected. Example: if segmentSpeechMsRef < 1000ms,
+  use SILENCE_MS_SHORT (e.g. 4500ms); if >= 1000ms, use SILENCE_MS (3500ms).
+  Rationale: short utterances ("Hey," "Sorry,") are often sentence openers, so
+  allow a longer pause before concluding they're complete.
+
+Option C — Use the existing set_silence_threshold server mechanism: the server
+  knows intent (from speech_start categorisation) and could push a longer
+  threshold when it detects a conversational opening. Already wired end-to-end;
+  zero client code changes needed. Requires server logic to decide when to push it.
+
+Option D — "Continuation window": after detecting silence, wait for continuation
+  rather than immediately submitting. If sound is detected again within a short
+  window (e.g. 1000ms after the SILENCE_MS gate passes), reset and continue.
+  More complex; closer to a true barge-in scenario.
+
+These are tuning questions, not bugs. SILENCE_MS is the sole governing constant
+for the silence-triggered submission path. The autoSubmit 4s fallback is
+independent and unchanged.
+
+================================================================================
+FINDING 2 — FREEZE > 45s: SERVER LOGS PULLED AND ANALYSED
+================================================================================
+
+SERVER LOGS RETRIEVED: yes. Deployment logs cover the relevant window.
+Timestamp base: all server log timestamps are Unix ms.
+
+RELEVANT LOG SEQUENCE (with human-readable offsets):
+
+T+0.0s   1781936139848  voice: speech_final accepted — "Phone call system."
+                        utteranceId="qj4kx8vdn"
+T+0.6s   1781936140412  Gemini rate limit — retrying attempt=1 delayMs=1000
+T+1.8s   1781936141610  Gemini rate limit — retrying attempt=2 delayMs=2000
+T+4.0s   1781936143845  Gemini rate limit — retrying attempt=3 delayMs=4000
+T+8.2s   1781936148074  Gemini rate limit exhausted (forceProvider=gemini) — throwing
+T+8.3s   1781936148118  VoiceOrch: LLM stream error [429 RATELIMIT_EXCEEDED]
+                        sessionId="cf776495-a76b-40ec-a50d-e50792b99ca8"
+                        turnId="73cc2014-c9ec-4467-aca1-e1190f6f15a8"
+T+9.8s   1781936149668  voice: interrupt handled
+                        sessionId="cf776495-a76b-40ec-a50d-e50792b99ca8"
+
+T+15.1s  1781936154678  /api/chat/transcribe completed (for "Sorry.") responseTime=496ms
+T+15.1s  1781936154906  voice: speech_final accepted — "Sorry."
+                        utteranceId="vdcomz03rk"
+T+15.1s  1781936154907  VoiceOrch: speech_final queued — awaiting playback_confirmed
+                        utteranceId="vdcomz03rk"
+
+(no further voice activity)
+
+T+74.4s  1781936214281  voice: client sent call_end    ← Kane hangs up
+T+74.4s  1781936214293  Voice-call WS: closed
+
+THE FREEZE: 59 seconds between "Sorry." being queued (T+15.1s) and Kane ending
+the call (T+74.4s). The total from "Phone call system." speech_final to call_end
+is 74.4 seconds.
+
+WHAT ACTUALLY HAPPENED:
+
+1. "Phone call system." turn: Gemini 429 rate limit fired on the 3rd retry attempt
+   at T+8.2s. 3 retries × (1+2+4=7s total backoff) = 8.2s for the error to surface.
+   The VoiceOrch error handler logged the error at T+8.3s.
+
+2. Kane sent interrupt at T+9.8s (1.5s after the error). The server handled it
+   ("voice: interrupt handled"). This should have reset the turn state.
+
+3. "Sorry." speech_final arrived at T+15.1s and was accepted — but then
+   immediately queued: "speech_final queued — awaiting playback_confirmed".
+
+4. No playback_confirmed was ever sent. The session stayed in "awaiting
+   playback_confirmed" state for 59 seconds until Kane hung up.
+
+ROOT CAUSE OF THE FREEZE:
+
+The error handler for the Gemini 429 error left the session's playback gate in
+an "awaiting playback_confirmed" state. There was no TTS audio generated (the
+LLM errored before producing any output), so no playback ever happened, so the
+client never sent playback_confirmed. The session was waiting for a confirmation
+that could never arrive.
+
+The interrupt at T+9.8s was handled by the server, but it did not clear the
+"awaiting playback_confirmed" gate — the "Sorry." speech_final was still queued
+behind it rather than being processed directly.
+
+DID THE 45s BUDGET FIRE?
+
+For the "Phone call system." turn: the LLM error fired at T+8.2s — before any
+45s budget would have triggered. The turn ended via error, not budget.
+
+For the "Sorry." turn: it was in the QUEUED state ("awaiting playback_confirmed"),
+not in active processing. No log entry shows a 45s budget timeout firing for
+"vdcomz03rk". The 45s budget appears to be armed for ACTIVE turns (processing
+in-flight), not for queued turns waiting behind a stuck gate. The budget did not
+fire and the queue did not drain.
+
+IS THIS THE SAME AS THE FIRST FREEZE DIAGNOSTIC (currentSpeechId gate)?
+
+NO. This is a different failure mode. The first freeze was a 45s budget that fired
+but whose cancellation check (session.currentSpeechId === speechId) may have
+failed. This freeze did not involve the 45s budget at all — it was the playback
+gate being left in a permanently-awaiting state after a Gemini error+interrupt
+combo. The LLM error path's recovery did not ensure the gate was cleared.
+
+WHAT IS NOT CONFIRMED FROM LOGS:
+
+Whether the VoiceOrch error handler for LLM errors sends any end-of-turn
+signals (response_end, tts_done, or equivalent) to the client. If it does not,
+the client's ttsCompleteRef and ttsServerDoneRef flags remain false, and the
+playback_confirmed gate cannot be cleared. The server-side error handler code
+itself is not visible in logs — only its absence of effect is observable.
+
+================================================================================
+FINDING 3 — openMic reentrancy: mutex exists, log evidence of double-completion
+================================================================================
+
+THE MUTEX (lines 530-532, useVoiceCall.ts):
+
+530    if (micOpeningRef.current) {
+531      addLog("openMic BLOCKED mutex");
+532      return;
+533    }
+534    addLog("openMic start");
+535    micOpeningRef.current = true;
+
+CONFIRMED: a reentrancy guard exists. micOpeningRef is set to true synchronously
+(before any await) immediately after the check. In single-threaded JS, a second
+synchronous caller arriving AFTER line 535 would see micOpeningRef=true and be
+blocked.
+
+ALL CALL SITES (from grep of useVoiceCall.ts):
+
+  Line 249  void openMicRef.current()  — safety-timeout path in playNext:
+    fires when queue drains AND ttsServerDoneRef.current=true (server already
+    sent tts_done, so we open mic directly without waiting for response_end)
+  Line 400  void openMicRef.current()  — submitSegment: recorder.stop() returned null
+  Line 413  void openMicRef.current()  — submitSegment: STT gate skipped (speech too short)
+  Line 439  void openMicRef.current()  — submitSegment: empty transcript
+  Line 461  void openMicRef.current()  — submitSegment: fetch error catch
+  Line 623  await openMicRef.current() — WS call_connected handler (initial connect)
+  Line 698  void openMicRef.current()  — WS interrupt_ack handler
+  Line 705  void openMicRef.current()  — WS reconnect_ok handler
+  (not listed but also present: post-tts_done path via queue drain → playback_confirmed
+   → server sends some message → client tts_done case → openMicRef)
+
+ANALYSIS OF THE LOG SEQUENCE (from the Finding 3 example):
+
+Log as shown (audit log is newest-first, so read bottom to top for execution order):
+
+  Execution order:
+  1. "ttsComplete=true — opening mic (safety-timeout path)"  at :55
+     ← safety-timeout path in playNext (line 247), fires before calling openMicRef
+  2. "openMic start"  at :55
+     ← first openMic() call enters, sets micOpeningRef=true, begins async work
+  3. (230ms of async work: recorder.ensurePermission + recorder.start)
+  4. "openMic start"  at :78
+     ← a SECOND openMic() call passes the mutex (micOpeningRef must be false)
+  5. "openMic OK — recording (500ms delay)"  at :78
+  6. "openMic OK — recording (500ms delay)"  at :79
+
+Two successful "openMic OK" 10ms apart. "openMic BLOCKED mutex" does NOT appear
+between entries 2 and 4, which would have appeared if the second call was blocked.
+
+HOW THE SECOND CALL BYPASSED THE MUTEX:
+
+The mutex is not a blocking semaphore — it returns immediately if busy. The second
+call did not bypass the mutex synchronously; it arrived AFTER the first call had
+already completed (reset micOpeningRef to false at line 571 after recorder.start()).
+
+The first call (at :55) ran:
+  recorder.ensurePermission() — fast, already granted
+  recorder.start() — resolved at ~:78 (230ms, plausible for Android audio setup)
+  Set micOpeningRef = false, logged "openMic OK"
+  Armed 500ms VAD delay timer
+  Armed 4s autoSubmit timer
+
+Immediately after (or during) the first call completing at :78, a SECOND call
+arrived (also at :78) from a different call site. micOpeningRef was now false,
+so it passed the mutex check, also called recorder.start(), and also logged
+"openMic OK" 10ms later (:79).
+
+The 10ms between the two "openMic OK" entries means recorder.start() completed
+nearly instantly for the second call — possibly because the recorder was already
+in a started/prepared state from the first call, and the second start() was fast.
+
+CONFIRMED ROOT: not a mutex failure — the second caller arrived after the first
+call completed. The mutex correctly sees a non-busy state at that point. Two
+independent call sites both triggered openMic() within a ~230ms window at a turn
+boundary, and both succeeded because they ran sequentially (not concurrently).
+
+IDENTIFYING THE TWO CALL SITES ACTIVE AT THAT MOMENT:
+
+From the log text "ttsComplete=true — opening mic (safety-timeout path)": this
+is definitively line 247 (the safety-timeout path in playNext: queue empty +
+ttsServerDoneRef=true). This was the FIRST call.
+
+The SECOND call is harder to identify without more surrounding log context. The
+likely candidates at a turn boundary are:
+  - WS tts_done handler (lines 670-692 in the WS message handler): the server
+    sends tts_done, the client flushes the chunk buffer, the queue drains,
+    which triggers playNext, which checks responseEndReceivedRef — possibly a
+    second path through the queue-drain → playback_confirmed → server reply →
+    tts_done received → openMic chain.
+  - The safety-timeout path firing from two independent callers (e.g. playNext
+    called from both a didJustFinish listener and a direct call).
+
+Without the surrounding log context, the exact second call site cannot be
+confirmed. What IS confirmed: two successive successful openMic() calls from two
+different code paths at the same turn boundary, with the mutex working as designed
+(sequential, not concurrent), but two separate armed VAD delay timers running
+simultaneously, explaining the duplicate "VAD delay: 500ms elapsed — active" at
+:50.29 and :50.31.
+
+EFFECT: two VAD delay timers fire 20ms apart. The second timer fires and finds
+vadActiveRef already true (set by the first), writes true again (no-op), logs a
+duplicate. The autoSubmit timer may also be doubled. Functionally the call
+continues, but the doubled timers are noise that could mask real issues in logs
+and in theory cause a double-submit if the segment happens to be ready exactly
+as both fire. The mutex alone is insufficient — there is no guard preventing the
+COMPLETED-and-reset-mutex call from being immediately triggered again by a second
+caller within the same turn boundary window.
+
+================================================================================
+END OF DUMP — NO CHANGES MADE
+================================================================================

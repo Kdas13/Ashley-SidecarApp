@@ -1,0 +1,84 @@
+================================================================================
+WREN — THREE NEW FINDINGS, POST ECHO-FIX VERIFICATION
+Date: 20 June 2026
+================================================================================
+
+GOOD NEWS FIRST — VERIFY, DON'T RE-INVESTIGATE:
+Live testing tonight shows "VAD delay: 500ms elapsed — active" firing
+correctly and consistently. No "VAD settle: timeout" anywhere. No invented
+phantom text ("Still there.", "8.") in any of tonight's transcripts. The
+echo/hallucination work from the last few rounds appears to have landed.
+Treat that as closed pending continued normal use — no action needed here.
+
+What follows are THREE SEPARATE, NEW issues surfaced now that the bigger bug
+is out of the way. Diagnose only, no fixes yet, per Commitment 1 Standard.
+
+--------------------------------------------------------------------------
+FINDING 1 — Mid-sentence cutoff (pause = treated as "done talking")
+--------------------------------------------------------------------------
+Real (non-phantom) fragments submitted early, e.g. "Hey, actually." and
+"Sorry." — both look like the start of a real sentence that got cut short by
+a pause, not hallucinated text.
+
+QUESTION: what is the current silence-duration value that triggers
+autoSubmit after detected speech stops (referenced previously as
+SILENCE_MS / similar)? Paste the actual constant and where it's used. This
+is a tuning question, not a bug — is there a sensible way to extend it or
+make it adaptive (e.g. longer tolerance once some speech has already been
+detected in the segment) without reintroducing the original "open mic
+forever" problem Issue 1 was about?
+
+--------------------------------------------------------------------------
+FINDING 2 — Freeze lasting "well over a minute" (exceeds known 45s budget)
+--------------------------------------------------------------------------
+Kane reports a freeze on "Thinking…" significantly longer than the existing
+MAX_TURN_BUDGET_MS (45s) hard safety net. This either means the safety net
+itself failed to fire, or something new is involved.
+
+Approximate window: 20 June 2026, ~07:16–07:17 BST (between the "Sorry."
+submission around 06:15:53 UTC-equivalent and Kane switching to the text
+interface to check if the system was responsive at all, screenshot timestamp
+7:17 local).
+
+ACTION: pull server logs for this exact window. Specifically check:
+  - Did the 45s hard-budget setTimeout fire at all for the relevant
+    speechId?
+  - If it fired, did the `session.currentSpeechId === speechId` gate pass
+    or fail? (Same gate flagged as a risk in the very first freeze
+    diagnostic, hours ago — confirm whether this is the same failure mode
+    recurring, or something different.)
+  - Was there an actual LLM (Gemini) call in flight for that turn, and did
+    it return, error, or hang?
+
+--------------------------------------------------------------------------
+FINDING 3 — Rapid duplicate openMic firing (flag only, don't fix)
+--------------------------------------------------------------------------
+Log sequence from one screenshot, ~250ms span:
+  06:15:49.55 openMic start
+  06:15:49.55 ttsComplete=true — opening mic (safety-timeout path)
+  06:15:49.78 openMic start
+  06:15:49.78 openMic OK — recording (500ms delay)
+  06:15:49.79 openMic OK — recording (500ms delay)
+  06:15:50.29 VAD delay: 500ms elapsed — active
+  06:15:50.31 VAD delay: 500ms elapsed — active
+
+Two near-simultaneous openMic start/OK pairs, two near-simultaneous VAD-delay
+completions. Possibly two independent call sites invoking openMic() within
+the same short window without a shared mutex/guard — similar in spirit to
+the unguarded Interrupt button finding from earlier tonight.
+
+QUESTION: does openMic() have any reentrancy guard at all (a mutex/ref
+checked at the top, separate from the per-button guard already found on
+Interrupt)? If two different code paths can call it within the same
+~250ms window, identify both call sites here — don't fix yet.
+
+================================================================================
+RULES
+================================================================================
+- Diagnosis only on all three. No code changes.
+- Finding 2 needs actual server logs from the stated window — don't reason
+  about it from client-side logs alone, the freeze is server-side by nature.
+- If server logs for that window aren't available/retained, say so plainly
+  rather than guessing.
+
+— End of request —
