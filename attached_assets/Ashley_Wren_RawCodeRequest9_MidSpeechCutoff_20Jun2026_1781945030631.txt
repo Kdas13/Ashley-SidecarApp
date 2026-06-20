@@ -1,0 +1,42 @@
+================================================================================
+WREN — GOOD NEWS + ONE NEW THING TO PIN DOWN
+NO CHANGES. NO COMMITS. NO BUILDS. PASTE CODE/REASONING ONLY.
+Date: 20 June 2026
+================================================================================
+
+CONFIRMED WORKING: live test of Option B shows a clean single-cycle interrupt
+resolution — "openMic BLOCKED mutex" fired correctly, no repeat loop, normal
+turn progression afterward. Treat the interrupt loop as closed pending
+continued normal use.
+
+NEW THING: Kane reports being cut off ~3 seconds into a deliberately long,
+continuous sentence — not a pause-after-speech cutoff, a mid-utterance one.
+
+QUESTION: in the actual code, is "autoSubmit fired" ALWAYS the literal log
+line from submitSegment() regardless of what triggered it (i.e. it's a
+generic "a submission happened" log, not specific to one mechanism), or are
+there genuinely two distinct call paths — the SILENCE_MS/adaptive-threshold
+pause-based path vs. the older 4-second hard fallback timer (the one
+originally meant only as backup for devices with null metering) — and if so,
+which one fired in this case?
+
+Specifically check:
+  1. Does the 4-second fallback timer (separate from SILENCE_MS) get reset
+     on every continued sound, or only once at the start of detected speech?
+     If it's only reset once and then counts down regardless of continued
+     speech, that would explain a hard ~4s cap on any continuous utterance
+     regardless of pauses — confirm if this is the case.
+  2. For this specific cutoff: what was segmentSpeechMsRef.current at the
+     moment of submission (i.e. how much continuous speech had actually
+     been detected)? If there isn't a log line exposing this value
+     currently, say so — that's a real gap, since right now there's no way
+     to tell from the debug log alone which path triggered a given
+     submission.
+
+Suggest (don't implement): a small logging improvement so each submission
+states which mechanism triggered it (e.g. "submit: silence-gate" vs
+"submit: autoSubmit-fallback") rather than a single generic "autoSubmit
+fired" line for both. This alone would make this kind of question
+answerable from a screenshot next time, instead of needing a code dump.
+
+— End of request —
