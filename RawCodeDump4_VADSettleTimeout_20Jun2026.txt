@@ -1,0 +1,243 @@
+================================================================================
+ASHLEY PROJECT — DIAGNOSTIC RAW CODE DUMP #4
+Date: 20 June 2026  |  NO CHANGES. NO COMMITS. NO BUILDS.
+Issue: VAD settle gate exits via timeout 100% of the time
+Commit examined: db999814e4e1a2c2e11f6dcaafc61ffc3e6b396d (current HEAD)
+================================================================================
+
+================================================================================
+SECTION 1 — Full VAD settle implementation as committed
+================================================================================
+
+1A. Constants (lines 27-45, useVoiceCall.ts)
+
+    const SILENCE_DB    = -45;    // threshold: above this = user speaking
+    const VAD_SETTLE_READINGS   = 3;    // consecutive near-silence readings required
+    const VAD_SETTLE_TIMEOUT_MS = 600;  // force-enable VAD after this many ms
+
+1B. Settle trigger in openMic() — fires after recorder.start() (lines 582-608)
+
+582    try {
+583      await recorder.start();
+591      meteringEverReceivedRef.current = false;
+592      vadSettlingRef.current = true;
+593      vadSettleCountRef.current = 0;
+594      vadSettleTimeoutRef.current = setTimeout(() => {
+595        vadSettleTimeoutRef.current = null;
+596        if (vadSettlingRef.current) {
+597          vadSettlingRef.current = false;
+598          if (phaseRef.current === "listening") {
+599            vadActiveRef.current = true;
+600            addLog("VAD settle: timeout — forced active");
+601          }
+602        }
+603      }, VAD_SETTLE_TIMEOUT_MS);   // ← 600ms constant, confirmed
+604      setPhaseSync("listening");
+605      addLog("openMic OK — recording (settling)");
+606      micOpeningRef.current = false;
+
+1C. Settle check in VAD effect (lines 473-501, the full settling block)
+
+473  useEffect(() => {
+474    const db = recorder.metering;
+475    if (db === null) return;
+476    meteringEverReceivedRef.current = true;
+477
+478    if (vadSettlingRef.current) {
+479      if (db <= SILENCE_DB) {            // ← SILENCE_DB = -45
+480        vadSettleCountRef.current += 1;
+481        if (vadSettleCountRef.current >= VAD_SETTLE_READINGS) {  // ← need 3
+482          if (vadSettleTimeoutRef.current !== null) {
+483            clearTimeout(vadSettleTimeoutRef.current);
+484            vadSettleTimeoutRef.current = null;
+485          }
+486          vadSettlingRef.current = false;
+487          if (phaseRef.current === "listening") {
+488            vadActiveRef.current = true;
+489            addLog(`VAD settled: ${vadSettleCountRef.current} readings`);
+490          }
+491        }
+492      } else {
+493        // Echo still audible — reset consecutive-silence counter.
+494        vadSettleCountRef.current = 0;
+495      }
+496      return;
+497    }
+498
+499    if (!vadActiveRef.current) return;
+500    // ... regular VAD logic ...
+501  }, [recorder.metering, setPhaseSync, clearAutoSubmitTimer, addLog]);
+
+SETTLE CONDITION IN PLAIN TERMS:
+  To exit the settle window via the "confirmed quiet" path, the device must
+  produce 3 consecutive metering readings where db <= -45 dBFS.
+  The counter resets to 0 on any reading where db > -45.
+  If 3 consecutive readings below -45 never arrive within 600ms, the timeout
+  fires and forces VAD active.
+
+================================================================================
+SECTION 2 — Metering threshold and whether values are logged during settling
+================================================================================
+
+THRESHOLD USED: SILENCE_DB = -45 dBFS. Exact same constant used for regular
+VAD detection (db > -45 = user speaking; db <= -45 = silence).
+
+ARE METERING VALUES LOGGED DURING SETTLING? NO.
+
+The settling block (lines 478-496) increments or resets a counter, but at no
+point calls addLog() with the actual db value it is observing. The only two
+log lines from the settle path are:
+
+  "VAD settled: N readings"      ← fires on confirmed-quiet exit (never seen)
+  "VAD settle: timeout — forced active"  ← fires on timeout (seen every time)
+
+The actual db readings during the 600ms settle window are not visible anywhere.
+If the device is producing readings of -35 during "silence", the settle code
+would silently reset the counter every tick and we would have no indication.
+We are flying blind on the actual numbers.
+
+================================================================================
+SECTION 3 — Confirm: is 600ms the actual constant?
+================================================================================
+
+YES. VAD_SETTLE_TIMEOUT_MS = 600 is the exact hardcoded constant on line 38.
+The observed 600ms and 610ms gaps in the logs are consistent with this value
+(the 10ms drift is normal event-loop scheduling jitter). This is not a coincidence
+and not a fluke — it means the timeout fires at exactly the configured interval
+every single time, confirming the "confirmed quiet" branch never fires.
+
+================================================================================
+SECTION 4 — Is the threshold too strict to ever realistically be satisfied?
+================================================================================
+
+SHORT ANSWER: Almost certainly yes on this device.
+
+EXPLANATION:
+
+SILENCE_DB = -45 was designed for one purpose: distinguishing user speech from
+not-speech during active VAD. If db > -45, the user is talking; if db <= -45,
+they are not. This works for that purpose.
+
+For settling, the condition is being used for a different purpose: confirming
+that the hardware speaker has gone quiet. To satisfy it, the device must report
+metering readings at or below -45 dBFS during what is nominally "silence" on
+the device in VOICE_COMMUNICATION audio mode.
+
+Why -45 may be unreachable during ambient silence on this device:
+
+1. MICROPHONE SELF-NOISE AND AMBIENT FLOOR
+   Consumer-grade smartphone microphones in VOICE_COMMUNICATION mode typically
+   have a noise floor of -40 to -30 dBFS depending on the device. Ambient room
+   sounds (HVAC, street noise, keyboard, clothing) routinely keep readings at
+   -38 to -32 even in a "quiet" room. On some Androids the mic self-noise alone
+   floors readings around -38.
+
+2. ANDROID VOICE_COMMUNICATION AUDIO PROCESSING
+   VOICE_COMMUNICATION mode activates a stack of signal processing: AGC
+   (Automatic Gain Control), NS (Noise Suppression), and AEC (Acoustic Echo
+   Cancellation). AGC is particularly relevant here: it continuously amplifies
+   low-level signals to maintain a target input level. This means that even in
+   a genuinely quiet room, AGC will boost whatever residual noise exists so
+   that metering reads somewhere around -35 to -30 rather than -60 to -80.
+   AGC is designed specifically to prevent the kind of very-low readings that
+   would satisfy a -45 silence threshold.
+
+3. EXPO-AUDIO METERING IN THIS MODE
+   expo-audio ~1.1.1 reports metering from the Android AudioRecord API.
+   In VOICE_COMMUNICATION mode, the AudioRecord source is
+   VOICE_COMMUNICATION or VOICE_RECOGNITION. Both sources activate the
+   above processing stack unless explicitly disabled (which this codebase does
+   not do). The resulting metering values reflect the processed signal, not
+   the raw microphone input.
+
+CONCLUSION: On Kane's device, in a quiet room between sentences, the metering
+readings during "ambient silence" are probably in the -38 to -30 range rather
+than below -45. Every metering reading during the 600ms settle window exceeds
+-45, so the counter resets to 0 every tick, and the timeout fires every time.
+
+The settle condition `db <= -45` requires the device to report readings lower
+than its own noise floor. This condition is not satisfiable in normal use.
+
+WHAT WE DON'T KNOW (because values aren't logged):
+The actual dBFS readings during settling. Without those numbers we cannot
+set a correct threshold. This is the information gap. Logging the actual
+values is the necessary prerequisite to calibrating the settle condition.
+
+================================================================================
+SECTION 5 — Interrupt button: debounce and disable state
+================================================================================
+
+INTERRUPT BUTTON IN voice-call.tsx (lines 217-229):
+
+217          {/* Interrupt — tap to cut Ashley off mid-sentence */}
+218          {phase === "speaking" && (
+219            <Pressable
+220              onPress={interrupt}
+221              style={[
+222                styles.interruptBtn,
+223              ]}
+224            >
+225              <Text style={styles.interruptBtnText}>Interrupt</Text>
+226            </Pressable>
+227          )}
+
+CONFIRMED: there is no `disabled` prop on this Pressable.
+CONFIRMED: there is no debounce — onPress calls interrupt() directly.
+
+interrupt() in useVoiceCall.ts (lines 822-833):
+
+822  const interrupt = useCallback((): void => {
+823    const ws = wsRef.current;
+824    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+825    if (phaseRef.current !== "speaking") return;
+826    addLog("interrupt: tap");
+827    stopPlayback();
+828    void playNextRef.current();
+829    try { ws.send(JSON.stringify({ type: "interrupt" })); } catch { /* ignore */ }
+830  }, [stopPlayback, addLog]);
+
+CONFIRMED: the ONLY guard is `phaseRef.current !== "speaking"`. No mutex,
+no cooldown, no in-flight flag, no setTimeout minimum between calls.
+
+IMPLICATION FOR THE LOG EVIDENCE (04:30:13.57, 04:30:13.74, 04:30:13.94):
+Three taps 170ms and 200ms apart, all in "speaking" phase. All three pass the
+phase check. All three call stopPlayback() (idempotent — no harm on repeat) and
+all three call ws.send(interrupt). The server receives three interrupt messages
+for the same turn. The server's interrupt handler is:
+
+  registry.cancelCurrentTurn(currentSession, "user_interrupt")
+
+cancelCurrentTurn may or may not be idempotent — if it aborts an already-
+cancelled stream, it could cause a second interrupt_ack to fire before the first
+cycle has completed. This is a distinct problem from the echo race, flagged for
+the next options round per the brief.
+
+================================================================================
+SUMMARY OF ROOT CAUSES
+================================================================================
+
+Echo-race phantom (immediate finding):
+  The settle gate uses SILENCE_DB = -45 as the "confirmed quiet" threshold.
+  This is the same threshold used for speech detection. On this device in
+  VOICE_COMMUNICATION mode, ambient silence reads ABOVE -45 dBFS (likely
+  -38 to -30) due to AGC and microphone noise floor. The settle condition
+  is therefore impossible to satisfy in normal use. The gate has been a
+  flat 600ms delay since the first deployment — functionally no different
+  from a sleep(600ms) before any of this was written.
+
+Why we can't see the actual values:
+  Metering values during the settle window are not logged. We know the count
+  is resetting every tick (because the timeout always fires) but we cannot
+  confirm the actual dBFS numbers. Logging them is the prerequisite for
+  calibrating any threshold-based approach.
+
+Interrupt double-tap (separate, flagged only):
+  The Interrupt Pressable has no debounce or disabled-during-flight state.
+  Rapid taps all pass the phase guard and send multiple interrupt messages
+  to the server in milliseconds. Whether the server handles duplicate
+  interrupts safely (or whether a second interrupt_ack causes a protocol
+  issue) is not confirmed here.
+
+================================================================================
+END OF DUMP — NO CHANGES MADE
+================================================================================

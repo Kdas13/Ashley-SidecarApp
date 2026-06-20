@@ -1,0 +1,58 @@
+================================================================================
+WREN — DIAGNOSTIC: VAD-SETTLE GATE TIMES OUT 100% OF THE TIME
+NO CHANGES. NO COMMITS. NO BUILDS. PASTE CODE ONLY.
+Date: 20 June 2026
+================================================================================
+
+CONFIRMED LIVE RESULT: Option 2 (VAD-gate, hold vadActiveRef false until
+confirmed quiet) does NOT appear to be working as approved. Phantom
+submission ("Still there.") still occurred, identical to pre-fix behaviour.
+
+LOG EVIDENCE — across two separate openMic cycles in the same call:
+  04:29:34.19 openMic OK — recording (settling)
+  04:29:34.79 VAD settle: timeout — forced active     [600ms later]
+
+  04:29:14.46 openMic OK — recording (settling)
+  04:29:15.07 VAD settle: timeout — forced active     [610ms later]
+
+  04:29:19.53 openMic OK — recording (settling)
+  04:29:20.14 VAD settle: timeout — forced active     [610ms later]
+
+EVERY observed openMic call hit the timeout branch and forced VAD active.
+None confirmed actual quiet. If the gate is only ever exiting via timeout,
+it is functionally identical to a flat ~600ms delay — and a non-functional
+one, since 600ms doesn't even cover the 300–400ms Bluetooth tail you
+yourself identified as the risk window last round, let alone leave margin.
+
+ALSO OBSERVED (separate, flag only, don't fix yet): three "interrupt: tap"
+log lines fired within ~200ms of each other in one sequence
+(04:30:13.57, 04:30:13.74, 04:30:13.94). May simply be Kane tapping
+multiple times — confirm whether the button has any debounce/disable-while-
+processing, since rapid repeat taps currently appear to all fire independently.
+
+WHAT TO PASTE
+1. The full "VAD settle" implementation as actually committed — the function
+   or block that sets/checks "settling" state, whatever confirms quiet
+   (metering threshold, consecutive-reading count, etc.), and the timeout
+   value and what triggers it.
+2. The exact metering threshold being checked against, and what the actual
+   metering values were doing during settling (if logged anywhere) — or
+   confirm if metering values aren't being logged, so we're flying blind on
+   why it's not satisfying the quiet condition.
+3. Confirm: is the timeout value 600ms, or is 600ms just how long it
+   happened to take this run? State the actual configured constant.
+4. Straight question: is it plausible the metering threshold chosen is too
+   strict to ever realistically be satisfied (e.g. expects a value lower
+   than ambient noise floor ever produces on this device), meaning the
+   timeout branch is the ONLY branch that can ever fire? Check this against
+   the actual numbers if logged, don't reason it out abstractly.
+5. Confirm whether the Interrupt button has any debounce / is disabled while
+   an interrupt is already in flight.
+
+RULES
+- Raw code only. No fix proposal yet — find out why it's failing 100% of
+  the time before touching anything.
+- If metering values aren't currently logged during the settle window, say
+  so plainly — that itself may be the next thing needed to see this clearly.
+
+— End of request —
