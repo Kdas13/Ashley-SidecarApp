@@ -1,0 +1,42 @@
+================================================================================
+WREN — FIND 2 OPTIONS: INTERRUPT LOOP (in-flight audio re-arms "speaking")
+Commitment 1 Standard — options only, no implementation.
+Date: 20 June 2026
+================================================================================
+
+CONFIRMED ROOT CAUSE (from RawCodeDump7): audio chunks already sent by the
+server before it processes an interrupt continue arriving at the client
+afterward. Each arriving chunk gets queued and played normally, which calls
+setPhaseSync("speaking") — re-arming the Interrupt button and creating the
+appearance that nothing happened, repeating until all in-flight audio from
+the original (interrupted) response has drained.
+
+OPEN QUESTION FOR YOU: this looks like the same underlying gap as Finding 3
+(duplicate openMic) — the system has no way to recognise "this audio/event
+belongs to a turn that's already been interrupted, discard it." Could a
+single mechanism (e.g. a turn/speechId generation token, checked both before
+playing a newly-arrived audio chunk AND before activating openMic) resolve
+both findings together, rather than as two separate patches? Give your honest
+assessment — if they're genuinely separable, say so and scope them
+separately instead.
+
+GIVE 2-3 OPTIONS, e.g. along these lines (your judgement on the real
+options, not mine):
+  - Tag each audio chunk/sentence_end with the speechId it belongs to
+    client-side (if not already present) and drop any chunk whose speechId
+    doesn't match the currently-active (non-interrupted) speechId.
+  - A simpler "interrupted" flag/timestamp: once interrupt() fires, ignore
+    any newly-arriving sentence_end/chunk pushes for some window or until a
+    fresh speech_start(main) is received, rather than queuing and playing them.
+  - The unified generation-token approach from Finding 3, extended to gate
+    audio playback in addition to openMic activation.
+
+State tradeoffs plainly, same as previous rounds. Flag any risk of
+accidentally dropping audio that legitimately belongs to a NEW turn arriving
+quickly after an interrupt (e.g. don't want to over-aggressively discard).
+
+Not urgent in the sense that it requires a live emergency fix tonight, but it
+is a confirmed, reproducible failure (13s of unresponsive interrupt taps) —
+treat as real priority, just options first per Commitment 1.
+
+— End of request —
