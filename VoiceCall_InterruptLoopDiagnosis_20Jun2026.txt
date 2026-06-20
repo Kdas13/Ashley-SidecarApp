@@ -1,0 +1,210 @@
+================================================================================
+VOICE CALL — INTERRUPT LOOP RECURRENCE: DIAGNOSTIC REPORT
+Date: 20 June 2026
+Status: DIAGNOSIS ONLY — no code changes, no commits
+================================================================================
+
+CONTEXT
+-------
+P0-2 (blind-capture filter) is live and confirmed working via
+"blind-capture size-pass" log lines. The cutoff at ~4s during continuous
+speech is expected — P0-2 only filters garbage; it does not stop the blind
+timer from firing.
+
+New/recurring symptom: interrupt loop — repeated interrupt:tap +
+playback_confirmed + drained bursts, UI stuck on "Ashley speaking" with no
+audio playing, Interrupt button unresponsive to repeated taps.
+
+Suspected trigger from log evidence:
+
+  12:17:19.70 player: started q=0
+  12:17:19.85 submit: autoSubmit-initial speechMs=0 phase=speaking
+  12:17:22.32 player: finished
+  12:17:22.32 WS playback_confirmed → sent (response_end + queue empty)
+  12:17:22.32 interrupt: tap
+
+================================================================================
+Q1 — IS THE AUTOSUBMIT TIMER GATED ON PHASE?
+================================================================================
+
+YES. Both timers log first, then check phase before calling submitSegment.
+The log line is emitted unconditionally — that is why you see phase=speaking
+in the audit — but the guard below it blocks the submit.
+
+autoSubmit-initial (openMic, lines 735-746):
+
+  autoSubmitTimerRef.current = setTimeout(() => {
+    autoSubmitTimerRef.current = null;
+    addLog(`submit: autoSubmit-initial speechMs=... phase=...`);
+    if (
+      phaseRef.current === "listening" ||
+      phaseRef.current === "user_speaking"
+    ) {
+      vadActiveRef.current = false;
+      isBlindCaptureRef.current = true;
+      void submitSegmentRef.current();
+    }
+  }, 4000);
+
+autoSubmit-sound-reset (VAD effect, lines 616-627): identical guard.
+
+The timer fire shown in the log (phase=speaking) was correctly blocked.
+The timer is not the cause of the loop.
+
+================================================================================
+Q2 — DOES THE GENERATION TOKEN COVER STRAY PLAYBACK_CONFIRMED?
+================================================================================
+
+NO.
+
+The generation token (turnGenRef) is checked in two places only:
+  - flushChunkBuffer: drops stale audio file writes
+  - openMic: drops stale mic reopens
+It does NOT gate playback_confirmed sends.
+
+playback_confirmed is sent from exactly one place — inside playNext() drain
+branch (lines 325-332):
+
+  const uri = playQueueRef.current.shift();
+  if (!uri) {
+    // Queue drained.
+    if (phaseRef.current === "speaking") {
+      if (ttsServerDoneRef.current) {
+        // safety-timeout path — open mic directly
+        ttsCompleteRef.current = true;
+        setPhaseSync("listening");
+        void openMicRef.current();
+      } else if (responseEndReceivedRef.current) {
+        // THE ONLY VALID SEND POINT
+        wsRef.current.send(JSON.stringify({ type: "playback_confirmed" }));
+        addLog("WS playback_confirmed → sent (response_end + queue empty)");
+      }
+      // else: inter-sentence gap — do nothing
+    }
+    playNextRunningRef.current = false;
+    return;
+  }
+
+responseEndReceivedRef.current is only set to false in the speech_start
+(main) WS message handler — NOT in stopPlayback(), NOT in interrupt().
+So after it becomes true for a turn, it stays true until the next turn begins.
+
+interrupt() function (lines 1005-1018):
+
+  const interrupt = useCallback((): void => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (phaseRef.current !== "speaking") return;
+    addLog("interrupt: tap");
+    stopPlayback();
+    turnGenRef.current++;
+    // Kick the drain path so playback_confirmed is sent if response_end
+    // already arrived — closes the Path C stuck-state.
+    void playNextRef.current();
+    try { ws.send(JSON.stringify({ type: "interrupt" })); } catch {}
+  }, [stopPlayback, addLog]);
+
+void playNextRef.current() is an intentional drain kick added to close a
+previous stuck-state (Path C). It fires immediately after stopPlayback(),
+with:
+  - phaseRef.current still "speaking" (stopPlayback does not change phase)
+  - responseEndReceivedRef.current still true
+  - playNextRunningRef.current = false (released by the first drain that
+    fired from player:finished)
+
+So the second playNext() call enters freely, hits the empty queue, finds
+phase=speaking and responseEndReceivedRef=true, and sends playback_confirmed
+a second time. That is the double-send.
+
+The generation token does not see this and cannot block it.
+
+================================================================================
+Q3 — WHAT HAPPENS IF SUBMITSEGMENT() IS CALLED DURING PHASE=SPEAKING?
+================================================================================
+
+It is blocked immediately. Line 463:
+
+  const submitSegment = useCallback(async (): Promise<void> => {
+    if (
+      phaseRef.current === "submitting" ||
+      phaseRef.current === "thinking" ||
+      phaseRef.current === "speaking"
+    ) {
+      addLog(`submit BLOCKED phase=${phaseRef.current}`);
+      return;
+    }
+    ...
+
+Returns immediately. No playNext, no playback_confirmed, no path to the
+loop from submitSegment during speaking.
+
+================================================================================
+WORD ANSWER
+================================================================================
+
+Gating the autoSubmit timer is not the fix and is not needed — the phase
+gate at fire time is already working. The log line with phase=speaking is
+the log statement firing before the gate check, not after it. That submission
+was correctly blocked.
+
+The actual gap is the void playNextRef.current() drain kick inside
+interrupt(). It was added deliberately to close the Path C stuck-state
+(where phase got stuck if ws.send threw), but it creates a new hazard:
+
+  1. player: finished → playNext() drain #1 → responseEndReceivedRef=true,
+     phase=speaking → sends playback_confirmed (correct)
+     → playNextRunningRef = false
+
+  2. interrupt: tap → stopPlayback() → turnGenRef++ →
+     void playNextRef.current() → playNext() drain #2 enters freely
+     → phase=speaking still, responseEndReceivedRef=true still
+     → sends playback_confirmed a SECOND TIME
+
+The server has a guard (awaitingPlaybackConfirm flag) that should ignore the
+second confirmation. But whether that guard holds under the race between the
+two playback_confirmed messages and the subsequent interrupt message arriving
+determines whether the server ends up in a clean state or loops.
+
+Nothing clears responseEndReceivedRef in stopPlayback() or interrupt() —
+that is the root miss. The drain kick was written assuming responseEndReceived
+would not still be true at the moment it fires, but player:finished + interrupt
+tap in the same event loop tick is exactly the case where it is.
+
+The generation token does not help here. It only guards audio chunk delivery
+and openMic reopens — it has no visibility into the playback_confirmed send
+path.
+
+CANDIDATE FIXES (options for next round, per Commitment 1):
+
+  A. Clear responseEndReceivedRef.current = false inside stopPlayback().
+     The drain kick in interrupt() then finds it false and stays silent.
+     Risk: if stopPlayback() is called during normal inter-sentence gaps,
+     clearing responseEndReceived prematurely would suppress a legitimate
+     playback_confirmed. Needs audit of all stopPlayback() call sites.
+
+  B. One-shot "playback_confirmed already sent this turn" flag, reset by
+     speech_start (main). Gate the send on !alreadyConfirmedRef.current.
+     Cleanest isolation — doesn't change stopPlayback() semantics.
+
+  C. Remove the drain kick from interrupt() entirely and accept the Path C
+     risk. Document that Path C (ws.send throws mid-drain) is now unguarded.
+     Simplest diff, highest residual risk.
+
+================================================================================
+FILES REFERENCED
+================================================================================
+
+artifacts/mobile/lib/useVoiceCall.ts:
+  Line  305  — playNext() function
+  Line  316  — drain branch, playback_confirmed send logic
+  Line  462  — submitSegment() phase guard
+  Line  616  — autoSubmit-sound-reset timer callback
+  Line  735  — autoSubmit-initial timer callback
+  Line 1005  — interrupt() function
+
+No server-side files are implicated by this diagnosis. The double-send is
+a client-side issue.
+
+================================================================================
+END OF DIAGNOSTIC REPORT
+================================================================================

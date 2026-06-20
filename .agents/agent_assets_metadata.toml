@@ -521,3 +521,9 @@ id = "e_9KhSACALw1Gs1zNunUx"
 uri = "file://VoiceCall_P0_2_CompletionReport_20Jun2026.txt"
 type = "text"
 title = "VoiceCall_P0_2_CompletionReport_20Jun2026.txt"
+
+[[outputs]]
+id = "DhDZ34l9DWMZFI2TerthK"
+uri = "file://VoiceCall_InterruptLoopDiagnosis_20Jun2026.txt"
+type = "text"
+title = "VoiceCall_InterruptLoopDiagnosis_20Jun2026.txt"
