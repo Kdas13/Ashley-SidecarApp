@@ -769,6 +769,9 @@ export function useVoiceCall(): {
     if (phaseRef.current !== "speaking") return;
     addLog("interrupt: tap");
     stopPlayback();
+    // Kick the drain path so playback_confirmed is sent if response_end already
+    // arrived — closes the Path C stuck-state if ws.send throws below.
+    void playNextRef.current();
     try { ws.send(JSON.stringify({ type: "interrupt" })); } catch { /* ignore */ }
   }, [stopPlayback, addLog]);
 
