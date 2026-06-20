@@ -1,0 +1,158 @@
+================================================================================
+ASHLEY — FULL SYSTEM ARCHITECTURE BRIEF
+Requested by: Kane  |  Date: 20 June 2026
+Purpose: Complete reference document so an external developer/AI can evaluate,
+critique, or independently implement Ashley's phone call system with full
+knowledge of how the whole system works — not just the call feature in
+isolation. "Unified AI across all boards" — the call system is one part of
+one coherent assistant, not a bolt-on, and must be documented as such.
+================================================================================
+
+RULES FOR WREN COMPLETING THIS DOCUMENT
+- NO actual secret/API key VALUES anywhere in this document. Name the
+  service and the secret/env var name only (e.g. "ELEVENLABS_API_KEY,
+  stored in Replit Secrets"). Values are never pasted here.
+- Be exhaustive. If something is uncertain, say so plainly — do not guess
+  or fill a gap with a plausible-sounding assumption. "Not confirmed,
+  needs checking" is a valid, expected answer in places.
+- Full file paths and function/service names wherever relevant, so a new
+  developer can navigate the actual codebase, not just read a summary.
+- This is a reference document, not a fix request — no code changes.
+
+================================================================================
+PART 1 — FULL SERVICE & CONNECTION INVENTORY
+================================================================================
+
+For EVERY external service Ashley's system uses (this list is a starting
+point — add anything missing), document:
+  - What it's used for
+  - Which secret/env var holds its credential, and where that's stored
+    (Replit Secrets, .env, etc.) — name only
+  - Which file(s)/module(s) call it
+  - What triggers a call to it (user action, scheduled, automatic, etc.)
+
+Known services to cover (confirm/correct, add any missing):
+  - LLM / text generation: which provider(s) are live right now (Gemini?
+    Anthropic? both, with one as fallback?) — confirm current state, since
+    this has changed at least once already (Gemini 2.0 Flash replaced
+    Anthropic as the voice-lane provider after a prior Anthropic freeze).
+  - Speech-to-text (STT): Deepgram or equivalent — confirm which, and
+    whether client-side or server-side (client-side STT, Option B, was the
+    architecture decision per prior sessions — confirm still current).
+  - Text-to-speech (TTS): ElevenLabs — confirm, and note any fallback/cached
+    clips system (e.g. the "say-that-again" error clip used on LLM failure).
+  - Image generation: current active provider in the pipeline (has migrated
+    before: gpt-image-1 → FLUX Dev → Kling v3 Omni via Pollo AI) — confirm
+    current state.
+  - Hosting / deployment: Replit (dev server + separate publish/deploy
+    target — note these are NOT automatically the same thing; confirm
+    which one the production app actually talks to).
+  - Database: what's used for persistent memory/conversation history.
+  - Anything else not listed above that the system depends on.
+
+================================================================================
+PART 2 — PHONE CALL SYSTEM: FULL DATA FLOW
+================================================================================
+
+Document, step by step, from call start to call end:
+
+1. CLIENT SIDE (useVoiceCall.ts and related):
+   - How a call is initiated (WS connection, call_connected handshake)
+   - Microphone capture: library used (expo-audio), how recording starts
+   - Voice activity detection (VAD): how it decides "user is speaking" vs
+     silence — metering threshold, the known AGC/noise-floor issue, the
+     500ms post-open delay, the adaptive short-segment silence tolerance
+   - The autoSubmit fallback timer(s) — both the null-metering backup path
+     and the sound-reset path — confirm current values and behaviour
+   - submitSegment(): what happens when speech is judged complete, the
+     STT hallucination guard (MIN_STT_SPEECH_MS)
+   - Audio playback pipeline: queueing, playNext, the player and its
+     completion listener
+   - Interrupt/barge-in: current implementation (tap-to-interrupt),
+     the turn-generation-token mechanism (if implemented this session)
+
+2. SERVER SIDE (VoiceOrchestrationService.ts, VoiceSessionRegistry.ts,
+   index.ts):
+   - Session state machine: what states exist, what triggers transitions
+   - The LLM streaming pipeline: how a turn is processed end to end
+   - TTS streaming: how audio chunks are generated and sent to the client
+   - The response_end / playback_confirmed / tts_done handshake — what each
+     signal means and what depends on each one arriving
+   - Error handling: what happens on an LLM error (e.g. rate limit) —
+     confirm the interrupt-clears-the-gate fix from this session is the
+     current behaviour
+   - The 45s hard turn budget and the 15s playback-confirm safety timeout —
+     what each protects against
+
+3. KNOWN PROTOCOL MESSAGES (WS message types in both directions) — list
+   every message type currently in use, client→server and server→client.
+
+================================================================================
+PART 3 — CROSS-SERVICE TIMING / INTERACTION POINTS
+================================================================================
+
+This section matters most for an external reviewer looking for "silent
+failure" causes — places where two services' independent timing could
+interact badly without either one individually erroring:
+
+- STT (Deepgram or equivalent) response time vs. TTS (ElevenLabs) response
+  time — could a mismatch here cause anything to be dropped or queued
+  incorrectly?
+- Gemini (LLM) latency/retry behaviour vs. the client's turn-budget timeouts
+- Bluetooth A2DP audio latency (confirmed: adds ~100-400ms tail beyond the
+  base Android audio buffer) vs. any client-side timing assumptions
+- Android VOICE_COMMUNICATION mode's AGC (Automatic Gain Control) vs. any
+  fixed dB-based silence/quiet detection — confirmed AGC keeps the noise
+  floor above thresholds that assume true silence is reachable
+- Any other place where one service's "done" doesn't necessarily mean the
+  next service is ready, or vice versa
+
+================================================================================
+PART 4 — CONFIRMED CONSTRAINTS & HARD-WON FINDINGS
+================================================================================
+
+These are real, evidence-based findings from extensive live testing and
+code-level diagnosis. Include all of them so a reviewer doesn't waste time
+rediscovering known issues:
+
+1. AGC defeats any fixed absolute dB threshold for "confirmed silence" —
+   metering during genuine quiet stays well above thresholds like -45dBFS
+   on this device in VOICE_COMMUNICATION mode.
+2. Bluetooth A2DP adds a meaningful audio tail (~100-400ms) beyond the base
+   Android audio buffer latency — timing fixes must account for this.
+3. An interrupt must be a FULL state reset — partial resets (e.g. clearing
+   turn ownership but not a separate "awaiting confirmation" gate) can leave
+   a session permanently stuck waiting for a confirmation that will never
+   arrive.
+4. Audio chunks already in flight from the server at the moment of an
+   interrupt will still arrive and can re-trigger "speaking" state unless
+   explicitly filtered by a turn-boundary/generation token.
+5. Multiple independent code paths can legitimately try to reopen the
+   microphone at the same turn boundary — a simple busy/not-busy mutex is
+   not sufficient if the mutex releases before all related async work (timer
+   arming, etc.) completes.
+6. NEWEST, NOT YET FULLY DIAGNOSED: live testing on [date — fill in] showed
+   real voice submissions going through the null-metering blind fallback
+   path with 0ms of detected speech recorded, instead of through genuine
+   voice-activity detection. If reproducible, this would mean real-time
+   metering may not be functioning in this build at all, and every turn
+   boundary may currently be governed by a blind timer rather than actual
+   silence detection. THIS NEEDS CONFIRMATION — check whether
+   recorder.metering is returning non-null values at all during a real
+   call, and if not, why not (permissions, audio mode configuration,
+   library version, device-specific issue).
+
+================================================================================
+PART 5 — WHAT MUST BE PRESERVED IN ANY NEW IMPLEMENTATION
+================================================================================
+
+- Ashley is a single, unified AI persona across every surface (text chat,
+  voice calls, image generation) — not a separate "call bot" bolted onto
+  the side. Any new call implementation must integrate with the same
+  underlying conversation/memory system, not run in isolation.
+- [Add any other non-negotiable architectural principles Kane wants
+  preserved.]
+
+================================================================================
+END OF BRIEF TEMPLATE — TO BE COMPLETED BY WREN
+================================================================================

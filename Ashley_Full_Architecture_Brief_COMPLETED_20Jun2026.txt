@@ -1,0 +1,590 @@
+================================================================================
+ASHLEY — FULL SYSTEM ARCHITECTURE BRIEF (COMPLETED)
+Completed by: Wren  |  Date: 20 June 2026
+Source: live codebase read — all file paths and values confirmed against
+current code. Uncertainty flagged explicitly where present.
+================================================================================
+
+
+================================================================================
+PART 1 — FULL SERVICE & CONNECTION INVENTORY
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+1a. LLM / TEXT GENERATION
+────────────────────────────────────────────────────────────────────────────────
+
+TWO PROVIDERS, ROUTED BY ENV VAR:
+
+GEMINI (default):
+  Model:    gemini-2.5-flash
+  Env var:  AI_INTEGRATIONS_GEMINI_BASE_URL
+            AI_INTEGRATIONS_GEMINI_API_KEY
+  Storage:  Auto-set by Replit Gemini integration (not manually managed)
+  Adapter:  artifacts/api-server/src/lib/textLLM.ts (activeChatProvider(),
+            streamChatText(), generateChatText())
+            artifacts/api-server/src/lib/gemini.ts (getGemini() factory)
+  Activate: ASHLEY_TEXT_PROVIDER=gemini (or unset — gemini is the default)
+
+ANTHROPIC (flip-back):
+  Model:    claude-sonnet-4-6
+  Env var:  AI_INTEGRATIONS_ANTHROPIC_BASE_URL
+            AI_INTEGRATIONS_ANTHROPIC_API_KEY
+  Storage:  Auto-set by Replit Anthropic integration
+  Import:   @workspace/integrations-anthropic-ai
+  Activate: ASHLEY_TEXT_PROVIDER=anthropic
+
+HARDCODED ON ANTHROPIC REGARDLESS OF ENV VAR:
+  - Summariser: /chat/summarize route, maybeRollUpOlderMessages, carryover.ts
+  - Vision replies: photo-input chat path in chat.ts (~line 2062)
+  Rationale: quality matters for long-term memory continuity (summariser),
+  and call frequency is low enough that cost is not a concern (vision).
+
+VOICE LANE SPECIFICS:
+  The voice call pipeline calls streamChatText() with:
+    geminiModel: "gemini-2.0-flash"   (lighter model, lower latency)
+  This overrides GEMINI_CHAT_MODEL for the voice path. All other paths
+  use gemini-2.5-flash.
+  Source: VoiceOrchestrationService.ts, GenerateOpts.geminiModel field
+  in textLLM.ts (line ~20).
+
+TRIGGERED BY:
+  - User chat message (POST /api/chat/reply, /api/chat/stream)
+  - Voice call turn (VoiceOrchestrationService.runLLMAndTTSPipeline)
+  - Proactive message generation (proactiveScheduler.ts, proactiveMessage.ts)
+  - Per-turn memory distiller
+  - Summariser (/api/chat/summarize + rollup)
+
+────────────────────────────────────────────────────────────────────────────────
+1b. SPEECH-TO-TEXT (STT)
+────────────────────────────────────────────────────────────────────────────────
+
+PRIMARY:   Deepgram nova-3
+FALLBACK:  OpenAI Whisper (when DEEPGRAM_API_KEY is unset)
+LOCATION:  SERVER-SIDE — client sends base64 audio blob over HTTP POST;
+           server transcribes and returns text. (Client-side STT was
+           considered and rejected; server-side is the confirmed current
+           architecture.)
+Env var:   DEEPGRAM_API_KEY (Replit Secret)
+Files:
+  artifacts/api-server/src/lib/deepgram.ts
+  artifacts/api-server/src/lib/deepgramStream.ts
+  artifacts/api-server/src/routes/voice-call.ts
+    → POST /api/voice-call/transcribe (the actual transcription endpoint)
+Triggered: submitSegment() on client POSTs audio; server calls Deepgram.
+
+────────────────────────────────────────────────────────────────────────────────
+1c. TEXT-TO-SPEECH (TTS)
+────────────────────────────────────────────────────────────────────────────────
+
+PRIMARY:   ElevenLabs (streaming)
+FALLBACK:  OpenAI tts-1 (when ELEVENLABS_API_KEY or ELEVENLABS_VOICE_ID unset)
+Env vars:  ELEVENLABS_API_KEY  (Replit Secret)
+           ELEVENLABS_VOICE_ID (Replit Secret)
+Files:
+  artifacts/api-server/src/lib/elevenlabsStream.ts
+    → streamSpeechElevenLabs() — used in voice call pipeline per sentence
+  artifacts/api-server/src/lib/elevenlabs.ts
+    → non-streaming path, fallback
+  artifacts/api-server/src/lib/AudioClipRegistry.ts
+    → pre-rendered MP3 clips (error, farewell, "please wait" etc.)
+    → speakClipOrText() plays a clip OR synthesises live TTS depending on
+      whether a matching clip exists
+Triggered: each LLM-generated sentence during a voice call turn.
+           speakClipOrText() also used for LLM-error recovery clips.
+
+────────────────────────────────────────────────────────────────────────────────
+1d. IMAGE GENERATION
+────────────────────────────────────────────────────────────────────────────────
+
+CURRENT ACTIVE PROVIDER: FAL.ai
+  Model:    fal-ai/flux-pro/v1.1
+  Env var:  FAL_KEY           (Replit Secret)
+            ASHLEY_IMAGE_PROVIDER=fal  (set in environment)
+            safety_tolerance=6 (hardcoded permissive setting)
+  File:     artifacts/api-server/src/lib/fal.ts
+  Triggered: POST /api/chat/selfie (two-call selfie flow: first call returns
+             text immediately; second async call generates image)
+  Cap:      ASHLEY_SELFIE_DAILY_CAP (default 5) — in-process counter,
+            resets on server restart. Enforced by lib/selfieCap.ts.
+
+WIRED BUT INACTIVE (activated by ASHLEY_IMAGE_PROVIDER env var):
+  Pollo AI:   lib/pollo.ts — ASHLEY_IMAGE_PROVIDER=pollo.
+              Note: API was returning 404 on all POST endpoints as of last
+              confirmed test. Not production-viable without resolution.
+  Replicate:  lib/replicate.ts — ASHLEY_IMAGE_PROVIDER=replicate.
+              REPLICATE_LORA_MODEL + REPLICATE_USERNAME env vars.
+
+IMPORTANT: No OpenAI image fallback is intentional. OpenAI's own moderation
+pipeline defeats the purpose of using a permissive provider. Any fallback
+to OpenAI image gen would be a regression — do not add one.
+
+────────────────────────────────────────────────────────────────────────────────
+1e. HOSTING / DEPLOYMENT
+────────────────────────────────────────────────────────────────────────────────
+
+DEVELOPMENT: Replit dev server
+  - API server: pnpm --filter @workspace/api-server run dev
+    Binds to PORT env var; proxied at localhost:80 via shared reverse proxy.
+  - Mobile: pnpm --filter @workspace/mobile run dev (Expo Go on Android)
+    EXPO_PUBLIC_DOMAIN is auto-set by the dev script.
+  - Dev URL: $REPLIT_DEV_DOMAIN (internal) — not a stable URL.
+
+PRODUCTION (publish/deploy):
+  - Separate Replit deployment environment — NOT the same container as dev.
+  - URL: https://Ashley-Sidecar.replit.app (confirmed production URL).
+  - Published via Replit Deploy. Changes do NOT auto-deploy from dev;
+    an explicit publish step is required.
+  - Kane's physical device APK points to the production URL.
+    Dev server changes require a restart_workflow to be tested; production
+    changes require a publish to affect the live device.
+
+────────────────────────────────────────────────────────────────────────────────
+1f. DATABASE
+────────────────────────────────────────────────────────────────────────────────
+
+PostgreSQL via Drizzle ORM
+Env var: DATABASE_URL (Replit Secret)
+Package: @workspace/db
+Tables relevant to voice calls:
+  activeSessionsTable — voice session persistence (VoiceSessionRegistry.ts
+    imports this for durable session state across server restarts)
+Legacy tables (mounted, production-relevant if API is deployed):
+  ashley_profile, messages, memories, conversation_summaries
+  (see artifacts/api-server/src/lib/db/src/schema/ashley.ts)
+
+Note: the primary mobile storage architecture is local-first (AsyncStorage)
+with the server as source-of-truth for non-voice flows. The voice call
+system uses the DB for session state, not for conversation content.
+
+────────────────────────────────────────────────────────────────────────────────
+1g. OTHER SERVICES
+────────────────────────────────────────────────────────────────────────────────
+
+Tavily web search: optional. TAVILY_API_KEY (Replit Secret).
+  File: artifacts/api-server/src/lib/webSearch.ts
+  Triggered: when user query triggers web search intent in chat.
+
+Object storage (Replit App Storage): selfie image persistence.
+  File: artifacts/api-server/src/lib/objectStorage.ts
+  Triggered: /api/chat/selfie saves generated image; /api/selfies/:filename serves.
+
+API auth: X-API-Key header (matched against API_SECRET / EXPO_PUBLIC_API_KEY),
+plus X-Device-Id header (Bearer token). Both required on every API call.
+  Middleware: artifacts/api-server/src/middleware/apiKey.ts
+
+
+================================================================================
+PART 2 — PHONE CALL SYSTEM: FULL DATA FLOW
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+2a. CLIENT SIDE — useVoiceCall.ts
+────────────────────────────────────────────────────────────────────────────────
+
+FILE: artifacts/mobile/lib/useVoiceCall.ts
+
+CALL INITIATION:
+  connect() opens a WebSocket to /api/voice-call (via voiceApiBase() helper).
+  Headers include X-Device-Id and X-Api-Key.
+  Server sends call_connected {sessionId} → client calls openMicRef.current().
+
+MICROPHONE CAPTURE:
+  Library: expo-audio (createAudioPlayer, useAudioRecorder from expo-audio).
+  openMic() calls recorder.ensurePermission() then recorder.start().
+  Audio mode: VOICE_COMMUNICATION throughout the call — set once, never changed.
+  Keeping allowsRecording: true for the entire call preserves hardware echo
+  cancellation (switching mode tears down the VOICE_COMMUNICATION session).
+
+VOICE ACTIVITY DETECTION (VAD):
+  Threshold: SILENCE_DB = -45 dBFS
+  Metering: recorder.metering (fires on every audio frame via useEffect).
+  On sound (db > SILENCE_DB):
+    - isUserSpeakingRef = true, speechStartAtRef = now
+    - segmentSpeechMsRef = now - speechStartAtRef (accumulated speech time)
+    - autoSubmit timer reset to 4s from now
+  On silence (db ≤ SILENCE_DB):
+    - Adaptive threshold: if segmentSpeechMsRef < 1000ms → effectiveSilenceMs
+      = SILENCE_MS_SHORT (4500ms); else → SILENCE_MS (3500ms)
+    - When isUserSpeaking=true AND segmentSpeechMsRef ≥ MIN_SPEECH_MS (500ms)
+      AND now - lastSpeechAtRef ≥ effectiveSilenceMs → submit
+
+  Known AGC issue: Android VOICE_COMMUNICATION mode's AGC keeps the noise
+  floor above SILENCE_DB even during genuine silence. True silence is not
+  reliably detectable. VAD is therefore duration-based, not
+  instantaneous-silence-based.
+
+  VAD open-mic delay: 500ms hold after recorder.start() (VAD_DELAY_MS=500).
+  Covers ~300-400ms Bluetooth A2DP drain window. vadActiveRef stays false
+  during this window — metering handler early-returns.
+
+AUTOSUBMIT FALLBACK TIMERS:
+  There are logically two paths — both use the same autoSubmitTimerRef:
+
+  Path A (autoSubmit-initial): set once in openMic() after recorder.start().
+  Fires 4s after mic open. Purpose: null-metering devices with no VAD path.
+  Log: "submit: autoSubmit-initial speechMs=<N> phase=<phase>"
+
+  Path B (autoSubmit-sound-reset): reset on EVERY sound tick (db > SILENCE_DB)
+  while autoSubmitTimerRef is armed. Fires 4s after last detected sound.
+  Log: "submit: autoSubmit-sound-reset speechMs=<N> phase=<phase>"
+
+  For continuous speech, Path B keeps pushing the timer out indefinitely.
+  Neither path fires mid-utterance for normal continuous speech.
+
+SUBMITSEGMENT():
+  1. Cancels autoSubmit timer and VAD delay timer.
+  2. Sets phase = "submitting".
+  3. await recorder.stop() → audio blob.
+  4. STT hallucination guard: if meteringEverReceivedRef=true (metering device)
+     AND segmentSpeechMsRef < MIN_STT_SPEECH_MS (300ms) → skip, reopen mic.
+  5. POST /api/voice-call/transcribe with base64 audio.
+  6. On success: ws.send({ type: "speech_final", utteranceId, transcript }).
+  Log (silence gate path): "submit: silence-gate speechMs=<N>"
+
+AUDIO PLAYBACK PIPELINE:
+  Chunks arrive as binary WS frames → chunkBufRef.
+  sentence_end WS message → flushChunkBuffer():
+    Writes base64 MP3 to temp file (async write).
+    Gen check (turnGenRef): if gen changed during write, delete file, drop.
+    Else push URI to playQueueRef, call playNext().
+  playNext() mutex (playNextRunningRef):
+    Dequeues URI, creates AudioPlayer, setPhaseSync("speaking"), plays.
+    On didJustFinish: releases mutex, calls playNext() again.
+    One-shot guard (local trackFinished) prevents double-fire on Android.
+  On queue drain + responseEndReceivedRef=true: sends playback_confirmed.
+  On queue drain + ttsServerDoneRef=true: opens mic directly.
+
+INTERRUPT / BARGE-IN:
+  interrupt() (called by UI tap button when phase === "speaking"):
+    1. stopPlayback() — clears queue, releases mutex, pauses+removes player.
+    2. turnGenRef.current++ — invalidates all in-flight flushChunkBuffer
+       and openMic calls (stale audio dropped, stale openMic dropped).
+    3. void playNextRef.current() — drain path; sends playback_confirmed
+       if responseEndReceivedRef=true (Path C stuck-state protection).
+    4. ws.send({ type: "interrupt" }).
+
+  Server responds with interrupt_ack → client:
+    ttsCompleteRef=true, stopPlayback(), setPhaseSync("listening"), openMic().
+
+  Generation counter (turnGenRef) also increments on speech_start(main)
+  WS message, re-arming flushChunkBuffer and openMic for the new turn.
+
+────────────────────────────────────────────────────────────────────────────────
+2b. SERVER SIDE
+────────────────────────────────────────────────────────────────────────────────
+
+FILES:
+  artifacts/api-server/src/index.ts            — WS message routing
+  artifacts/api-server/src/lib/VoiceOrchestrationService.ts — turn pipeline
+  artifacts/api-server/src/lib/VoiceSessionRegistry.ts     — session state
+  artifacts/api-server/src/routes/voice-call.ts            — HTTP routes
+
+SESSION STATE MACHINE (VoiceSessionState):
+  active              — initial connected state
+  listening           — waiting for user speech_final
+  llm_pending         — LLM stream not yet started (context loading)
+  tts_streaming       — sending TTS audio chunks to client
+  interrupted_cleanup — handling interrupt
+  recovering          — reconnection window open
+  closing             — winding down gracefully
+  closed              — terminated normally
+  failed              — terminated abnormally
+
+LLM STREAMING PIPELINE (runLLMAndTTSPipeline):
+  1. Assign turnId, speechId, reset session text/flags.
+  2. state = "llm_pending".
+  3. VoiceContextAssembler loads conversation context (consecutive failures
+     gate: ≥2 → finalise call).
+  4. Set state = "tts_streaming", currentSpeechId = speechId.
+  5. Send speech_start {kind:"main", speechId} to client.
+  6. 45s hard budget timer armed (MAX_TURN_BUDGET_MS = 45_000).
+     On expiry: abortController.abort() → send error clip.
+  7. First-token watchdog: if no first LLM token within threshold, play
+     thinking clip (speakClipOrText with AudioClipRegistry clip).
+  8. Stream LLM response sentence by sentence.
+  9. Per sentence: flushSentenceToTTS():
+     a. ElevenLabs streaming TTS → binary MP3 chunks.
+     b. Send speech_start {kind:"main"} for first chunk (already sent in step 5).
+     c. Send binary chunk frames via ws.send(chunk).
+     d. Send sentence_end {kind:"main"}.
+  10. On LLM stream complete: send response_end {kind:"main"}.
+      Set awaitingPlaybackConfirm=true, responseComplete=true.
+      Arm 15s playback-confirm safety timeout.
+  11. state = "listening" (after tts_done is sent via handlePlaybackConfirmed).
+
+TTS STREAMING:
+  ElevenLabs streaming (streamSpeechElevenLabs from elevenlabsStream.ts).
+  Per sentence — not per full response. Each sentence triggers a TTS round-trip.
+  Binary chunks sent directly via ws.send(Buffer). No sentence_start (only
+  speech_start at turn level and sentence_end at sentence level).
+
+RESPONSE_END / PLAYBACK_CONFIRMED / TTS_DONE HANDSHAKE:
+  response_end (server→client):
+    Server has sent all TTS audio for this turn. Client may not send
+    playback_confirmed until after this arrives. Gates premature confirmation.
+
+  playback_confirmed (client→server):
+    Client's audio queue has drained AND response_end was already received.
+    handlePlaybackConfirmed():
+      Checks responseComplete=true AND awaitingPlaybackConfirm=true.
+      Clears both flags. Cancels 15s safety timeout.
+      Sends tts_done to client.
+      state = "listening".
+      Processes pendingUtterance (if user spoke during playback).
+
+  tts_done (server→client):
+    Tells client the full turn is complete. Client opens mic.
+    Fields: kind, responseText (full turn text), speechId, sessionId,
+    connectionGeneration.
+
+ERROR HANDLING — LLM FAILURE:
+  On LLM stream error (e.g. Gemini 429 rate limit):
+    LLM stream throws. Caught in runLLMAndTTSPipeline catch block.
+    isAbort=false → speakClipOrText plays error clip (e.g. "sorry" clip
+    from AudioClipRegistry).
+    Error clip uses the SAME response_end → playback_confirmed → tts_done
+    lifecycle as a normal turn (no bypass).
+    The interrupt-clears-the-gate fix (this session): interrupt handler now
+    unconditionally clears awaitingPlaybackConfirm=false and responseComplete=false
+    in addition to cancelCurrentTurn, then drains pendingUtterance.
+    Before this fix: interrupt during an error-clip playback left the gate
+    permanently open, queuing subsequent speech_finals forever.
+
+TIMEOUTS:
+  45s hard turn budget (MAX_TURN_BUDGET_MS):
+    Protects against LLM stream hangs. On fire: abortController.abort(),
+    play error clip, finalise if needed.
+  15s playback-confirm safety timeout:
+    Armed when response_end is sent. If playback_confirmed never arrives
+    (e.g. client crash, network drop): fires and attempts to unblock the
+    session. Guard: currentSpeechId === speechId at fire time. Known
+    fragility: if anything else clears currentSpeechId before the timeout
+    fires, the guard fails silently (confirmed finding, not yet hardened).
+
+────────────────────────────────────────────────────────────────────────────────
+2c. KNOWN PROTOCOL MESSAGES
+────────────────────────────────────────────────────────────────────────────────
+
+CLIENT → SERVER:
+  speech_final     { utteranceId: string, transcript: string }
+                   Sent after STT completes. utteranceId used for dedup
+                   (processedUtteranceIds set on session).
+  playback_confirmed  {}
+                   Sent when client audio queue drains after response_end.
+  interrupt        {}
+                   User tapped barge-in. Cancels current LLM/TTS turn.
+  call_end         {}
+                   User ended call deliberately.
+
+SERVER → CLIENT:
+  call_connected   { sessionId: string }
+  speech_start     { kind: "main"|"auxiliary", speechId: string,
+                     sessionId: string, connectionGeneration: number }
+  [binary frames]  Raw MP3 audio chunks (Buffer). No JSON wrapper.
+  sentence_end     { kind: "main"|"auxiliary" }
+  response_end     { kind: "main" }
+  tts_done         { kind: "main"|"auxiliary", responseText: string,
+                     speechId: string, sessionId: string,
+                     connectionGeneration: number }
+  interrupt_ack    { speechId: string, sessionId: string,
+                     connectionGeneration: number }
+  reconnect_ok     (sent on successful reconnection)
+  call_ended       { reason: string }
+                   Reasons include: "client_call_end",
+                   "replaced_by_new_connection", others.
+  STOP_AUDIO_PLAYBACK_IMMEDIATE
+                   Sent during interrupt handling in some paths.
+                   Not confirmed as handled client-side — needs verification.
+
+
+================================================================================
+PART 3 — CROSS-SERVICE TIMING / INTERACTION POINTS
+================================================================================
+
+STT (Deepgram) LATENCY vs TTS (ElevenLabs) LATENCY:
+  End-to-end latency from user finishing speech to first audio arriving:
+    VAD silence gate: 3500ms (or 4500ms for short segments)
+    + STT round-trip: ~200-500ms typical
+    + LLM first token: ~500-2000ms (Gemini 2.5 Flash, voice lane uses 2.0-flash)
+    + TTS first sentence: ~300-800ms (ElevenLabs streaming)
+    Total observable gap: typically 4.5-8s from user stop → first Ashley audio.
+  Mismatch risk: STT returning too quickly (< 300ms, STT hallucination guard
+  threshold) causes spurious submissions. The MIN_STT_SPEECH_MS=300ms guard
+  on the client-side prevents near-silence segments from being transcribed.
+
+GEMINI LATENCY/RETRY vs CLIENT TURN BUDGET:
+  Gemini 2.0 Flash (voice lane) first-token latency is typically lower than
+  Gemini 2.5 Flash. The 45s server hard budget handles hangs. The first-token
+  watchdog plays a "thinking" clip after a configurable window to fill the gap.
+  Gemini 429 rate limit is the confirmed failure mode that produces LLM errors
+  mid-call. The server's error clip path handles this; the interrupt-clears-
+  the-gate fix from this session ensures the gate doesn't stick afterward.
+
+BLUETOOTH A2DP LATENCY:
+  Adds ~100-400ms audio tail beyond Android audio buffer drain.
+  Implication: after TTS finishes playing, the A2DP path delivers audio for
+  an additional 100-400ms. Without the 500ms VAD_DELAY_MS post-openMic hold,
+  this tail would trigger VAD as "user speaking" and produce a spurious
+  submission immediately after Ashley finishes talking.
+  The 500ms delay is a heuristic confirmed sufficient for typical A2DP
+  headsets — not a measured per-device value.
+
+ANDROID VOICE_COMMUNICATION MODE AGC vs SILENCE DETECTION:
+  AGC (Automatic Gain Control) in VOICE_COMMUNICATION mode normalises audio
+  amplitude. During genuine silence, the noise floor is raised to near
+  SILENCE_DB=-45dBFS. This means:
+    a) The VAD threshold cannot be used to confirm silence — it will always
+       appear "not silent" even in a quiet room.
+    b) Any fixed dB threshold lower than -45dBFS would be constantly triggered.
+    c) The current VAD works around this by requiring a sustained silence
+       DURATION (3500ms or 4500ms) rather than instantaneous below-threshold
+       detection. Only the timer matters; the threshold is a direction test.
+  This is a permanent constraint of the Android audio architecture in
+  VOICE_COMMUNICATION mode, not a bug.
+
+IN-FLIGHT TTS vs INTERRUPT TIMING:
+  When the user taps Interrupt, the server has already buffered TTS chunks
+  in the WS send buffer. These arrive at the client after interrupt() clears
+  the playQueue. Without the turnGenRef generation counter, these chunks
+  would be flushed into the queue and played, setting phase back to "speaking"
+  and re-arming the interrupt button. The generation counter (added this
+  session) drops these stale chunks in flushChunkBuffer after the async file
+  write, preventing the loop.
+
+TURN BOUNDARY RACE (openMic reentrancy):
+  Both tts_done and interrupt_ack can trigger openMic() within the same
+  JS event loop tick. The micOpeningRef mutex blocks the second call,
+  but only while the first is actively awaiting. The mutex was previously
+  released before the autoSubmit timer was armed, creating a narrow window
+  where a second openMic could enter the try block and arm a duplicate timer.
+  Fixed this session: mutex now released after all async work including
+  timer setup.
+
+
+================================================================================
+PART 4 — CONFIRMED CONSTRAINTS & HARD-WON FINDINGS
+================================================================================
+
+1. AGC DEFEATS FIXED ABSOLUTE dB SILENCE DETECTION
+   Android VOICE_COMMUNICATION mode AGC keeps the noise floor above
+   SILENCE_DB (-45dBFS) even in genuine silence on Kane's device. This is
+   confirmed from live metering logs (see Dump #4, referenced in code comments
+   at useVoiceCall.ts line ~589). Fixed dB thresholds cannot confirm silence;
+   only duration-based gates work reliably. This is not configurable per-app.
+
+2. BLUETOOTH A2DP AUDIO TAIL
+   ~100-400ms of audio continues to play after the last byte is delivered to
+   the Android audio buffer over Bluetooth A2DP. All timing assumptions about
+   "audio finished playing" must account for this tail. The 500ms VAD_DELAY_MS
+   post-openMic hold was sized to cover this window.
+
+3. INTERRUPT REQUIRES A FULL STATE RESET
+   A partial reset — e.g. clearing currentSpeechId (turn ownership) but not
+   awaitingPlaybackConfirm (the playback gate) — leaves the session waiting
+   forever for a confirmation that will never arrive. Confirmed in live logs:
+   59-second freeze observed where the gate was not cleared on interrupt.
+   Fixed this session (Finding 2): interrupt handler now clears both
+   currentSpeechId AND awaitingPlaybackConfirm/responseComplete atomically,
+   then drains pendingUtterance.
+
+4. IN-FLIGHT AUDIO RE-ARMS SPEAKING STATE AFTER INTERRUPT
+   TTS chunks already sent to the WS buffer before the server processes
+   an interrupt continue arriving at the client. Without filtering, each
+   arriving sentence_end triggers flushChunkBuffer → playNext →
+   setPhaseSync("speaking"), re-arming the interrupt button and producing
+   a loop that lasts as long as there is audio in the buffer (~13s observed
+   in live testing). Fixed this session (Option B): turnGenRef generation
+   counter is incremented on interrupt(); flushChunkBuffer drops any URI
+   whose gen changed during the async file write.
+
+5. OPENMIC MUTEX MUST HOLD FOR ALL ASYNC WORK
+   Multiple code paths legitimately call openMic() at the same turn boundary
+   (interrupt_ack, tts_done via playNext drain, reconnect_ok). The
+   micOpeningRef mutex blocks duplicate calls, but only while held. Previously
+   the mutex was released before the autoSubmit timer was armed, allowing a
+   second concurrent openMic() to enter the try block and arm a duplicate timer.
+   Fixed this session: micOpeningRef.current = false moved to after
+   autoSubmitTimerRef.current = setTimeout(...).
+
+6. METERING RELIABILITY — NOT YET FULLY CONFIRMED
+   During live testing, submissions were observed with speechMs=0 in the audit
+   log at the time of submission. This is consistent with the null-metering
+   code path (autoSubmit-initial: mic opened, no non-null metering received,
+   4s timer fires with segmentSpeechMsRef=0).
+   If reproducible: recorder.metering is returning null for the entire call,
+   and every turn boundary is governed by the blind 4s timer rather than
+   genuine voice activity detection. The STT hallucination guard would also
+   be bypassed (meteringEverReceivedRef stays false → guard skips → any
+   audio, even silence, gets submitted).
+   Current status: NOT CONFIRMED. Requires a test round with the new
+   per-path logging (added this session) to distinguish:
+     "submit: autoSubmit-initial speechMs=0" → metering null, timer path
+     "submit: silence-gate speechMs=<N>"     → metering working, VAD path
+   Possible causes if metering IS null: expo-audio version regression,
+   VOICE_COMMUNICATION mode suppressing metering output on this device,
+   missing permission not caught at startup, or recorder not fully
+   initialised before start() is called.
+   File: useVoiceCall.ts lines 492-494 (meteringEverReceivedRef logic).
+
+
+================================================================================
+PART 5 — WHAT MUST BE PRESERVED IN ANY NEW IMPLEMENTATION
+================================================================================
+
+1. UNIFIED PERSONA ACROSS ALL SURFACES
+   Ashley is one AI across text chat, voice calls, and image generation —
+   not a separate call bot. Any new call implementation must use the same
+   conversation context assembly (VoiceContextAssembler.ts), the same
+   memory system, and the same underlying persona spec (ashleyCoreSpec.ts,
+   ashleyPrompt.ts). The voice pipeline draws from the same message history
+   that the mobile chat UI reads from.
+
+2. TWO-PROVIDER LLM ARCHITECTURE MUST REMAIN SWITCHABLE
+   The ASHLEY_TEXT_PROVIDER env var switch between Gemini and Anthropic must
+   remain a single-env-var flip with no code changes required. This is a
+   live cost lever; the summariser-on-Anthropic carve-out must also be
+   preserved regardless of which env var is set.
+
+3. NO OPENAI IMAGE FALLBACK
+   The image pipeline (FAL.ai or equivalent permissive provider) must never
+   silently fall back to OpenAI image generation. OpenAI's own content
+   moderation defeats the purpose of using a permissive provider.
+
+4. API AUTH MUST REMAIN DOUBLE-HEADER
+   X-API-Key (static shared secret) + X-Device-Id (Bearer identity) are
+   BOTH required on every API and WS request. Removing either header breaks
+   the existing mobile client without a coordinated client update.
+
+5. PRODUCTION URL IS HTTPS://ASHLEY-SIDECAR.REPLIT.APP
+   Kane's physical device APK is compiled against this URL. Any deployment
+   to a new domain requires a new APK build (EAS build). The production URL
+   must not change without coordinating an APK rebuild.
+
+6. VOICE_COMMUNICATION AUDIO MODE MUST NOT BE CHANGED DURING A CALL
+   Switching audio mode mid-call tears down the hardware echo cancellation
+   session. The mode is set once in openMic() and held for the entire call
+   duration (allowsRecording: true throughout, even during playback).
+
+================================================================================
+OPEN QUESTIONS / UNCERTAINTIES (confirmed by code read)
+================================================================================
+
+Q1. Does the client handle STOP_AUDIO_PLAYBACK_IMMEDIATE?
+    The server sends this WS message during interrupt handling in some paths
+    (VoiceOrchestrationService.ts line ~377). The client-side WS message
+    handler (useVoiceCall.ts switch statement) does NOT have a case for this
+    message type. It would fall through to the default (unknown message, ignored).
+    This appears to be a dead message currently — sent but not handled.
+
+Q2. Is recorder.metering returning non-null values during live calls?
+    See Part 4 Finding 6. Requires a test with the new logging to confirm.
+
+Q3. 15s playback-confirm safety timeout — exact value not confirmed in code.
+    The constant name was not grepped directly; the value 15s is from prior
+    session context and code comments. Confirm against VoiceSessionRegistry.ts
+    or VoiceOrchestrationService.ts grep for the actual setTimeout value.
+
+================================================================================
+END OF ARCHITECTURE BRIEF
+================================================================================
