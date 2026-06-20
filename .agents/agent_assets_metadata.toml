@@ -503,3 +503,9 @@ id = "wpaOdiQT0v_BdiTH2mbby"
 uri = "file://Ashley_Full_Architecture_Brief_COMPLETED_20Jun2026.txt"
 type = "text"
 title = "Ashley_Full_Architecture_Brief_COMPLETED_20Jun2026.txt"
+
+[[outputs]]
+id = "XnuH8xdQdj_rlmPSoE7jY"
+uri = "file://VoiceCall_P0_1_CompletionReport_20Jun2026.txt"
+type = "text"
+title = "VoiceCall_P0_1_CompletionReport_20Jun2026.txt"

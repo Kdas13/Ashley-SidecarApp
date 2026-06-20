@@ -1,0 +1,108 @@
+================================================================================
+STANDING v3.1 COMPLETION REPORT
+Item: P0-1 — VAD Capability Probe
+Date: 20 June 2026
+================================================================================
+
+VERDICT: COMMITTED — DIAGNOSIS ONLY. NO BEHAVIOUR CHANGE.
+
+────────────────────────────────────────────────────────────────────────────────
+WHAT CHANGED
+────────────────────────────────────────────────────────────────────────────────
+
+FILE CHANGED: artifacts/mobile/lib/useVoiceCall.ts (one file, one commit)
+
+1. FOUR NEW REFS (around line 215):
+   vadProbeUsableRef  — count of non-null metering frames during probe window
+   vadProbeNullRef    — count of null metering frames during probe window
+   vadModeRef         — "unknown" | "vad" | "blind" (set by probe timer)
+   vadProbeTimerRef   — handle for the 2s probe report timer
+
+2. FRAME COUNTER IN VAD EFFECT (top of useEffect on recorder.metering):
+   Runs on every invocation, before the existing `if (db === null) return;`.
+   db === null → vadProbeNullRef.current++
+   db !== null → vadProbeUsableRef.current++
+   Counts regardless of whether vadActiveRef is true (probe runs even during
+   the 500ms VAD delay window).
+
+3. PROBE TIMER IN openMic() — after recorder.start() and gen check:
+   Resets both counters and vadModeRef = "unknown".
+   Clears any previous probe timer (handles rapid mic reopen).
+   Captures probeGen = turnGenRef.current (stale-segment guard).
+   Starts a 2000ms timer. On fire:
+     - If turnGenRef.current !== probeGen → skip (stale segment, mic reopened)
+     - usable = vadProbeUsableRef.current
+     - nullCount = vadProbeNullRef.current
+     - mode = usable > 0 ? "vad" : "blind"
+     - vadModeRef.current = mode
+     - addLog(`VAD_CAPABILITY mode=${mode} usableFrames=${usable} nullFrames=${nullCount}`)
+
+4. CLEANUP ON UNMOUNT (in the existing cleanup useEffect):
+   vadProbeTimerRef cleared alongside the existing vadDelayTimerRef cleanup.
+
+────────────────────────────────────────────────────────────────────────────────
+WHAT WAS NOT CHANGED
+────────────────────────────────────────────────────────────────────────────────
+
+- No change to VAD thresholds, submission logic, or call control flow.
+- No change to submit paths (autoSubmit-initial, autoSubmit-sound-reset,
+  silence-gate). Those log lines from the previous commit remain untouched.
+- vadModeRef is set but not yet read by any downstream logic — it is
+  diagnosis data only at this stage. P0-2 will read it.
+- meteringEverReceivedRef (STT hallucination guard) is unchanged.
+- All existing comments and constants unchanged.
+
+────────────────────────────────────────────────────────────────────────────────
+HOW TO READ THE OUTPUT
+────────────────────────────────────────────────────────────────────────────────
+
+Two seconds after the mic opens on each turn, the log will contain one line:
+
+  VAD_CAPABILITY mode=vad usableFrames=<N> nullFrames=<M>
+    → metering is working. N non-null frames received in 2s.
+    → VAD silence gate is operative. autoSubmit is a safety net only.
+
+  VAD_CAPABILITY mode=blind usableFrames=0 nullFrames=<M>
+    → metering is null the entire probe window.
+    → Every turn boundary is governed by the blind 4s timer (autoSubmit-initial
+      or autoSubmit-sound-reset), not genuine silence detection.
+    → STT hallucination guard is also bypassed (meteringEverReceivedRef stays
+      false → guard always passes through).
+    → P0-2 fix becomes mandatory.
+
+  VAD_CAPABILITY mode=blind usableFrames=0 nullFrames=0
+    → Metering fired zero times in 2s. The useEffect on recorder.metering
+      may not be triggering at all. Deeper investigation needed (expo-audio
+      version, audio mode, recorder initialisation).
+
+────────────────────────────────────────────────────────────────────────────────
+TESTABILITY
+────────────────────────────────────────────────────────────────────────────────
+
+Not testable in the dev environment without a real call on the device.
+The log line is emitted 2 seconds after each mic open — check the audit log
+immediately after starting a call and speaking (or staying silent).
+Expo Go and the production APK should both show this line — Expo Go is
+sufficient to read the probe result, but the production APK result is what
+matters for confirming the real device behaviour.
+
+The commit diff should show:
+  - One file changed: artifacts/mobile/lib/useVoiceCall.ts
+  - ~35 lines added, 0 lines removed in production logic
+  - No other files
+
+────────────────────────────────────────────────────────────────────────────────
+NEXT STEP
+────────────────────────────────────────────────────────────────────────────────
+
+Kane reviews the actual git diff (git show --stat HEAD, then git show HEAD)
+to confirm only useVoiceCall.ts changed and the stated lines are the only
+ones that moved.
+
+Once diff-checked and approved, run a real call, open the audit log, and
+read the VAD_CAPABILITY line. That result determines whether P0-2 is a
+mandatory fix (mode=blind) or a defensive hardening (mode=vad but weak).
+
+P0-2 cannot be sensibly implemented until this result is known.
+
+================================================================================

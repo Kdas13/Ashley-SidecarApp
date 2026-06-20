@@ -209,6 +209,15 @@ export function useVoiceCall(): {
   // "null-metering device that should always pass through".
   const meteringEverReceivedRef = useRef(false);
 
+  // ── P0-1: VAD capability probe refs ────────────────────────────────────────
+  // For the first 2 s after each mic open, count non-null vs null metering
+  // frames. After the window closes the probe timer logs VAD_CAPABILITY and
+  // sets vadModeRef so downstream code knows whether VAD is usable.
+  const vadProbeUsableRef = useRef(0);   // frames with non-null metering
+  const vadProbeNullRef   = useRef(0);   // frames with null metering
+  const vadModeRef        = useRef<"unknown" | "vad" | "blind">("unknown");
+  const vadProbeTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // ── Auxiliary audio (thinking clips, non-turn clips) ──────────────────────
   // These messages carry kind="auxiliary" and must not touch main lifecycle refs.
   const auxChunkBufRef      = useRef<Uint8Array[]>([]);
@@ -490,6 +499,15 @@ export function useVoiceCall(): {
 
   useEffect(() => {
     const db = recorder.metering;
+    // P0-1: count every metering frame (null or not) during the probe window.
+    // The probe timer reads these counts at the 2 s mark regardless of how
+    // many times this effect fires — works even if null-metering devices only
+    // trigger the effect once or twice.
+    if (db === null) {
+      vadProbeNullRef.current++;
+    } else {
+      vadProbeUsableRef.current++;
+    }
     if (db === null) return;
     meteringEverReceivedRef.current = true;
 
@@ -589,6 +607,29 @@ export function useVoiceCall(): {
     try {
       await recorder.start();
       if (turnGenRef.current !== capturedGen) { micOpeningRef.current = false; return; }
+
+      // ── P0-1: VAD capability probe ────────────────────────────────────────
+      // Reset counters for this segment; start a 2 s window. After 2 s the
+      // timer logs VAD_CAPABILITY mode=vad|blind and sets vadModeRef so a
+      // reviewer can tell whether metering is working on this device at all.
+      vadProbeUsableRef.current = 0;
+      vadProbeNullRef.current   = 0;
+      vadModeRef.current        = "unknown";
+      if (vadProbeTimerRef.current !== null) {
+        clearTimeout(vadProbeTimerRef.current);
+        vadProbeTimerRef.current = null;
+      }
+      const probeGen = turnGenRef.current;
+      vadProbeTimerRef.current = setTimeout(() => {
+        vadProbeTimerRef.current = null;
+        if (turnGenRef.current !== probeGen) return; // stale segment — skip
+        const usable    = vadProbeUsableRef.current;
+        const nullCount = vadProbeNullRef.current;
+        const mode      = usable > 0 ? "vad" : "blind";
+        vadModeRef.current = mode;
+        addLog(`VAD_CAPABILITY mode=${mode} usableFrames=${usable} nullFrames=${nullCount}`);
+      }, 2000);
+
       // ── VAD open-mic delay ────────────────────────────────────────────────
       // Hold VAD inactive for VAD_DELAY_MS (500ms) after the mic opens.
       // This is a known heuristic: it covers the ~300-400ms Bluetooth A2DP
@@ -852,6 +893,10 @@ export function useVoiceCall(): {
   useEffect(() => {
     return () => {
       clearAutoSubmitTimer();
+      if (vadProbeTimerRef.current !== null) {
+        clearTimeout(vadProbeTimerRef.current);
+        vadProbeTimerRef.current = null;
+      }
       if (vadDelayTimerRef.current !== null) {
         clearTimeout(vadDelayTimerRef.current);
         vadDelayTimerRef.current = null;

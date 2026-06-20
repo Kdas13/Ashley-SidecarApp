@@ -1,0 +1,203 @@
+================================================================================
+ASHLEY VOICE CALL — PRIORITIZED FIX LIST FOR WREN
+Synthesized from three independent reviews of the architecture brief.
+Date: 20 June 2026
+Process: ONE ITEM AT A TIME. Commitment 1 Standard — options before code on
+anything non-trivial. After EACH item is committed, Kane reviews the actual
+git diff for that commit before moving to the next item, to confirm only the
+stated files/lines changed. Standing v3.1 completion report required each time.
+================================================================================
+
+VERDICT FROM ALL THREE REVIEWS (for context, not in dispute):
+The architecture is sound. None of the three reviews recommend a rewrite.
+Keep the existing service choices (Deepgram, ElevenLabs, Gemini/Anthropic,
+WebSocket, server-side orchestration). The problems are in the call-control
+protocol layer, not the overall design. Harden it — don't replace it.
+
+================================================================================
+P0 — BLOCKING. DO THESE FIRST, IN ORDER.
+================================================================================
+
+P0-1. VAD CAPABILITY PROBE (highest priority — confirmed by all three reviews
+      and by live test data from tonight)
+
+  Confirm whether recorder.metering ever returns non-null values during a
+  real call on Kane's device. This is not yet proven either way — tonight's
+  test showed speechMs=0 on submissions, consistent with null metering, but
+  it needs a direct, unambiguous check.
+
+  Implementation: for the first 2 seconds after mic open, count non-null
+  metering frames vs null frames. Log it explicitly:
+    VAD_CAPABILITY mode=vad|blind usableFrames=<n> nullFrames=<n>
+  Set a session flag (vadMode) based on the result.
+
+  This is diagnosis-grade instrumentation, not yet a fix — but it's the one
+  piece of evidence everything else below depends on. Do this first.
+
+P0-2. STOP BLIND AUTOSUBMIT FROM BECOMING REAL USER SPEECH
+
+  If vadMode=blind (from P0-1), a segment captured via the 4-second blind
+  timer must NOT be treated as confirmed user speech automatically. Require
+  at minimum: non-empty transcript, a minimum word count, and rejection of
+  known filler/hallucination phrases, before it's ever sent onward as a real
+  utterance. If it fails the check, discard silently and reopen the mic —
+  do not respond, do not treat it as "user went quiet."
+
+  This directly closes the gap where the STT hallucination guard currently
+  gets bypassed exactly when it's needed most (when metering is unavailable).
+
+P0-3. IMPLEMENT OR REMOVE STOP_AUDIO_PLAYBACK_IMMEDIATE
+
+  The server sends this message in some interrupt paths; the client has no
+  handler for it — confirmed dead in the audit. Pick one in the same commit:
+    a) Implement a real client handler (stop playback, clear queue, log it), or
+    b) Remove it from the server entirely and rely on the existing
+       interrupt_ack + generation-counter path.
+  Do not leave it half-wired either way.
+
+P0-4. BUILD/ENVIRONMENT VERSION REPORTING
+
+  Add a way to confirm, from the phone itself, which backend (dev or
+  production) and which commit/build the app is actually talking to right
+  now. Minimum: server /health returns environment + commit hash; the
+  call_connected WS message includes the same; client logs it on connect.
+
+  This exists because of a real, already-encountered problem: a stalled
+  production publish earlier this week meant the phone was briefly testing
+  against stale code without anyone realizing it. This prevents that
+  happening silently again.
+
+================================================================================
+P1 — IMPORTANT, NOT BLOCKING. DO AFTER P0 IS VERIFIED WORKING LIVE.
+================================================================================
+
+P1-1. Make playback lifecycle messages (response_end, playback_confirmed,
+      sentence_end, tts_done) explicitly carry speechId, and have both
+      client and server ignore/reject any of these messages that don't match
+      the currently active speechId. Closes the remaining fragility in the
+      handshake that's already been patched once tonight (the interrupt gate
+      fix) but isn't fully hardened end-to-end.
+
+P1-2. Harden the 15s playback-confirm safety timeout so it no longer relies
+      solely on currentSpeechId matching to decide whether to fire — same
+      class of fragility as the bug fixed earlier tonight, just not yet
+      closed everywhere it appears.
+
+P1-3. Pending-utterance safety: don't let an utterance captured mid-Ashley-
+      speech auto-process after a state reset unless it was a deliberate,
+      recognised interruption. Tag captured utterances with enough context
+      (when captured, what phase, which speechId) to judge this properly.
+
+================================================================================
+P2 — WORTH DOING EVENTUALLY, NOT URGENT.
+================================================================================
+
+P2-1. Give binary audio chunks proper self-describing metadata (speechId,
+      sentence ordering) rather than relying on external JSON ordering and
+      the generation counter alone to infer ownership.
+
+P2-2. Barge-in mode design (wake-prefix vs. tap vs. confident-words) — this
+      overlaps with the Phase 2/3 roadmap already logged from a couple of
+      nights ago. Don't duplicate that work, just keep it in mind as the
+      same eventual feature.
+
+================================================================================
+SHELL COMMANDS — FOR KANE, COPY-PASTE INTO THE SHELL TAB
+================================================================================
+
+These are the only commands needed for this whole process. Run them in the
+Shell tab in Replit, not the Agent chat. If a command ever opens a scrolling
+view that won't let you type (you'll see ~ symbols down the left and
+"(END)" at the bottom) — press "q" to get back to a normal prompt.
+
+--------------------------------------------------------------------------
+1. AFTER WREN SAYS HE'S COMMITTED A FIX — see what actually changed:
+--------------------------------------------------------------------------
+
+  git log -1
+
+  Shows the most recent commit: who made it, when, and the message. Confirm
+  the message matches what Wren's completion report says he just did.
+
+  git show --stat HEAD
+
+  Shows WHICH FILES changed in that commit, and how many lines, without
+  showing the full code — quickest way to sanity-check scope. Compare this
+  list against what the completion report says should have changed. If a
+  file is listed here that the report didn't mention, that's the thing to
+  flag and ask about before approving the next item.
+
+  git show HEAD
+
+  Shows the FULL line-by-line diff (the actual code added/removed) for that
+  commit, if you want to look closer or paste it to me to read properly.
+  Press "q" to exit if it opens a scrolling view.
+
+--------------------------------------------------------------------------
+2. ONCE YOU'RE HAPPY — push the approved change to GitHub:
+--------------------------------------------------------------------------
+
+  git status && git log -1 && git push origin main
+
+  Chained with && so each step only runs if the one before it succeeded.
+  git status confirms there's something committed and ready to push;
+  git log -1 shows you what it is one more time; git push sends it to
+  GitHub. If it opens a pager, press "q" first, then it'll continue.
+
+--------------------------------------------------------------------------
+3. IF SOMETHING LOOKS WRONG AND YOU WANT THE FULL RECENT HISTORY:
+--------------------------------------------------------------------------
+
+  git log --oneline -10
+
+  Shows the last 10 commits, one line each — useful for spotting an
+  unexpected commit (like an auto-publish) sitting where you didn't expect.
+
+================================================================================
+APK VERIFICATION — DO NOT TRUST DEV-SIDE TESTING ALONE
+================================================================================
+
+Everything tested so far this session ran through Expo Go against the dev
+server. That's fine for fast iteration while diagnosing — but Expo Go is
+NOT the same runtime as the actual phone app Kane uses day to day, and this
+session already hit one real instance of dev-tested work not matching what
+was actually deployed (the stalled Publishing run found earlier).
+
+RULE: once ALL of P0 is implemented and each item has been individually
+diff-checked and approved, build a real APK and verify P0 on that build
+before calling voice reliability "fixed." Do not skip this step because
+Expo Go testing looked clean — P0-4 (build/version reporting) exists
+specifically so this can be confirmed rather than assumed.
+
+WHO DOES WHAT:
+- Wren cannot trigger builds or push to GitHub — confirmed earlier this
+  session, this remains true. Building and pushing are Kane-only, via Shell.
+- Once Wren confirms all P0 commits are in and diff-checked, Kane runs the
+  build himself (Shell command below), installs it, and re-runs the P0
+  test scenarios (silent room, continuous long sentence, interrupt during
+  speech) on the real APK — not Expo Go.
+
+SHELL COMMAND TO BUILD AN INSTALLABLE TEST APK (not a Play Store bundle —
+confirmed earlier this session that omitting --profile defaults to a
+non-installable store build):
+
+  pnpm --filter @workspace/mobile exec eas build --platform android --profile preview
+
+This produces a download/QR page to install directly on the phone. If it
+errors saying the "preview" profile doesn't exist, that's a one-line config
+fix for Wren (eas.json) — not something to guess around.
+
+================================================================================
+RULES
+================================================================================
+- P0 items first, strictly in order. P0-1 must be done and its result known
+  before P0-2 can be sensibly implemented (the fix in P0-2 depends on
+  knowing whether vadMode is actually blind on this device).
+- One item, one commit, one completion report. No bundling multiple P0 items
+  into a single commit even if related — keeps the diff-check meaningful.
+- After each commit: Kane reviews the actual diff against the stated scope
+  before approving the next item.
+- Standing v3.1 format throughout: verdict, permalink, timestamp, honest
+  "not testable without live device" where applicable.
+
+— End of punch list —
