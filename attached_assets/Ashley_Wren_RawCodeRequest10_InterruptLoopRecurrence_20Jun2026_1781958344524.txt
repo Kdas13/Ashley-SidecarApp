@@ -1,0 +1,58 @@
+================================================================================
+WREN — RECURRING INTERRUPT LOOP, NEW TRIGGER SUSPECTED
+NO CHANGES. NO COMMITS. NO BUILDS. PASTE CODE ONLY.
+Date: 20 June 2026
+================================================================================
+
+CONTEXT: P0-2 (size + transcript filter for blind captures) is live and
+working as designed — confirmed via "blind-capture size-pass" log lines.
+Separately, live testing today shows two things:
+
+1. The cutoff at ~4s during continuous speech is EXPECTED at this stage —
+   P0-2 only filters garbage, it doesn't stop the blind timer firing on
+   schedule. Not a bug, just the known limitation until P0-1's deeper cause
+   (dead metering) is addressed. No action needed here.
+
+2. NEW/RECURRING: the interrupt loop from several rounds ago (fixed via the
+   turn-generation-token approach) appears to be happening again — repeated
+   `interrupt: tap` + `playback_confirmed` + `drained` bursts, UI stuck on
+   "Ashley speaking" with no audio actually playing, Interrupt button
+   unresponsive to repeated taps. Kane specifically hit this when Ashley
+   was wrapping up a call ("I'll let you go").
+
+SUSPECTED NEW TRIGGER: log evidence shows the blind 4-second autoSubmit
+timer firing while phase=speaking (not just phase=listening):
+
+  12:17:19.70 player: started q=0
+  12:17:19.85 submit: autoSubmit-initial speechMs=0 phase=speaking  ← mid-speech
+  12:17:22.32 player: finished
+  12:17:22.32 WS playback_confirmed → sent (response_end + queue empty)
+  12:17:22.32 interrupt: tap
+
+This looks like it could be a path the turn-generation-token fix didn't
+account for: a blind-timer submission landing DURING playback, rather than
+the post-interrupt in-flight-audio race the token was built to close.
+
+WHAT TO PASTE:
+1. Confirm: is the autoSubmit fallback timer (both initial and sound-reset
+   paths) currently gated on phase at all, or does it fire and call
+   submitSegment() regardless of whether phase is "listening" or "speaking"?
+   If ungated, that's likely the actual gap — paste the relevant code.
+2. The current turn-generation-token implementation (from the earlier
+   interrupt-loop fix) — does it cover BOTH the audio-chunk-arrival path
+   AND a stray submitSegment()/playback_confirmed call landing during
+   phase=speaking? Or was it scoped only to the post-interrupt audio-drain
+   case?
+3. Trace what happens, step by step, when submitSegment() is called while
+   phase=speaking and srvDone=false/responseEnd=true (mid-response) — does
+   anything in that path call playNext() or send playback_confirmed in a
+   way that could re-trigger the loop?
+
+QUESTION TO ANSWER IN WORDS (after pasting code):
+Is gating the autoSubmit timer to only fire during phase=listening (i.e.
+simply not call submitSegment at all if phase=speaking) a sufficient fix on
+its own, or does the generation-token logic also need extending to cover
+this case? Don't propose final code yet — diagnosis first, options next
+round per Commitment 1.
+
+— End of request —
