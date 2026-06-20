@@ -1,0 +1,153 @@
+================================================================================
+P0-2 — OPTIONS FOR BLOCKING BLIND-TIMER CAPTURES
+Date: 20 June 2026
+Context: VAD_CAPABILITY confirmed mode=blind, usableFrames=0, nullFrames=0.
+         recorder.metering does not change at all on this device — the React
+         effect fires zero times, meaning metering is completely dead, not
+         merely unreliable. Every turn boundary is currently governed by the
+         4-second autoSubmit timer with no voice-activity gating whatsoever.
+         The STT hallucination guard (MIN_STT_SPEECH_MS=300ms) is also
+         bypassed because meteringEverReceivedRef never becomes true.
+
+Goal: when vadMode=blind, a segment submitted by the blind timer must not
+reach Ashley as a real turn unless it passes a content check. Failed checks
+discard silently and reopen the mic — no response, no "you went quiet."
+
+All three options add a `isBlindCapture` flag to submitSegment's STT
+callback so that blind-path submissions are distinguishable in the log.
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+OPTION A — TRANSCRIPT FILTER ONLY
+Simplest. Runs after STT returns. One new function, one new call site.
+────────────────────────────────────────────────────────────────────────────────
+
+HOW IT WORKS:
+After the Deepgram round-trip, before sending speech_final, check the
+transcript against three gates (in order):
+
+  Gate 1 — Empty: if transcript.trim() === "" → discard.
+  Gate 2 — Word count: if wordCount < 2 → discard.
+    (Blocks single-word hallucinations: "you", "bye", "thanks", "hmm".)
+  Gate 3 — Hallucination blocklist: if transcript matches any known Deepgram
+    silent-audio hallucination phrase → discard.
+    Known phrases (confirmed from public Deepgram reports and live testing):
+      "Thank you.", "Thanks for watching.", "you", "Thanks.",
+      "Bye.", "See you.", "I'll see you next time.", "Bye-bye."
+    Match is case-insensitive, exact or near-exact after trim().
+
+On discard: addLog(`blind-capture discarded: "<transcript>"`), reopen mic.
+On pass: proceed to speech_final exactly as now.
+
+WHAT IT CHANGES:
+  artifacts/mobile/lib/useVoiceCall.ts:
+  - isBlindCaptureRef (boolean, reset in openMic, set true when
+    autoSubmit-initial or autoSubmit-sound-reset fires)
+  - isBlindTranscriptOk(transcript) helper function (pure, ~15 lines)
+  - submitSegment: if isBlindCaptureRef, run filter before sending speech_final
+
+TRADEOFFS:
+  PRO: simplest change, narrowest diff. Covers all three hallucination classes
+       with one pass. No STT calls wasted (call is already made anyway).
+  CON: does not save the Deepgram round-trip — blind audio is still sent to
+       STT even if it's pure silence. Deepgram charges per transcription minute;
+       at 4 seconds per blind cycle this adds up if the call is long or quiet.
+  CON: blocklist requires maintenance — new Deepgram hallucinations not on the
+       list will still pass through. List is not exhaustive.
+
+────────────────────────────────────────────────────────────────────────────────
+OPTION B — AUDIO BLOB SIZE PRE-CHECK (before STT)
+Saves the Deepgram call. Catches near-silence before it is transcribed.
+────────────────────────────────────────────────────────────────────────────────
+
+HOW IT WORKS:
+After recorder.stop() returns the audio blob, before POSTing to /transcribe,
+check the blob's byte length:
+
+  If blob.size < SIZE_THRESHOLD_BYTES → discard immediately, reopen mic.
+
+Rationale: a 4-second recording with no speech compresses very small in the
+format expo-audio produces. A recording with actual speech is meaningfully
+larger. The threshold needs calibration against a real device recording — a
+starting value of 8000 bytes (roughly 2 KB/s for near-silence) is a
+reasonable first estimate but must be confirmed with a real silent recording.
+
+On discard: addLog(`blind-capture discarded size=${blob.size}<threshold`),
+            reopen mic. No STT call made.
+On pass: proceed to STT as now (no transcript filter applied).
+
+WHAT IT CHANGES:
+  artifacts/mobile/lib/useVoiceCall.ts:
+  - isBlindCaptureRef (same as Option A)
+  - SIZE_THRESHOLD_BYTES constant (top of file, needs calibration)
+  - submitSegment: if isBlindCapture, check blob.size before fetch
+
+TRADEOFFS:
+  PRO: eliminates the Deepgram round-trip for near-silent blind captures.
+       Responds immediately rather than waiting 200-500ms for STT.
+  PRO: works even for hallucination phrases on genuinely silent audio.
+  CON: does not handle the case where the user speaks quietly but the blob
+       is above the size threshold yet produces a short/hallucinated transcript.
+       A user who says "um" and stops may pass the size gate and still get a
+       one-word transcript through.
+  CON: SIZE_THRESHOLD_BYTES requires calibration — wrong value either blocks
+       real speech (too high) or lets silence through (too low). Cannot be
+       confirmed without a real device recording measurement. Risk of a bad
+       threshold value shipping before calibration.
+
+────────────────────────────────────────────────────────────────────────────────
+OPTION C — BOTH: SIZE PRE-CHECK + TRANSCRIPT FILTER (recommended)
+Two-stage defence. Catches silent audio before STT; catches hallucinations
+from near-silent audio after STT.
+────────────────────────────────────────────────────────────────────────────────
+
+HOW IT WORKS:
+Stage 1 (pre-STT, same as Option B):
+  If blob.size < SIZE_THRESHOLD_BYTES → discard, reopen mic. No STT call.
+
+Stage 2 (post-STT, same as Option A — only reached if Stage 1 passes):
+  Run Gates 1, 2, 3 on the transcript. Discard and reopen on failure.
+
+This means:
+  - Genuinely silent audio (4s timer, no speech): caught at Stage 1, no STT.
+  - Near-silent audio that passes Stage 1 but produces a hallucination
+    from Deepgram: caught at Stage 2, no turn.
+  - Real short user speech that passes both: treated as a turn normally.
+
+WHAT IT CHANGES:
+  Same as Option A + Option B combined. isBlindCaptureRef, the size check,
+  and isBlindTranscriptOk — all in submitSegment in useVoiceCall.ts.
+  One new constant (SIZE_THRESHOLD_BYTES) at the top of the file.
+  One new helper function (isBlindTranscriptOk) near submitSegment.
+
+TRADEOFFS:
+  PRO: closes both failure modes — wasted STT calls AND hallucination turns.
+  PRO: the transcript filter provides a safety net if the size threshold is
+       miscalibrated (Stage 2 catches what Stage 1 misses).
+  CON: SIZE_THRESHOLD_BYTES still needs calibration before it can be tuned;
+       ships with a conservative default (low threshold, catches only
+       truly-silent audio) and can be tightened once a real silent recording
+       is measured.
+  CON: slightly larger diff than A or B alone. Still all in one file,
+       still a small change in absolute terms (~40 lines).
+  NOTE: both stages only activate when vadMode === "blind" — on VAD-capable
+        devices (mode=vad) neither stage runs and behaviour is unchanged.
+
+================================================================================
+RECOMMENDATION
+================================================================================
+
+Option C. The size pre-check and the transcript filter address different
+failure modes — one without the other leaves a real gap. The calibration
+concern on SIZE_THRESHOLD_BYTES is real but manageable: ship with a
+deliberately conservative value (e.g. 4000 bytes — catches only true silence)
+so it is never accidentally too aggressive, with a comment marking it for
+tightening once a real silent recording is measured. Option A alone would be
+adequate if avoiding any dependency on an unverified threshold is preferred.
+
+Whichever option: the isBlindCaptureRef flag and the per-discard log line
+are shared across all three — they go in regardless.
+
+================================================================================
+AWAITING KANE'S WRITTEN APPROVAL OF ONE OPTION BEFORE ANY CODE IS WRITTEN.
+================================================================================

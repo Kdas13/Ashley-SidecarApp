@@ -509,3 +509,9 @@ id = "XnuH8xdQdj_rlmPSoE7jY"
 uri = "file://VoiceCall_P0_1_CompletionReport_20Jun2026.txt"
 type = "text"
 title = "VoiceCall_P0_1_CompletionReport_20Jun2026.txt"
+
+[[outputs]]
+id = "GVcozeWR7Mm9A0263Ag7r"
+uri = "file://VoiceCall_P0_2_Options_20Jun2026.txt"
+type = "text"
+title = "VoiceCall_P0_2_Options_20Jun2026.txt"
