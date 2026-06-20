@@ -1,0 +1,74 @@
+================================================================================
+WREN — NEW FINDING: INTERRUPT LOOP, NO PROGRESS, POST FINDING-2-FIX TESTING
+NO CHANGES. NO COMMITS. NO BUILDS. PASTE CODE ONLY.
+Date: 20 June 2026
+================================================================================
+
+CONTEXT: Live test of the Finding 2 fix. Two clean turns worked correctly
+(no phantom text, adaptive silence tuning behaving as built). On the THIRD
+turn, while Ashley was speaking, Kane tapped Interrupt repeatedly over ~13
+seconds. The call never progressed and became unresponsive to further taps.
+
+LOG EVIDENCE (every interrupt tap produces an identical three-line burst,
+same millisecond, repeating roughly every 0.2-0.8s for 13 seconds straight):
+
+  07:49:56.98 WS playback_confirmed → sent (response_end + queue empty)
+  07:49:56.98 playNext: drained responseEnd=true srvDone=false phase=speaking
+  07:49:56.98 interrupt: tap
+
+  07:49:57.66 WS playback_confirmed → sent (response_end + queue empty)
+  07:49:57.66 playNext: drained responseEnd=true srvDone=false phase=speaking
+  07:49:57.66 interrupt: tap
+
+  07:50:08.81 WS playback_confirmed → sent (response_end + queue empty)
+  07:50:08.81 playNext: drained responseEnd=true srvDone=false phase=speaking
+  07:50:08.81 interrupt: tap
+
+  07:50:09.02 WS playback_confirmed → sent (response_end + queue empty)
+  07:50:09.02 playNext: drained responseEnd=true srvDone=false phase=speaking
+  07:50:09.02 interrupt: tap
+
+UI never left "Ashley speaking" / never cleared the Interrupt button despite
+many successful-looking taps. Call eventually produced a line resembling
+"call me back when you're ready" without the UI state ever actually moving
+forward, per Kane's live observation.
+
+HYPOTHESIS (confirm or correct against real code, do not assume):
+stopPlayback(), when called from interrupt(), may itself trigger the audio
+player's own onPlaybackStatusUpdate "finished" callback — which would
+explain why playback_confirmed and playNext:drained fire on EVERY interrupt
+tap, as if the player believes it just finished naturally each time, rather
+than being forcibly stopped. If that callback then re-arms something that
+puts the UI back into "speaking" phase, repeated taps would loop
+indefinitely without ever reaching a stable "interrupted, listening" state.
+
+This is a different mechanism from the already-deferred Finding 3 (no
+debounce on the Interrupt button) — though the lack of debounce may be
+amplifying it, since each tap re-triggers the same loop rather than being
+ignored.
+
+WHAT TO PASTE:
+1. The complete, current stopPlayback() function.
+2. The complete audio player status-update listener (onPlaybackStatusUpdate
+   or equivalent) — specifically: does it fire / can it fire as a side
+   effect of stopPlayback() being called, and if so, what does it do when
+   it fires (does it call playNext, send playback_confirmed, etc.)?
+3. The complete interrupt() function as it currently stands (post Finding 2
+   changes) — confirm exact call order: does it call stopPlayback() before
+   or after sending the WS interrupt message, and does anything in that
+   sequence re-enter "speaking" phase?
+4. Whatever sets phase back to "speaking" after an interrupt — trace where
+   that could be coming from given the log shows phase=speaking persisting
+   through every single tap.
+
+QUESTION TO ANSWER IN WORDS (after pasting code, not instead of):
+Does the evidence support the stopPlayback-triggers-its-own-finish-callback
+hypothesis, or is something else producing this loop? Be honest if the
+logs alone can't fully confirm it and more specific logging would be needed.
+
+RULES:
+- Raw code only, full functions. No fix proposal yet.
+- This took 13 seconds to become fully stuck live — treat it as a real,
+  reproducible failure, not a one-off glitch.
+
+— End of request —

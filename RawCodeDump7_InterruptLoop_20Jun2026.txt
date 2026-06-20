@@ -1,0 +1,298 @@
+================================================================================
+ASHLEY PROJECT — DIAGNOSTIC RAW CODE DUMP #7
+Date: 20 June 2026  |  NO CHANGES. NO COMMITS. NO BUILDS.
+Issue: Interrupt loop — repeated taps produce identical three-line burst,
+       phase stays "speaking" indefinitely, call never recovers.
+Commit examined: 5e7e74d0c170f0842b333565a46a9c18e9420ef0
+================================================================================
+
+================================================================================
+1. COMPLETE stopPlayback() (lines 215–237, useVoiceCall.ts)
+================================================================================
+
+  215  const stopPlayback = useCallback((): void => {
+  216    playQueueRef.current = [];              // queue cleared
+  217    playBusyRef.current = false;
+  218    playNextRunningRef.current = false;     // ← RELEASES THE playNext MUTEX
+  219    const p = playerRef.current;
+  220    const u = playerUriRef.current;
+  221    playerRef.current = null;              // ← playerRef nulled BEFORE pause
+  222    playerUriRef.current = null;
+  223    if (p) {
+  224      try { p.pause(); } catch { /* ignore */ }
+  225      try { p.remove(); } catch { /* ignore */ }
+  226    }
+  227    if (u) {
+  228      FileSystem.deleteAsync(u, { idempotent: true }).catch(() => { /* ignore */ });
+  229    }
+  230    // Also stop any in-flight auxiliary clip.
+  231    const ap = auxPlayerRef.current;
+  232    auxPlayerRef.current = null;
+  233    if (ap) {
+  234      try { ap.pause(); } catch { /* ignore */ }
+  235      try { ap.remove(); } catch { /* ignore */ }
+  236    }
+  237  }, []);
+
+KEY FACTS:
+  a) playNextRunningRef (the playNext mutex) is set to false at line 218 —
+     before p.pause() is called.
+  b) playerRef.current is nulled at line 221 — before p.pause() is called.
+  c) p.pause() fires on the local capture `p`, not via playerRef. The listener
+     closure also holds `p` directly. See section 2.
+
+================================================================================
+2. COMPLETE audio player status-update listener (lines 289–307, useVoiceCall.ts)
+   — the didJustFinish callback inside playNext
+================================================================================
+
+  289      // One-shot guard: expo-audio can fire didJustFinish more than once for
+  290      // the same player on Android; the second fire would double-release the
+  291      // mutex and start a second concurrent playNext.
+  292      let trackFinished = false;
+  293      player.addListener("playbackStatusUpdate", (status) => {
+  294        if (status.didJustFinish) {
+  295          if (trackFinished) return;          // one-shot guard
+  296          trackFinished = true;
+  297          addLog("player: finished");
+  298          playBusyRef.current = false;
+  299          playerRef.current = null;           // already null (stopPlayback set this)
+  300          playerUriRef.current = null;
+  301          // Release mutex BEFORE calling playNext so the next call can enter.
+  302          playNextRunningRef.current = false;
+  303          try { player.remove(); } catch { /* ignore */ }
+  304          FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => { /* ignore */ });
+  305          void playNextRef.current();         // ← CALLS playNext
+  306        }
+  307      });
+
+DOES didJustFinish FIRE AS A SIDE EFFECT OF stopPlayback?
+
+The one-shot guard `trackFinished` is a local variable in the listener closure.
+It is NOT touched by stopPlayback(). stopPlayback() only nulls playerRef and
+calls p.pause() + p.remove() on the captured local variable `p`.
+
+On Android with expo-audio, p.pause() MAY dispatch a playbackStatusUpdate event
+with didJustFinish=true before the listener is removed. This is device/version-
+dependent. If it fires:
+
+  1. trackFinished = false → proceeds
+  2. trackFinished = true
+  3. playBusyRef = false, playerRef = null (already null from stopPlayback)
+  4. playNextRunningRef.current = false (already false from stopPlayback, AND
+     already false again because the explicit void playNextRef.current() call
+     in interrupt() ran synchronously and exited — see section 3)
+  5. player.remove() — already removed by stopPlayback? p.remove() in stopPlayback
+     fires first. A second remove() may throw or no-op.
+  6. void playNextRef.current() ← CALLED AGAIN from the callback
+
+If this fires, each interrupt tap can trigger TWO calls to playNextRef.current():
+  a) The explicit `void playNextRef.current()` in interrupt() — synchronous path
+  b) The didJustFinish callback from p.pause() — async, fires later in event loop
+
+================================================================================
+3. COMPLETE interrupt() function (lines 851–861, useVoiceCall.ts)
+================================================================================
+
+  851  const interrupt = useCallback((): void => {
+  852    const ws = wsRef.current;
+  853    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  854    if (phaseRef.current !== "speaking") return;   // ← guard
+  855    addLog("interrupt: tap");
+  856    stopPlayback();            // step 1: clear queue, release mutex, pause+remove player
+  857    // Kick the drain path so playback_confirmed is sent if response_end already
+  858    // arrived — closes the Path C stuck-state if ws.send throws below.
+  859    void playNextRef.current(); // step 2: explicit playNext call
+  860    try { ws.send(JSON.stringify({ type: "interrupt" })); } catch { /* ignore */ }  // step 3
+  861  }, [stopPlayback, addLog]);
+
+CALL ORDER:
+  1. stopPlayback() — synchronous
+  2. void playNextRef.current() — starts synchronously, entire empty-queue
+     path runs without any await, so completes before step 3 executes
+  3. ws.send({ type: "interrupt" }) — synchronous
+
+WHAT playNextRef.current() DOES IN STEP 2:
+
+  playNext() enters (mutex=false after stopPlayback released it).
+  Sets mutex=true.
+  uri = playQueueRef.current.shift()  → undefined (queue was just cleared)
+  Drain branch:
+    phase === "speaking"          → TRUE  (stopPlayback doesn't change phase)
+    ttsServerDoneRef.current      → false (srvDone=false per log)
+    responseEndReceivedRef.current → TRUE (responseEnd=true per log, explained below)
+
+  → Sends playback_confirmed to the server.
+  → Logs "WS playback_confirmed → sent (response_end + queue empty)"
+  Releases mutex, returns.
+
+THIS IS THE DIRECT CAUSE OF THE LOOP (see section 5).
+
+DOES ANYTHING RE-ENTER "speaking" PHASE FROM interrupt()?
+  No. interrupt() itself does not call setPhaseSync("speaking").
+  stopPlayback() does not call setPhaseSync.
+  playNext()'s empty-queue path does not call setPhaseSync.
+  Phase stays "speaking" after interrupt() returns.
+
+================================================================================
+4. WHAT SETS PHASE BACK TO "speaking"
+================================================================================
+
+The ONLY call to setPhaseSync("speaking") in the entire file is at line 288,
+inside playNext() when it dequeues a non-null URI:
+
+  278    playBusyRef.current = true;
+  ...
+  284    const player = createAudioPlayer({ uri });
+  285    playerRef.current = player;
+  286    playerUriRef.current = uri;
+  287    addLog(`player: started q=${playQueueRef.current.length}`);
+  288    setPhaseSync("speaking");   ← THE ONLY SOURCE
+
+For phase to return to "speaking" after interrupt() runs, playNext() must be
+called with a non-empty queue. That requires a URI to be pushed to playQueueRef
+after stopPlayback() cleared it.
+
+SOURCE OF THE RE-QUEUED AUDIO:
+
+Ashley's original speaking turn produced TTS audio in two stages:
+  a) sentence_end messages → flushChunkBuffer() → audio file written → URI pushed
+     to playQueueRef → playNext called
+  b) Any sentence_end that was already in the WS receive buffer when Kane tapped
+     interrupt
+
+The WS receive buffer is a queue of messages the server already sent. When the
+server is mid-TTS and Kane taps interrupt:
+  - The server receives playback_confirmed (sent by interrupt()'s playNext call)
+  - Server calls handlePlaybackConfirmed → sends tts_done → state="listening"
+    (no new LLM turn since pendingUtterance is null in the normal interrupt case)
+  - Server receives interrupt → cancelCurrentTurn (aborts LLM/TTS pipeline) →
+    sends interrupt_ack
+
+BUT — any TTS chunk messages and sentence_end messages that the server sent
+to the WS BEFORE processing the playback_confirmed and interrupt are already
+in the client's WS receive buffer. They arrive and are processed:
+
+  binary chunk → chunkBufRef
+  sentence_end → flushChunkBuffer() → writes file → pushes URI → playNext → setPhaseSync("speaking")
+
+Phase goes back to "speaking". The next tap passes the guard. Loop continues.
+
+================================================================================
+5. WHY responseEnd=true PERSISTS ACROSS ALL TAPS (the enabler)
+================================================================================
+
+responseEndReceivedRef is:
+  SET   at line 681 (WS response_end handler)
+  RESET at line 657 (WS speech_start(main) handler — ONLY reset point)
+
+speech_start(main) is sent by the server at the beginning of each new LLM turn.
+In the interrupt loop, the server does NOT start a new LLM turn — handlePlayback
+Confirmed finds pendingUtterance=null and only sends tts_done + transitions to
+listening. NO new speech_start is sent. Therefore responseEndReceivedRef stays
+true throughout all taps.
+
+Effect: every tap's playNext(empty queue) finds responseEnd=true and sends
+playback_confirmed. Server ignores all but the first (responseComplete=false
+after handlePlaybackConfirmed clears it), but the client sends them regardless.
+
+================================================================================
+6. COMPLETE LOOP TRACE (one full cycle)
+================================================================================
+
+Precondition: Ashley is speaking. response_end was received (responseEnd=true).
+awaitingPlaybackConfirm=true on server. No pendingUtterance.
+
+TAP N:
+  interrupt() fires (phase=speaking → guard passes)
+  stopPlayback():
+    playQueueRef = []
+    playNextRunningRef = false  (mutex released)
+    p.pause() + p.remove()
+  void playNextRef.current() (step 2):
+    queue empty + responseEnd=true + phase=speaking
+    → ws.send(playback_confirmed)   ← SENT
+  ws.send({ type: "interrupt" })    ← SENT
+
+SERVER (receives in order):
+  playback_confirmed:
+    If responseComplete=true → handlePlaybackConfirmed:
+      awaitingPlaybackConfirm=false, responseComplete=false
+      sends tts_done (kind=main, no pendingUtterance → no new LLM)
+      state = "listening"
+    Else (responseComplete=false — all taps after tap 1):
+      → IGNORED ("playback_confirmed received before response_end")
+  interrupt:
+    cancelCurrentTurn (aborts TTS in progress if any)
+    clears awaitingPlaybackConfirm, responseComplete (already false after tap 1)
+    pendingUtterance = null → no drain
+    sends interrupt_ack
+
+CLIENT receives (approximate order, in-flight traffic from server):
+  [binary audio chunks from Ashley's original turn]
+  [sentence_end]
+  tts_done (from tap 1's handlePlaybackConfirmed — only arrives once)
+  interrupt_ack (one per tap)
+
+Processing:
+  sentence_end → flushChunkBuffer → URI pushed → playNext → setPhaseSync("speaking")
+  tts_done → ttsServerDoneRef=true → void playNextRef.current()
+             → if queue non-empty: plays → speaking
+             → if queue empty + srvDone=true: ttsCompleteRef=true, setPhaseSync("listening"), openMic
+  interrupt_ack → ttsCompleteRef=true, stopPlayback, setPhaseSync("listening"), openMic
+
+RACE: sentence_end arrives and plays audio, setting phase="speaking" AGAIN
+before or after interrupt_ack sets it to "listening". If speaking comes last,
+the next tap fires.
+
+p.pause() didJustFinish callback (async, if expo-audio fires it on Android):
+  Also calls void playNextRef.current()
+  If queue non-empty (from sentence_end that arrived): plays → speaking
+  If queue empty: drain path → responseEnd=true → another playback_confirmed
+
+Loop ends when all in-flight TTS audio from the original turn has been drained.
+13 seconds of tapping corresponds to ~13 seconds of in-flight TTS audio being
+drip-fed to the client after each stopPlayback cleared the current chunk.
+Eventually the silence monitor fired the farewell ("call me back when you're
+ready") ending the call.
+
+================================================================================
+7. ANSWER TO THE HYPOTHESIS
+================================================================================
+
+"Does the evidence support the stopPlayback-triggers-its-own-finish-callback
+hypothesis, or is something else producing this loop?"
+
+PARTIALLY CORRECT, but not the primary cause.
+
+The stopPlayback → p.pause() → didJustFinish callback path IS possible on
+Android with expo-audio and CAN send a second playback_confirmed per tap.
+The one-shot `trackFinished` guard prevents double-firing for natural track
+completion, but `trackFinished` is a local closure variable that stopPlayback()
+cannot touch. If p.pause() fires didJustFinish, the callback runs unguarded.
+
+HOWEVER: the PRIMARY cause is the explicit `void playNextRef.current()` call
+at line 859 of interrupt(). This was added intentionally ("Kick the drain path
+so playback_confirmed is sent if response_end already arrived — closes the Path C
+stuck-state if ws.send throws below"). It unconditionally triggers the drain
+path, which unconditionally sends playback_confirmed when responseEnd=true and
+phase=speaking — which is always true when interrupt fires.
+
+The server correctly processes the first playback_confirmed (tap 1). After
+that, responseComplete=false and all subsequent playback_confirmed messages
+are ignored. The loop is NOT caused by repeated server-side LLM starts (those
+don't happen because pendingUtterance is null on a clean interrupt). The loop
+is caused by in-flight TTS audio from the original turn arriving at the client
+after each stopPlayback, being queued, being played, and setting phase back to
+"speaking" — re-enabling the interrupt button.
+
+WHAT LOGS ALONE CANNOT CONFIRM:
+  Whether p.pause() actually fires didJustFinish on Kane's device (device and
+  expo-audio version dependent). Adding "player: finished" log counting per-tap
+  would confirm: if "player: finished" appears more than once per tap burst, the
+  callback is firing. Currently "player: finished" is only logged when
+  didJustFinish fires — if it appears in the loop burst it confirms the hypothesis.
+
+================================================================================
+END OF DUMP — NO CHANGES MADE
+================================================================================
