@@ -55,6 +55,51 @@ const VAD_DELAY_MS = 500;
 // null-metering devices always pass through (they have no other submit path).
 const MIN_STT_SPEECH_MS = 300;
 
+// ── P0-2: blind-mode capture filter ───────────────────────────────────────────
+// When vadMode=blind, every submission comes from the 4-second autoSubmit
+// timer, not real silence detection. Two gates are applied before sending
+// the turn to Ashley:
+//
+//   Stage 1 (pre-STT): discard if estimated audio size is below this
+//   threshold — catches near-silent recordings before wasting a Deepgram
+//   round-trip. 4000 bytes is deliberately conservative (catches only true
+//   silence). Tighten once a real silent-call recording is measured.
+//
+//   Stage 2 (post-STT): discard short or known-hallucination transcripts.
+//   Deepgram produces these on near-silent audio regardless of content.
+//
+// Both gates only activate when vadModeRef==="blind".  VAD-capable devices
+// (mode=vad) are completely unaffected.
+const SIZE_THRESHOLD_BYTES = 4000;
+
+const BLIND_HALLUCINATION_LIST = [
+  "thank you",
+  "thanks for watching",
+  "thanks",
+  "bye",
+  "bye-bye",
+  "see you",
+  "see you next time",
+  "i'll see you next time",
+  "you",
+  "hmm",
+  "um",
+  "uh",
+];
+
+/** Returns true if a transcript from a blind-timer capture looks like real
+ *  user speech rather than a Deepgram hallucination on near-silent audio. */
+function isBlindTranscriptOk(transcript: string): boolean {
+  const t = transcript.trim().toLowerCase().replace(/[.!?,]+$/, "").trim();
+  if (t === "") return false;
+  const words = t.split(/\s+/).filter(Boolean);
+  if (words.length < 2) return false; // single-word hallucinations
+  for (const phrase of BLIND_HALLUCINATION_LIST) {
+    if (t === phrase) return false;
+  }
+  return true;
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type VoiceCallPhase =
@@ -208,6 +253,12 @@ export function useVoiceCall(): {
   // Lets submitSegment distinguish "no speech on a metering device" from
   // "null-metering device that should always pass through".
   const meteringEverReceivedRef = useRef(false);
+
+  // ── P0-2: blind-capture flag ────────────────────────────────────────────────
+  // Reset to false in openMic(); set to true in both autoSubmit timer callbacks
+  // before calling submitSegment. submitSegment reads this to decide whether
+  // to apply the size and transcript gates.
+  const isBlindCaptureRef = useRef(false);
 
   // ── P0-1: VAD capability probe refs ────────────────────────────────────────
   // For the first 2 s after each mic open, count non-null vs null metering
@@ -444,6 +495,24 @@ export function useVoiceCall(): {
       return;
     }
 
+    const isBlind = isBlindCaptureRef.current;
+
+    // ── P0-2 Stage 1: blind-capture size gate ──────────────────────────────
+    // Only runs when vadMode=blind. Estimates audio byte length from the
+    // base64 string (×0.75) and discards near-silent captures before spending
+    // a Deepgram round-trip. On pass, logs the size so calibration data
+    // accumulates from normal use (per Kane's addition to the approved spec).
+    if (isBlind) {
+      const estimatedBytes = Math.floor(audio.audioBase64.length * 0.75);
+      if (estimatedBytes < SIZE_THRESHOLD_BYTES) {
+        addLog(`blind-capture discarded size=${estimatedBytes}<${SIZE_THRESHOLD_BYTES}`);
+        setPhaseSync("listening");
+        void openMicRef.current();
+        return;
+      }
+      addLog(`blind-capture size-pass estimatedBytes=${estimatedBytes}`);
+    }
+
     const apiBase = voiceApiBase();
     const key = process.env.EXPO_PUBLIC_API_KEY ?? "";
     const deviceId = getDeviceIdSync();
@@ -465,6 +534,17 @@ export function useVoiceCall(): {
 
       if (!tx) {
         // Empty transcript — reopen and listen.
+        setPhaseSync("listening");
+        void openMicRef.current();
+        return;
+      }
+
+      // ── P0-2 Stage 2: blind-capture transcript filter ───────────────────
+      // Only runs when vadMode=blind AND the capture passed Stage 1.
+      // Catches short or hallucination transcripts that Deepgram produces
+      // from near-silent audio that was large enough to survive Stage 1.
+      if (isBlind && !isBlindTranscriptOk(tx)) {
+        addLog(`blind-capture discarded transcript: "${tx.slice(0, 60)}"`);
         setPhaseSync("listening");
         void openMicRef.current();
         return;
@@ -538,6 +618,7 @@ export function useVoiceCall(): {
             phaseRef.current === "user_speaking"
           ) {
             vadActiveRef.current = false;
+            isBlindCaptureRef.current = true; // P0-2: blind timer path
             void submitSegmentRef.current();
           }
         }, 4000);
@@ -638,6 +719,7 @@ export function useVoiceCall(): {
       // VOICE_COMMUNICATION mode AGC keeps the noise floor above SILENCE_DB
       // (-45 dBFS) even in genuine silence — see Dump #4 for full diagnosis.
       meteringEverReceivedRef.current = false;
+      isBlindCaptureRef.current = false; // P0-2: reset for each new segment
       vadDelayTimerRef.current = setTimeout(() => {
         vadDelayTimerRef.current = null;
         if (phaseRef.current === "listening") {
@@ -658,6 +740,7 @@ export function useVoiceCall(): {
           phaseRef.current === "user_speaking"
         ) {
           vadActiveRef.current = false;
+          isBlindCaptureRef.current = true; // P0-2: blind timer path
           void submitSegmentRef.current();
         }
       }, 4000);

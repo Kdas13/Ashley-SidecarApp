@@ -1,0 +1,143 @@
+================================================================================
+STANDING v3.1 COMPLETION REPORT
+Item: P0-2 — Blind-Capture Filter (size pre-check + transcript filter)
+Date: 20 June 2026
+Option approved: C (both stages, vadMode=blind only, SIZE_THRESHOLD_BYTES=4000)
+================================================================================
+
+VERDICT: COMMITTED — BEHAVIOUR CHANGE (blind-mode only). No effect on
+VAD-capable devices.
+
+────────────────────────────────────────────────────────────────────────────────
+WHAT CHANGED
+────────────────────────────────────────────────────────────────────────────────
+
+FILE CHANGED: artifacts/mobile/lib/useVoiceCall.ts (one file)
+
+1. MODULE-LEVEL CONSTANTS (after MIN_STT_SPEECH_MS, before Types):
+
+   SIZE_THRESHOLD_BYTES = 4000
+     Conservative starting default. Catches only true silence.
+     Comment explicitly marks it for tightening once a real silent-call
+     recording is measured against actual byte sizes.
+
+   BLIND_HALLUCINATION_LIST (12 phrases)
+     Known Deepgram silent-audio hallucinations: "thank you", "thanks for
+     watching", "thanks", "bye", "bye-bye", "see you", "see you next time",
+     "i'll see you next time", "you", "hmm", "um", "uh".
+
+2. MODULE-LEVEL HELPER FUNCTION: isBlindTranscriptOk(transcript)
+   Pure function, no side effects.
+   Gates (in order):
+     a. Empty string after trim → false
+     b. Fewer than 2 words → false  (catches single-word hallucinations)
+     c. Exact match on BLIND_HALLUCINATION_LIST (case-insensitive,
+        trailing punctuation stripped) → false
+   Anything that passes all three → true (treat as real speech).
+
+3. NEW REF: isBlindCaptureRef (useRef<boolean>, default false)
+   Reset to false in openMic() alongside meteringEverReceivedRef reset.
+   Set to true in both autoSubmit timer callbacks (autoSubmit-initial and
+   autoSubmit-sound-reset) immediately before void submitSegmentRef.current().
+   The silence-gate path never touches it — silence-gate only fires when
+   metering works, so it is never a blind capture.
+
+4. STAGE 1 IN submitSegment (pre-STT, after existing STT hallucination guard):
+   const isBlind = isBlindCaptureRef.current;   ← captured once, stable
+   if (isBlind):
+     estimatedBytes = Math.floor(audio.audioBase64.length × 0.75)
+     if estimatedBytes < SIZE_THRESHOLD_BYTES:
+       addLog("blind-capture discarded size=<N><<threshold>")
+       setPhaseSync("listening"), openMic(), return
+     else:
+       addLog("blind-capture size-pass estimatedBytes=<N>")  ← calibration data
+   (Kane's addition: log on pass as well as discard)
+
+5. STAGE 2 IN submitSegment (post-STT, after empty-transcript early return):
+   if (isBlind && !isBlindTranscriptOk(tx)):
+     addLog("blind-capture discarded transcript: \"<first 60 chars>\"")
+     setPhaseSync("listening"), openMic(), return
+
+────────────────────────────────────────────────────────────────────────────────
+WHAT WAS NOT CHANGED
+────────────────────────────────────────────────────────────────────────────────
+
+- VAD thresholds, autoSubmit timer durations, silence-gate logic: unchanged.
+- STT hallucination guard (meteringEverReceivedRef path): unchanged.
+- Any code path on VAD-capable devices (mode=vad): isBlindCaptureRef is
+  never set to true on those paths. Both stages are dead code for them.
+- Server-side code: nothing changed.
+- P0-1 probe refs and logic: unchanged.
+
+────────────────────────────────────────────────────────────────────────────────
+LOGIC FLOW ON KANE'S DEVICE (mode=blind, confirmed)
+────────────────────────────────────────────────────────────────────────────────
+
+  Every turn:
+    openMic() → isBlindCaptureRef = false
+    4 s timer fires → isBlindCaptureRef = true → submitSegment()
+    submitSegment():
+      Stage 1: estimatedBytes = base64 × 0.75
+        < 4000 → discarded, log "blind-capture discarded size=..."
+        ≥ 4000 → log "blind-capture size-pass estimatedBytes=...", continue
+      POST /chat/transcribe (Deepgram)
+      Stage 2: isBlindTranscriptOk(tx)?
+        false → discarded, log "blind-capture discarded transcript: ..."
+        true  → speech_final sent, Ashley responds
+
+  On discard (either stage): mic reopens immediately, 4 s timer resets,
+  no Ashley response, no "you went quiet" turn.
+
+────────────────────────────────────────────────────────────────────────────────
+CALIBRATION NOTES
+────────────────────────────────────────────────────────────────────────────────
+
+After a real call:
+  Check logs for "blind-capture size-pass estimatedBytes=<N>" lines.
+  These are real speech captures that passed Stage 1.
+  The smallest N seen across multiple turns = the floor for real speech.
+  SIZE_THRESHOLD_BYTES can be raised toward (smallest_N - margin) to
+  save more Deepgram calls without risking blocking real speech.
+
+  Also check for any "blind-capture discarded transcript" lines — if
+  a real intended utterance is being discarded here, the isBlindTranscriptOk
+  word-count threshold (currently 2) may be too aggressive and needs lowering.
+
+────────────────────────────────────────────────────────────────────────────────
+TESTABILITY
+────────────────────────────────────────────────────────────────────────────────
+
+Not fully testable without a live call on the device. Behaviour to verify:
+
+  Test 1 — Silence: Start call, say nothing for 4 s, check audit log.
+    Expected: "blind-capture discarded size=<N><<4000>" OR
+              "blind-capture size-pass estimatedBytes=<N>" then
+              "blind-capture discarded transcript: ..." (if silence passed
+              Stage 1 but Deepgram hallucinated).
+    Not expected: "speech_final" sent to server, Ashley responding.
+
+  Test 2 — Real speech: Say a normal sentence, wait for 4 s timer.
+    Expected: "blind-capture size-pass estimatedBytes=<N>" (Stage 1 passes)
+              then Ashley responds normally (Stage 2 passes).
+    Note: collecting these N values is the calibration data.
+
+  Test 3 — Short hallucination phrase: If Deepgram returns e.g. "you" or
+    "Thank you." from marginal audio → "blind-capture discarded transcript"
+    in log, no Ashley response.
+
+────────────────────────────────────────────────────────────────────────────────
+COMMIT DIFF SCOPE — EXPECTED
+────────────────────────────────────────────────────────────────────────────────
+
+Application files changed: 1 (artifacts/mobile/lib/useVoiceCall.ts)
+Lines added: approximately 70
+Lines removed: 0
+
+Platform files that may also appear in the commit (not application code):
+  .agents/agent_assets_metadata.toml — updated by present_asset tool call
+  Completion report .txt file — self-documentation
+  Any .txt files attached by Kane to this message — saved by platform
+
+================================================================================
+NEXT: Kane diff-checks this commit, then approves or flags before P0-3.
+================================================================================
