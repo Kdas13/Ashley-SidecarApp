@@ -1,0 +1,56 @@
+================================================================================
+WREN — DIAGNOSTIC: ECHO RACE ON INTERRUPT → MIC REOPEN
+NO CHANGES. NO COMMITS. NO BUILDS. PASTE CODE ONLY.
+Date: 20 June 2026
+================================================================================
+
+CONTEXT
+Live-tested tonight on commit 12bfeef2. The interrupt button itself works
+correctly end to end (ack received, mic reopens, Ashley responds sensibly to
+being interrupted) — confirmed working, no issue there.
+
+NEW FINDING: shortly after a successful interrupt, the mic picked up and
+auto-submitted phantom text ("Still there.") that Kane did not say — the same
+pattern as the original phantom-mic bug, but now occurring specifically right
+after an interrupt cycle, not during silence. Sequence from logs:
+
+  [interrupt fires, ack received, mic reopens — works correctly]
+  ...
+  [conversation continues normally for ~20s]
+  ...
+  03:59:16.22 autoSubmit fired phase=listening   ← phantom, Kane did not speak
+  03:59:17.62 WS speech_start(main) — gates reset
+
+HYPOTHESIS (confirm or correct against actual code, don't assume):
+Per the v2 completion report, interrupt() calls stopPlayback() immediately,
+then the interrupt_ack handler reopens the mic (~200ms round-trip measured).
+If there's any gap between the JS-side stopPlayback() call and the physical
+speaker actually going silent — buffered audio still draining, hardware
+latency, etc. — the mic could reopen while a trailing fragment of Ashley's
+own cut-off audio is still physically audible, get picked up as real sound
+(correctly scored as "sound" by VAD, since it genuinely is audio), and get
+auto-submitted as if Kane spoke. This would NOT be caught by Option C's
+fallback-timer fix, since Option C only governs the silence case — this is
+genuine audio, not silence.
+
+WHAT TO PASTE
+1. The full stopPlayback() function — does it await anything, or is sound
+   guaranteed to stop synchronously/immediately when it returns?
+2. Whatever expo-audio API is used to stop/unload the player — does its
+   underlying native call have any known or documented latency between
+   being invoked and audio actually ceasing at the hardware level?
+3. The full openMic() function — is there any existing delay, debounce, or
+   "settle" period before it starts actively listening/recording, or does it
+   start capturing immediately on call?
+4. Confirm: is there currently ANY gap/guard between stopPlayback() finishing
+   and openMic() being invoked in the interrupt_ack handler, or do they fire
+   back-to-back with nothing between them?
+
+QUESTION TO ANSWER IN WORDS (after pasting the code, not instead of):
+Is a short guard delay (e.g. 150–250ms) between stopPlayback() and openMic()
+in the interrupt path a reasonable mitigation, or is there a better way to
+confirm actual hardware silence before listening resumes? Don't propose
+exact code yet — this is diagnosis only, options come next round per
+Commitment 1 Standard.
+
+— End of request —

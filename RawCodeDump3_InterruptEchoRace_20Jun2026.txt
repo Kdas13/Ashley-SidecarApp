@@ -1,0 +1,290 @@
+================================================================================
+ASHLEY PROJECT — DIAGNOSTIC RAW CODE DUMP #3
+Date: 20 June 2026  |  NO CHANGES. NO COMMITS. NO BUILDS.
+Issue: echo race on interrupt → mic reopen (phantom STT after interrupt cycle)
+Commit examined: 12bfeef2e8d10ebd29db8af8cca1adebb7adfc0a (post-Path-C fix)
+================================================================================
+
+================================================================================
+SECTION 1 — stopPlayback() — full function
+================================================================================
+
+File: artifacts/mobile/lib/useVoiceCall.ts, lines 178–200
+
+178    const stopPlayback = useCallback((): void => {
+179      playQueueRef.current = [];
+180      playBusyRef.current = false;
+181      playNextRunningRef.current = false;
+182      const p = playerRef.current;
+183      const u = playerUriRef.current;
+184      playerRef.current = null;
+185      playerUriRef.current = null;
+186      if (p) {
+187        try { p.pause(); } catch { /* ignore */ }
+188        try { p.remove(); } catch { /* ignore */ }
+189      }
+190      if (u) {
+191        FileSystem.deleteAsync(u, { idempotent: true }).catch(() => { /* ignore */ });
+192      }
+193      // Also stop any in-flight auxiliary clip.
+194      const ap = auxPlayerRef.current;
+195      auxPlayerRef.current = null;
+196      if (ap) {
+197        try { ap.pause(); } catch { /* ignore */ }
+198        try { ap.remove(); } catch { /* ignore */ }
+199      }
+200    }, []);
+
+KEY OBSERVATIONS:
+
+1. stopPlayback() is a synchronous void function. Return type (): void.
+   No await, no Promise, no callback.
+
+2. p.pause() and p.remove() are called inside try/catch with no await.
+   expo-audio ~1.1.1's AudioPlayer.pause() and .remove() are synchronous
+   JavaScript methods — they do not return Promises and cannot be awaited.
+   They issue native commands and return immediately at the JS layer.
+
+3. There is no confirmation of silence. stopPlayback() returns as soon as
+   the native calls are dispatched — it has no way of knowing when audio
+   physically ceases at the hardware speaker.
+
+================================================================================
+SECTION 2 — expo-audio pause/remove: what the API guarantees at the native layer
+================================================================================
+
+Package version: "expo-audio": "~1.1.1" (artifacts/mobile/package.json, line 60)
+API used: createAudioPlayer from expo-audio (imported at line 21 of useVoiceCall.ts)
+
+The AudioPlayer object created by createAudioPlayer() exposes .pause() and
+.remove() as synchronous methods. In expo-audio 1.1.x (SDK 54), these call
+through to AVAudioPlayer (iOS) or Android's AudioTrack/MediaPlayer (Android)
+via JSI/bridging. The JS call returns BEFORE the native layer confirms silence.
+
+Android specifics (relevant for Kane's test device):
+  - The call is running in VOICE_COMMUNICATION audio mode (set by voiceInput's
+    ensurePermission/start chain), which uses lower-latency audio buffers than
+    MUSIC mode — typically 20–80ms total pipeline latency on modern Android.
+  - However, at the moment pause() is called, the audio pipeline already has
+    buffered audio in-flight: audio frames that have been decoded and queued to
+    the hardware mixer but not yet pushed to the speaker. These drain before
+    silence is achieved. How much is buffered depends on:
+      a) the AudioPlayer's internal buffer size
+      b) how far into the current MP3 chunk the playback was when pause() fired
+      c) the OS audio focus handoff when the call switches from output to input
+
+  There is no documented guarantee in expo-audio ~1.1.1 that silence at the
+  hardware speaker is achieved within any specific time after .pause() returns.
+
+iOS specifics (not Kane's primary device, noted for completeness):
+  AVAudioPlayer.pause() is similarly synchronous at the ObjC layer. The audio
+  buffer drains within one render cycle (~23ms at 44.1kHz with 1024-frame buffer).
+
+SUMMARY: the API provides no "I am now silent" callback or Promise. Silence
+at the speaker happens some time after pause() returns, with no signal back to JS.
+
+================================================================================
+SECTION 3 — openMic() — full function
+================================================================================
+
+File: artifacts/mobile/lib/useVoiceCall.ts, lines 473–528
+
+473    const openMic = useCallback(async (): Promise<void> => {
+474      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+475      if (phaseRef.current === "ended") return;
+476      if (!ttsCompleteRef.current) {
+477        addLog(`openMic BLOCKED ttsComplete=false srvDone=${ttsServerDoneRef.current}`);
+478        return;
+479      }
+480      if (micOpeningRef.current) {
+481        addLog("openMic BLOCKED mutex");
+482        return;
+483      }
+484      addLog("openMic start");
+485      micOpeningRef.current = true;
+486
+487      // Reset VAD state for new segment.
+488      isUserSpeakingRef.current = false;
+489      lastSpeechAtRef.current = 0;
+490      segmentSpeechMsRef.current = 0;
+491      speechStartAtRef.current = 0;
+492      clearAutoSubmitTimer();
+493      // Apply intent-based threshold if server requested one, then reset.
+494      activeSilenceMsRef.current = nextSilenceThresholdRef.current ?? SILENCE_MS;
+495      nextSilenceThresholdRef.current = null;
+496
+497      const ok = await recorder.ensurePermission();    // ← first await
+498      if (!ok) {
+499        micOpeningRef.current = false;
+500        setError("Microphone permission denied");
+501        return;
+502      }
+503      try {
+504        await recorder.start();                         // ← second await — mic opens here
+505        vadActiveRef.current = true;                   // ← VAD goes live immediately
+506        setPhaseSync("listening");
+507        addLog("openMic OK — recording");
+508        micOpeningRef.current = false;
+509
+510        // Fallback: 4s autoSubmit timer armed immediately.
+511        autoSubmitTimerRef.current = setTimeout(() => {
+512        ...
+513        }, 4000);
+514      } catch (err) { ... }
+515    }, [recorder, setPhaseSync, clearAutoSubmitTimer]);
+
+KEY OBSERVATIONS:
+
+1. There is NO deliberate delay, debounce, or settle window before recording
+   starts. There is no setTimeout(0), no configurable quiet period.
+
+2. vadActiveRef.current = true is set on the first JS statement after
+   recorder.start() awaits. The VAD effect fires on the very next change
+   to recorder.metering — which is typically the first metering update
+   from the native layer after start() resolves (Android: every ~100ms
+   on expo-audio's default update interval).
+
+3. recorder.start() is an async call to the native recorder. On Android it
+   re-arms the VOICE_COMMUNICATION session and begins capturing. The await
+   resolves when the native recorder is ready — this is typically 10–50ms
+   on a modern Android device after the previous player has been paused.
+
+================================================================================
+SECTION 4 — interrupt_ack handler — exact code + what fires between stopPlayback
+             and openMicRef.current()
+================================================================================
+
+File: artifacts/mobile/lib/useVoiceCall.ts, lines 631–636
+
+631        case "interrupt_ack":
+632          ttsCompleteRef.current = true;
+633          stopPlayback();
+634          setPhaseSync("listening");
+635          void openMicRef.current();
+636          break;
+
+And the interrupt() callback that fires stopPlayback() first
+(lines 769–779, current post-Path-C state):
+
+769    const interrupt = useCallback((): void => {
+770      const ws = wsRef.current;
+771      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+772      if (phaseRef.current !== "speaking") return;
+773      addLog("interrupt: tap");
+774      stopPlayback();                           // ← FIRST stopPlayback (T=0)
+775      void playNextRef.current();
+776      try { ws.send(JSON.stringify({ type: "interrupt" })); } catch { /* ignore */ }
+777    }, [stopPlayback, addLog]);
+
+CONFIRMED: there is no gap between stopPlayback() and openMicRef.current() in
+the interrupt_ack handler. Lines 633 and 635 are adjacent synchronous JS
+statements separated only by setPhaseSync("listening") at line 634, which is
+a synchronous React state dispatch (no await). The full sequence from tap to
+VAD-active is:
+
+  T=0ms        user taps Interrupt
+  T=0ms        interrupt() fires: stopPlayback() (first call)
+                 → p.pause() dispatched to native
+                 → p.remove() dispatched to native
+  T=0ms+       interrupt() sends WS { type: "interrupt" }
+  T≈200ms      interrupt_ack arrives (measured WS round-trip)
+  T≈200ms      interrupt_ack handler fires:
+                 ttsCompleteRef = true
+                 stopPlayback() (second call — player already null, no-op)
+                 setPhaseSync("listening")
+                 openMicRef.current() (async, begins executing)
+  T≈200ms+ε    await recorder.ensurePermission() (fast, already granted)
+  T≈210–250ms  await recorder.start() resolves → VAD goes live
+
+HARDWARE SILENCE TIMELINE vs. VAD ACTIVE TIMELINE:
+
+  First p.pause() was called at T=0ms.
+  Android audio buffer: 20–80ms drain time after pause() in VOICE_COMMUNICATION
+  mode (device-dependent; faster with smaller buffers, slower with large ones).
+  So hardware silence is achieved at approximately T=20–80ms.
+
+  VAD goes live at T≈210–250ms.
+
+  On most devices: silence is achieved BEFORE the mic opens. The gap is large
+  enough. This is why the interrupt works correctly most of the time.
+
+  BUT: if the audio was in the middle of a buffered TTS chunk at the moment of
+  tap (not at the boundary between chunks), the remaining buffer content —
+  which may be 80–200ms of speech audio — continues playing until the OS
+  drains it. With an 80ms buffer and a 200ms WS round-trip, the hardware may
+  still be playing the tail of a TTS chunk when VAD goes live.
+
+================================================================================
+SECTION 5 — ANSWER TO THE QUESTION
+================================================================================
+
+Q: Is a 150–250ms guard delay between stopPlayback() and openMic() in the
+   interrupt path a reasonable mitigation, or is there a better way to
+   confirm actual hardware silence before listening resumes?
+
+DIRECT ANSWER:
+
+150–250ms is a reasonable approximation but it does not CONFIRM hardware
+silence — it estimates it. Whether it's sufficient depends on the audio
+buffer size at the moment of interrupt, which is not visible from JS.
+
+On Kane's device with AirPods, the audio path is:
+  phone → Bluetooth A2DP → AirPods speaker
+Bluetooth A2DP adds its own pipeline latency on top of the Android audio
+buffer: typically 100–200ms additional. This means the tail of a TTS chunk
+may still be audible in the room up to 300–400ms after pause() is called —
+above the upper end of the proposed 250ms guard.
+
+Three confirmation approaches, in order of accuracy:
+
+1. TIME DELAY (proposed): sleep 150–250ms before openMic(). Heuristic. Fast
+   to implement. Does not confirm silence — may be insufficient on Bluetooth
+   or large-buffer devices.
+
+2. VAD-GATE WITH RECORDER RUNNING: start the recorder immediately but hold
+   vadActiveRef.current = false for a brief window (e.g., 200ms or until
+   N consecutive near-silence metering readings). This uses the recorder's
+   own metering to confirm the hardware is seeing silence before any detection
+   fires. More accurate than a flat delay because it adapts to actual observed
+   levels. Adds modest complexity inside openMic.
+
+3. SEPARATE ECHO-DETECT WINDOW: open the recorder, observe metering for a
+   short fixed window (e.g., 200ms, 2–3 readings), check if levels are below
+   a threshold — if so, enable VAD; if not, start a brief hold and retry.
+   Essentially approach 2 with an explicit state machine.
+
+The underlying constraint: expo-audio ~1.1.1 provides no "silence confirmed"
+callback on pause()/remove(). There is no API call that says "hardware is now
+quiet." Any solution must either wait (time-based) or measure (metering-based).
+
+A metering-based gate (approach 2) is strictly more accurate. Whether the
+added complexity is worth it vs. a well-chosen flat delay is the tradeoff Kane
+should pick on. That is an options question.
+
+REGARDING THE 20-SECOND GAP IN THE LOG:
+
+The log shows the phantom submission ~20s after the interrupt, not immediately
+after. This is consistent with an echo that:
+  - triggered VAD briefly (isUserSpeakingRef=true, timer reset by Option C)
+  - then the room went silent
+  - 4s of silence after the last sound → VAD-based submit fires
+  - OR: no VAD activity, mic opened cleanly, but subsequent silence →
+    4s autoSubmit fallback fires → STT returns "Still there." (hallucination)
+
+"Still there." is a coherent phrase. Deepgram/Whisper STT APIs are documented
+to return common filler phrases for near-silence or low-level background audio.
+This is a known STT hallucination pattern on sub-threshold input. It cannot be
+distinguished from a genuine echo submission at the code level — both paths
+produce the same outcome (non-empty transcript → speech_final sent).
+
+Whether the root cause is:
+  (a) audio echo from the interrupt triggering VAD → genuine submission of echo
+  (b) STT hallucination on near-silence or low background noise → phantom text
+
+...is not determinable from the audit log alone. Both cause the same log entry.
+A guard delay (or VAD gate) addresses (a). A minimum audio energy threshold
+before STT submission addresses (b). These are independent fixes.
+
+================================================================================
+END OF DUMP — NO CHANGES MADE
+================================================================================
