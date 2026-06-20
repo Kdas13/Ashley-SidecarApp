@@ -26,8 +26,17 @@ import { getDeviceIdSync } from "./deviceId";
 // ── VAD config ────────────────────────────────────────────────────────────────
 
 const SILENCE_DB    = -45;    // was -30 — too sensitive, picking up room noise as speech
-const SILENCE_MS    = 3500;   // was 1200 — was cutting Kane off mid-sentence
+const SILENCE_MS    = 3500;   // silence tolerance once significant speech has been detected
 const MIN_SPEECH_MS = 500;    // was 200 — too short, catching non-speech sounds
+
+// ── Adaptive silence threshold ─────────────────────────────────────────────
+// Short segments (sentence openers like "Hey," / "Sorry,") get a longer
+// silence tolerance before submit. A genuine pause after a short fragment
+// is more likely a thinking pause than an end-of-utterance.
+// Long segments (≥ 1000ms detected speech — a sentence is underway) use
+// the standard SILENCE_MS; they don't need extra tolerance.
+const SILENCE_MS_SHORT           = 4500;   // silence tolerance for short-segment openers
+const SILENCE_THRESHOLD_SHORT_MS = 1000;   // segment speech below this → SILENCE_MS_SHORT
 
 // ── VAD open-mic delay (echo guard on mic reopen) ─────────────────────────────
 // After recorder.start(), hold VAD inactive for a flat delay before allowing
@@ -505,10 +514,19 @@ export function useVoiceCall(): {
       }
     } else {
       // Silence.
+      // Adaptive threshold: segments with < 1000ms of detected speech get
+      // SILENCE_MS_SHORT (4500ms) tolerance — they are likely sentence openers
+      // ("Hey,", "Sorry,") where a thinking pause should not trigger submit.
+      // Longer segments use the standard activeSilenceMsRef (SILENCE_MS=3500ms
+      // or a server-pushed override). Math.max keeps server overrides intact.
+      const effectiveSilenceMs =
+        segmentSpeechMsRef.current < SILENCE_THRESHOLD_SHORT_MS
+          ? Math.max(SILENCE_MS_SHORT, activeSilenceMsRef.current)
+          : activeSilenceMsRef.current;
       if (
         isUserSpeakingRef.current &&
         segmentSpeechMsRef.current >= MIN_SPEECH_MS &&
-        now - lastSpeechAtRef.current >= activeSilenceMsRef.current
+        now - lastSpeechAtRef.current >= effectiveSilenceMs
       ) {
         // User has stopped talking long enough — submit.
         isUserSpeakingRef.current = false;

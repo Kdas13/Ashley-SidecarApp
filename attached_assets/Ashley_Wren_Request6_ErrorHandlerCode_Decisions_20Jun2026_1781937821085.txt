@@ -1,0 +1,70 @@
+================================================================================
+WREN — NEXT ROUND: SERVER ERROR-HANDLER CODE + TWO DECISIONS
+Date: 20 June 2026
+Commitment 1 Standard applies to Findings 1 and 3 — options/code only,
+no implementation without written approval.
+================================================================================
+
+--------------------------------------------------------------------------
+FINDING 2 — TOP PRIORITY. NEED THE ACTUAL CODE, NOT JUST LOG ABSENCE.
+--------------------------------------------------------------------------
+Confirmed from server logs: Gemini 429 → error thrown at T+8.3s → Kane
+interrupted at T+9.8s → "awaiting playback_confirmed" gate never cleared →
+next turn ("Sorry.") queued behind it forever → 59s dead air until call_end.
+
+PASTE (raw code, full functions, no elisions):
+1. The complete LLM-stream error handler — wherever
+   "VoiceOrch: LLM stream error [429 RATELIMIT_EXCEEDED]" is logged from.
+   Does it send ANYTHING back to the client on error (response_end, tts_done,
+   an explicit error message, anything)? If it sends nothing, say so plainly.
+2. The complete interrupt handler server-side (where "voice: interrupt
+   handled" is logged). Does it clear/reset the playback gate
+   unconditionally, or only as a side effect of a normal in-progress turn?
+   Trace what state it actually touches when there's no active TTS stream
+   to interrupt (i.e. the turn already died from the LLM error).
+3. Wherever the "awaiting playback_confirmed" state is set and wherever it
+   is normally cleared (on a successful turn) — show both, so we can see
+   exactly which clear-path the error+interrupt combo skips.
+
+DO NOT propose a fix yet. Diagnosis only. Once the actual code is visible,
+the fix is likely small (guarantee every error path also clears the gate /
+sends an end-of-turn signal) but I want it confirmed against real code, not
+assumed.
+
+--------------------------------------------------------------------------
+FINDING 1 — DECISION
+--------------------------------------------------------------------------
+Approved: Option B — scale silence tolerance with segment speech duration.
+  if segmentSpeechMsRef.current < 1000ms → use a longer threshold
+    (e.g. SILENCE_MS_SHORT = 4500ms)
+  else → keep current SILENCE_MS = 3500ms
+Pick the exact short-segment cutoff and SILENCE_MS_SHORT value yourself if
+1000/4500 isn't well-supported by the actual VAD effect structure — explain
+your choice in the report. Implement and include in next completion report.
+
+--------------------------------------------------------------------------
+FINDING 3 — OPTIONS NEEDED (no fix yet)
+--------------------------------------------------------------------------
+Give two or three options for preventing duplicate openMic() activations at
+a shared turn boundary, e.g.:
+  - A turn-boundary token/generation counter: each new turn increments it;
+    any openMic() call carries the token it was scheduled under; if the
+    token is stale by the time it actually runs, it's a no-op.
+  - Identify and consolidate the two call sites so only one path triggers
+    openMic() at the queue-drain/safety-timeout boundary, rather than
+    allowing two independent paths to both reach it.
+  - Add a short cooldown (e.g. ignore a second openMic() call within Nms of
+    a successful one) as a blunter backstop.
+State tradeoffs plainly. This one isn't urgent — duplicate timers are noise
+today, not a confirmed user-facing failure — so it can wait for a calmer
+round if you'd rather batch it with other hardening work.
+
+================================================================================
+RULES
+================================================================================
+- Finding 2: code first, no fix proposal yet.
+- Finding 1: implement as approved.
+- Finding 3: options only, no implementation.
+- Standing v3.1 format on resubmission — verdicts, permalinks, timestamps.
+
+— End of request —

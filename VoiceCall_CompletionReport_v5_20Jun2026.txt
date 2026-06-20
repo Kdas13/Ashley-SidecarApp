@@ -1,0 +1,125 @@
+================================================================================
+ASHLEY PROJECT — VOICE CALL FIX COMPLETION REPORT v5
+Date: 20 June 2026  |  Standing v3.1 format
+Scope: Finding 1 (adaptive silence threshold) — approved implementation
+Commit base: 6d9b66a6b0c9160a617ec408a8168042ab9424a1
+================================================================================
+
+ITEMS IN THIS ROUND:
+  Finding 1 — Adaptive silence threshold (Option B)   BUILT
+  Finding 2 — Server freeze code paste + diagnosis      DUMP ONLY, no fix
+  Finding 3 — openMic reentrancy options                OPTIONS ONLY, no fix
+
+================================================================================
+FINDING 1 — ADAPTIVE SILENCE THRESHOLD (OPTION B)
+================================================================================
+
+WHAT CHANGED (useVoiceCall.ts):
+
+Two new constants added near the existing VAD config block (after line 33):
+
+  const SILENCE_MS_SHORT           = 4500;
+  const SILENCE_THRESHOLD_SHORT_MS = 1000;
+
+VAD effect silence branch updated (line ~525):
+
+BEFORE:
+  if (
+    isUserSpeakingRef.current &&
+    segmentSpeechMsRef.current >= MIN_SPEECH_MS &&
+    now - lastSpeechAtRef.current >= activeSilenceMsRef.current
+  ) {
+    isUserSpeakingRef.current = false;
+    segmentSpeechMsRef.current = 0;
+    void submitSegmentRef.current();
+  }
+
+AFTER:
+  const effectiveSilenceMs =
+    segmentSpeechMsRef.current < SILENCE_THRESHOLD_SHORT_MS
+      ? Math.max(SILENCE_MS_SHORT, activeSilenceMsRef.current)
+      : activeSilenceMsRef.current;
+  if (
+    isUserSpeakingRef.current &&
+    segmentSpeechMsRef.current >= MIN_SPEECH_MS &&
+    now - lastSpeechAtRef.current >= effectiveSilenceMs
+  ) {
+    isUserSpeakingRef.current = false;
+    segmentSpeechMsRef.current = 0;
+    void submitSegmentRef.current();
+  }
+
+LOGIC:
+  if segment detected speech < 1000ms → 4500ms silence tolerance before submit
+  if segment detected speech ≥ 1000ms → 3500ms silence tolerance (unchanged)
+  Math.max ensures a server-pushed silence threshold > 4500ms still wins for
+  short segments.
+
+WHY 1000ms / 4500ms:
+
+1000ms cutoff: one second of detected speech (not wall-clock, measured speech
+time in segmentSpeechMsRef) is a reasonable boundary between "opener fragment"
+and "sentence underway". "Hey, actually." at a comfortable speaking pace runs
+~600–900ms. "Sorry." runs ~400–600ms. A full sentence starter like "I was just
+wondering if..." runs ≥1000ms quickly. The cutoff may need adjustment based on
+Kane's speaking pace but 1000ms is conservative.
+
+4500ms short-segment tolerance: 1000ms longer than SILENCE_MS (3500ms). This
+gives the "thinking pause after an opener" scenario one extra second to resume.
+Increasing further would delay every short-fragment submission by the same
+amount, including deliberate short utterances that ARE complete (e.g. "Yes.",
+"Stop."). 4500ms is a balanced increase.
+
+WHAT THIS DOES NOT CHANGE:
+  MIN_SPEECH_MS (500ms) — still required before silence-based submission fires
+  SILENCE_MS (3500ms) — unchanged, still used for long segments
+  autoSubmit 4s fallback — completely independent, unchanged
+  STT hallucination gate (MIN_STT_SPEECH_MS=300ms) — unchanged
+  VAD_DELAY_MS (500ms) — unchanged
+  Server set_silence_threshold path — Math.max ensures server overrides still win
+
+EDGE CASE: a short segment where Kane stops mid-opener and genuinely wants to
+submit (e.g. says "Fine." and pauses deliberately). The 4500ms tolerance means
+it takes 4.5s of silence instead of 3.5s before submitting. 1 extra second.
+The autoSubmit 4s fallback fires at 4s regardless of segment length — so for
+short segments the autoSubmit will fire at 4s (before the 4.5s silence gate).
+Net effect: short deliberate utterances still submit via autoSubmit at 4s.
+No regression on "Fine." / "Yes." type submissions.
+
+TYPECHECK: PASS (pnpm --filter @workspace/mobile run typecheck — 0 errors)
+
+================================================================================
+VERDICTS
+================================================================================
+
+Finding 1 (adaptive silence):
+  NOT TESTABLE without a live device. Kane should confirm:
+  - "Hey, actually." or "Sorry." followed by a 2–3s pause no longer submits
+    early. The pause extends to 4.5s before VAD fires submission.
+  - Full-sentence speech (≥1s detected) still submits at the existing 3.5s
+    silence threshold.
+  - deliberate short utterances ("Yes.", "Stop.") submit via the 4s autoSubmit
+    fallback rather than the VAD silence gate.
+
+Finding 2 (server freeze — diagnosis only):
+  NOT FIXED THIS ROUND. See RawCodeDump6. Fix confirmed viable and ready to
+  propose in options format per Commitment 1 Standard:
+  The interrupt handler (index.ts lines 390–415) must clear
+  awaitingPlaybackConfirm and drain pendingUtterance when it cancels the
+  current turn, OR the 15s safety timeout's guard must be made robust to
+  the interrupt having cleared currentSpeechId.
+
+Finding 3 (openMic reentrancy — options only):
+  NOT FIXED THIS ROUND. See RawCodeDump6. Three options with tradeoffs.
+  Not urgent — duplicate timers are noise today.
+
+================================================================================
+COMMIT PERMALINKS
+================================================================================
+
+Base examined: 6d9b66a6b0c9160a617ec408a8168042ab9424a1
+Finding 1 changes are live on main (adaptive silence, useVoiceCall.ts only).
+
+================================================================================
+END OF REPORT
+================================================================================

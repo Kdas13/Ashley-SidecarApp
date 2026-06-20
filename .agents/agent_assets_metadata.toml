@@ -449,3 +449,15 @@ id = "qUTJBhK_lUcTaVASzpQwC"
 uri = "file://RawCodeDump5_ThreeFindings_20Jun2026.txt"
 type = "text"
 title = "RawCodeDump5_ThreeFindings_20Jun2026.txt"
+
+[[outputs]]
+id = "YrkVyqmHr8vf0fH43Y84P"
+uri = "file://RawCodeDump6_Finding2Code_Finding3Options_20Jun2026.txt"
+type = "text"
+title = "RawCodeDump6_Finding2Code_Finding3Options_20Jun2026.txt"
+
+[[outputs]]
+id = "0agFhOp4gF_kBZ7tub-e2"
+uri = "file://VoiceCall_CompletionReport_v5_20Jun2026.txt"
+type = "text"
+title = "VoiceCall_CompletionReport_v5_20Jun2026.txt"

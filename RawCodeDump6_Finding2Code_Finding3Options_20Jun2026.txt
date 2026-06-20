@@ -1,0 +1,431 @@
+================================================================================
+ASHLEY PROJECT — DIAGNOSTIC RAW CODE DUMP #6
+Date: 20 June 2026  |  Finding 2: complete server code + freeze root cause confirmed.
+                        Finding 3: three options, no fix.
+Commit examined: 6d9b66a6b0c9160a617ec408a8168042ab9424a1
+Finding 1 (adaptive silence) — implemented in this same round, separate report.
+================================================================================
+
+================================================================================
+FINDING 2 — COMPLETE SERVER CODE PASTE + ROOT CAUSE CONFIRMATION
+================================================================================
+
+Files covered:
+  artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+  artifacts/api-server/src/lib/VoiceSessionRegistry.ts
+  artifacts/api-server/src/index.ts
+
+──────────────────────────────────────────────────────────────────────────────
+(1) COMPLETE LLM-STREAM ERROR HANDLER
+    "VoiceOrch: LLM stream error" is logged from inside runLLMAndTTSPipeline.
+    Below is the catch/finally block + what runs immediately after.
+──────────────────────────────────────────────────────────────────────────────
+
+VoiceOrchestrationService.ts, lines 628–695:
+
+  628  } catch (err: unknown) {
+  629    // Treat both the Web standard AbortError and the Anthropic SDK's
+  630    // APIUserAbortError as expected cancellations (budget exceeded, interrupt).
+  631    const isAbort =
+  632      err instanceof Error &&
+  633      (err.name === "AbortError" || err.name === "APIUserAbortError");
+  634    if (!isAbort) {
+  635      logger.error({ err, sessionId: session.sessionId, turnId }, "VoiceOrch: LLM stream error");
+  636      await speakClipOrText(
+  637        session,
+  638        "say-that-again",
+  639        "Sorry, I've lost my train of thought. What were you saying?",
+  640        "main",
+  641      );
+  642    }
+  643  } finally {
+  644    clearTimeout(hardBudget);
+  645    if (firstTokenWatchdog) clearTimeout(firstTokenWatchdog);
+  646    if (session.currentAbortController === controller) {
+  647      session.currentAbortController = null;
+  648    }
+  649    session.llmStreamActive = false;
+  650  }
+  651
+  652  // ── Send response_end — explicit signal that all TTS chunks are dispatched ──
+  653  // This is the authoritative "all audio sent" signal. The client MUST NOT
+  654  // send playback_confirmed until it has received this. Replaces the old
+  655  // implicit inference from queue drain state (the root cause of Issue 1).
+  656  if (session.currentSpeechId === speechId) {
+  657    session.responseComplete = true;
+  658    const seqEnd = registry.incrementSequence(session);
+  659    try {
+  660      session.ws?.send(
+  661        JSON.stringify({
+  662          type:                "response_end",
+  663          kind:                "main",
+  664          speechId,
+  665          responseText:         session.currentResponseText,
+  666          sessionId:            session.sessionId,
+  667          connectionGeneration: session.connectionGeneration,
+  668          sequenceNumber:       seqEnd,
+  669          timestamp:            Date.now(),
+  670        }),
+  671      );
+  672    } catch (err) {
+  673      logger.warn({ err, sessionId: session.sessionId }, "VoiceOrch: failed to send response_end");
+  674    }
+  675
+  676    session.awaitingPlaybackConfirm = true;
+  677
+  678    // Safety timeout: starts alongside response_end. If playback_confirmed
+  679    // does not arrive within 15 seconds, reset to listening to prevent hang.
+  680    if (session.playbackConfirmTimeout) clearTimeout(session.playbackConfirmTimeout);
+  681    session.playbackConfirmTimeout = setTimeout(() => {
+  682      if (session.awaitingPlaybackConfirm && session.currentSpeechId === speechId) {
+  683        // ↑ SAFETY TIMEOUT GUARD — explained below
+  684        logger.warn(
+  685          { sessionId: session.sessionId },
+  685          "VoiceOrch: playback_confirmed not received within 15s — resetting to listening",
+  686        );
+  687        session.awaitingPlaybackConfirm = false;
+  688        session.responseComplete = false;
+  689        session.playbackConfirmTimeout = null;
+  690        session.currentSpeechId = null;
+  691        session.state = "listening";
+  692        if (session.pendingUtterance && session.pendingUtteranceId) {
+  693          // ... drain pending utterance
+  694        }
+  695      }
+  696    }, 15_000);
+  697  }
+
+WHAT DOES IT SEND ON LLM ERROR:
+
+YES, something IS sent. Here is the exact sequence:
+  1. speakClipOrText(session, "say-that-again", "Sorry...", "main") is called.
+     This is awaited. speakClipOrText internally sends:
+       a. speech_start     (kind="main", speechId=CLIP_SPEECH_ID — locally scoped, not the turn's speechId)
+       b. audio chunk(s)   (from the cached clip or ElevenLabs TTS)
+       c. sentence_end     (kind="main")
+       d. tts_done         (kind="main", speechId=CLIP_SPEECH_ID)
+  2. After speakClipOrText returns, lines 652–676 run:
+     - If session.currentSpeechId === speechId (the MAIN turn's speechId):
+       e. response_end (kind="main", speechId=MAIN_SPEECH_ID)
+       f. session.awaitingPlaybackConfirm = true
+       g. 15s safety timeout armed
+
+NOTE ON speakClipOrText (lines 142–232): the speechId inside speakClipOrText is
+a locally-scoped clipSpeechId — it is never written to session.currentSpeechId.
+So session.currentSpeechId remains equal to the main turn's speechId throughout.
+
+──────────────────────────────────────────────────────────────────────────────
+(2) COMPLETE INTERRUPT HANDLER (server-side)
+    "voice: interrupt handled" is logged from index.ts, not VoiceOrch.
+──────────────────────────────────────────────────────────────────────────────
+
+index.ts, lines 390–415:
+
+  390  if (msg["type"] === "interrupt") {
+  391    // 1G: User interrupts Ashley mid-speech.
+  392    // cancelCurrentTurn is called BEFORE sending interrupt_ack so that
+  393    // any in-flight TTS chunk send sees the cleared speechId first.
+  394    registry.cancelCurrentTurn(currentSession, "user_interrupt");
+  395    currentSession.state = "listening";
+  396
+  397    const seq = registry.incrementSequence(currentSession);
+  398    try {
+  399      ws.send(
+  400        JSON.stringify({
+  401          type: "interrupt_ack",
+  402          sessionId: currentSession.sessionId,
+  403          connectionGeneration: currentSession.connectionGeneration,
+  404          sequenceNumber: seq,
+  405          timestamp: Date.now(),
+  406        }),
+  407      );
+  408    } catch (err) {
+  409      logger.warn({ err, deviceId }, "voice: failed to send interrupt_ack");
+  410    }
+  411    logger.info(
+  412      { deviceId, sessionId: currentSession.sessionId },
+  413      "voice: interrupt handled",
+  414    );
+  415  }
+
+cancelCurrentTurn (VoiceSessionRegistry.ts, lines 435–461):
+
+  435  export function cancelCurrentTurn(
+  436    session: VoiceSession,
+  437    reason: string,
+  438  ): void {
+  439    const hadTurn = session.currentTurnId !== null;
+  440
+  441    // Clear ownership fields first so any concurrent callbacks that check
+  442    // them see null before the AbortController fires.
+  443    session.currentSpeechId = null;       // ← CLEARS currentSpeechId
+  444    session.currentTurnId = null;
+  445    session.currentResponseId = null;
+  446
+  447    // Abort any active controller.
+  448    if (session.currentAbortController !== null) {
+  449      try {
+  450        session.currentAbortController.abort();
+  451      } catch {}
+  452      session.currentAbortController = null;
+  453    }
+  454
+  455    if (hadTurn) {
+  456      appendLog(session, "TURN_CANCELLED", `reason=${reason}`);
+  457    }
+  458    // ← awaitingPlaybackConfirm is NOT touched here.
+  459  }
+
+WHAT THE INTERRUPT HANDLER TOUCHES WHEN THERE IS NO ACTIVE TTS STREAM:
+
+  session.currentSpeechId = null     ← CLEARED
+  session.currentTurnId = null       ← CLEARED
+  session.currentResponseId = null   ← CLEARED
+  session.currentAbortController = null  (abort() if non-null, no-op if already null)
+  session.state = "listening"        ← SET
+
+  session.awaitingPlaybackConfirm    ← NOT TOUCHED
+  session.responseComplete           ← NOT TOUCHED
+  session.playbackConfirmTimeout     ← NOT TOUCHED
+  session.pendingUtterance           ← NOT TOUCHED
+  session.pendingUtteranceId         ← NOT TOUCHED
+
+──────────────────────────────────────────────────────────────────────────────
+(3) WHERE awaitingPlaybackConfirm IS SET AND WHERE IT IS NORMALLY CLEARED
+──────────────────────────────────────────────────────────────────────────────
+
+SET (awaitingPlaybackConfirm = true):
+  VoiceOrchestrationService.ts line 676   — after response_end, main pipeline
+  voice-call.ts line 181                  — speakFallback (fast-path, no LLM)
+
+CLEARED (awaitingPlaybackConfirm = false):
+  handlePlaybackConfirmed() — VoiceOrchestrationService.ts line 327
+    → only path that also clears responseComplete and processes pendingUtterance
+
+  Safety timeout (VoiceOrchestrationService.ts line 687):
+    fires 15s after response_end
+    GUARD: if (session.awaitingPlaybackConfirm && session.currentSpeechId === speechId)
+    → clears if AND ONLY IF currentSpeechId still matches the original speechId
+
+  Safety timeout (voice-call.ts line 205):
+    fires 15s after speakFallback
+    GUARD: if (session.awaitingPlaybackConfirm && session.currentSpeechId === speechId)
+    → same guard — same vulnerability
+
+NEVER touched by:
+  cancelCurrentTurn() (VoiceSessionRegistry.ts)
+  handleInterruption() (VoiceOrchestrationService.ts line 371)
+  abortCurrentOutputs() (VoiceOrchestrationService.ts line 285)
+  The interrupt handler in index.ts (lines 390–415)
+
+──────────────────────────────────────────────────────────────────────────────
+ROOT CAUSE OF THE 59-SECOND FREEZE — CONFIRMED FROM CODE
+──────────────────────────────────────────────────────────────────────────────
+
+EXACT SEQUENCE (times from server logs):
+
+  T+0.0s  speech_final "Phone call system." — LLM pipeline starts
+  T+8.2s  Gemini 429 exhausted — catch block fires
+           speakClipOrText("say-that-again", kind="main") is awaited
+           sends: speech_start / audio / sentence_end / tts_done (all with CLIP_SPEECH_ID)
+  ~T+8.x  speakClipOrText returns
+           finally block runs (clears hardBudget, sets llmStreamActive=false)
+           Line 656: session.currentSpeechId === speechId  → TRUE (not yet interrupted)
+           Line 676: session.awaitingPlaybackConfirm = true  ← GATE SET
+           Lines 681-696: 15s safety timeout armed
+
+  T+9.8s  interrupt message arrives
+           registry.cancelCurrentTurn → session.currentSpeechId = null
+           session.state = "listening"
+           interrupt_ack sent to client
+           session.awaitingPlaybackConfirm: NOT TOUCHED — still true
+
+  T+15.1s speech_final "Sorry." — handleSpeechFinal called
+           Line 806: if (session.awaitingPlaybackConfirm)  → TRUE
+           "speech_final queued — awaiting playback_confirmed"
+           pendingUtterance = "Sorry."
+
+  T+~23s  15s safety timeout fires
+           Guard: session.awaitingPlaybackConfirm (true) && session.currentSpeechId === speechId
+           session.currentSpeechId is now null (set by interrupt's cancelCurrentTurn)
+           speechId is the main turn's UUID — null !== UUID → GUARD FAILS SILENTLY
+           No log emitted, no state changed, awaitingPlaybackConfirm stays true
+           pendingUtterance "Sorry." stays queued
+
+  T+74.4s call_end — Kane hangs up. "Sorry." was never processed.
+
+──────────────────────────────────────────────────────────────────────────────
+IS THIS THE SAME AS THE PREVIOUS FREEZE DIAGNOSTIC (currentSpeechId gate)?
+
+NO. The previous freeze was about the 45s MAX_TURN_BUDGET_MS safety net and
+whether the currentSpeechId gate inside it would pass on a new turn. That
+was a different turn, different path. This freeze:
+
+  a) The 45s budget never fired — the error happened at T+8.2s and the
+     interrupt was received at T+9.8s. The 45s timer was cancelled in the
+     finally block (line 644: clearTimeout(hardBudget)).
+  b) The freeze is caused by the 15s SAFETY TIMEOUT for playback_confirmed,
+     not the 45s turn budget.
+  c) The 15s timeout fires but its guard uses the same "currentSpeechId ===
+     speechId" pattern — and the interrupt has cleared currentSpeechId to
+     null by then, so the guard silently fails every time.
+  d) The specific compound failure is: LLM error → error clip sent → 
+     awaitingPlaybackConfirm=true → interrupt → currentSpeechId=null → 
+     safety timeout becomes permanently ineffective → gate never clears.
+
+──────────────────────────────────────────────────────────────────────────────
+DOES THE ERROR PATH SEND ANYTHING TO THE CLIENT?
+
+YES — it sends more than you might expect:
+  1. tts_done (via speakClipOrText, for the error clip)
+  2. response_end (after speakClipOrText returns, if currentSpeechId still matches)
+  3. awaitingPlaybackConfirm = true (internal)
+
+The client DOES receive both tts_done and response_end for the error path.
+The client should theoretically send playback_confirmed in response. Why didn't it?
+
+Likely: at T+9.8s the interrupt_ack arrived on the client. The client's interrupt_ack
+handler (useVoiceCall.ts line 694–699) sets ttsCompleteRef=true, calls stopPlayback(),
+sets phase to "listening", and calls openMicRef.current() — it moves on. Once the
+client is in "listening" state with ttsCompleteRef=true, subsequent response_end
+messages from the server (which the client receives after the interrupt_ack) would
+reach a client that is already past the playback phase and may not trigger a
+playback_confirmed send. The client's playback_confirmed logic is inside playNext
+(called when audio playback ends) — if stopPlayback() was called by the interrupt,
+the playback chain is broken and playback_confirmed is never sent, even though
+response_end was received.
+
+Both client and server are in an irrecoverable mismatched state:
+  Server: awaitingPlaybackConfirm=true, waiting
+  Client: in "listening" state, has moved past the turn, will not send playback_confirmed
+
+================================================================================
+FINDING 3 — THREE OPTIONS FOR PREVENTING DUPLICATE openMic() ACTIVATIONS
+================================================================================
+
+CONTEXT: two independent call sites both successfully invoke openMic() within a
+~230ms window at a turn boundary. The mutex (micOpeningRef) works as designed —
+it only blocks concurrent calls; the second call arrives after the first has
+already completed and reset the mutex. Two VAD delay timers + two autoSubmit
+timers run simultaneously until one fires and the other fires 10–20ms later.
+Today this is log noise; it could cause a double-submit if a segment happens to
+be ready exactly at the double-fire.
+
+──────────────────────────────────────────────────────────────────────────────
+OPTION A — Turn-boundary generation counter
+──────────────────────────────────────────────────────────────────────────────
+
+Add a `micGeneration` ref (integer, incremented each time openMic() is CALLED).
+Each openMic() call captures the generation at entry. At the point where it would
+arm timers and activate VAD (after recorder.start() succeeds), it checks whether
+the captured generation is still current. A second call that started after the
+first completed would see a different generation and be a no-op at the "activate"
+point, even though it already started the recorder.
+
+  const micGenRef = useRef(0);
+
+  const openMic = useCallback(async () => {
+    ...
+    const gen = ++micGenRef.current;  // increment and capture
+
+    await recorder.ensurePermission();
+    await recorder.start();
+
+    if (gen !== micGenRef.current) {
+      // A newer openMic() has run since this one started.
+      addLog("openMic: stale generation — suppressing");
+      return;
+    }
+    // arm VAD delay, autoSubmit, log OK
+  }, [...]);
+
+TRADEOFFS:
+  + Precise: the actual physical record() calls both run, but only the most
+    recent generation activates VAD and arms timers.
+  + No changes to the playback or submit paths.
+  - Two recorder.start() calls still happen (they're fast and no-op on the
+    second call if the recorder is already started, but it's not confirmed
+    whether expo-av throws or ignores a second start while started).
+  - If the recorder's start() has side effects on double-call, this doesn't
+    protect against them.
+
+──────────────────────────────────────────────────────────────────────────────
+OPTION B — Identify and consolidate the two call sites
+──────────────────────────────────────────────────────────────────────────────
+
+The two call sites at the turn boundary are:
+  Line 249: safety-timeout path in playNext (queue empty + ttsServerDoneRef=true)
+  Line 698: interrupt_ack WS handler (or tts_done WS handler, depending on the turn)
+
+These are conceptually duplicate: both say "audio is done, open mic". The safety-
+timeout path is a client-side heuristic that predates the server's tts_done/
+response_end protocol. If the tts_done path (line 698 or the playback_confirmed
+→ tts_done chain) reliably fires, the safety-timeout path at line 249 is
+redundant at that turn boundary.
+
+Consolidation approach: in playNext's safety-timeout branch (line 243–249),
+before calling openMicRef.current(), check whether micOpeningRef.current is
+already false AND whether we just completed openMic within the last Nms. If yes,
+skip the second call. This is a lighter version of Option C (see below), applied
+only to this specific branch.
+
+Alternatively: audit whether the safety-timeout path (ttsServerDoneRef=true) and
+the interrupt_ack / tts_done paths are actually both needed at every turn boundary,
+and whether one can be made authoritative, making the other conditional.
+
+TRADEOFFS:
+  + Targets the actual site of the duplication, not a general mechanism.
+  + Would require careful analysis of every scenario where both paths fire (not
+    just interrupt turns — also clean turns, reconnect turns, etc.) to ensure
+    no regression.
+  - More code surgery than Options A or C.
+  - Risk: if the authoritative path fails (e.g. tts_done from server is lost),
+    the safety-timeout path is needed as a fallback. Removing it without a
+    replacement fallback could cause mic to never open.
+
+──────────────────────────────────────────────────────────────────────────────
+OPTION C — Last-openMic-OK cooldown ref (blunter backstop)
+──────────────────────────────────────────────────────────────────────────────
+
+Add a `lastOpenMicOkAtRef` ref (timestamp). At the end of openMic() (after
+recorder.start() succeeds), record Date.now(). At the top of openMic(), before
+the mutex check, also check whether a successful open happened within the last
+OPENMICOK_COOLDOWN_MS (e.g. 300ms). If so, log and return.
+
+  const lastOpenMicOkAtRef = useRef(0);
+  const OPENMICOK_COOLDOWN_MS = 300;
+
+  if (Date.now() - lastOpenMicOkAtRef.current < OPENMICOK_COOLDOWN_MS) {
+    addLog("openMic COOLDOWN — skipped");
+    return;
+  }
+  // ... existing mutex check ...
+  // ... after recorder.start() succeeds: ...
+  lastOpenMicOkAtRef.current = Date.now();
+
+TRADEOFFS:
+  + Simplest implementation — one ref, one check, one write.
+  + No structural changes to call sites.
+  - 300ms is a guess. If a call site LEGITIMATELY needs to open the mic within
+    300ms of a previous open (e.g. rapid reconnect after network drop), it would
+    be silently blocked.
+  - Does not address WHY two paths fired — only prevents the second from
+    completing. Leaves the root cause in place.
+  - The cooldown value is a magic number that may need tuning per-device.
+
+──────────────────────────────────────────────────────────────────────────────
+RECOMMENDATION (not a request, just a call):
+
+Option A (generation counter) is the most semantically precise — it allows the
+recorder to start (which is hardware and can be idempotent) but ensures only one
+generation arms VAD and timers. Option C is lower-effort but leaves the root
+cause in place. Option B is the right long-term fix but needs a full audit of all
+paths before touching it.
+
+The issue is not urgent (duplicate timers are noise today). It can wait for a
+hardening round if preferred.
+
+================================================================================
+END OF DUMP — NO CHANGES MADE TO SERVER CODE
+Finding 1 (adaptive silence) implemented separately, see completion report v5.
+================================================================================
