@@ -413,3 +413,9 @@ id = "cmrTnIm7BLW77ERVD_Yqp"
 uri = "file://VoiceCall_CompletionReport_19Jun2026.txt"
 type = "text"
 title = "VoiceCall_CompletionReport_19Jun2026.txt"
+
+[[outputs]]
+id = "x-9bKp0MceP1oY1uHHsEF"
+uri = "file://VoiceCall_CompletionReport_v2_19Jun2026.txt"
+type = "text"
+title = "VoiceCall_CompletionReport_v2_19Jun2026.txt"

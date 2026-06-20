@@ -1,0 +1,128 @@
+================================================================================
+COMPLETION REPORT v2 — VOICE CALL FIXES (RESUBMIT)
+Standing Completion Report Template v3.1
+Date: 19 June 2026  |  Commit: 12bfeef2e8d10ebd29db8af8cca1adebb7adfc0a
+================================================================================
+
+TASK
+  Issue 1 — Phantom mic cycling: Option C (reset fallback timer on detected sound)
+  Issue 3 — Barge-in interim: Option B (tap-to-interrupt button)
+  Issue 2 — No code change confirmed
+
+================================================================================
+1. VERDICTS
+================================================================================
+
+Issue 1 — NOT TESTABLE.
+  I cannot run Expo Go. The logic change is correctly implemented and
+  typechecks clean. Live validation requires Kane to test on device: open a
+  call, speak briefly mid-listen, confirm the audit log shows "autoSubmit
+  fired" only after genuine post-sound silence, not cycling every 5s.
+
+Issue 3 — NOT TESTABLE.
+  Same constraint. Requires Kane to test: let Ashley reply, confirm the amber
+  "Interrupt" button appears, tap it, confirm "interrupt: tap" in the audit
+  log and mic reopening within one WS round-trip.
+
+================================================================================
+2. GITHUB PERMALINKS
+================================================================================
+
+Commit hash: 12bfeef2e8d10ebd29db8af8cca1adebb7adfc0a
+
+Note on push status: this commit is on `main` in the Replit workspace and in
+the gitsafe-backup remote, but it has NOT yet been pushed to
+github.com/Kdas13/Ashley-SidecarApp. Kane pushes that remote manually.
+The permalinks below reference the correct commit hash, but they will 404 on
+GitHub until Kane pushes.
+
+  useVoiceCall.ts:
+  https://github.com/Kdas13/Ashley-SidecarApp/blob/12bfeef2e8d10ebd29db8af8cca1adebb7adfc0a/artifacts/mobile/lib/useVoiceCall.ts
+
+  voice-call.tsx:
+  https://github.com/Kdas13/Ashley-SidecarApp/blob/12bfeef2e8d10ebd29db8af8cca1adebb7adfc0a/artifacts/mobile/app/voice-call.tsx
+
+================================================================================
+3. TIMESTAMPS
+================================================================================
+
+All edits in a single session, committed as one checkpoint:
+
+  20:37 UTC  useVoiceCall.ts — VoiceCallActions interface, VAD effect reset,
+               interrupt callback, return value updated
+  20:37 UTC  voice-call.tsx — interrupt destructured, button added, styles added
+  20:38 UTC  pnpm --filter @workspace/mobile run typecheck → 0 errors
+  20:54 UTC  Checkpoint committed: 12bfeef2e8d10ebd29db8af8cca1adebb7adfc0a
+
+================================================================================
+4. DEPLOY STATUS
+================================================================================
+
+Committed: yes — to `main` in the Replit workspace, checkpoint 12bfeef2.
+Pushed to github.com/Kdas13/Ashley-SidecarApp: NO — Kane must push manually.
+Ashley-SidecarApp.replit.app deployment: the Replit hosted deployment reads
+  from the workspace, not GitHub. A `just restart` of the API Server and Expo
+  workflows picks up the changes without a GitHub push. Both workflows were
+  restarted after the commit and are currently stopped (workflow state resets
+  between sessions). Kane needs to restart both before testing in Expo Go.
+
+What Kane needs to do:
+  1. Restart workflows in the Replit UI (or the Shell tab)
+  2. Scan the Expo QR to pick up the mobile changes
+  3. Optional: push to GitHub when ready — the permalink URLs will resolve then
+
+================================================================================
+5. STUCK-STATE RISK IN interrupt() — DIRECT ANSWER
+================================================================================
+
+THE GAP IS REAL.
+
+The interrupt callback is:
+
+  stopPlayback();
+  try { ws.send(JSON.stringify({ type: "interrupt" })); } catch { }
+
+If ws.send() throws while the WS is still nominally open:
+  - stopPlayback() has already run — queue cleared, player removed
+  - interrupt_ack never arrives — the ack handler never calls openMicRef
+
+Whether the mic eventually reopens depends on which of three paths fires:
+
+PATH A — server not yet done streaming (response_end not yet received):
+  New audio chunks arrive, flushChunkBuffer calls playNext, audio resumes.
+  Ashley keeps talking as if nothing happened, call continues normally, mic
+  opens via the normal tts_done lifecycle when the response finishes.
+  NOT stuck. Interrupt is silently lost, UX degrades, mic does open.
+
+PATH B — response_end already received, player fires didJustFinish after remove():
+  playNext drains: queue empty + responseEndReceivedRef=true → sends
+  playback_confirmed → server sends tts_done → ttsCompleteRef=true → openMic.
+  NOT stuck. Whether expo-audio fires didJustFinish after player.remove() is
+  not guaranteed by the spec; in practice on Android it usually does.
+
+PATH C — response_end already received, didJustFinish does NOT fire after remove():
+  playNextRunningRef=false, queue empty, nothing calls playNext again.
+  responseEndReceivedRef=true but playback_confirmed is never sent.
+  Server's 15s playback_confirmed timeout fires → server resets to "listening"
+  but there is no queued utterance and the client mic is still closed.
+  Phase stays "speaking", mic stays closed, no recovery trigger on the client.
+  GENUINELY STUCK until the WS drops (onclose → reconnect or "ended").
+
+PROBABILITY: Path C requires three things to coincide — (1) ws.send throws
+with the WS still open (rare; the OPEN check is done 2 lines above), (2)
+response_end had already arrived (i.e., Kane taps Interrupt as Ashley finishes
+her last sentence, not mid-sentence), (3) expo-audio doesn't fire didJustFinish
+on remove(). Narrow window, but not impossible.
+
+PROPOSED FIX (one line, held pending Kane's word — no code changed yet):
+  After stopPlayback(), call void playNextRef.current() unconditionally.
+  playNext gates on playNextRunningRef (mutex) so it's safe to call redundantly.
+  If the queue is empty and responseEndReceivedRef=true, it sends
+  playback_confirmed immediately, closing the gap in Path C.
+  If response_end hasn't arrived yet, playNext drains to the inter-sentence
+  wait branch and exits cleanly.
+
+Current state: gap documented, one-line fix ready, not yet applied.
+Kane to confirm whether to apply it.
+
+================================================================================

@@ -1,0 +1,34 @@
+================================================================================
+WREN — COMPLETION REPORT INCOMPLETE, RESUBMIT REQUIRED
+Standing Completion Report Template v3.1
+Date: 19 June 2026
+================================================================================
+
+Your "VoiceCall_CompletionReport_19Jun2026" is missing required v3.1 elements.
+Resubmit with the following added — do not redo the work, just complete the
+report:
+
+1. VERDICT: explicit PASS / NOT TESTABLE / ESCALATE for Issue 1 and Issue 3
+   separately. State which one applies and why (e.g. NOT TESTABLE if you
+   haven't run the live test yourself; PASS only if you have).
+
+2. GITHUB PERMALINKS: a permalink for every changed file (useVoiceCall.ts,
+   voice-call.tsx), not line numbers in prose. Confirm commit hash.
+
+3. TIMESTAMPS: sequential timestamps for when each change was made and when
+   typecheck was run.
+
+4. DEPLOY STATUS: "just restart" is not sufficient. State plainly: is this
+   change committed? Checkpointed? Pushed to GitHub? Kane pushes manually —
+   confirm exactly what state the workspace is in so he knows what (if
+   anything) he needs to do.
+
+5. ONE QUESTION TO ANSWER DIRECTLY: in the `interrupt` callback,
+   `stopPlayback()` runs before `ws.send(...)`, which is wrapped in an empty
+   `catch {}`. If that send throws, playback has already stopped locally but
+   the server is never notified — meaning interrupt_ack never arrives, and
+   per the existing ack-handler logic, the mic never reopens. Is this a real
+   stuck-state risk, or is there a recovery path elsewhere that isn't visible
+   in the report? Answer plainly — don't reason it away if it's a genuine gap.
+
+— End of request —
