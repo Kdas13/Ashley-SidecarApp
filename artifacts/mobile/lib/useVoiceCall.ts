@@ -514,7 +514,7 @@ export function useVoiceCall(): {
         clearAutoSubmitTimer();
         autoSubmitTimerRef.current = setTimeout(() => {
           autoSubmitTimerRef.current = null;
-          addLog(`autoSubmit fired phase=${phaseRef.current}`);
+          addLog(`submit: autoSubmit-sound-reset speechMs=${segmentSpeechMsRef.current} phase=${phaseRef.current}`);
           if (
             phaseRef.current === "listening" ||
             phaseRef.current === "user_speaking"
@@ -542,7 +542,9 @@ export function useVoiceCall(): {
       ) {
         // User has stopped talking long enough — submit.
         isUserSpeakingRef.current = false;
+        const speechMs = segmentSpeechMsRef.current;
         segmentSpeechMsRef.current = 0;
+        addLog(`submit: silence-gate speechMs=${speechMs}`);
         void submitSegmentRef.current();
       }
     }
@@ -609,7 +611,7 @@ export function useVoiceCall(): {
       // device), auto-submit after 4 s so the call doesn't hang forever.
       autoSubmitTimerRef.current = setTimeout(() => {
         autoSubmitTimerRef.current = null;
-        addLog(`autoSubmit fired phase=${phaseRef.current}`);
+        addLog(`submit: autoSubmit-initial speechMs=${segmentSpeechMsRef.current} phase=${phaseRef.current}`);
         if (
           phaseRef.current === "listening" ||
           phaseRef.current === "user_speaking"
