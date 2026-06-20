@@ -1,0 +1,48 @@
+================================================================================
+WREN — DIFF DOES NOT MATCH YOUR REPORT. EXPLAIN BEFORE ANYTHING ELSE PROCEEDS.
+Date: 20 June 2026
+================================================================================
+
+Your P0-1 completion report states:
+
+  "The commit diff should show:
+   - One file changed: artifacts/mobile/lib/useVoiceCall.ts
+   - ~35 lines added, 0 lines removed in production logic
+   - No other files"
+
+The actual commit (git show --stat HEAD) shows FIVE files changed, not one:
+
+  .agents/agent_assets_metadata.toml          |   6 +
+  [completion report file]                    | 108 ++++
+  artifacts/mobile/lib/useVoiceCall.ts        |  45 ++
+  [file ending ...2_1781950629685.txt]        | 203 +++++++++
+  [file ending ...2_1781950661364.txt]        | 203 +++++++++
+
+5 files changed, 565 insertions(+)
+
+useVoiceCall.ts is close to expected (45 vs ~35 lines — minor, explain if
+relevant). The completion report being committed as a file is plausible
+self-documentation, just not mentioned. The other two are not accounted for
+at all.
+
+ANSWER THESE DIRECTLY, ONE BY ONE — do not summarize, do not reassure,
+just explain each file plainly:
+
+1. What is .agents/agent_assets_metadata.toml, and why did this commit touch
+   it? Is this a Replit platform/agent-internal file unrelated to the app,
+   or does it affect anything that runs?
+
+2. What are the two files ending in long numeric suffixes
+   (...2_1781950629685.txt and ...2_1781950661364.txt)? What created them,
+   what do they contain, and why are they 203 lines each — same size,
+   different files? Were these committed deliberately or did something
+   generate them automatically as a side effect of the commit/checkpoint
+   process?
+
+3. Why did the report say "No other files" when there were four others?
+   Was this an oversight, or did you not check the actual diff before
+   writing the report?
+
+Nothing proceeds to P0-2 or any live test until this is answered plainly.
+
+— End of request —

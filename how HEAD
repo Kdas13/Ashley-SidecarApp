@@ -1,0 +1,21 @@
+[33mcommit 5b45656ce759fbe2b31b592d57f41359b1181417[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31mgitsafe-backup/main[m[33m, [m[1;31mgitsafe-backup/HEAD[m[33m)[m
+Author: Replit Agent <agent@replit.com>
+Date:   Sat Jun 20 10:21:34 2026 +0000
+
+    Add diagnostic probe to check audio input capability
+    
+    Adds refs and logic to `useVoiceCall.ts` to probe Voice Activity Detection (VAD) capability by counting null vs. non-null metering frames for the first 2 seconds after mic open, logging the result as `VAD_CAPABILITY` for diagnosis.
+    
+    Replit-Commit-Author: Agent
+    Replit-Commit-Session-Id: f74c5b9c-b7b5-498e-b14d-c9e8c47d9e9f
+    Replit-Commit-Checkpoint-Type: full_checkpoint
+    Replit-Commit-Event-Id: 5488eb16-4ee6-4018-a9e6-89cec3c01d91
+    Replit-Commit-Screenshot-Url: https://storage.googleapis.com/screenshot-production-us-central1/3d135146-fd1d-4fba-8cfb-91f0dca36aa2/f74c5b9c-b7b5-498e-b14d-c9e8c47d9e9f/cFTgYXD
+    Replit-Helium-Checkpoint-Created: true
+
+ ...gent_assets_metadata.toml |   6 [32m+[m
+ ...etionReport_20Jun2026.txt | 108 [32m++++[m
+ .../lib/useVoiceCall.ts      |  45 [32m++[m
+ ...n2026-2_1781950629685.txt | 203 [32m+++++++[m
+ ...n2026-2_1781950661364.txt | 203 [32m+++++++[m
+ 5 files changed, 565 insertions(+)
