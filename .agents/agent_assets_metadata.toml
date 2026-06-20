@@ -485,3 +485,9 @@ id = "b-kUJm7YIj1WjDvgjzDNa"
 uri = "file://VoiceCall_Options8_InterruptLoop_20Jun2026.txt"
 type = "text"
 title = "VoiceCall_Options8_InterruptLoop_20Jun2026.txt"
+
+[[outputs]]
+id = "hgg1gpJmY3hOq1CrWCs92"
+uri = "file://VoiceCall_CompletionReport_v7_20Jun2026.txt"
+type = "text"
+title = "VoiceCall_CompletionReport_v7_20Jun2026.txt"

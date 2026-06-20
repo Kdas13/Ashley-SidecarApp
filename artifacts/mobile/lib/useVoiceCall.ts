@@ -191,6 +191,12 @@ export function useVoiceCall(): {
   // Mutex: prevents two concurrent openMic calls from both calling
   // prepareToRecordAsync — the second call would throw "already been prepared".
   const micOpeningRef       = useRef(false);
+  // Turn generation counter. Incremented in interrupt() and speech_start(main).
+  // flushChunkBuffer and openMic capture the gen before their first await and
+  // drop their result if the gen changed by the time the await resolves —
+  // discarding stale audio from an already-interrupted turn and stale openMic
+  // calls from the previous turn transition window.
+  const turnGenRef          = useRef(0);
 
   // ── VAD open-mic delay ref ────────────────────────────────────────────────
   // Handle for the plain 500ms delay timer that holds VAD inactive after
@@ -328,10 +334,16 @@ export function useVoiceCall(): {
     const dir = FileSystem.cacheDirectory;
     if (!dir) return;
     const uri = `${dir}vc-${Date.now()}-${Math.random().toString(36).slice(2)}.mp3`;
+    const capturedGen = turnGenRef.current;
     try {
       await FileSystem.writeAsStringAsync(uri, b64, {
         encoding: FileSystem.EncodingType.Base64,
       });
+      if (turnGenRef.current !== capturedGen) {
+        // Turn was interrupted during the async write — discard stale audio.
+        FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => { /* ignore */ });
+        return;
+      }
       playQueueRef.current.push(uri);
       // Always call playNext — the mutex inside ensures only one runs at a time.
       void playNextRef.current();
@@ -551,6 +563,9 @@ export function useVoiceCall(): {
     }
     addLog("openMic start");
     micOpeningRef.current = true;
+    // Capture gen so stale openMic calls (duplicate tts_done / interrupt_ack
+    // signals from the previous turn) bail out after each await boundary.
+    const capturedGen = turnGenRef.current;
 
     // Reset VAD state for new segment.
     isUserSpeakingRef.current = false;
@@ -563,6 +578,7 @@ export function useVoiceCall(): {
     nextSilenceThresholdRef.current = null;
 
     const ok = await recorder.ensurePermission();
+    if (turnGenRef.current !== capturedGen) { micOpeningRef.current = false; return; }
     if (!ok) {
       micOpeningRef.current = false;
       setError("Microphone permission denied");
@@ -570,6 +586,7 @@ export function useVoiceCall(): {
     }
     try {
       await recorder.start();
+      if (turnGenRef.current !== capturedGen) { micOpeningRef.current = false; return; }
       // ── VAD open-mic delay ────────────────────────────────────────────────
       // Hold VAD inactive for VAD_DELAY_MS (500ms) after the mic opens.
       // This is a known heuristic: it covers the ~300-400ms Bluetooth A2DP
@@ -587,7 +604,6 @@ export function useVoiceCall(): {
       }, VAD_DELAY_MS);
       setPhaseSync("listening");
       addLog("openMic OK — recording (500ms delay)");
-      micOpeningRef.current = false;
 
       // Fallback: if metering-based VAD never fires (metering null on this
       // device), auto-submit after 4 s so the call doesn't hang forever.
@@ -602,6 +618,10 @@ export function useVoiceCall(): {
           void submitSegmentRef.current();
         }
       }, 4000);
+      // Mutex released AFTER all async work including timer setup, so a
+      // second concurrent openMic call cannot enter the try block while
+      // the first is still completing its own setup.
+      micOpeningRef.current = false;
     } catch (err) {
       micOpeningRef.current = false;
       setError(err instanceof Error ? err.message : "Could not open mic");
@@ -656,6 +676,10 @@ export function useVoiceCall(): {
             ttsServerDoneRef.current = false;      // server not done sending
             responseEndReceivedRef.current = false; // server has not yet confirmed response complete
             activeSpeechKindRef.current = "main";
+            // New generation: re-arms flushChunkBuffer and openMic for the
+            // new turn, invalidating any stale in-flight calls from the
+            // previous interrupt window.
+            turnGenRef.current++;
             addLog("WS speech_start(main) — gates reset");
           }
           break;
@@ -854,6 +878,9 @@ export function useVoiceCall(): {
     if (phaseRef.current !== "speaking") return;
     addLog("interrupt: tap");
     stopPlayback();
+    // Invalidate current turn: any flushChunkBuffer or openMic already in
+    // flight will see a stale gen and discard their result.
+    turnGenRef.current++;
     // Kick the drain path so playback_confirmed is sent if response_end already
     // arrived — closes the Path C stuck-state if ws.send throws below.
     void playNextRef.current();

@@ -1,0 +1,164 @@
+================================================================================
+ASHLEY PROJECT — VOICE CALL FIX COMPLETION REPORT v7
+Date: 20 June 2026  |  Standing v3.1 format
+Scope: Option B — unified generation counter
+       Interrupt loop fix + Finding 3 hardening (openMic reentrancy)
+================================================================================
+
+ITEMS IN THIS ROUND:
+  Interrupt loop (in-flight audio re-arms "speaking")   BUILT
+  Finding 3 (openMic mutex released too early)          BUILT
+  (Finding 3 was deferred from earlier rounds; resolved here as part of
+   Option B since the fix sites overlap)
+
+================================================================================
+CHANGE SUMMARY
+================================================================================
+
+FILE: artifacts/mobile/lib/useVoiceCall.ts only. No server changes.
+
+── 1. New ref ──────────────────────────────────────────────────────────────────
+
+  const turnGenRef = useRef(0);
+
+  Added after micOpeningRef. Counter starts at 0. Increments invalidate all
+  async paths (flushChunkBuffer, openMic) that captured the previous value.
+
+── 2. interrupt() — increment after stopPlayback ───────────────────────────────
+
+  stopPlayback();
+  turnGenRef.current++;          ← NEW
+  void playNextRef.current();
+  ws.send({ type: "interrupt" });
+
+  Effect: any flushChunkBuffer or openMic already in flight captures the old
+  gen. The increment happens synchronously in the same JS task as stopPlayback,
+  so the new gen is visible to all async callbacks before any microtask or
+  macrotask fires.
+
+── 3. speech_start(main) handler — increment alongside gate resets ─────────────
+
+  chunkBufRef.current = [];
+  ttsCompleteRef.current = false;
+  ttsServerDoneRef.current = false;
+  responseEndReceivedRef.current = false;
+  activeSpeechKindRef.current = "main";
+  turnGenRef.current++;          ← NEW
+
+  Effect: re-arms flushChunkBuffer and openMic for the new turn. Any openMic
+  call that was legitimately started by interrupt_ack (capturedGen = N+1) is
+  not affected by this increment because:
+    a) openMic completes its awaits (ensurePermission + start) well within the
+       interrupt_ack handler's response window, long before the user speaks and
+       the LLM responds with a new speech_start.
+    b) speech_start only arrives after a full LLM round-trip — typically 1–3s
+       after the mic opens. openMic's awaits complete in <200ms.
+
+── 4. flushChunkBuffer() — gen check after async write ─────────────────────────
+
+  const capturedGen = turnGenRef.current;    ← NEW: capture before await
+  try {
+    await FileSystem.writeAsStringAsync(uri, b64, { ... });
+    if (turnGenRef.current !== capturedGen) { ← NEW: check after await
+      FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+      return;
+    }
+    playQueueRef.current.push(uri);
+    void playNextRef.current();
+  }
+
+  Effect: sentence_end messages from the interrupted turn that arrive after
+  interrupt() set the new gen will complete their file write and then discard
+  the URI rather than pushing to the queue. Phase never goes back to "speaking"
+  from stale audio. The loop is broken.
+
+── 5. openMic() — gen checks at await boundaries + mutex release moved ─────────
+
+  micOpeningRef.current = true;
+  const capturedGen = turnGenRef.current;    ← NEW: capture after mutex set
+
+  const ok = await recorder.ensurePermission();
+  if (turnGenRef.current !== capturedGen) { micOpeningRef.current = false; return; } ← NEW
+
+  try {
+    await recorder.start();
+    if (turnGenRef.current !== capturedGen) { micOpeningRef.current = false; return; } ← NEW
+
+    // ... VAD delay timer, setPhaseSync("listening"), addLog ...
+
+    autoSubmitTimerRef.current = setTimeout(..., 4000);
+    micOpeningRef.current = false;           ← MOVED: was before autoSubmit timer,
+                                               now after — mutex held for full setup
+  }
+
+  Effect (Finding 3): a duplicate openMic call that arrives after the first
+  completes recorder.start() but before autoSubmit timer is set can no longer
+  enter the try block (mutex held). The gen checks provide a second layer for
+  callers arriving from a stale turn window.
+
+================================================================================
+WHAT THIS DOES NOT CHANGE
+================================================================================
+
+  The explicit void playNextRef.current() call in interrupt() still runs and
+  may still send playback_confirmed to the server (if responseEndReceivedRef
+  is true at that moment). This is unchanged and intentional — it closes the
+  Path C stuck-state. The server handles the resulting playback_confirmed
+  correctly (no pending utterance → sends tts_done → transitions to listening).
+  The loop is now broken by the gen check in flushChunkBuffer, not by removing
+  the playback_confirmed send.
+
+================================================================================
+TYPECHECK
+================================================================================
+
+  pnpm --filter @workspace/mobile run typecheck — 0 errors, 0 warnings.
+
+================================================================================
+TEST INSTRUCTION
+================================================================================
+
+Confirm:
+  1. INTERRUPT LOOP CLOSED: While Ashley is speaking, tap Interrupt repeatedly
+     (5–10 taps over ~2–3s). The call should transition to the listening state
+     on the first or second tap. Phase must not stay "speaking" across multiple
+     taps. The audit log should show "turnGen changed — dropping stale audio"
+     (from flushChunkBuffer) rather than repeated "WS playback_confirmed → sent"
+     bursts per tap.
+
+     Wait — the log message in flushChunkBuffer is not a labelled addLog; it is
+     a silent return. So the correct confirmation is absence of:
+       "WS playback_confirmed → sent (response_end + queue empty)"
+     repeating on every tap. One send on the first tap is expected (from the
+     explicit playNextRef call in interrupt()). Subsequent taps should show
+     only "interrupt: tap" with no playback_confirmed, because the gen check
+     in flushChunkBuffer prevents audio from being queued, which prevents phase
+     from returning to "speaking", which blocks subsequent tap guards.
+
+  2. CLEAN TURNS UNAFFECTED: Run 2–3 normal turns end-to-end. Confirm:
+     - Adaptive silence (SILENCE_MS=3500 / SILENCE_MS_SHORT=4500) is unchanged.
+     - STT hallucination gate (MIN_STT_SPEECH_MS=300) is unchanged.
+     - VAD 500ms settle delay fires correctly ("VAD delay: 500ms elapsed — active").
+     - No spurious "openMic BLOCKED" or "openMic BLOCKED mutex" logs on clean
+       turn completions (the gen check should be transparent for clean paths).
+
+     The gen check in openMic ONLY fires if turnGenRef changed between the
+     capturedGen assignment and the await returning. On clean turns:
+       - No interrupt() fires → gen never changes → both checks pass.
+       - speech_start(main) increments gen, but this fires before openMic is
+         called for that turn, so capturedGen is always the post-speech_start
+         value — check passes.
+
+================================================================================
+OUTSTANDING ITEMS
+================================================================================
+
+  Finding 2 follow-up hardening (15s safety timeout guard):
+    The `currentSpeechId === speechId` guard in the server's safety timeout
+    is still fragile if any future path clears currentSpeechId before the
+    timeout fires. Option B (drop the speechId guard, always clear the gate
+    on timeout) recommended as a low-priority hardening pass.
+
+================================================================================
+END OF REPORT
+================================================================================
