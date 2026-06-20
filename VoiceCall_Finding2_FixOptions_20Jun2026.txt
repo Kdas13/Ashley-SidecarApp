@@ -1,0 +1,157 @@
+================================================================================
+ASHLEY PROJECT — FINDING 2 FIX OPTIONS
+Date: 20 June 2026  |  Commitment 1 Standard — options only, no implementation
+Root cause confirmed in RawCodeDump6_Finding2Code_Finding3Options_20Jun2026.txt
+================================================================================
+
+ROOT CAUSE (SUMMARY)
+
+The interrupt handler (index.ts) calls cancelCurrentTurn when the user sends
+an interrupt. cancelCurrentTurn clears session.currentSpeechId (and turn
+ownership fields) but does NOT touch session.awaitingPlaybackConfirm.
+
+The 15s safety timeout that was armed when response_end was sent fires 15
+seconds later, but its guard —
+
+  if (session.awaitingPlaybackConfirm && session.currentSpeechId === speechId)
+
+— fails silently: cancelCurrentTurn set currentSpeechId to null, so
+null !== speechId, the condition is false, and no state is changed.
+awaitingPlaybackConfirm remains true indefinitely. Every subsequent
+speech_final is queued behind it and never processed.
+
+The "Sorry." utterance from the session was queued at T+15.1s and remained
+queued for 59 seconds until Kane hung up. The 15s safety timeout fired at
+approximately T+23s but the guard silently no-oped. The 45s turn budget
+was never involved.
+
+================================================================================
+OPTION A — Fix the interrupt handler: clear the full playback gate on interrupt
+================================================================================
+
+FILE: artifacts/api-server/src/index.ts (the interrupt case, lines 390–415)
+
+After registry.cancelCurrentTurn(currentSession, "user_interrupt"), add
+unconditional playback state reset before sending interrupt_ack:
+
+  registry.cancelCurrentTurn(currentSession, "user_interrupt");
+  currentSession.state = "listening";
+
+  // NEW: clear playback gate so a queued utterance is not stranded.
+  if (currentSession.playbackConfirmTimeout) {
+    clearTimeout(currentSession.playbackConfirmTimeout);
+    currentSession.playbackConfirmTimeout = null;
+  }
+  currentSession.awaitingPlaybackConfirm = false;
+  currentSession.responseComplete = false;
+
+  // NEW: drain any pending utterance immediately (user continued talking).
+  if (currentSession.pendingUtterance && currentSession.pendingUtteranceId) {
+    const u   = currentSession.pendingUtterance;
+    const uid = currentSession.pendingUtteranceId;
+    currentSession.pendingUtterance   = null;
+    currentSession.pendingUtteranceId = null;
+    void VoiceOrchestrationService.handleSpeechFinal(
+      currentSession, u, uid,
+    ).catch((err) =>
+      logger.error({ err, deviceId }, "voice: interrupt drain failed"),
+    );
+  }
+
+  // existing: send interrupt_ack, log "voice: interrupt handled"
+
+TRADEOFFS:
+  + Targeted: ~10 lines in one file (index.ts only)
+  + Semantically correct: interrupt means "reset everything" — this makes the
+    state reset complete rather than partial
+  + Drains pendingUtterance immediately after interrupt_ack: "Sorry." would
+    be processed as soon as the client reopens the mic, not 15s later
+  + Fixes the failure mode for all future LLM errors + interrupt combos,
+    not just the Gemini 429 case
+  - Race: if the user sends interrupt while a new speech_final is mid-flight
+    on another async path, the pendingUtterance drain could start a turn
+    before the client is fully in listening state. Unlikely in practice —
+    the client sends interrupt only while Ashley is playing audio, not
+    while a new turn is actively being processed server-side.
+
+================================================================================
+OPTION B — Fix the safety timeout's guard: drop the currentSpeechId check
+================================================================================
+
+FILES: VoiceOrchestrationService.ts (line ~682), voice-call.ts (line ~200)
+
+Change both safety timeout guards from:
+  if (session.awaitingPlaybackConfirm && session.currentSpeechId === speechId)
+to:
+  if (session.awaitingPlaybackConfirm)
+
+VoiceOrchestrationService.ts (currently):
+  682  if (session.awaitingPlaybackConfirm && session.currentSpeechId === speechId) {
+
+voice-call.ts (currently):
+  200  if (session.awaitingPlaybackConfirm && session.currentSpeechId === speechId) {
+
+TRADEOFFS:
+  + Minimal change: 2 lines across 2 files, no new logic
+  + Self-healing: if the gate gets stuck for any reason, it always resets
+    within 15s of the response_end that set it
+  + The original speechId guard risk (stale timeout acting on a newer turn)
+    is mitigated: each new response_end cancels the old timeout before
+    arming a new one, so the old timeout for the interrupted turn can
+    only fire when awaitingPlaybackConfirm is still from THAT turn
+  - Does NOT drain pendingUtterance — "Sorry." is processed when the
+    timeout fires, meaning 15s of dead air before the call recovers
+    (improvement over forever, but still poor UX)
+  - Does not close the semantic gap: the interrupt handler still leaves
+    partial state behind; this just makes the safety net more robust
+
+================================================================================
+OPTION C — Introduce a playback-gate generation counter
+================================================================================
+
+FILES: VoiceSession type, VoiceSessionRegistry.ts, VoiceOrchestrationService.ts,
+       voice-call.ts
+
+Add playbackGateGeneration: number to VoiceSession (initialised to 0).
+Increment it in two places:
+  a) cancelCurrentTurn (VoiceSessionRegistry.ts) — so any interrupt
+     or turn cancel bumps the generation
+  b) When setting awaitingPlaybackConfirm = true (VoiceOrchestrationService.ts
+     line 676, voice-call.ts line 181)
+
+Each safety timeout captures the generation at arm time:
+  const capturedGen = session.playbackGateGeneration;
+  session.playbackConfirmTimeout = setTimeout(() => {
+    if (
+      session.awaitingPlaybackConfirm &&
+      session.playbackGateGeneration === capturedGen
+    ) { ... reset ... }
+  }, 15_000);
+
+TRADEOFFS:
+  + Most robust: generation survives currentSpeechId being cleared and
+    is immune to any future refactors that touch currentSpeechId
+  + Semantically clean: the counter says "which gate are we waiting on",
+    independent of turn ownership
+  - Most invasive: schema change to VoiceSession, changes in 4 files
+  - Does NOT drain pendingUtterance — same 15s dead air as Option B
+  - Overkill for a single confirmed failure mode if Option A is taken
+
+================================================================================
+RECOMMENDATION
+
+Option A. It fixes the semantic gap (interrupt should be a full state reset),
+drains the pending utterance immediately so the call recovers in under a
+second rather than 15s, and is confined to one file. Options B and C are
+worthwhile belt-and-suspenders hardening after Option A lands — the
+speechId-based safety timeout guard is fragile regardless — but A is the
+primary fix for the user-facing freeze.
+
+Suggested order if approved:
+  1. Option A in this round (fixes the freeze, drains queued utterance)
+  2. Option B in a follow-up hardening pass (makes the safety timeout
+     robust to any other future path that clears currentSpeechId)
+
+================================================================================
+WAITING FOR WRITTEN APPROVAL BEFORE ANY CODE CHANGES
+================================================================================
