@@ -1,0 +1,125 @@
+WREN BRIEF — V1 PRODUCTION AI CLIENT FIX
+Root cause: confirmed (see V1_RootCause_LocalhostProxy_20Jun2026)
+Scope: Anthropic + Gemini clients only. OpenAI client is OUT OF SCOPE — do not
+touch lib/openai.ts unless something in V1 is confirmed to depend on it.
+
+================================================================================
+BACKGROUND (WHY THIS BRIEF EXISTS)
+================================================================================
+
+V1's Anthropic and Gemini clients were wired to AI_INTEGRATIONS_ANTHROPIC_* and
+AI_INTEGRATIONS_GEMINI_* environment variables. Those variables point at
+localhost:1106, a proxy that exists only inside the live Replit editor session.
+In production, every AI call routed through these clients fails silently —
+caught inside the SDK before reaching the request-level logger, so the server
+appeared healthy (scheduler ticking, no error logs) while chat, memory,
+summarisation, voice, and proactive messaging were all dead.
+
+Real ANTHROPIC_API_KEY and GEMINI_API_KEY secrets have now been added to V1's
+Replit Secrets. They are correctly populated but currently read by zero lines
+of code. This brief is the code change that makes them load-bearing.
+
+================================================================================
+JOB 1 — ANTHROPIC CLIENT
+================================================================================
+
+FILE: lib/integrations-anthropic-ai/src/client.ts
+
+CURRENT (the bug):
+
+    import Anthropic from "@anthropic-ai/sdk";
+
+    if (!process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL) {
+      throw new Error("AI_INTEGRATIONS_ANTHROPIC_BASE_URL must be set...");
+    }
+    if (!process.env.AI_INTEGRATIONS_ANTHROPIC_API_KEY) {
+      throw new Error("AI_INTEGRATIONS_ANTHROPIC_API_KEY must be set...");
+    }
+
+    export const anthropic = new Anthropic({
+      apiKey:  process.env.AI_INTEGRATIONS_ANTHROPIC_API_KEY,   // -> localhost:1106
+      baseURL: process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL,  // -> localhost:1106
+    });
+
+REQUIRED CHANGE:
+
+    import Anthropic from "@anthropic-ai/sdk";
+
+    if (!process.env.ANTHROPIC_API_KEY) {
+      throw new Error("ANTHROPIC_API_KEY must be set...");
+    }
+
+    export const anthropic = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+      // baseURL omitted deliberately -- let the SDK use its real default
+      // (https://api.anthropic.com). Do not hardcode a baseURL here.
+    });
+
+DO NOT implement a fallback that tries AI_INTEGRATIONS_* first and falls back
+to ANTHROPIC_API_KEY. A fallback re-creates exactly the kind of silent-failure
+path that hid this bug for as long as it did. Hard swap only.
+
+This file is imported by (no changes needed in these — fix flows through
+automatically once client.ts is corrected):
+  artifacts/api-server/src/lib/textLLM.ts
+  artifacts/api-server/src/routes/chat.ts
+  artifacts/api-server/src/routes/carryover.ts
+  artifacts/api-server/src/lib/maintainerService.ts
+  artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+  artifacts/api-server/src/lib/CallSummarisationService.ts
+
+================================================================================
+JOB 2 — GEMINI CLIENT
+================================================================================
+
+FILE: artifacts/api-server/src/lib/gemini.ts
+
+Apply the identical pattern: replace whatever reads
+AI_INTEGRATIONS_GEMINI_API_KEY / AI_INTEGRATIONS_GEMINI_BASE_URL with
+process.env.GEMINI_API_KEY and the real Google endpoint (SDK default, do not
+hardcode AI_INTEGRATIONS_GEMINI_BASE_URL's value).
+
+Same rule: hard swap, no fallback to the AI_INTEGRATIONS_* path.
+
+================================================================================
+EXPLICITLY OUT OF SCOPE
+================================================================================
+
+- lib/openai.ts / any AI_INTEGRATIONS_OPENAI_* wiring. Leave untouched unless
+  you find a live V1 code path that actually depends on it -- if you find one,
+  STOP and flag it rather than fixing it silently, since that would be outside
+  this brief's stated scope.
+- The standalone secrets ASHLEY_API_KEY, CLERK_*, DEEPGRAM_*, ELEVENLABS_*,
+  FAL_KEY, REPLICATE_*, etc. Not part of this bug, not part of this brief.
+
+================================================================================
+VERIFICATION (STANDARD — DO NOT SKIP)
+================================================================================
+
+After committing:
+  git show --stat HEAD
+
+Confirm the diff touches ONLY:
+  lib/integrations-anthropic-ai/src/client.ts
+  artifacts/api-server/src/lib/gemini.ts
+
+If the diff touches any file outside this list, stop and explain why before
+proceeding -- per standing rule, any commit touching files outside stated
+scope requires explanation before approval.
+
+Submit the Standing Completion Report (v3.1) with GitHub permalinks and raw
+`git show` output as proof, plus a verdict on whether production AI calls now
+succeed. A passing verdict based on code-reading alone, without an actual
+production test call, is not acceptable -- this exact failure mode (looks
+correct on inspection, dead in production) is what caused the original bug.
+
+================================================================================
+POST-FIX REMINDER (NOT WREN'S JOB -- KANE'S)
+================================================================================
+
+Once this lands and production AI calls are live again, ANTHROPIC_API_KEY and
+GEMINI_API_KEY in V1 start incurring real spend. Confirm spend caps are set on
+both the Anthropic Console workspace and the Google AI Studio project before
+calling this closed.
+
+END OF BRIEF

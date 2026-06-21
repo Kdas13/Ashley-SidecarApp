@@ -4,22 +4,17 @@ let cached: GoogleGenAI | null = null;
 
 export function getGemini(): GoogleGenAI {
   if (cached) return cached;
-  if (!process.env.AI_INTEGRATIONS_GEMINI_BASE_URL) {
+  if (!process.env.GEMINI_API_KEY) {
     throw new Error(
-      "AI_INTEGRATIONS_GEMINI_BASE_URL must be set to use the Gemini chat lane (ASHLEY_TEXT_PROVIDER=gemini). Provision the Gemini AI integration.",
-    );
-  }
-  if (!process.env.AI_INTEGRATIONS_GEMINI_API_KEY) {
-    throw new Error(
-      "AI_INTEGRATIONS_GEMINI_API_KEY must be set to use the Gemini chat lane (ASHLEY_TEXT_PROVIDER=gemini). Provision the Gemini AI integration.",
+      "GEMINI_API_KEY must be set to use the Gemini chat lane (ASHLEY_TEXT_PROVIDER=gemini). Add it to Replit Secrets.",
     );
   }
   cached = new GoogleGenAI({
-    apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
-    httpOptions: {
-      apiVersion: "",
-      baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
-    },
+    apiKey: process.env.GEMINI_API_KEY,
+    // httpOptions.baseUrl deliberately omitted — SDK uses Google's real endpoint
+    // by default. Do not point this at AI_INTEGRATIONS_GEMINI_BASE_URL: that
+    // variable resolves to localhost:1106, a proxy that only exists inside the
+    // Replit editor session and is unreachable in production.
   });
   return cached;
 }

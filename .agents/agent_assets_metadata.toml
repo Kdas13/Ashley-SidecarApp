@@ -545,3 +545,9 @@ id = "PcN3eU3qgG0nDhzq1hdoS"
 uri = "file://V1_RootCause_LocalhostProxy_20Jun2026.txt"
 type = "text"
 title = "V1_RootCause_LocalhostProxy_20Jun2026.txt"
+
+[[outputs]]
+id = "Cd4JIs9ws3pcL52EXpiZd"
+uri = "file://V1_AIClientFix_CompletionReport_20Jun2026.txt"
+type = "text"
+title = "V1_AIClientFix_CompletionReport_20Jun2026.txt"

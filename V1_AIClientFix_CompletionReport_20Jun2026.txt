@@ -1,0 +1,150 @@
+================================================================================
+V1 AI CLIENT FIX — STANDING v3.1 COMPLETION REPORT
+Brief: Wren_Brief_V1_AI_Client_Fix
+Date: 20 June 2026
+================================================================================
+
+VERDICT: CODE COMPLETE — typecheck passes — NOT YET PRODUCTION-VERIFIED.
+Per the brief's own rule: a passing verdict based on code-reading alone is not
+acceptable. Production verification requires a live AI call returning a real
+response, which requires a deployment. This report documents the code change;
+the production verdict is PENDING until Kane deploys and tests.
+
+================================================================================
+FILES CHANGED (diff scope check — PASS)
+================================================================================
+
+git diff --name-only HEAD:
+
+  artifacts/api-server/src/lib/gemini.ts
+  lib/integrations-anthropic-ai/src/client.ts
+
+Exactly the two files named in the brief. Nothing else was touched.
+
+================================================================================
+RAW DIFF
+================================================================================
+
+diff --git a/artifacts/api-server/src/lib/gemini.ts b/artifacts/api-server/src/lib/gemini.ts
+index ee9da9f..6a6de91 100644
+--- a/artifacts/api-server/src/lib/gemini.ts
++++ b/artifacts/api-server/src/lib/gemini.ts
+@@ -4,22 +4,17 @@ let cached: GoogleGenAI | null = null;
+
+ export function getGemini(): GoogleGenAI {
+   if (cached) return cached;
+-  if (!process.env.AI_INTEGRATIONS_GEMINI_BASE_URL) {
++  if (!process.env.GEMINI_API_KEY) {
+     throw new Error(
+-      "AI_INTEGRATIONS_GEMINI_BASE_URL must be set to use the Gemini chat lane (ASHLEY_TEXT_PROVIDER=gemini). Provision the Gemini AI integration.",
+-    );
+-  }
+-  if (!process.env.AI_INTEGRATIONS_GEMINI_API_KEY) {
+-    throw new Error(
+-      "AI_INTEGRATIONS_GEMINI_API_KEY must be set to use the Gemini chat lane (ASHLEY_TEXT_PROVIDER=gemini). Provision the Gemini AI integration.",
++      "GEMINI_API_KEY must be set to use the Gemini chat lane (ASHLEY_TEXT_PROVIDER=gemini). Add it to Replit Secrets.",
+     );
+   }
+   cached = new GoogleGenAI({
+-    apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
+-    httpOptions: {
+-      apiVersion: "",
+-      baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL,
+-    },
++    apiKey: process.env.GEMINI_API_KEY,
++    // httpOptions.baseUrl deliberately omitted — SDK uses Google's real endpoint
++    // by default. Do not point this at AI_INTEGRATIONS_GEMINI_BASE_URL: that
++    // variable resolves to localhost:1106, a proxy that only exists inside the
++    // Replit editor session and is unreachable in production.
+   });
+   return cached;
+ }
+
+diff --git a/lib/integrations-anthropic-ai/src/client.ts b/lib/integrations-anthropic-ai/src/client.ts
+index 8de684f..6f39156 100644
+--- a/lib/integrations-anthropic-ai/src/client.ts
++++ b/lib/integrations-anthropic-ai/src/client.ts
+@@ -1,18 +1,15 @@
+ import Anthropic from "@anthropic-ai/sdk";
+
+-if (!process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL) {
++if (!process.env.ANTHROPIC_API_KEY) {
+   throw new Error(
+-    "AI_INTEGRATIONS_ANTHROPIC_BASE_URL must be set. Did you forget to provision the Anthropic AI integration?",
+-  );
+-}
+-
+-if (!process.env.AI_INTEGRATIONS_ANTHROPIC_API_KEY) {
+-  throw new Error(
+-    "AI_INTEGRATIONS_ANTHROPIC_API_KEY must be set. Did you forget to provision the Anthropic AI integration?",
++    "ANTHROPIC_API_KEY must be set. Add it to Replit Secrets.",
+   );
+ }
+
+ export const anthropic = new Anthropic({
+-  apiKey: process.env.AI_INTEGRATIONS_ANTHROPIC_API_KEY,
+-  baseURL: process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL,
++  apiKey: process.env.ANTHROPIC_API_KEY,
++  // baseURL deliberately omitted — SDK uses https://api.anthropic.com by default.
++  // Do not point this at AI_INTEGRATIONS_ANTHROPIC_BASE_URL: that variable
++  // resolves to localhost:1106, a proxy that only exists inside the Replit
++  // editor session and is unreachable in production.
+ });
+
+================================================================================
+WHAT THE CHANGE DOES
+================================================================================
+
+Anthropic client (lib/integrations-anthropic-ai/src/client.ts):
+  - Removed: two startup guards on AI_INTEGRATIONS_ANTHROPIC_BASE_URL and
+    AI_INTEGRATIONS_ANTHROPIC_API_KEY
+  - Removed: apiKey and baseURL from constructor pointing at localhost:1106
+  - Added: single startup guard on ANTHROPIC_API_KEY
+  - Added: apiKey: process.env.ANTHROPIC_API_KEY in constructor
+  - baseURL omitted — SDK default is https://api.anthropic.com
+
+Gemini client (artifacts/api-server/src/lib/gemini.ts):
+  - Removed: two startup guards on AI_INTEGRATIONS_GEMINI_BASE_URL and
+    AI_INTEGRATIONS_GEMINI_API_KEY
+  - Removed: httpOptions.baseUrl pointing at localhost:1106
+  - Added: single startup guard on GEMINI_API_KEY
+  - Added: apiKey: process.env.GEMINI_API_KEY in constructor
+  - httpOptions.baseUrl omitted — SDK default is Google's real endpoint
+
+No fallback to AI_INTEGRATIONS_* paths. Hard swap, as required by brief.
+
+Downstream files that import these clients are unchanged:
+  textLLM.ts, chat.ts, carryover.ts, maintainerService.ts,
+  VoiceOrchestrationService.ts, CallSummarisationService.ts
+
+OpenAI client (lib/openai.ts): NOT TOUCHED — out of scope per brief.
+No V1 code path confirmed to depend on it was found during this change.
+
+================================================================================
+TYPECHECK
+================================================================================
+
+pnpm --filter @workspace/api-server run typecheck: PASS (no errors, no output)
+
+================================================================================
+PRODUCTION VERDICT: PENDING
+================================================================================
+
+The brief explicitly states: "A passing verdict based on code-reading alone,
+without an actual production test call, is not acceptable."
+
+Required to close this item:
+  1. Deploy V1 with this commit in.
+  2. Send a chat message and confirm a real AI response comes back.
+  3. If the startup guard throws (ANTHROPIC_API_KEY or GEMINI_API_KEY not set
+     in V1's production secrets), that will appear as a hard crash on boot
+     rather than a silent failure — which is the correct behaviour per brief.
+
+Kane's pre-deploy checklist (from brief, not Wren's job):
+  - Confirm ANTHROPIC_API_KEY and GEMINI_API_KEY are set in V1 Replit Secrets
+  - Confirm spend caps are set on Anthropic Console and Google AI Studio before
+    calling this closed — real spend begins on first successful AI call.
+
+================================================================================
+END OF REPORT
+================================================================================
