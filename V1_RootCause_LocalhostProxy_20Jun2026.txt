@@ -1,0 +1,111 @@
+================================================================================
+V1 ROOT CAUSE CONFIRMED: localhost:1106 PROXY DEAD IN PRODUCTION
+Date: 20 June 2026
+================================================================================
+
+VERDICT: CONFIRMED. Every AI call in V1 production routes to localhost:1106,
+which does not exist outside the Replit editor session. All chat, memory,
+summarisation, voice, and proactive message calls are dead in production.
+
+================================================================================
+CODE EVIDENCE
+================================================================================
+
+The central Anthropic client lives in one place:
+
+  lib/integrations-anthropic-ai/src/client.ts:
+
+    import Anthropic from "@anthropic-ai/sdk";
+
+    if (!process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL) {
+      throw new Error("AI_INTEGRATIONS_ANTHROPIC_BASE_URL must be set...");
+    }
+    if (!process.env.AI_INTEGRATIONS_ANTHROPIC_API_KEY) {
+      throw new Error("AI_INTEGRATIONS_ANTHROPIC_API_KEY must be set...");
+    }
+
+    export const anthropic = new Anthropic({
+      apiKey:  process.env.AI_INTEGRATIONS_ANTHROPIC_API_KEY,   // → localhost:1106
+      baseURL: process.env.AI_INTEGRATIONS_ANTHROPIC_BASE_URL,  // → localhost:1106
+    });
+
+Every file that talks to Anthropic imports from this package:
+
+  artifacts/api-server/src/lib/textLLM.ts          (chat lane — Anthropic + Gemini)
+  artifacts/api-server/src/routes/chat.ts           (main chat, vision, summariser)
+  artifacts/api-server/src/routes/carryover.ts      (conversation carryover)
+  artifacts/api-server/src/lib/maintainerService.ts (always-Claude path)
+  artifacts/api-server/src/lib/VoiceOrchestrationService.ts (voice call LLM)
+  artifacts/api-server/src/lib/CallSummarisationService.ts  (call summarisation)
+
+The Gemini client (artifacts/api-server/src/lib/gemini.ts) follows the same
+pattern, reading AI_INTEGRATIONS_GEMINI_BASE_URL → localhost:1106.
+
+The OpenAI client (artifacts/api-server/src/lib/openai.ts) follows the same
+pattern, reading AI_INTEGRATIONS_OPENAI_BASE_URL → localhost:1106.
+
+================================================================================
+QUESTION 1 ANSWERED: WHICH PATH IS LOAD-BEARING?
+================================================================================
+
+ALL of them. There is no code path that bypasses the AI_INTEGRATIONS_* vars.
+
+Default production behaviour with ASHLEY_TEXT_PROVIDER=gemini:
+  chat reply  → gemini.ts → AI_INTEGRATIONS_GEMINI_BASE_URL → localhost:1106
+  (on Gemini rate-limit) → textLLM.ts fallback → anthropic → localhost:1106
+  memory distillation → anthropic directly → localhost:1106
+  summarisation → anthropic directly → localhost:1106
+  voice LLM → anthropic directly → localhost:1106
+  proactive messages → anthropic directly → localhost:1106
+
+The standalone ANTHROPIC_API_KEY (_DUMMY_API_KEY_) is set as a Replit secret
+but is read by zero lines of V1's code. It is irrelevant to the failure.
+
+================================================================================
+QUESTION 2 ANSWERED: IS THE FIX "PASTE A REAL KEY INTO AI_INTEGRATIONS_*"?
+================================================================================
+
+NO. Those variables are designed to hold the localhost proxy address, not a
+real Anthropic key. Pasting a real key into AI_INTEGRATIONS_ANTHROPIC_API_KEY
+would still leave baseURL pointing at localhost:1106, so the SDK would still
+connect to the wrong host.
+
+The correct fix (as Kane identified) is to wire production traffic directly
+to Anthropic using its own client constructor:
+
+  new Anthropic({
+    apiKey:  process.env.ANTHROPIC_API_KEY,  // real key, set as a real secret
+    baseURL: "https://api.anthropic.com",    // or omit — SDK default
+  });
+
+V3 is already doing this by design, which is why V3 is not affected by this
+failure mode.
+
+================================================================================
+WHY THE PRODUCTION LOGS SHOWED NOTHING
+================================================================================
+
+The errors from localhost:1106 connection failures (ECONNREFUSED or timeout)
+are caught inside the Anthropic SDK before reaching Pino's request-level
+logger. The startup probe (client.ts module-level throw) would only fire if
+the env var was MISSING entirely — but it's present (just useless), so no
+throw occurs and no startup error is logged. The server starts cleanly,
+the proactive scheduler runs, and individual AI call failures happen inside
+route handlers where Express catches them and either returns a 500 or the
+SDK retries until it times out. Neither produces a top-level Pino log line
+visible in the deployment log stream.
+
+================================================================================
+IMPACT SUMMARY
+================================================================================
+
+  V1 production: ALL AI calls broken since deployment.
+                 Reads, healthcheck, static assets unaffected.
+                 Logs look healthy because only the scheduler runs at idle.
+
+  V3 (api-server / Ashley-Sidecar dev): NOT affected.
+                 Uses its own Anthropic client wired to a real key.
+
+================================================================================
+END OF REPORT
+================================================================================
