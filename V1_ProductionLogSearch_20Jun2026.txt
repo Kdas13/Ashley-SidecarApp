@@ -1,0 +1,81 @@
+================================================================================
+V1 PRODUCTION DEPLOYMENT LOG SEARCH
+Terms: Anthropic | 401 | API key | undefined
+Date: 20 June 2026
+================================================================================
+
+SEARCH RESULT: NONE OF THE TARGET TERMS APPEAR IN THE RETRIEVABLE LOG WINDOW.
+
+================================================================================
+WHAT THE LOGS ACTUALLY CONTAIN
+================================================================================
+
+Two log types, repeating continuously from the earliest available timestamp
+(~1782007007924):
+
+  [warn]  Keepalive ping returned non-2xx status=404
+          url=https://5e7170ff-.../api/healthz
+          → fires every 60 seconds, unbroken
+
+  [info]  Proactive scheduler tick complete
+          attempted=1 sent=0 skipped=1 durationMs=~1000-1900
+          → fires every ~60 seconds, unbroken
+
+No chat route hits. No startup/bootstrap sequence. No error lines.
+No Anthropic, 401, API key, undefined, ECONNREFUSED, or crash anywhere.
+
+================================================================================
+WHAT THAT MEANS
+================================================================================
+
+1. The server IS alive. The proactive scheduler ticking successfully every
+   minute proves the process is running. This is not a crash.
+
+2. No request-level logs are visible. Either no requests hit the server during
+   the retrievable window, or the Replit deployment log capture began partway
+   through the process lifetime and the startup/error events are already gone.
+
+3. The failure Kane reported may have:
+   a) Occurred before the current log retention window (logs pruned)
+   b) Not generated a server-side log line (e.g. AI integration key error
+      thrown during module initialisation before Pino starts, or caught
+      silently in the client layer)
+   c) Been a client-side failure — the mobile app failing to reach the server
+      or the Expo bundle failing to load, neither of which produces API server
+      logs
+
+================================================================================
+STANDING ISSUE: HEALTHZ 404 (PRE-EXISTING, SEPARATE)
+================================================================================
+
+The /api/healthz route DOES exist in code:
+  artifacts/api-server/src/routes/health.ts — router.get("/healthz", ...)
+  artifacts/api-server/src/routes/index.ts  — router.use(healthRouter)
+  artifacts/api-server/src/app.ts           — bypass in apiKey middleware
+
+The keepalive self-ping in index.ts constructs:
+  https://${publicDomain}/api/healthz
+
+In production that request exits the process, goes through the external
+Replit proxy, and comes back in. The proxy may not route that external
+path back to this same process — resulting in a permanent 404 on the
+self-check while external callers on /api/healthz work fine.
+
+This is a pre-existing self-ping misconfiguration, not a sign the route
+is broken to real callers.
+
+================================================================================
+NEXT STEP TO FIND THE ACTUAL ERROR
+================================================================================
+
+If Kane can provide approximately when V1 broke (wall-clock time or symptom
+description), the log search can be narrowed to that timestamp window.
+Alternatively:
+  - Check Expo/client logs on device for the failure message
+  - Check whether the AI integration secrets (AI_INTEGRATIONS_ANTHROPIC_API_KEY,
+    AI_INTEGRATIONS_GEMINI_API_KEY) are present in the production deployment
+    environment — a missing key would fail silently if the startup log is pruned
+
+================================================================================
+END OF REPORT
+================================================================================
