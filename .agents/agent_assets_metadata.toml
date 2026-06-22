@@ -557,3 +557,9 @@ id = "2LQEt00cqYVEkVx_IE1AK"
 uri = "file://VoiceCall_MeteringDiag_20Jun2026.txt"
 type = "text"
 title = "VoiceCall_MeteringDiag_20Jun2026.txt"
+
+[[outputs]]
+id = "Cm8gBCJ1_V1R-7bABtSKH"
+uri = "file://VoiceCall_MeteringFix_Options_22Jun2026.txt"
+type = "text"
+title = "VoiceCall_MeteringFix_Options_22Jun2026.txt"

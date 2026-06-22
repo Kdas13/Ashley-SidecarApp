@@ -1,0 +1,176 @@
+================================================================================
+VOICE CALL — METERING FIX: THREE OPTIONS
+Commitment 1 Standard — no code until Kane approves in writing
+Date: 22 June 2026
+================================================================================
+
+ROOT CAUSE (confirmed from expo-audio 1.1.1 source)
+-----------------------------------------------------
+
+useAudioRecorder(options, statusCallback) wires the callback via:
+
+  recorder.addListener(RECORDING_STATUS_UPDATE, (status) => { ... })
+
+RECORDING_STATUS_UPDATE = "recordingStatusUpdate" — a native event the Android
+layer must emit. In expo-audio 1.1.1 on Android, this event fires only on state
+transitions (start / stop / pause). It is NOT emitted on a timer tick during
+active recording. There is no amplitude polling at the native event level.
+Result: the callback never fires during recording — Case C.
+
+Second finding (would have blocked metering even if Case C were fixed):
+RecordingStatus (the event payload type) has NO metering field at all.
+The cast (status as RecordingStatus & { metering?: number }) always yields
+undefined. The correct type is RecorderState, returned by recorder.getStatus(),
+which declares metering?: number as a first-class typed field.
+
+expo-audio already ships a polling hook for exactly this purpose:
+  useAudioRecorderState(recorder, intervalMs) → RecorderState
+It calls recorder.getStatus() on a setInterval, has smart diffing built in
+(including metering change detection: skip update if |delta| < 0.1), and
+returns a RecorderState with typed metering. It is the library's own documented
+solution to the event gap.
+
+CURRENT CALL SITE (voiceInput.ts — what changes in each option)
+----------------------------------------------------------------
+
+const recorder = useAudioRecorder(
+  VOICE_CALL_PRESET,
+  (status: RecordingStatus) => {           // ← dead callback; never fires
+    const raw = (status as ...).metering;  // ← wrong type; always undefined
+    if (typeof raw === "number" ...) { setMetering(raw); }
+  },
+);
+// metering is returned as recorder.metering — but this is React state that
+// can only change if setMetering() is called, which never happens.
+
+================================================================================
+OPTION A — useAudioRecorderState(recorder, 100)
+================================================================================
+
+Drop the dead status callback from useAudioRecorder. Add one call:
+
+  const recorderState = useAudioRecorderState(recorder, 100);
+
+Add a useEffect that syncs recorderState.metering into meteringRef and
+setMetering (needed because the VAD reads meteringRef in a non-React closure,
+and the VoiceRecorder return type includes `metering: number | null`):
+
+  useEffect(() => {
+    const m = recorderState.metering ?? null;
+    meteringRef.current = m;
+    setMetering(m);
+  }, [recorderState.metering]);
+
+Remove the callback argument from useAudioRecorder entirely.
+
+Changes: voiceInput.ts only. ~8 lines net delta.
+diagCountRef and the DIAG log can be removed in the same commit (finding
+confirmed; no longer needed) or left for one more test cycle at Kane's option.
+
+TRADEOFFS
+  + Uses the library's own documented polling mechanism — not a workaround.
+  + metering is a first-class typed field on RecorderState — no cast needed.
+  + Smart diffing built in: setInterval fires every 100ms but state only
+    updates when metering changes by >0.1 dB or other fields change. No
+    spurious React re-renders.
+  + Minimal scope: one file, no changes to useVoiceCall.ts or VAD logic.
+  + Tested against the same recorder.getStatus() path expo-audio itself uses
+    for its own state hook — confirmed valid API.
+  - useAudioRecorderState fires its interval unconditionally once the component
+    mounts (not gated on state === "recording"). During idle the interval polls
+    getStatus() every 100ms even when not recording. This is harmless (getStatus
+    is a cheap sync call) but slightly untidy.
+  - The VAD effect still depends on `metering` React state. If recorderState
+    does not update between the probe interval boundaries (unlikely at 100ms
+    polling), the VAD would still miss a frame. In practice 100ms polling gives
+    ~20 samples in the 2s probe window — well above the VAD's detection
+    threshold.
+
+RECOMMENDED. Smallest change, uses the library's own path, clean types.
+
+================================================================================
+OPTION B — Custom setInterval with recorder.getStatus()
+================================================================================
+
+Keep useAudioRecorder without a status callback (drop the dead argument).
+Add a useEffect that runs a setInterval only when state is "recording":
+
+  useEffect(() => {
+    if (state !== "recording") return;
+    const id = setInterval(() => {
+      const s = recorder.getStatus();
+      const m = s.metering ?? null;
+      meteringRef.current = m;
+      setMetering(m);
+    }, 100);
+    return () => clearInterval(id);
+  }, [state, recorder.id]);
+
+Changes: voiceInput.ts only. ~12 lines net delta.
+
+TRADEOFFS
+  + Gated on state === "recording" — no polling during idle. Cleanest resource
+    use of the three options.
+  + Full control: trivial to add DIAG logging inside the interval, adjust
+    interval dynamically, or transform the value before setMetering.
+  + Uses the same recorder.getStatus() API as useAudioRecorderState.
+  - No built-in smart diffing — setMetering is called every 100ms regardless
+    of whether the value changed. This triggers a React re-render + VAD effect
+    re-run 10x/second during recording. At single-component scope this is
+    negligible, but it is more churn than Option A.
+  - More custom code to own. If expo-audio changes getStatus() semantics in a
+    future version, the custom interval will need updating while
+    useAudioRecorderState would be updated by the library.
+
+Good if fine-grained control or idle-silence is a hard requirement. Otherwise
+Option A is simpler.
+
+================================================================================
+OPTION C — useAudioRecorderState + pass RecorderState directly into VAD
+================================================================================
+
+Drop the status callback from useAudioRecorder. Call useAudioRecorderState.
+Change the VoiceRecorder return type to expose recorderState directly (or at
+least its metering field), and update the VAD useEffect in useVoiceCall.ts to
+read from recorderState.metering instead of going through the meteringRef /
+setMetering / recorder.metering chain.
+
+This removes the intermediate sync layer entirely:
+  native getStatus() → recorderState → VAD effect (one hop, not three).
+
+Changes: voiceInput.ts AND useVoiceCall.ts. ~20 lines net delta across 2 files.
+
+TRADEOFFS
+  + Cleanest long-term architecture. No React state acting as a relay for a
+    value that the polling hook already manages.
+  + VAD reads metering at exactly the same cadence as polling — no risk of
+    a missed frame due to the sync useEffect running asynchronously.
+  + Full typed RecorderState is available in the VAD if we ever want additional
+    fields (isRecording, durationMillis) without another hook.
+  - Touches useVoiceCall.ts — larger scope, more surface area for introducing
+    a regression in the VAD or recorder state machine.
+  - The VoiceRecorder interface (the object voiceInput.ts returns) may need to
+    change or be extended. useVoiceCall.ts calls into it; any interface change
+    cascades.
+  - Over-engineered for what is essentially a plumbing fix. The relay via
+    meteringRef / setMetering works fine once the polling source is corrected;
+    there is no architectural problem to solve here.
+
+Appropriate if a broader VAD refactor is already planned. Not the right scope
+for a targeted metering fix.
+
+================================================================================
+RECOMMENDATION
+================================================================================
+
+Option A.
+
+One file, ~8 lines, uses the library's own hook, typed, smart-diffed, no
+architectural changes. The idle polling cost (100ms getStatus when not
+recording) is negligible. The DIAG log can be stripped in the same commit.
+
+Awaiting Kane's written approval before any code change.
+
+================================================================================
+END
+================================================================================
