@@ -1,0 +1,117 @@
+================================================================================
+react-native-audio-record: ARCHITECTURE ASSESSMENT
+Three questions, no code, Commitment 1
+Date: 22 June 2026
+================================================================================
+
+================================================================================
+Q1: Can react-native-audio-record replace useAudioRecorder in voiceInput.ts
+    without touching WebSocket / Deepgram / ElevenLabs / handshake?
+================================================================================
+
+Yes — at the interface boundary. One hard blocker.
+
+useVoiceCall.ts consumes the VoiceRecorder interface:
+  { state, metering, start(), stop(), cancel(), ensurePermission() }
+Nothing in that contract is expo-audio specific. stop() returns
+RecordedAudio = { audioBase64, mimeType, durationMs } — the server receives
+whatever mimeType the client sends. The server already handles audio/wav
+explicitly (confirmed in audioFilenameFor(): "if (m.includes("wav")) return
+'speech.wav'"). So react-native-audio-record outputting WAV would flow through
+to Deepgram without any server changes.
+
+The WebSocket layer, SSE stream, Deepgram transcription, ElevenLabs TTS, and
+the playback/handshake protocol in useVoiceCall.ts are all downstream of
+RecordedAudio. None of them would change.
+
+THE HARD BLOCKER:
+The project runs in managed Expo workflow (confirmed: app.json has
+workflow: managed, audio capture is via the expo-audio config plugin).
+react-native-audio-record is a bare React Native native module with no Expo
+config plugin. It cannot run in Expo Go — it requires a custom development
+build via EAS. The current dev loop ("scan QR with Expo Go") would break for
+the recording layer. Every test of a recording change would require an EAS
+build + APK install. EAS builds cannot run from the Replit agent (documented
+constraint — Kane must trigger from Shell tab).
+
+This is not a code architecture blocker. It is a dev workflow constraint that
+Kane should weigh.
+
+================================================================================
+Q2: Does react-native-audio-record support getMaxAmplitude() for real-time
+    metering on Android, and would this give usable VAD data?
+================================================================================
+
+Not as a method — but better: it gives raw PCM chunks from which amplitude
+is computed in JS.
+
+react-native-audio-record uses Android's AudioRecord API, not MediaRecorder.
+getMaxAmplitude() is a MediaRecorder method — it does not exist on AudioRecord.
+The library instead streams raw 16-bit PCM data as base64-encoded chunks via
+a 'data' event at a configurable interval (driven by buffer size and sample
+rate — typically every 100–200ms).
+
+Amplitude from PCM chunks:
+  decode base64 → Int16Array → max(|sample|) / 32768 → dBFS
+This computation is done in JS per chunk.
+
+This is MORE RELIABLE than MediaRecorder.getMaxAmplitude() for two reasons:
+
+1. It is computed from the actual digital audio samples, not queried from the
+   hardware DSP layer. Samsung's firmware can suppress the value returned by
+   getMaxAmplitude() but cannot suppress the PCM sample values — the samples
+   still carry real signal amplitude even after AGC normalisation.
+
+2. The amplitude reading frequency is configurable rather than tied to a fixed
+   MediaRecorder timer. At 16kHz sample rate with a 4096-sample buffer, you
+   get a chunk (and therefore an amplitude reading) roughly every 256ms. At
+   8192 samples, every 512ms. This is coarser than the 100ms polling previously
+   attempted with useAudioRecorderState, but sufficient for VAD.
+
+The VAD effect in useVoiceCall.ts would get real, non-zero amplitude readings
+where expo-audio currently gives nothing. meteringEverReceivedRef would flip to
+true, and the VAD's metering-based submit gate would become active.
+
+================================================================================
+Q3: Does it support Android Acoustic Echo Cancellation (AEC) at the native
+    layer?
+================================================================================
+
+Yes — via the same audioSource: VOICE_COMMUNICATION mechanism, and the
+suppression problem does not apply.
+
+react-native-audio-record accepts an audioSource option that maps to Android's
+MediaRecorder.AudioSource constants. Setting audioSource: 7
+(VOICE_COMMUNICATION) on AudioRecord enables the same hardware AEC, noise
+suppression, and AGC as the current MediaRecorder setup. AEC is applied at the
+hardware DSP layer to the audio before it reaches the AudioRecord buffer.
+
+Crucially: the AGC that suppresses MediaRecorder.getMaxAmplitude() on the S24
+Ultra operates on the hardware amplitude meter, not on the PCM sample values.
+The samples written to the AudioRecord buffer after DSP processing have real
+non-zero amplitude — they are more normalised than raw mic input (that is what
+AGC does), but normalised ≠ zero. Computing amplitude from those samples yields
+usable VAD signal even on VOICE_COMMUNICATION with Samsung AGC active.
+
+================================================================================
+OVERALL FEASIBILITY VERDICT
+================================================================================
+
+Technically clean. The interface contract is preserved, the server needs no
+changes, WAV mimeType already handled, PCM amplitude is a more reliable VAD
+signal than anything expo-audio provides on this hardware.
+
+The one constraint that must be decided before any code: switching to
+react-native-audio-record requires a development build — Expo Go testing of
+the recording layer ends. Given EAS builds must be triggered by Kane from the
+Shell tab and take 10–20 minutes per cycle, this changes the iteration speed
+for recording-layer work. All other parts of the app (chat, onboarding,
+settings, TTS playback) continue to work in Expo Go normally — only recording
+layer changes require a build.
+
+If Kane is already on a custom APK from a prior EAS build and not relying on
+Expo Go for recording tests, the practical cost is lower.
+
+================================================================================
+END
+================================================================================
