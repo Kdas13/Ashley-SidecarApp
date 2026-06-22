@@ -146,6 +146,31 @@ export class WebSearchProviderError extends Error {
   }
 }
 
+// Keywords that signal a price / shopping / availability query.
+// When any of these appear in a classifier-generated query, the query is
+// biased toward UK results before it reaches Tavily.
+const SHOPPING_PRICE_KEYWORDS = [
+  "price", "cost", "how much", "cheap", "cheapest", "expensive",
+  "buy", "where to buy", "where can i", "nearest", "near me",
+  "shop", "store", "supermarket", "retailer", "available", "in stock",
+  "order", "purchase", "deliver", "delivery", "offer", "deal",
+  "bottle", "can", "pack", "box",
+];
+
+/**
+ * Append " UK" to a query that looks like a price / shopping / availability
+ * search, unless the query already contains a UK location signal.
+ * This ensures Tavily returns UK sources and £ prices rather than US results.
+ */
+function biasQueryForUK(query: string): string {
+  const lower = query.toLowerCase();
+  // Already contains a UK signal — don't double-add.
+  if (/\buk\b|\bengland\b|\bbritain\b|\bbritish\b/.test(lower)) return query;
+  // Shopping / price / availability query — bias toward UK.
+  const isShopping = SHOPPING_PRICE_KEYWORDS.some((kw) => lower.includes(kw));
+  return isShopping ? `${query} UK` : query;
+}
+
 /**
  * Call Tavily and return up to MAX_RESULTS simplified results.
  *
@@ -174,9 +199,10 @@ export async function tavilySearch(
         Authorization: `Bearer ${key}`,
       },
       body: JSON.stringify({
-        query: trimmed,
+        query:        biasQueryForUK(trimmed),
         search_depth: "basic",
-        max_results: MAX_RESULTS,
+        max_results:  MAX_RESULTS,
+        country:      "gb",
       }),
       signal: ac.signal,
     });

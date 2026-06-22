@@ -1,0 +1,103 @@
+UK BIAS — WEB SEARCH + CORE SPEC
+v3.1 COMPLETION REPORT — 22 Jun 2026
+
+VERDICT
+-------
+Implemented. Two files changed, typecheck clean.
+
+FILES CHANGED
+-------------
+artifacts/api-server/src/lib/webSearch.ts
+artifacts/api-server/src/lib/ashleyCoreSpec.ts
+
+SHA
+---
+See checkpoint notification for this commit.
+
+DIFF
+----
+diff --git a/artifacts/api-server/src/lib/ashleyCoreSpec.ts b/artifacts/api-server/src/lib/ashleyCoreSpec.ts
+--- a/artifacts/api-server/src/lib/ashleyCoreSpec.ts
++++ b/artifacts/api-server/src/lib/ashleyCoreSpec.ts
+@@ -104,6 +104,14 @@
+ Silence is not a problem. Do not acknowledge silence ever.
+
++RULE C: PRICE AND SHOPPING SEARCHES — UK FIRST.
++When a web lookup returns price or availability results:
++- Always present results in £ sterling. Never present US dollar prices as the primary answer.
++- If only overseas prices come back, say so clearly and give a sterling equivalent as an estimate only — do not present it as a confirmed UK price.
++- If an overseas retailer genuinely undercuts the UK price including delivery, flag it as an option after the UK results.
++- Always present results cheapest first.
++- If results are inconsistent or unclear, say so honestly rather than picking one and presenting it as fact.
++
+ ## 1. Builder-Aware Mode
+
+diff --git a/artifacts/api-server/src/lib/webSearch.ts b/artifacts/api-server/src/lib/webSearch.ts
+--- a/artifacts/api-server/src/lib/webSearch.ts
++++ b/artifacts/api-server/src/lib/webSearch.ts
+@@ -146,6 +146,31 @@
+
++const SHOPPING_PRICE_KEYWORDS = [
++  "price", "cost", "how much", "cheap", "cheapest", "expensive",
++  "buy", "where to buy", "where can i", "nearest", "near me",
++  "shop", "store", "supermarket", "retailer", "available", "in stock",
++  "order", "purchase", "deliver", "delivery", "offer", "deal",
++  "bottle", "can", "pack", "box",
++];
++
++function biasQueryForUK(query: string): string {
++  const lower = query.toLowerCase();
++  if (/\buk\b|\bengland\b|\bbritain\b|\bbritish\b/.test(lower)) return query;
++  const isShopping = SHOPPING_PRICE_KEYWORDS.some((kw) => lower.includes(kw));
++  return isShopping ? `${query} UK` : query;
++}
+
+@@ -174,9 +199,10 @@
+       body: JSON.stringify({
+-        query: trimmed,
++        query:        biasQueryForUK(trimmed),
+         search_depth: "basic",
+-        max_results: MAX_RESULTS,
++        max_results:  MAX_RESULTS,
++        country:      "gb",
+       }),
+
+JOB 1 — webSearch.ts
+--------------------
+SHOPPING_PRICE_KEYWORDS: 20-term list covering price/cost/buy/shop/
+available/deliver/bottle etc.
+
+biasQueryForUK(query):
+  - If query already contains \buk\b, \bengland\b, \bbritain\b, or
+    \bbritish\b → return unchanged (no double-append).
+  - If any SHOPPING_PRICE_KEYWORDS term appears → append " UK".
+  - Otherwise → return unchanged (news, weather, etc. unaffected).
+
+tavilySearch POST body:
+  - query: biasQueryForUK(trimmed) — biased before hitting Tavily.
+  - country: "gb" — Tavily country filter, forces UK sources.
+
+Note: the CLASSIFIER_SYSTEM already contained "produce a concise
+UK-focused query" — that instruction was already present and is not
+duplicated. The new layer operates on the classifier's OUTPUT before
+it reaches Tavily, so it catches any query the classifier under-biases.
+
+JOB 2 — ashleyCoreSpec.ts
+--------------------------
+RULE C inserted at line 110, immediately after RULE B, in the
+⚠ CONSTITUTIONAL RULES block. Five rules:
+  1. £ sterling only — never US dollars as primary answer.
+  2. Overseas-only results → flag clearly, sterling estimate only.
+  3. Overseas retailer cheaper incl. delivery → flag after UK results.
+  4. Cheapest first.
+  5. Inconsistent results → say so honestly.
+
+WHAT DID NOT CHANGE
+-------------------
+- CLASSIFIER_SYSTEM prompt — "UK-focused query" instruction already present.
+- VoiceOrchestrationService.ts — not touched.
+- Any other file — not touched.
+
+DEPLOYMENT
+----------
+Server-side change only. Replit redeploy required. No EAS build needed.
