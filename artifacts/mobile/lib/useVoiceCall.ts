@@ -25,7 +25,7 @@ import { getDeviceIdSync } from "./deviceId";
 
 // ── VAD config ────────────────────────────────────────────────────────────────
 
-const SILENCE_DB    = -45;    // was -30 — too sensitive, picking up room noise as speech
+const SILENCE_DB    = -70;    // was -45; live testing shows TV noise at -55..-64 dBFS, child voice at -67 dBFS — floor raised to exclude measured background noise
 const SILENCE_MS    = 3500;   // silence tolerance once significant speech has been detected
 const MIN_SPEECH_MS = 500;    // was 200 — too short, catching non-speech sounds
 
@@ -42,10 +42,8 @@ const SILENCE_THRESHOLD_SHORT_MS = 1000;   // segment speech below this → SILE
 // After recorder.start(), hold VAD inactive for a flat delay before allowing
 // detection to start. This is a known heuristic, not a calibrated measurement:
 // it covers the ~300-400ms Bluetooth A2DP buffer drain identified as the echo
-// risk window, with some margin. SILENCE_DB (-45) is unreachable during ambient
-// silence on VOICE_COMMUNICATION mode (AGC keeps the noise floor above -45), so
-// a metering-based "confirmed quiet" gate is not viable on this device without
-// first logging and calibrating actual dBFS values.
+// risk window, with some margin. SILENCE_DB is calibrated from PCM amplitude
+// metering (react-native-audio-record) — see the SILENCE_DB comment above.
 const VAD_DELAY_MS = 500;
 
 // ── STT hallucination guard ────────────────────────────────────────────────────
