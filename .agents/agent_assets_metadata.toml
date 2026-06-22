@@ -587,3 +587,9 @@ id = "AHQh8DQ5olk8bQxF-Mku4"
 uri = "file://VoiceCallDataFlow_Architecture_22Jun2026.txt"
 type = "text"
 title = "Voice Call Data Flow — Architecture Audit 22 Jun 2026"
+
+[[outputs]]
+id = "qlSyeYaTeQYdnxAbZ5sxf"
+uri = "file://Task85_Evidence_22Jun2026.txt"
+type = "text"
+title = "Task #85 Evidence — git show HEAD — 22 Jun 2026"

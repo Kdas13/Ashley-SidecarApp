@@ -1,0 +1,162 @@
+================================================================================
+EVIDENCE — Task #85 silence monitor commit
+git show --stat HEAD | cat
+git show HEAD -- artifacts/api-server/src/routes/voice-call.ts | cat
+22 June 2026
+================================================================================
+
+--------------------------------------------------------------------------------
+git show --stat HEAD | cat
+--------------------------------------------------------------------------------
+
+commit d2b69f5546a95021043c66bdcbf1cfae5f08e8a9
+Author: Replit Agent <agent@replit.com>
+Date:   Mon Jun 22 16:50:32 2026 +0000
+
+    voice-call.ts: silence monitor observe-only — remove all timed actions
+
+    Task #85. One file changed: artifacts/api-server/src/routes/voice-call.ts
+
+    Removed all three timed interventions from startSilenceMonitor tick():
+    - 90s branch: removed ws.send(call_ended) + registry.finalise() + early return
+    - 60s branch: removed speakFarewell() + early return (also removed silenceWarningSent guard)
+    - 30s branch: removed speakFallback("Still there?") + silenceWarningSent = true
+
+    Polling structure, 5s tick, state gates, and log lines retained.
+    Log messages updated to "observed only" to reflect passive intent.
+    Comment block updated to state the monitor never acts.
+    Constants SILENCE_WARN_MS / SILENCE_END_MS / SILENCE_FORCE_MS retained as
+    log-level thresholds (still referenced in the surviving if-chain).
+    speakFallback and speakFarewell untouched per task out-of-scope constraint.
+    Typecheck passes (tsc --noEmit, zero errors).
+
+ Task85_SilenceMonitor_ObserveOnly_22Jun2026.txt | 122 ++++++++++++++++++++++++
+ artifacts/api-server/src/routes/voice-call.ts   |  44 ++-------
+ 2 files changed, 131 insertions(+), 35 deletions(-)
+
+--------------------------------------------------------------------------------
+git show HEAD -- artifacts/api-server/src/routes/voice-call.ts | cat
+--------------------------------------------------------------------------------
+
+commit d2b69f5546a95021043c66bdcbf1cfae5f08e8a9
+Author: Replit Agent <agent@replit.com>
+Date:   Mon Jun 22 16:50:32 2026 +0000
+
+    voice-call.ts: silence monitor observe-only — remove all timed actions
+
+    Task #85. One file changed: artifacts/api-server/src/routes/voice-call.ts
+
+    Removed all three timed interventions from startSilenceMonitor tick():
+    - 90s branch: removed ws.send(call_ended) + registry.finalise() + early return
+    - 60s branch: removed speakFarewell() + early return (also removed silenceWarningSent guard)
+    - 30s branch: removed speakFallback("Still there?") + silenceWarningSent = true
+
+    Polling structure, 5s tick, state gates, and log lines retained.
+    Log messages updated to "observed only" to reflect passive intent.
+    Comment block updated to state the monitor never acts.
+    Constants SILENCE_WARN_MS / SILENCE_END_MS / SILENCE_FORCE_MS retained as
+    log-level thresholds (still referenced in the surviving if-chain).
+    speakFallback and speakFarewell untouched per task out-of-scope constraint.
+    Typecheck passes (tsc --noEmit, zero errors).
+
+diff --git a/artifacts/api-server/src/routes/voice-call.ts b/artifacts/api-server/src/routes/voice-call.ts
+index c3fd30e..b36446d 100644
+--- a/artifacts/api-server/src/routes/voice-call.ts
++++ b/artifacts/api-server/src/routes/voice-call.ts
+@@ -249,16 +249,12 @@ async function speakFarewell(session: VoiceSession): Promise<void> {
+ }
+ 
+ // ---------------------------------------------------------------------------
+-// startSilenceMonitor — starts a recurring 5-second poll that enforces the
+-// silence lifecycle:
+-//
+-//   0–30s  listening, no audio  →  nothing
+-//   30s                         →  "still there?" (once only)
+-//   60s  (warning already sent) →  farewell TTS + call_ended + finalise
+-//   90s  (failsafe)             →  force-close without TTS
++// startSilenceMonitor — starts a recurring 5-second poll that observes and
++// logs silence duration. No actions are taken regardless of how long the
++// session is silent. Only Kane ends calls.
+ //
+ // The poll pauses automatically when state ≠ "listening" (the tick fires but
+-// does not measure silence while Claude or TTS is active). The timer is
++// does not measure silence while LLM or TTS is active). The timer is
+ // cancelled by registry.finalise() when the session closes.
+ //
+ // Must be called once per session from index.ts after call_connected is sent.
+@@ -291,40 +287,18 @@ export function startSilenceMonitor(session: VoiceSession): void {
+       if (silenceMs >= SILENCE_FORCE_MS) {
+         logger.warn(
+           { deviceId: session.deviceId, silenceMs },
+-          "voice: silence failsafe (90s) — force closing session",
++          "voice: silence 90s — observed only",
+         );
+-        try {
+-          session.ws?.send(
+-            JSON.stringify({ type: "call_ended", reason: "silence_timeout" }),
+-          );
+-        } catch {}
+-        session.silenceTimer = null;
+-        registry.finalise(session.sessionId, "silence_timeout_failsafe");
+-        return;
+-      }
+-
+-      if (silenceMs >= SILENCE_END_MS && session.silenceWarningSent) {
++      } else if (silenceMs >= SILENCE_END_MS) {
+         logger.info(
+           { deviceId: session.deviceId, silenceMs },
+-          "voice: silence 60s — speaking farewell and ending call",
++          "voice: silence 60s — observed only",
+         );
+-        session.silenceTimer = null;
+-        void speakFarewell(session).catch((err) => {
+-          logger.error({ err, deviceId: session.deviceId }, "voice: speakFarewell failed");
+-          registry.finalise(session.sessionId, "silence_timeout");
+-        });
+-        return;
+-      }
+-
+-      if (silenceMs >= SILENCE_WARN_MS && !session.silenceWarningSent) {
++      } else if (silenceMs >= SILENCE_WARN_MS) {
+         logger.info(
+           { deviceId: session.deviceId, silenceMs },
+-          "voice: silence 30s — speaking warning",
++          "voice: silence 30s — observed only",
+         );
+-        session.silenceWarningSent = true;
+-        void speakFallback(session, "Still there?").catch((err) => {
+-          logger.error({ err, deviceId: session.deviceId }, "voice: silence warning TTS failed");
+-        });
+       }
+     }
+ 
+
+================================================================================
+FINDINGS
+================================================================================
+
+1. speakFallback("Still there?") removed from tick():
+   YES — confirmed by diff. 30s branch is now a single logger.info line only.
+
+2. speakFarewell() removed from tick():
+   YES — confirmed by diff. 60s branch is now a single logger.info line only.
+
+3. speakFallback and speakFarewell functions still exist in the file:
+   YES — retained per the task out-of-scope constraint. They are now dead code
+   within voice-call.ts but the function bodies were not removed.
+
+4. startSilenceMonitor() is still exported and called:
+   YES — the function itself is unchanged; its callers in index.ts were not
+   touched. The monitor still polls every 5s, it just no longer acts.
+
+5. Code change is in HEAD:
+   YES — commit d2b69f5546a95021043c66bdcbf1cfae5f08e8a9
+   Mon Jun 22 16:50:32 2026 UTC
+
+PROBABLE CAUSE OF LIVE BEHAVIOUR:
+   The code in HEAD is correct. The production deployment at
+   Ashley-Sidecar.replit.app runs the last published binary, which predates
+   this commit. A new publish/deploy is required to push this change to
+   production.
+
+================================================================================
