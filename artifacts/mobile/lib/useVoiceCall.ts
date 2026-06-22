@@ -214,8 +214,9 @@ export function useVoiceCall(): {
   // the LLM pipeline; openMic() picks it up and resets to SILENCE_MS afterward.
   const nextSilenceThresholdRef = useRef<number | null>(null);
   const activeSilenceMsRef      = useRef<number>(SILENCE_MS);
-  const reconnectAttemptsRef = useRef(0);
-  const connectRef          = useRef<() => void>(() => {});
+  const reconnectAttemptsRef  = useRef(0);
+  const connectRef            = useRef<() => void>(() => {});
+  const keepalivePingRef      = useRef<ReturnType<typeof setInterval> | null>(null);
   // ttsServerDoneRef: true once the server has sent tts_done (all chunks sent).
   // ttsCompleteRef:   true once the device has finished PLAYING all queued audio.
   // Both must be true before openMic is allowed to run.
@@ -932,6 +933,13 @@ export function useVoiceCall(): {
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
 
+    ws.onopen = () => {
+      keepalivePingRef.current = setInterval(() => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          try { wsRef.current.send(JSON.stringify({ type: "ping" })); } catch { /* ignore */ }
+        }
+      }, 30_000);
+    };
     ws.onmessage = (e: MessageEvent) => { void handleMessage(e); };
     ws.onerror = () => {
       // onclose always fires after onerror — let it handle state.
@@ -940,6 +948,10 @@ export function useVoiceCall(): {
     };
     ws.onclose = () => {
       wsRef.current = null;
+      if (keepalivePingRef.current !== null) {
+        clearInterval(keepalivePingRef.current);
+        keepalivePingRef.current = null;
+      }
       vadActiveRef.current = false;
       clearAutoSubmitTimer();
       stopPlayback();
@@ -970,6 +982,10 @@ export function useVoiceCall(): {
   // ── Disconnect ────────────────────────────────────────────────────────────
 
   const disconnect = useCallback((): void => {
+    if (keepalivePingRef.current !== null) {
+      clearInterval(keepalivePingRef.current);
+      keepalivePingRef.current = null;
+    }
     clearAutoSubmitTimer();
     vadActiveRef.current = false;
     stopPlayback();
@@ -988,6 +1004,10 @@ export function useVoiceCall(): {
 
   useEffect(() => {
     return () => {
+      if (keepalivePingRef.current !== null) {
+        clearInterval(keepalivePingRef.current);
+        keepalivePingRef.current = null;
+      }
       clearAutoSubmitTimer();
       if (vadProbeTimerRef.current !== null) {
         clearTimeout(vadProbeTimerRef.current);

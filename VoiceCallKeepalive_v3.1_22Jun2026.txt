@@ -1,0 +1,107 @@
+VOICE CALL WS KEEPALIVE PING — v3.1 COMPLETION REPORT
+22 Jun 2026
+
+VERDICT
+-------
+Implemented. Two files changed, one commit. No other files touched.
+
+PURPOSE
+-------
+The Replit reverse proxy closes WebSocket connections after ~60 seconds of
+inactivity (no text frames). This triggered the 60s call freeze diagnosed in
+VoiceCallDiagnostic_60sFreeze_22Jun2026.txt. A 30-second client-side ping
+sends a text frame every 30s, keeping the connection alive indefinitely.
+
+FILES CHANGED
+-------------
+artifacts/mobile/lib/useVoiceCall.ts
+artifacts/api-server/src/index.ts
+
+DIFF SUMMARY (git diff HEAD before commit)
+------------------------------------------
+
+--- a/artifacts/api-server/src/index.ts
++++ b/artifacts/api-server/src/index.ts
+@@ -314,6 +314,8 @@ wss.on("connection", ...)
+       return;
+     }
+
++    if (msg["type"] === "ping") return;
++
+     const msgSessionId = msg["sessionId"] as string | undefined;
+
+--- a/artifacts/mobile/lib/useVoiceCall.ts
++++ b/artifacts/mobile/lib/useVoiceCall.ts
+@@ -214,8 +214,9 @@
+-  const reconnectAttemptsRef = useRef(0);
+-  const connectRef          = useRef<() => void>(() => {});
++  const reconnectAttemptsRef  = useRef(0);
++  const connectRef            = useRef<() => void>(() => {});
++  const keepalivePingRef      = useRef<ReturnType<typeof setInterval> | null>(null);
+
+@@ -932,6 +933,13 @@
+     ws.binaryType = "arraybuffer";
+     wsRef.current = ws;
+
++    ws.onopen = () => {
++      keepalivePingRef.current = setInterval(() => {
++        if (wsRef.current?.readyState === WebSocket.OPEN) {
++          try { wsRef.current.send(JSON.stringify({ type: "ping" })); } catch { /* ignore */ }
++        }
++      }, 30_000);
++    };
+     ws.onmessage = (e: MessageEvent) => { void handleMessage(e); };
+
+@@ -948,6 +948,10 @@
+     ws.onclose = () => {
+       wsRef.current = null;
++      if (keepalivePingRef.current !== null) {
++        clearInterval(keepalivePingRef.current);
++        keepalivePingRef.current = null;
++      }
+       vadActiveRef.current = false;
+
+@@ -982,6 +982,10 @@
+   const disconnect = useCallback((): void => {
++    if (keepalivePingRef.current !== null) {
++      clearInterval(keepalivePingRef.current);
++      keepalivePingRef.current = null;
++    }
+     clearAutoSubmitTimer();
+
+@@ -1004,6 +1004,10 @@
+   useEffect(() => {
+     return () => {
++      if (keepalivePingRef.current !== null) {
++        clearInterval(keepalivePingRef.current);
++        keepalivePingRef.current = null;
++      }
+       clearAutoSubmitTimer();
+
+IMPLEMENTATION NOTES
+--------------------
+Client (useVoiceCall.ts):
+  - keepalivePingRef: useRef<ReturnType<typeof setInterval> | null>(null)
+  - ws.onopen starts setInterval(30_000) that sends { type: "ping" }
+  - Interval only fires when wsRef.current.readyState === WebSocket.OPEN
+    (guards against send on a closing socket)
+  - Interval is cleared in ws.onclose, disconnect(), and unmount cleanup
+  - try/catch on send — a dead socket does not surface an unhandled error
+
+Server (index.ts):
+  - Single line: if (msg["type"] === "ping") return;
+  - Inserted after JSON parse, before session-ID validation
+  - No state change, no log, no response
+
+WHAT IS NOT CHANGED
+-------------------
+- No silence monitor logic
+- No session registry
+- No reconnect logic
+- No turn pipeline
+- No other files
+
+SHA
+---
+See checkpoint notification for this commit.
+(Auto-committed by platform on task completion.)

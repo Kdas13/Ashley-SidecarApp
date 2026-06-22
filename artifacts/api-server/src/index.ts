@@ -314,6 +314,8 @@ wss.on("connection", (ws: any, _req: any, deviceId: string) => {
       return;
     }
 
+    if (msg["type"] === "ping") return;
+
     const msgSessionId = msg["sessionId"] as string | undefined;
     const msgGen = msg["connectionGeneration"] as number | undefined;
 
