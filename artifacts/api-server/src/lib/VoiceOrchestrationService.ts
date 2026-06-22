@@ -25,6 +25,7 @@ import { VoiceContextAssembler } from "./VoiceContextAssembler.js";
 import { getClipBuffer, hasClip } from "./AudioClipRegistry.js";
 import type { ClipName } from "./AudioClipRegistry.js";
 import { logger } from "./logger.js";
+import { maybeRunWebLookup } from "./webSearch.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -619,6 +620,26 @@ async function runLLMAndTTSPipeline(
   }, FIRST_TOKEN_WATCHDOG_MS);
 
   let sentenceBuffer = "";
+
+  // Web search enrichment — identical pattern to /api/chat/stream (chat.ts ~4897).
+  // The classifier decides whether a Tavily call is needed; most conversational
+  // turns return {search:false} immediately and add no meaningful delay.
+  // builderAware=true matches the profile default (VoiceContextAssembler already
+  // consumed the profile; we avoid a second DB read by using the known default).
+  const webLookup = await maybeRunWebLookup(utterance, ctx.messages, true);
+  if (webLookup) {
+    ctx.systemPrompt = `${ctx.systemPrompt}\n\n${webLookup.block}`;
+    logger.info(
+      {
+        sessionId:   session.sessionId,
+        turnId,
+        query:       webLookup.query.slice(0, 80),
+        outcome:     webLookup.kind,
+        resultCount: webLookup.kind === "success" ? webLookup.results.length : 0,
+      },
+      "VoiceOrch: web lookup injected into system prompt",
+    );
+  }
 
   try {
     const stream = streamChatText({

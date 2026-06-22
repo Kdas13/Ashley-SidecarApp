@@ -1,0 +1,103 @@
+VOICE WEB SEARCH — maybeRunWebLookup WIRED INTO VOICE PIPELINE
+v3.1 COMPLETION REPORT — 22 Jun 2026
+
+VERDICT
+-------
+Implemented. One file changed, typecheck clean.
+
+FILE CHANGED
+------------
+artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+
+SHA
+---
+See checkpoint notification for this commit.
+
+DIFF
+----
+diff --git a/artifacts/api-server/src/lib/VoiceOrchestrationService.ts b/artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+index 51893eb..cd00918 100644
+--- a/artifacts/api-server/src/lib/VoiceOrchestrationService.ts
++++ b/artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+@@ -25,6 +25,7 @@ import { VoiceContextAssembler } from "./VoiceContextAssembler.js";
+ import { getClipBuffer, hasClip } from "./AudioClipRegistry.js";
+ import type { ClipName } from "./AudioClipRegistry.js";
+ import { logger } from "./logger.js";
++import { maybeRunWebLookup } from "./webSearch.js";
+
+@@ -620,6 +621,26 @@ async function runLLMAndTTSPipeline(
+
+   let sentenceBuffer = "";
+
++  // Web search enrichment — identical pattern to /api/chat/stream (chat.ts ~4897).
++  // The classifier decides whether a Tavily call is needed; most conversational
++  // turns return {search:false} immediately and add no meaningful delay.
++  // builderAware=true matches the profile default (VoiceContextAssembler already
++  // consumed the profile; we avoid a second DB read by using the known default).
++  const webLookup = await maybeRunWebLookup(utterance, ctx.messages, true);
++  if (webLookup) {
++    ctx.systemPrompt = `${ctx.systemPrompt}\n\n${webLookup.block}`;
++    logger.info(
++      {
++        sessionId:   session.sessionId,
++        turnId,
++        query:       webLookup.query.slice(0, 80),
++        outcome:     webLookup.kind,
++        resultCount: webLookup.kind === "success" ? webLookup.results.length : 0,
++      },
++      "VoiceOrch: web lookup injected into system prompt",
++    );
++  }
++
+   try {
+     const stream = streamChatText({
+       system:        ctx.systemPrompt,
+
+WHAT CHANGED
+------------
+Import:
+  maybeRunWebLookup imported from ./webSearch.js at line 31.
+
+Logic (runLLMAndTTSPipeline, after context assembly, before streamChatText):
+  maybeRunWebLookup(utterance, ctx.messages, true) runs on every turn.
+  - utterance  = the STT transcript for this turn
+  - ctx.messages = conversation history already assembled by VoiceContextAssembler
+  - builderAware = true (matches profile default; VoiceContextAssembler already
+    consumed the profile so a second DB read is avoided)
+
+  If the classifier returns {search:false} — the common case — the function
+  returns null immediately. No Tavily call, no delay.
+
+  If the classifier returns {search:true, query:"..."} the Tavily call runs
+  (5s hard timeout) and the result block is appended to ctx.systemPrompt
+  before streamChatText is called. The block contains voice rules telling
+  Ashley to answer first and cite sources naturally.
+
+  All non-success outcomes (empty results, Tavily failure, key not set)
+  still inject a status block so Ashley knows the lookup ran but didn't
+  deliver — consistent with the text chat behaviour.
+
+PLACEMENT IN PIPELINE
+---------------------
+Stage 5 (context assembly) → [NEW: web lookup enrichment] → speech_start
+already sent to client → Stage 6 (LLM streaming). The lookup runs after
+the first-token watchdog is armed, so if the lookup + LLM together exceed
+8s the thinking clip fires as normal.
+
+WHAT DID NOT CHANGE
+-------------------
+- VoiceContextAssembler.ts — not touched
+- webSearch.ts — not touched
+- chat.ts — not touched
+- Any other file — not touched
+
+PREREQUISITE FOR LIVE RESULTS
+------------------------------
+TAVILY_API_KEY must be set as a Replit secret on the API Server artifact.
+Without it: maybeRunWebLookup returns an "unavailable" block, Ashley
+acknowledges she can't check the web this turn, and the call continues
+normally. No crash, no silent failure.
+
+DEPLOYMENT
+----------
+Server-side change only. Replit redeploy required. No EAS build needed.

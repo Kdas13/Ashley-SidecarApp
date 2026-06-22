@@ -605,3 +605,9 @@ id = "nb4TGLPrnuR0HiIoPFBud"
 uri = "file://VoiceWebSearch_Architecture_22Jun2026.txt"
 type = "text"
 title = "Voice Web Search Architecture Analysis"
+
+[[outputs]]
+id = "oBOo2oTMJKE1Hc1bYQotB"
+uri = "file://VoiceWebSearch_Wired_v3.1_22Jun2026.txt"
+type = "text"
+title = "Voice Web Search — v3.1 Completion Report"
