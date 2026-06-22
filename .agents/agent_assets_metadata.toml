@@ -551,3 +551,9 @@ id = "Cd4JIs9ws3pcL52EXpiZd"
 uri = "file://V1_AIClientFix_CompletionReport_20Jun2026.txt"
 type = "text"
 title = "V1_AIClientFix_CompletionReport_20Jun2026.txt"
+
+[[outputs]]
+id = "2LQEt00cqYVEkVx_IE1AK"
+uri = "file://VoiceCall_MeteringDiag_20Jun2026.txt"
+type = "text"
+title = "VoiceCall_MeteringDiag_20Jun2026.txt"

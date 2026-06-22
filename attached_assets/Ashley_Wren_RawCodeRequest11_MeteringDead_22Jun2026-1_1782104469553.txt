@@ -1,0 +1,93 @@
+================================================================================
+WREN — DIAGNOSTIC: WHY IS METERING DEAD ON THIS DEVICE?
+NO CHANGES. NO COMMITS. NO BUILDS. PASTE CODE AND FINDINGS ONLY.
+Date: 22 June 2026
+================================================================================
+
+CONFIRMED CONTEXT
+P0-1 confirmed: VAD_CAPABILITY mode=blind, usableFrames=0, nullFrames=0,
+on every single mic open, on every call, on Kane's Samsung Galaxy S24 Ultra
+running Android. This has been consistent across all testing this session.
+
+The size-filter workaround (P0-2) is in place but insufficient — audio
+captured from Ashley's own voice passes the 4000-byte threshold easily
+(confirmed at ~64-65KB per blind capture) because it's real audio, not
+silence. The transcript filter behind it doesn't catch it because Deepgram
+returns real words from Ashley's voice. Net result: Ashley still catches
+her own audio and responds to it — the original echo/phantom-text problem —
+just less frequently than before P0-2.
+
+THE REAL FIX IS GETTING METERING WORKING, NOT FILTERING AROUND IT.
+
+================================================================================
+WHAT TO INVESTIGATE AND PASTE
+================================================================================
+
+1. HOW IS METERING CURRENTLY CONFIGURED?
+   Paste the complete recorder setup code — every option passed to
+   expo-audio (or expo-av if that's what's in use) when creating and
+   starting the recording. Specifically:
+   - Is `isMeteringEnabled: true` being set explicitly?
+   - What `android` options are being passed (e.g. extension, outputFormat,
+     audioEncoder, sampleRate, numberOfChannels, bitRate)?
+   - What audio mode is set before recording starts (iOS/Android specific)?
+   - Is `AudioSession` / `setAudioModeAsync` called before recording?
+
+2. WHAT DOES THE RAW METERING VALUE LOOK LIKE?
+   Add a temporary log inside the metering effect (the one that runs
+   every ~100ms) that prints the raw value from the recorder status:
+     DIAG: metering raw value=<exact value or null> status=<recording|stopped|etc>
+   This is the only way to know whether:
+     (a) metering events are firing but returning null
+     (b) metering events are firing but returning a value that fails the
+         non-null check due to a type mismatch (e.g. undefined vs null)
+     (c) metering events are not firing at all (status never updates)
+     (d) the recorder is not actually recording when we think it is
+
+3. EXPO-AUDIO vs EXPO-AV
+   Which library is actually being used for recording right now — expo-audio
+   or expo-av? They have different APIs and different metering support.
+   If expo-audio: confirm which version, and whether metering is documented
+   as supported on Android in that version.
+   If expo-av: same question.
+   Check the expo-audio/expo-av changelog for any known Android metering
+   issues or breaking changes in the version currently installed.
+
+4. ANDROID AUDIO MODE
+   The recording is known to run in VOICE_COMMUNICATION mode (confirmed
+   from the AGC finding earlier — AGC is a side effect of this mode).
+   Does VOICE_COMMUNICATION mode affect metering availability on Android?
+   Specifically: does switching to a different audio mode (e.g.
+   VOICE_RECOGNITION, which is designed for STT and disables some
+   noise processing) produce non-null metering values while still being
+   suitable for this use case?
+   Do NOT change the audio mode yet — just confirm what the current mode
+   is and whether switching is viable in principle.
+
+5. PERMISSIONS
+   Is RECORD_AUDIO the only permission required for metering on Android,
+   or does metering specifically require additional permissions or
+   manifest entries that might be missing?
+
+================================================================================
+WHAT NOT TO DO
+================================================================================
+- Do not propose a fix yet. Diagnosis only — we need to know which of
+  (a), (b), (c), or (d) above is actually happening before deciding
+  what to change.
+- Do not guess at the metering value from memory — add the actual log
+  and report what it prints.
+- If expo-audio's Android metering is simply not implemented in the
+  current version, say so plainly — that's the most important finding
+  of all, since it would mean a library change is needed, not a
+  configuration fix.
+
+================================================================================
+RULES
+================================================================================
+- Raw code and actual log output only.
+- The temporary DIAG log can be committed as a diagnostic-only change,
+  same as P0-1 was — but nothing else changes alongside it.
+- Standing v3.1 completion report required if anything is committed.
+
+— End of request —

@@ -1,0 +1,237 @@
+================================================================================
+VOICE CALL — METERING DEAD: DIAGNOSTIC REPORT + DIAG LOG COMMITTED
+Standing v3.1 Completion Report
+Date: 22 June 2026
+================================================================================
+
+VERDICT: DIAG LOG COMMITTED — typecheck passes — not testable without live device.
+Diagnostic log will surface in Expo Go / Metro console on Kane's S24 Ultra.
+
+================================================================================
+Q1 — HOW IS METERING CURRENTLY CONFIGURED?
+================================================================================
+
+Library: expo-audio 1.1.1 (confirmed — NOT expo-av).
+
+Recorder created in: artifacts/mobile/lib/voiceInput.ts
+
+VOICE_CALL_PRESET (assembled at runtime, lines 61-70):
+  {
+    ...RecordingPresets.HIGH_QUALITY,   // extension: .m4a, sampleRate: 44100,
+                                        // numberOfChannels: 2, bitRate: 128000
+    android: {
+      ...RecordingPresets.HIGH_QUALITY.android,  // outputFormat: mpeg4
+                                                 // audioEncoder: aac
+      audioSource: "voice_communication",  // ← VOICE_COMMUNICATION
+    },
+  }
+
+Hook call (line 72):
+  const recorder = useAudioRecorder(VOICE_CALL_PRESET, statusCallback);
+
+prepareToRecordAsync call (lines 139-143):
+  await recorder.prepareToRecordAsync({
+    ...VOICE_CALL_PRESET,
+    isMeteringEnabled: true,   // ← explicitly set
+  });
+
+setAudioModeAsync call (line 125, before prepareToRecordAsync):
+  await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+
+Mode is NEVER reset between turns — the session stays at allowsRecording: true
+throughout the call to preserve the VOICE_COMMUNICATION hardware echo
+cancellation pipeline.
+
+STATUS CALLBACK AS-WAS (before this commit):
+  (status: RecordingStatus) => {
+    const m = (status as RecordingStatus & { metering?: number }).metering;
+    if (typeof m === "number" && Number.isFinite(m)) {
+      meteringRef.current = m;
+      setMetering(m);
+    }
+    // ← NO ELSE. If m is undefined, setMetering is NEVER called.
+  }
+
+KEY FINDING — TYPE-SUPPRESSION BUG:
+`metering` is NOT an official field on expo-audio's RecordingStatus TypeScript
+type. The cast `RecordingStatus & { metering?: number }` treats it as optional.
+When the native layer emits a status tick without a `metering` property, `raw`
+is `undefined`, typeof is "undefined", the guard fails, and `setMetering` is
+never called. The React state stays frozen at its current value (null). The
+VAD useEffect's dependency `recorder.metering` never changes. The effect
+never re-fires. Both vadProbeNullRef and vadProbeUsableRef stay at 0. This
+matches the P0-1 result exactly: usableFrames=0, nullFrames=0.
+
+================================================================================
+Q2 — WHAT DOES THE RAW METERING VALUE LOOK LIKE?
+================================================================================
+
+The DIAG log added by this commit answers this. Format:
+
+  [Audio][DIAG:metering] {"n":1,"rawType":"...","rawValue":...,"isRecording":...}
+
+Expected log locations: Metro bundler console / Expo Go dev console on device.
+The counter runs 1–30 per mic-open (first ~3 seconds of each recording session).
+diagCountRef is reset to 0 on each recorder.record() call so each mic-open
+gets a fresh 30-callback window.
+
+Reading the DIAG output:
+
+  rawType="undefined", rawValue=null, 30 callbacks     → CASE (b) or (c)
+    The native layer is emitting status ticks but metering is not in the
+    payload. setMetering is never called. VAD deaf regardless of hardware.
+
+  0 DIAG logs appear at all                            → CASE (c)
+    The status callback is not firing. The useAudioRecorder subscription
+    is not receiving events from the native layer.
+
+  rawType="number", rawValue=0.0, isRecording=true     → CASE (a)
+    Native layer emits metering but always returns 0 amplitude.
+    Samsung VOICE_COMMUNICATION suppression confirmed.
+    getMaxAmplitude() returns 0 from hardware DSP processing layer.
+
+  rawType="number", rawValue=<negative dB>, varies     → CASE (d)
+    Metering is working. Problem is elsewhere in the VAD pipeline —
+    check the guard `typeof m === "number"` is not filtering valid values.
+
+================================================================================
+Q3 — expo-audio vs expo-av / CHANGELOG FINDINGS
+================================================================================
+
+Library in use: expo-audio 1.1.1 (installed).
+expo-av: NOT present in mobile package.json.
+
+Changelog search for 1.0.x and 1.1.x:
+  - NO entries about Android metering being fixed, broken, or changed.
+  - NO entries about VOICE_COMMUNICATION audio source and metering.
+  - 1.0.12 added `MediaRecorder.AudioSource` exposure on Android (the
+    audioSource field the VOICE_CALL_PRESET uses) — this predates 1.1.1.
+  - 1.0.13 fixed zero-byte recordings on Android after stop() — separate issue.
+
+From the native source (AudioRecorder.kt):
+  private var meteringEnabled = options.isMeteringEnabled
+  ...
+  if (!meteringEnabled || recorder == null || !isRecording) {
+    return  // no metering emitted
+  }
+  // Uses MediaRecorder.getMaxAmplitude() → puts result in status as "metering"
+
+This confirms metering IS implemented in expo-audio for Android via
+MediaRecorder.getMaxAmplitude(). The question is whether VOICE_COMMUNICATION
+suppresses the amplitude reading on the S24 Ultra.
+
+IMPORTANT: `metering` is a native field emitted by the Kotlin layer but NOT
+present in the official TypeScript type RecordingStatus. The TS type omits it.
+The cast `(status as RecordingStatus & { metering?: number })` is necessary.
+
+================================================================================
+Q4 — ANDROID AUDIO MODE / VOICE_COMMUNICATION vs VOICE_RECOGNITION
+================================================================================
+
+Current audio source: VOICE_COMMUNICATION (MediaRecorder.AudioSource = 7)
+  Effects: hardware AEC (echo cancellation), noise suppression, AGC.
+  Metering: uses MediaRecorder.getMaxAmplitude().
+  Samsung S24 Ultra: the VOICE_COMMUNICATION pipeline routes audio through
+  the DSP hardware layer. On Samsung flagship devices, this hardware layer
+  can suppress getMaxAmplitude() readings — returning 0 even during active
+  audio — because the processed audio amplitude is levelled by AGC before
+  the MediaRecorder amplitude meter reads it.
+
+VOICE_RECOGNITION (MediaRecorder.AudioSource = 6) as alternative:
+  Effects: noise suppression only. AGC and AEC are NOT applied.
+  Metering: getMaxAmplitude() reads the raw (non-AGC'd) amplitude — much
+  more likely to return non-zero values on Samsung hardware.
+  Suitability: designed for STT. No AEC means Ashley's TTS could bleed
+  into the mic if device speaker is used — but the call already runs through
+  Bluetooth/earpiece where AEC is done at the hardware driver level
+  independently of the MediaRecorder audio source.
+
+CONCLUSION ON VOICE_RECOGNITION: Viable in principle as a test — it would
+confirm the Samsung AGC/AEC suppression hypothesis. It is NOT a guaranteed
+fix because AEC loss could reintroduce echo, but it would isolate whether the
+metering issue is source-specific. DO NOT change yet — this is diagnosis only.
+
+================================================================================
+Q5 — PERMISSIONS
+================================================================================
+
+RECORD_AUDIO is the only Android permission required for metering.
+MediaRecorder.getMaxAmplitude() has no additional permission requirement.
+No manifest entries are needed for metering beyond standard mic recording.
+
+================================================================================
+WHAT THE DIAG WILL CONFIRM
+================================================================================
+
+The DIAG log output will distinguish all four cases:
+
+  CASE (b) [MOST LIKELY based on P0-1 data]:
+    30 lines appear, rawType=undefined, rawValue=null.
+    Means: native sends status ticks but without a metering field.
+    setMetering never called → VAD effect fires once at mount and never again.
+    Fix: emit setMetering(null) on non-number callbacks so the effect keeps
+    firing and can count null frames properly, OR change how VAD probe works.
+
+  CASE (c) [ALSO POSSIBLE]:
+    0 lines appear during a full call.
+    Means: useAudioRecorder status subscription never fires.
+    Fix: check if useAudioRecorder status callback requires a specific
+    prepareToRecordAsync option to activate, or if there is a bug in
+    expo-audio 1.1.1 on Android with the VOICE_COMMUNICATION source.
+
+  CASE (a):
+    30 lines appear, rawType=number, rawValue=0.0 consistently.
+    Means: Samsung hardware suppresses getMaxAmplitude() via VOICE_COMM.
+    Fix: switch audioSource to VOICE_RECOGNITION and re-test.
+
+  CASE (d):
+    Unexpected — metering would be working and the VAD logic itself would
+    be the bug. Would require a different investigation.
+
+================================================================================
+FILES CHANGED (diff scope)
+================================================================================
+
+git diff --name-only HEAD:
+  artifacts/mobile/lib/voiceInput.ts   (DIAG log only — 3 hunks)
+
+No other files changed. No logic changes. No API contract changes.
+No server changes.
+
+HUNKS:
+  1. Added diagCountRef = useRef(0) after meteringRef declaration
+  2. Status callback: added DIAG log for first 30 callbacks; renamed m → raw
+     for clarity; rest of logic unchanged
+  3. start(): added diagCountRef.current = 0 reset before recorder.record()
+
+================================================================================
+TYPECHECK: PASS (no errors)
+================================================================================
+
+Note: isRecording required a cast (RecordingStatus & { isRecording?: boolean })
+for the same reason as metering — it is in the native status payload but absent
+from the official TS type. Both casts already existed in the callback for
+metering; the DIAG log uses the same pattern.
+
+================================================================================
+HOW TO READ THE LOGS ON DEVICE
+================================================================================
+
+Open a voice call, let the mic open (mic-open triggers the 30-callback window).
+In Metro bundler console or Expo Go dev tools, filter for "[Audio][DIAG:metering]".
+The first 30 lines will appear within the first 3 seconds of each recording.
+
+Expected output format:
+  [Audio][DIAG:metering] {"n":1,"rawType":"undefined","rawValue":null,"isRecording":null}
+  [Audio][DIAG:metering] {"n":2,"rawType":"undefined","rawValue":null,"isRecording":null}
+  ...
+
+Or if hardware metering works:
+  [Audio][DIAG:metering] {"n":1,"rawType":"number","rawValue":-42.3,"isRecording":true}
+
+Or if callback never fires:
+  (silence — no DIAG lines appear)
+
+================================================================================
+END OF REPORT
+================================================================================

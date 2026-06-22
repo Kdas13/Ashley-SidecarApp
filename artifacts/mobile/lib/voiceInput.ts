@@ -52,6 +52,9 @@ const MIN_RECORDING_MS = 350;
 export function useVoiceRecorder(): VoiceRecorder {
   const meteringRef = useRef<number | null>(null);
   const [metering, setMetering] = useState<number | null>(null);
+  // P0-DIAG: throttle counter — reset each start(), logs first 30 callbacks
+  // (~3 s) so the probe window is fully covered without flooding the log.
+  const diagCountRef = useRef(0);
   const VOICE_CALL_PRESET = {
     ...RecordingPresets.HIGH_QUALITY,
     android: {
@@ -66,7 +69,25 @@ export function useVoiceRecorder(): VoiceRecorder {
   const recorder = useAudioRecorder(
     VOICE_CALL_PRESET,
     (status: RecordingStatus) => {
-      const m = (status as RecordingStatus & { metering?: number }).metering;
+      const raw = (status as RecordingStatus & { metering?: number }).metering;
+      // P0-DIAG: log first 30 callbacks per mic-open to confirm whether the
+      // native status callback fires at all, and what typeof raw is before
+      // the number guard below. Answers (a)/(b)/(c)/(d) from the brief:
+      //   callback never fires                → (c) events not firing
+      //   callback fires, rawType=undefined   → (b) type mismatch; setMetering
+      //                                           never called → VAD deaf
+      //   callback fires, rawType=number, 0  → (a)/(d) hardware returns zero
+      //   callback fires, rawType=number, <0 → metering working, VAD bug only
+      if (diagCountRef.current < 30) {
+        diagCountRef.current++;
+        audioLog("DIAG:metering", {
+          n: diagCountRef.current,
+          rawType: typeof raw,
+          rawValue: raw ?? null,
+          isRecording: (status as RecordingStatus & { isRecording?: boolean }).isRecording ?? null,
+        });
+      }
+      const m = raw;
       if (typeof m === "number" && Number.isFinite(m)) {
         meteringRef.current = m;
         setMetering(m);
@@ -144,6 +165,7 @@ export function useVoiceRecorder(): VoiceRecorder {
 
     meteringRef.current = null;
     setMetering(null);
+    diagCountRef.current = 0; // P0-DIAG: reset throttle on each new recording session
     recorder.record();
     startedAtRef.current = Date.now();
     setElapsedMs(0);
