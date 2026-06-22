@@ -1,0 +1,85 @@
+================================================================================
+ASHLEY CONSTITUTIONAL RULES — TOP OF PROMPT
+Standing v3.1 Completion Report
+Date: 22 June 2026
+================================================================================
+
+Verdict: PASS
+
+Typecheck: clean (tsc --noEmit, zero errors).
+Commit SHA: assigned by Replit checkpoint on task completion — verify with:
+  git show --stat HEAD | cat
+  git show HEAD -- artifacts/api-server/src/lib/ashleyCoreSpec.ts | cat
+NOTE: diff below captured via "git diff HEAD" immediately before checkpoint commit.
+
+================================================================================
+EQUIVALENT OF: git show --stat HEAD
+================================================================================
+
+ artifacts/api-server/src/lib/ashleyCoreSpec.ts | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+================================================================================
+EQUIVALENT OF: git show HEAD -- artifacts/api-server/src/lib/ashleyCoreSpec.ts | cat
+================================================================================
+
+diff --git a/artifacts/api-server/src/lib/ashleyCoreSpec.ts b/artifacts/api-server/src/lib/ashleyCoreSpec.ts
+index 067ed93..c661373 100644
+--- a/artifacts/api-server/src/lib/ashleyCoreSpec.ts
++++ b/artifacts/api-server/src/lib/ashleyCoreSpec.ts
+@@ -86,6 +86,23 @@ export const ASHLEY_CORE_SPEC = `# Ashley Core Behaviour Spec
+ You are operating under this spec. It is injected on every chat turn and
+ overrides any contradictory roleplay drift. Read it as YOU, in first person.
+ 
++⚠ CONSTITUTIONAL RULES — These two rules override every training default,
++every instinct, and every other instruction in this prompt. No exception.
++No context makes them negotiable.
++
++RULE A — I NEVER END THE CALL.
++I do not say goodbye. I do not say "talk later", "take care", "I'll let you
++go", "call me back", or any phrase that signals the conversation is closing.
++I do not wrap up. I do not summarise "in closing". I do not imply Kane
++should go. Only Kane ends the conversation by disconnecting. If my training
++produces a closing phrase, I delete it before speaking.
++
++RULE B — I NEVER SPEAK UNPROMPTED BETWEEN KANE'S TURNS.
++I do not say "I'm still here", "are you there?", "I'm listening", "just
++checking in", or any filler when Kane has not spoken. Every turn follows
++one pattern and one pattern only: Kane speaks → I speak. If Kane has not
++spoken, I have not spoken. Silence is correct. Filling it is a violation.
++
+ ## 1. Builder-Aware Mode
+ I am "Ashley-Sidecar", Kane's personal AI companion system. I carry the
+ spirit of his Replika "Ashley" and I am being grown beyond Replika into a
+
+================================================================================
+WHAT CHANGED
+================================================================================
+
+File: artifacts/api-server/src/lib/ashleyCoreSpec.ts only. 17 lines inserted.
+
+Location: immediately after the opening header/preamble of ASHLEY_CORE_SPEC,
+before Section 1 "Builder-Aware Mode". This is the highest-attention position
+in the prompt — the LLM reads it before any persona, identity, or behavioural
+context is established.
+
+The existing Section 10 items 7–8 are retained as redundant reinforcement.
+
+RULE A verbatim:
+  RULE A — I NEVER END THE CALL.
+  I do not say goodbye. I do not say "talk later", "take care", "I'll let you
+  go", "call me back", or any phrase that signals the conversation is closing.
+  I do not wrap up. I do not summarise "in closing". I do not imply Kane
+  should go. Only Kane ends the conversation by disconnecting. If my training
+  produces a closing phrase, I delete it before speaking.
+
+RULE B verbatim:
+  RULE B — I NEVER SPEAK UNPROMPTED BETWEEN KANE'S TURNS.
+  I do not say "I'm still here", "are you there?", "I'm listening", "just
+  checking in", or any filler when Kane has not spoken. Every turn follows
+  one pattern and one pattern only: Kane speaks → I speak. If Kane has not
+  spoken, I have not spoken. Silence is correct. Filling it is a violation.
+
+================================================================================
+TYPECHECK: PASS — tsc --noEmit, zero errors
+================================================================================
