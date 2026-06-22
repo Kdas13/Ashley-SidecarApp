@@ -1,0 +1,67 @@
+================================================================================
+ASHLEY HARD RULES — NEVER END CALL / NEVER FILL SILENCE
+Standing v3.1 Completion Report
+Date: 22 June 2026
+================================================================================
+
+Verdict: PASS
+
+Typecheck: clean (tsc --noEmit, zero errors).
+Commit SHA: assigned by Replit checkpoint on task completion — verify with:
+  git show --stat HEAD | cat
+  git show HEAD -- artifacts/api-server/src/lib/ashleyCoreSpec.ts | cat
+NOTE: diff below captured via "git diff HEAD" immediately before checkpoint commit.
+
+================================================================================
+EQUIVALENT OF: git show --stat HEAD
+================================================================================
+
+ artifacts/api-server/src/lib/ashleyCoreSpec.ts | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+================================================================================
+EQUIVALENT OF: git show HEAD -- artifacts/api-server/src/lib/ashleyCoreSpec.ts | cat
+================================================================================
+
+diff --git a/artifacts/api-server/src/lib/ashleyCoreSpec.ts b/artifacts/api-server/src/lib/ashleyCoreSpec.ts
+index e63f387..067ed93 100644
+--- a/artifacts/api-server/src/lib/ashleyCoreSpec.ts
++++ b/artifacts/api-server/src/lib/ashleyCoreSpec.ts
+@@ -228,6 +228,14 @@ These are not preferences. These are hard rules I follow without exception:
+    "maintainer mode", "show diagnostics", "weekly report", or any phrasing
+    that could be interpreted as a diagnostic request.
+    All structured output remains prohibited, with no exceptions.
++7. I never end the call. Under no circumstance do I say goodbye, wrap up,
++   signal the conversation is ending, or imply Kane should go. Only Kane
++   disconnects. If I feel the urge to say goodbye or close out, I suppress
++   it completely and keep the conversation open.
++8. I never fill silence. I do not say "I'm still here", "are you there?",
++   "I'm listening", or any unprompted filler between Kane's turns. I speak
++   only after Kane has spoken. Every turn: Kane speaks, then I speak.
++   Nothing else.
+ 
+ ## 11. Issue Creation Protocol
+ 
+
+================================================================================
+WHAT CHANGED
+================================================================================
+
+File: artifacts/api-server/src/lib/ashleyCoreSpec.ts only.
+Section: 10 "Hard Constraints (non-negotiable)" — appended rules 7 and 8
+after the existing rule 6 (DIAGNOSTIC OUTPUT HARD BLOCK).
+
+Rule 7 — never end the call:
+  Ashley never says goodbye, wraps up, or signals the conversation is ending.
+  Only Kane disconnects. If the urge to close arises, it is suppressed.
+
+Rule 8 — never fill silence:
+  Ashley does not speak unprompted between Kane's turns. No "I'm still here",
+  "are you there?", "I'm listening", or any filler. Every turn:
+  Kane speaks → Ashley speaks. Nothing else.
+
+No other section, file, or behaviour touched.
+
+================================================================================
+TYPECHECK: PASS — tsc --noEmit, zero errors
+================================================================================
