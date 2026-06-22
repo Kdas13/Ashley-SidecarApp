@@ -1,0 +1,86 @@
+VOICEORCHESTRATIONSERVICE — maybeRunWebLookup EVIDENCE
+22 Jun 2026
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+git log --oneline -10
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5f3c2c6 Published your App
+884641e Improve UK search results and refine shopping price presentation
+85fb9e9 Published your App
+adc9cba Published your App
+fd0681f Add web search capabilities to the voice interaction pipeline
+24517ee Add analysis of web search integration for voice calls
+2933b88 Published your App
+d3f1956 WS keepalive ping to prevent 60s call freeze (Task #86)
+f49276f Add a system to keep voice calls connected during periods of inactivity
+7b49337 Document the root cause of the 60-second voice call freeze
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+grep -n "maybeRunWebLookup" artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+28:import { maybeRunWebLookup } from "./webSearch.js";
+629:  const webLookup = await maybeRunWebLookup(utterance, ctx.messages, true);
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+git show fd0681f -- artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+commit fd0681fec164fad58fa12a7045cd69b1557eddb6
+Author: Replit Agent <agent@replit.com>
+Date:   Mon Jun 22 19:00:12 2026 +0000
+
+    Add web search capabilities to the voice interaction pipeline
+
+    Integrate `maybeRunWebLookup` into the voice pipeline in
+    `VoiceOrchestrationService.ts` to enrich the system prompt with web
+    search results before LLM generation, ensuring a seamless user
+    experience with improved information retrieval.
+
+diff --git a/artifacts/api-server/src/lib/VoiceOrchestrationService.ts b/artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+index 51893eb..cd00918 100644
+--- a/artifacts/api-server/src/lib/VoiceOrchestrationService.ts
++++ b/artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+@@ -25,6 +25,7 @@ import { VoiceContextAssembler } from "./VoiceContextAssembler.js";
+ import { getClipBuffer, hasClip } from "./AudioClipRegistry.js";
+ import type { ClipName } from "./AudioClipRegistry.js";
+ import { logger } from "./logger.js";
++import { maybeRunWebLookup } from "./webSearch.js";
+ 
+ // ---------------------------------------------------------------------------
+ // Constants
+@@ -620,6 +621,26 @@ async function runLLMAndTTSPipeline(
+ 
+   let sentenceBuffer = "";
+ 
++  // Web search enrichment — identical pattern to /api/chat/stream (chat.ts ~4897).
++  // The classifier decides whether a Tavily call is needed; most conversational
++  // turns return {search:false} immediately and add no meaningful delay.
++  // builderAware=true matches the profile default (VoiceContextAssembler already
++  // consumed the profile; we avoid a second DB read by using the known default).
++  const webLookup = await maybeRunWebLookup(utterance, ctx.messages, true);
++  if (webLookup) {
++    ctx.systemPrompt = `${ctx.systemPrompt}\n\n${webLookup.block}`;
++    logger.info(
++      {
++        sessionId:   session.sessionId,
++        turnId,
++        query:       webLookup.query.slice(0, 80),
++        outcome:     webLookup.kind,
++        resultCount: webLookup.kind === "success" ? webLookup.results.length : 0,
++      },
++      "VoiceOrch: web lookup injected into system prompt",
++    );
++  }
++
+   try {
+     const stream = streamChatText({
+       system:        ctx.systemPrompt,
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SUMMARY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+maybeRunWebLookup is confirmed present in VoiceOrchestrationService.ts:
+  - Line 28:  import { maybeRunWebLookup } from "./webSearch.js";
+  - Line 629: const webLookup = await maybeRunWebLookup(utterance, ctx.messages, true);
+
+Committed in fd0681f ("Add web search capabilities to the voice
+interaction pipeline"), currently live in the deployed HEAD at 5f3c2c6.
