@@ -1,0 +1,81 @@
+VOICE SEARCH LOG EVIDENCE — 22 Jun 2026 ~21:04 UTC
+Source: deployment logs (production API server)
+Query filter: tavily|webLookup|web lookup|TAVILY_API_KEY
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RAW LOG LINES (chronological)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+21:02 UTC [warn]
+  Search intent classifier returned non-JSON — skipping web lookup
+  raw="no problem at all, I'm here to help. what can I do for you?"
+  (greeting turn — correct skip, not a search query)
+
+21:03 UTC [error]
+  Web search failed; injecting failed block so Ashley can acknowledge
+  err type: WebSearchProviderError
+  message: Tavily returned 400: {"detail":{"error":"Invalid country. Must be a
+  valid country name from the list of supported countries
+  (https://docs.tavily.com/documentation/api-reference/endpoint/search)."}}
+  stack: tavilySearch (webSearch.ts:226) -> maybeRunWebLookup (webSearch.ts:423)
+         -> runLLMAndTTSPipeline (VoiceOrchestrationService.ts:629)
+         -> handleSpeechFinal (VoiceOrchestrationService.ts:946)
+         -> handleVoiceTurn (voice-call.ts:325)
+
+21:03 UTC [info]
+  VoiceOrch: web lookup injected into system prompt
+  sessionId="6e7d27d9-8ff3-44a9-a58c-46a5966c369c"
+  turnId="ced8de21-e479-4c55-ade6-c93fd55e4e71"
+  query="UK cheapest Jameson's orange whiskey bottle"
+  outcome="failed"
+  resultCount=0
+
+21:03 UTC [error]
+  Web search failed; injecting failed block so Ashley can acknowledge
+  err type: WebSearchProviderError
+  message: Tavily returned 400: {"detail":{"error":"Invalid country. Must be a
+  valid country name from the list of supported countries
+  (https://docs.tavily.com/documentation/api-reference/endpoint/search)."}}
+  stack: tavilySearch (webSearch.ts:226) -> maybeRunWebLookup (webSearch.ts:423)
+         -> runLLMAndTTSPipeline (VoiceOrchestrationService.ts:629)
+         -> handleSpeechFinal (VoiceOrchestrationService.ts:946)
+         -> handleVoiceTurn (voice-call.ts:325)
+
+21:03 UTC [info]
+  VoiceOrch: web lookup injected into system prompt
+  sessionId="6e7d27d9-8ff3-44a9-a58c-46a5966c369c"
+  turnId="ae357c8d-a12c-48cd-abeb-d405fb0d8896"
+  query="UK cheapest Jameson's orange whiskey"
+  outcome="failed"
+  resultCount=0
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ANSWERS TO YOUR THREE QUESTIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. "VoiceOrch: web lookup injected into system prompt" — YES, appears
+   twice. The classifier fix is working. Voice queries are now triggering
+   search intent correctly.
+
+2. Tavily errors around that time — YES. Two consecutive HTTP 400 errors.
+   No "TAVILY_API_KEY not set" messages — the key is present and
+   authenticated. The error is country parameter validation.
+
+3. Exact outcome field — "failed" on both turns (resultCount=0).
+   Root cause: the country:"gb" parameter added with the UK bias commit
+   is invalid. Tavily requires a full country name, not an ISO code.
+   The value "gb" must be changed to "United Kingdom" (or removed
+   entirely — the query already contains "UK" from the bias helper).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STATUS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Classifier fix:     WORKING
+  TAVILY_API_KEY:     PRESENT
+  Search triggering:  YES — fired on both Jameson's queries
+  Result delivery:    BLOCKED — country:"gb" invalid, Tavily returns 400
+  Fix required:       webSearch.ts — change country:"gb" to
+                      "United Kingdom" or remove the field entirely
+
+Awaiting your call before touching the file.
