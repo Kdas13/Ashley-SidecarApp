@@ -10,13 +10,13 @@
 //     traceable from the phone (no ADB needed — logs surface in the debug panel)
 // ---------------------------------------------------------------------------
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AudioModule,
   RecordingPresets,
   useAudioRecorder,
+  useAudioRecorderState,
   setAudioModeAsync,
-  type RecordingStatus,
 } from "expo-audio";
 import * as FileSystem from "expo-file-system/legacy";
 import { audioError, audioLog, patchAudioState } from "./audioState";
@@ -52,9 +52,6 @@ const MIN_RECORDING_MS = 350;
 export function useVoiceRecorder(): VoiceRecorder {
   const meteringRef = useRef<number | null>(null);
   const [metering, setMetering] = useState<number | null>(null);
-  // P0-DIAG: throttle counter — reset each start(), logs first 30 callbacks
-  // (~3 s) so the probe window is fully covered without flooding the log.
-  const diagCountRef = useRef(0);
   const VOICE_CALL_PRESET = {
     ...RecordingPresets.HIGH_QUALITY,
     android: {
@@ -66,32 +63,22 @@ export function useVoiceRecorder(): VoiceRecorder {
     },
   };
 
-  const recorder = useAudioRecorder(
-    VOICE_CALL_PRESET,
-    (status: RecordingStatus) => {
-      const raw = (status as RecordingStatus & { metering?: number }).metering;
-      // P0-DIAG: log first 30 callbacks per mic-open to confirm whether the
-      // native status callback fires at all, and what typeof raw is before
-      // the number guard below. Answers (a)/(b)/(c)/(d) from the brief:
-      //   callback never fires                → (c) events not firing
-      //   callback fires, rawType=undefined   → (b) type mismatch; setMetering
-      //                                           never called → VAD deaf
-      //   callback fires, rawType=number, 0  → (a)/(d) hardware returns zero
-      //   callback fires, rawType=number, <0 → metering working, VAD bug only
-      if (diagCountRef.current < 30) {
-        diagCountRef.current++;
-        // Bright prefix so the line stands out against fast-scrolling Metro output.
-        console.log(
-          `===DIAG:metering=== n=${diagCountRef.current} rawType=${typeof raw} rawValue=${raw ?? null} isRecording=${(status as RecordingStatus & { isRecording?: boolean }).isRecording ?? null}`,
-        );
-      }
-      const m = raw;
-      if (typeof m === "number" && Number.isFinite(m)) {
-        meteringRef.current = m;
-        setMetering(m);
-      }
-    },
-  );
+  // useAudioRecorder's status callback subscribes to the native
+  // "recordingStatusUpdate" event which is only emitted on state transitions
+  // (start/stop/pause) — not on a timer tick — so metering never arrives
+  // via that path on Android. useAudioRecorderState polls recorder.getStatus()
+  // every 100ms instead, which is the library's own documented solution and
+  // exposes metering as a first-class typed field on RecorderState.
+  const recorder = useAudioRecorder(VOICE_CALL_PRESET);
+  const recorderState = useAudioRecorderState(recorder, 100);
+
+  // Sync polled metering into meteringRef (read by VAD closures) and the
+  // metering React state (consumed by the VoiceRecorder return value).
+  useEffect(() => {
+    const m = recorderState.metering ?? null;
+    meteringRef.current = m;
+    setMetering(m);
+  }, [recorderState.metering]);
   const [state, setState] = useState<VoiceRecorderState>("idle");
   const stateRef = useRef<VoiceRecorderState>("idle");
   const setStateTracked = useCallback((s: VoiceRecorderState) => {
@@ -163,7 +150,6 @@ export function useVoiceRecorder(): VoiceRecorder {
 
     meteringRef.current = null;
     setMetering(null);
-    diagCountRef.current = 0; // P0-DIAG: reset throttle on each new recording session
     recorder.record();
     startedAtRef.current = Date.now();
     setElapsedMs(0);

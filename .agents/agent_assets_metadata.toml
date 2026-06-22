@@ -563,3 +563,9 @@ id = "Cm8gBCJ1_V1R-7bABtSKH"
 uri = "file://VoiceCall_MeteringFix_Options_22Jun2026.txt"
 type = "text"
 title = "VoiceCall_MeteringFix_Options_22Jun2026.txt"
+
+[[outputs]]
+id = "q9NfCbHT28nzIYYQQ6SkL"
+uri = "file://VoiceCall_MeteringFix_OptionA_22Jun2026.txt"
+type = "text"
+title = "VoiceCall_MeteringFix_OptionA_22Jun2026.txt"

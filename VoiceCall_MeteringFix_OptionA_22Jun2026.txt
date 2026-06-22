@@ -1,0 +1,114 @@
+================================================================================
+VOICE CALL — METERING FIX (OPTION A): useAudioRecorderState POLLING
+Standing v3.1 Completion Report
+Date: 22 June 2026
+================================================================================
+
+VERDICT: COMMITTED — typecheck passes — Expo workflow restarted.
+
+================================================================================
+WHAT CHANGED
+================================================================================
+
+File: artifacts/mobile/lib/voiceInput.ts — 4 hunks, voiceInput.ts only.
+
+HUNK 1 — imports:
+  + useEffect added to React import (was missing, needed for sync effect)
+  + useAudioRecorderState added to expo-audio import
+  - type RecordingStatus removed (no longer used anywhere in the file)
+
+HUNK 2 — hook init (removed diagCountRef):
+  - const diagCountRef = useRef(0) removed
+
+HUNK 3 — recorder block (core change):
+  BEFORE:
+    const recorder = useAudioRecorder(
+      VOICE_CALL_PRESET,
+      (status: RecordingStatus) => { ...dead callback... },
+    );
+
+  AFTER:
+    const recorder = useAudioRecorder(VOICE_CALL_PRESET);
+    const recorderState = useAudioRecorderState(recorder, 100);
+
+    useEffect(() => {
+      const m = recorderState.metering ?? null;
+      meteringRef.current = m;
+      setMetering(m);
+    }, [recorderState.metering]);
+
+HUNK 4 — start():
+  - diagCountRef.current = 0 removed (diagCountRef gone)
+
+================================================================================
+WHY THIS FIXES THE PROBLEM
+================================================================================
+
+Root cause (Case C, confirmed by DIAG log):
+  useAudioRecorder(options, statusCallback) wires the callback to the native
+  "recordingStatusUpdate" SharedObject event. On Android, expo-audio 1.1.1
+  emits this event only on state transitions (start / stop / pause) — not on
+  a timer tick during active recording. The callback therefore never fired
+  during the recording window, so setMetering was never called, recorder.metering
+  React state stayed null, and the VAD useEffect dependency never changed.
+
+  Additional: RecordingStatus (the event payload type) has no metering field
+  at all. Even if the callback had fired, the cast would always have yielded
+  undefined.
+
+Fix:
+  useAudioRecorderState(recorder, 100) polls recorder.getStatus() on a
+  setInterval every 100ms. getStatus() is a synchronous pull of the native
+  recorder state — it does not depend on native event emission. It returns
+  RecorderState, which has metering?: number as a first-class typed field
+  (no cast needed).
+
+  The useEffect([recorderState.metering]) then syncs each new polled value
+  into meteringRef (for VAD closures reading it synchronously) and setMetering
+  (for React consumers including the VoiceRecorder return value). useEffect
+  runs after render, so the VAD useEffect in useVoiceCall.ts will see the
+  updated metering on the same React flush.
+
+  100ms polling → ~10 samples/second → ~20 samples in the 2s VAD probe window.
+  The VAD's usableFrames and nullFrames counters will now accumulate real data.
+
+================================================================================
+WHAT IS NOT CHANGED
+================================================================================
+
+  - useVoiceCall.ts: untouched. VAD logic, probe timers, all state machines
+    unchanged. The VAD reads recorder.metering from the VoiceRecorder return
+    value, which is now backed by setMetering called from the sync useEffect.
+  - VOICE_CALL_PRESET: unchanged. VOICE_COMMUNICATION source, isMeteringEnabled:
+    true in prepareToRecordAsync, setAudioModeAsync — all preserved.
+  - No server changes, no API changes, no other files.
+
+================================================================================
+EXPECTED BEHAVIOUR AFTER THIS COMMIT
+================================================================================
+
+On Kane's S24 Ultra:
+  - recorder.getStatus() returns metering values from MediaRecorder.getMaxAmplitude()
+    directly (synchronous pull bypasses the broken native event pipeline).
+  - If the Samsung VOICE_COMMUNICATION AGC suppression that was suspected in
+    the original analysis is NOT present, metering values will be non-zero dB
+    during speech, and the VAD will produce usableFrames > 0 in the probe window.
+  - If Samsung AGC suppression IS present (getMaxAmplitude always returns 0
+    even on getStatus() pull), values will come through as 0 or near-zero dB
+    rather than undefined — the VAD will see them as nullFrames (below threshold)
+    rather than silence from missing events. This is a separate known risk
+    (documented in the options file) but is a different diagnosis from Case C.
+  - Either way: the "callback never fires" root cause is fixed. The VAD probe
+    will produce non-zero frame counts on the next call.
+
+================================================================================
+FILES CHANGED
+================================================================================
+
+git diff --name-only HEAD:
+  artifacts/mobile/lib/voiceInput.ts
+
+================================================================================
+TYPECHECK: PASS — no errors
+EXPO WORKFLOW: restarted
+================================================================================
