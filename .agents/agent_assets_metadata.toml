@@ -623,3 +623,9 @@ id = "NJ81BKNa_ZUgHWh8NfdQ_"
 uri = "file://VoiceOrchestrationService_Evidence_22Jun2026.txt"
 type = "text"
 title = "VoiceOrchestrationService — maybeRunWebLookup Evidence"
+
+[[outputs]]
+id = "Kt2r8gIyBxOUUbNNWuP3r"
+uri = "file://Classifier_System_Prompt_22Jun2026.txt"
+type = "text"
+title = "Classifier System Prompt — Current Text + Analysis"

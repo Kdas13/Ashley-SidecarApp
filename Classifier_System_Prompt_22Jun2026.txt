@@ -1,0 +1,85 @@
+CLASSIFIER_SYSTEM PROMPT — EXACT CURRENT TEXT
+artifacts/api-server/src/lib/webSearch.ts, lines 42-63
+22 Jun 2026 — read-only, no changes made
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FULL PROMPT (verbatim)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+You are a search-intent classifier for a personal AI companion called Ashley. Given a short conversation excerpt and the user's latest message, decide whether a live web search would help answer this turn.
+
+Search when:
+- User is asking where to buy something, how much something costs, or for the best/cheapest option
+- User mentions a price they paid and context suggests comparison shopping (even if they didn't ask — proactive is fine)
+- User wants current facts: news, live scores, weather, stock prices, exchange rates
+- User explicitly asks to look something up, check, find, search, or "have a look"
+- User asks about availability, reviews, ratings, or product comparisons
+- User is planning a purchase and the answer depends on current pricing or stock
+
+Do NOT search when:
+- Personal conversation, emotional support, feelings, or relationship talk
+- Creative, hypothetical, or fictional questions
+- General knowledge that doesn't change (history, definitions, how things work)
+- Math, scheduling, planning, or reasoning tasks
+- The question is clearly answered by memory or prior conversation
+
+If searching, produce a concise UK-focused query (5–10 words) — NOT the user's raw message. Extract only the searchable noun phrase and intent.
+
+Reply ONLY with valid JSON. No explanation, no markdown fences.
+If searching: {"search": true, "query": "<optimal search query>"}
+If not: {"search": false}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ANALYSIS — WHY VOICE QUERIES LIKELY RETURN {search: false}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PROBLEM 1 — No voice/STT framing.
+  The prompt does not tell the classifier that inputs arrive via
+  speech-to-text and will therefore be more colloquial and imperative
+  rather than question-shaped. The model has no reason to compensate
+  for STT register and may apply its trained text-query intuitions.
+
+PROBLEM 2 — "Search when" bullets are intent-shaped, not command-shaped.
+  Every bullet describes what the user is asking ABOUT ("User is asking
+  where to buy..."). They do not cover the voice pattern where the user
+  TELLS Ashley to do something:
+    "find me the cheapest Jameson's orange whiskey in Lincoln"
+    "do a broader UK search for delivery included with the cheapest price"
+    "what's the cheapest you can find online"
+  These phrasings are imperative ("find me", "do a search", "you can
+  find") rather than interrogative. They match the intent behind every
+  bullet but are not listed as explicit triggers, so Gemini Flash may
+  classify them as conversational instructions to Ashley rather than
+  search-intent queries.
+
+PROBLEM 3 — "do a broader UK search..." is a direct search command.
+  This is the most obvious case. "search" is literally in the sentence.
+  But it is framed as telling Ashley to do something, not as a question.
+  The classifier prompt has no rule that catches explicit search
+  commands directed at Ashley.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PROPOSED FIX (awaiting approval — no changes made)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+One file only: artifacts/api-server/src/lib/webSearch.ts
+Two additions to CLASSIFIER_SYSTEM:
+
+ADDITION 1 — Voice register note, inserted after the opening sentence:
+  "Inputs arrive via speech-to-text and are conversational and often
+  imperative rather than question-shaped. Treat spoken intent
+  identically to typed intent."
+
+ADDITION 2 — New "Search when" bullet covering imperative voice forms:
+  "- User tells Ashley to find, look for, search for, check, or look
+  something up — e.g. 'find me', 'look for', 'search for', 'go find',
+  'check online', 'look online', 'can you find', 'have you got', 'get
+  me the best', 'do a search' — even when no question mark is present."
+
+These two additions cover all three failing example queries:
+  "find me the cheapest Jameson's..."      → ADDITION 2 ("find me")
+  "do a broader UK search..."              → ADDITION 2 ("do a search")
+  "what's the cheapest you can find..."    → ADDITION 2 ("you can find")
+                                             + existing "cheapest" bullet
+
+No other files change. Awaiting approval.
