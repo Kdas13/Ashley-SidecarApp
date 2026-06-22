@@ -575,3 +575,9 @@ id = "u3YFwUgLo7Epi3hZiwqNY"
 uri = "file://ReactNativeAudioRecord_Architecture_22Jun2026.txt"
 type = "text"
 title = "ReactNativeAudioRecord_Architecture_22Jun2026.txt"
+
+[[outputs]]
+id = "tEyvyOwtAdDoTNew7Ys8K"
+uri = "file://ReactNativeAudioRecord_Commit_Evidence_22Jun2026.txt"
+type = "text"
+title = "ReactNativeAudioRecord_Commit_Evidence_22Jun2026.txt"

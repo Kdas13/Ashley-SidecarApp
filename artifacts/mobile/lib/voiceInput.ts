@@ -1,23 +1,21 @@
 // ---------------------------------------------------------------------------
-// Voice input — Push-to-talk STT via expo-audio.
+// Voice input — Push-to-talk STT via react-native-audio-record.
 //
-// See voiceOutput.ts for the staged voice plan status.
+// Replaces expo-audio's useAudioRecorder (whose native "recordingStatusUpdate"
+// event never fires during active recording on Android, making metering
+// permanently dead) with react-native-audio-record, which uses Android's
+// AudioRecord API directly. Raw 16-bit PCM chunks are streamed via a 'data'
+// event; amplitude is computed in JS from the samples, giving real metering
+// values that are immune to Samsung DSP/AGC suppression of getMaxAmplitude().
 //
-// Changes from previous version:
-//   • All state transitions logged via audioLog/audioError from audioState.ts
-//   • Every catch block now logs function name + error + current state
-//   • setAudioModeAsync calls logged so Android audio session changes are
-//     traceable from the phone (no ADB needed — logs surface in the debug panel)
+// Audio format: 16 kHz, mono, 16-bit PCM → WAV (Deepgram handles WAV natively).
+// AEC: audioSource=7 (VOICE_COMMUNICATION) preserves hardware echo cancellation,
+//      noise suppression, and AGC — the same source used by phone call apps.
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  AudioModule,
-  RecordingPresets,
-  useAudioRecorder,
-  useAudioRecorderState,
-  setAudioModeAsync,
-} from "expo-audio";
+import { PermissionsAndroid, Platform } from "react-native";
+import AudioRecord from "react-native-audio-record";
 import * as FileSystem from "expo-file-system/legacy";
 import { audioError, audioLog, patchAudioState } from "./audioState";
 
@@ -36,8 +34,9 @@ export type VoiceRecorder = {
   state: VoiceRecorderState;
   elapsedMs: number;
   /**
-   * Live metering value in dB (roughly -160 silence … 0 peak). Updated on
-   * every recorder status tick (~100ms). null when not recording.
+   * Live metering value in dBFS (roughly −160 silence … 0 peak). Computed
+   * from raw PCM chunk samples on every 'data' event (~100ms). null when
+   * not recording.
    */
   metering: number | null;
   ensurePermission: () => Promise<boolean>;
@@ -49,36 +48,20 @@ export type VoiceRecorder = {
 // Clips shorter than this are treated as accidental taps and discarded.
 const MIN_RECORDING_MS = 350;
 
+// Recording configuration: 16 kHz mono 16-bit PCM, VOICE_COMMUNICATION for AEC.
+// wavFile is the filename written to the app's documents directory; stop()
+// returns its full absolute path.
+const AUDIO_OPTIONS = {
+  sampleRate: 16000,
+  channels: 1,
+  bitsPerSample: 16,
+  audioSource: 7, // MediaRecorder.AudioSource.VOICE_COMMUNICATION
+  wavFile: "voice_input.wav",
+};
+
 export function useVoiceRecorder(): VoiceRecorder {
   const meteringRef = useRef<number | null>(null);
   const [metering, setMetering] = useState<number | null>(null);
-  const VOICE_CALL_PRESET = {
-    ...RecordingPresets.HIGH_QUALITY,
-    android: {
-      ...RecordingPresets.HIGH_QUALITY.android,
-      // VOICE_COMMUNICATION enables hardware acoustic echo cancellation (AEC),
-      // noise suppression, and AGC on Android — the same source used by phone
-      // call apps. Prevents Ashley's TTS audio from leaking back into the mic.
-      audioSource: "voice_communication" as const,
-    },
-  };
-
-  // useAudioRecorder's status callback subscribes to the native
-  // "recordingStatusUpdate" event which is only emitted on state transitions
-  // (start/stop/pause) — not on a timer tick — so metering never arrives
-  // via that path on Android. useAudioRecorderState polls recorder.getStatus()
-  // every 100ms instead, which is the library's own documented solution and
-  // exposes metering as a first-class typed field on RecorderState.
-  const recorder = useAudioRecorder(VOICE_CALL_PRESET);
-  const recorderState = useAudioRecorderState(recorder, 100);
-
-  // Sync polled metering into meteringRef (read by VAD closures) and the
-  // metering React state (consumed by the VoiceRecorder return value).
-  useEffect(() => {
-    const m = recorderState.metering ?? null;
-    meteringRef.current = m;
-    setMetering(m);
-  }, [recorderState.metering]);
   const [state, setState] = useState<VoiceRecorderState>("idle");
   const stateRef = useRef<VoiceRecorderState>("idle");
   const setStateTracked = useCallback((s: VoiceRecorderState) => {
@@ -88,6 +71,36 @@ export function useVoiceRecorder(): VoiceRecorder {
   const [elapsedMs, setElapsedMs] = useState(0);
   const startedAtRef = useRef<number | null>(null);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Init AudioRecord once on mount and subscribe to PCM data chunks for
+  // real-time metering. AudioRecord.on() calls removeAllListeners before
+  // addListener — only one handler is active at a time.
+  //
+  // Amplitude computation: decode base64 → 16-bit LE signed samples →
+  // max(|sample|) / 32768 → dBFS. This reads from the actual PCM buffer
+  // rather than querying the hardware amplitude meter, so Samsung's AGC
+  // cannot suppress it.
+  useEffect(() => {
+    AudioRecord.init(AUDIO_OPTIONS);
+    let active = true;
+    AudioRecord.on("data", (chunk: string) => {
+      if (!active) return;
+      const binary = atob(chunk);
+      let max = 0;
+      for (let i = 0; i + 1 < binary.length; i += 2) {
+        let sample = binary.charCodeAt(i) | (binary.charCodeAt(i + 1) << 8);
+        if (sample > 32767) sample -= 65536; // two's complement → signed int16
+        const abs = Math.abs(sample);
+        if (abs > max) max = abs;
+      }
+      const dBFS = max > 0 ? 20 * Math.log10(max / 32768) : -160;
+      meteringRef.current = dBFS;
+      setMetering(dBFS);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const stopTicker = useCallback(() => {
     if (tickRef.current !== null) {
@@ -99,11 +112,16 @@ export function useVoiceRecorder(): VoiceRecorder {
   const ensurePermission = useCallback(async () => {
     audioLog("STT.ensurePermission");
     try {
-      const status = await AudioModule.requestRecordingPermissionsAsync();
-      const granted = Boolean(status.granted);
-      patchAudioState({
-        micPermission: granted ? "granted" : "denied",
-      });
+      let granted = true;
+      if (Platform.OS === "android") {
+        const result = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+        );
+        granted = result === PermissionsAndroid.RESULTS.GRANTED;
+      }
+      // On iOS the system permission dialog fires automatically on the first
+      // AudioRecord.start() call — no explicit request needed here.
+      patchAudioState({ micPermission: granted ? "granted" : "denied" });
       audioLog("STT.ensurePermission.result", { granted });
       return granted;
     } catch (err) {
@@ -115,42 +133,29 @@ export function useVoiceRecorder(): VoiceRecorder {
 
   const start = useCallback(async () => {
     audioLog("STT.start");
-    // Guard: if the recorder is already running, skip rather than calling
-    // prepareToRecordAsync on a prepared session (throws "already been prepared").
-    // This is a safety net — the mutex in openMic should prevent concurrent calls,
-    // but defensive here in case any other caller bypasses that guard.
+    // Guard: if already recording skip. Safety net — the mutex in openMic
+    // should prevent concurrent calls, but defensive in case any caller bypasses.
     if (stateRef.current === "recording") {
       audioLog("STT.start.skipped — already recording");
       return;
     }
-    // setAudioModeAsync({ allowsRecording: true }) configures the audio
-    // session for capture on iOS; it also tells Android we want recording
-    // focus. Must complete BEFORE prepareToRecordAsync so the session is
-    // in the right state when the recorder acquires the hardware.
-    try {
-      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
-      patchAudioState({ audioFocusState: "recording" });
-      audioLog("STT.start.audioModeSet");
-    } catch (err) {
-      audioError("STT.start.setAudioMode", err);
-      // Continue anyway — recording may still work.
-    }
 
+    meteringRef.current = null;
+    setMetering(null);
+
+    // react-native-audio-record acquires audio focus internally on start().
+    // No explicit setAudioModeAsync needed; VOICE_COMMUNICATION AEC stays
+    // active throughout the session via the audioSource configuration.
     try {
-      await recorder.prepareToRecordAsync({
-        ...VOICE_CALL_PRESET,
-        isMeteringEnabled: true,
-      });
-      audioLog("STT.start.prepared");
+      AudioRecord.start();
+      patchAudioState({ audioFocusState: "recording" });
+      audioLog("STT.start.recording");
     } catch (err) {
-      audioError("STT.start.prepareToRecordAsync", err);
+      audioError("STT.start", err);
       patchAudioState({ sttReady: false, audioFocusState: "none" });
       throw err; // Propagate so handleMicPressIn can show voiceError.
     }
 
-    meteringRef.current = null;
-    setMetering(null);
-    recorder.record();
     startedAtRef.current = Date.now();
     setElapsedMs(0);
     setStateTracked("recording");
@@ -159,7 +164,6 @@ export function useVoiceRecorder(): VoiceRecorder {
       sttReady: true,
       lastSttStartedAt: Date.now(),
     });
-    audioLog("STT.start.recording");
 
     stopTicker();
     tickRef.current = setInterval(() => {
@@ -171,7 +175,7 @@ export function useVoiceRecorder(): VoiceRecorder {
         stopTicker();
       }
     }, 100);
-  }, [recorder, stopTicker, setStateTracked]);
+  }, [stopTicker, setStateTracked]);
 
   const finish = useCallback(
     async (returnAudio: boolean): Promise<RecordedAudio | null> => {
@@ -181,9 +185,10 @@ export function useVoiceRecorder(): VoiceRecorder {
       startedAtRef.current = null;
       const durationMs = startedAt === null ? 0 : Date.now() - startedAt;
 
+      let filePath: string;
       try {
-        await recorder.stop();
-        audioLog("STT.finish.stopped", { durationMs });
+        filePath = await AudioRecord.stop();
+        audioLog("STT.finish.stopped", { durationMs, filePath });
       } catch (err) {
         audioError("STT.finish.stop", err, { durationMs });
         setStateTracked("idle");
@@ -195,49 +200,42 @@ export function useVoiceRecorder(): VoiceRecorder {
         return null;
       }
 
-      const uri = recorder.uri;
-
-      // Do NOT reset allowsRecording to false here. For voice calls, the
-      // VOICE_COMMUNICATION audio source (hardware AEC) must stay active
-      // throughout the session — switching the mode off between turns
-      // destroys the echo cancellation pipeline. The mode was set to
-      // { allowsRecording: true } in start() and must remain there.
-
       meteringRef.current = null;
       setMetering(null);
       patchAudioState({ sttListening: false, lastSttStoppedAt: Date.now() });
 
-      if (!returnAudio || !uri || durationMs < MIN_RECORDING_MS) {
+      if (!returnAudio || !filePath || durationMs < MIN_RECORDING_MS) {
         setStateTracked("idle");
         setElapsedMs(0);
-        audioLog("STT.finish.discarded", { returnAudio, hasUri: !!uri, durationMs });
+        audioLog("STT.finish.discarded", {
+          returnAudio,
+          hasPath: !!filePath,
+          durationMs,
+        });
         return null;
       }
 
       setStateTracked("processing");
       try {
+        // AudioRecord.stop() returns an absolute path on Android; FileSystem
+        // requires a file:// URI.
+        const uri = filePath.startsWith("file://")
+          ? filePath
+          : `file://${filePath}`;
         const audioBase64 = await FileSystem.readAsStringAsync(uri, {
           encoding: FileSystem.EncodingType.Base64,
         });
-        const lower = uri.toLowerCase();
-        const mimeType = lower.endsWith(".wav")
-          ? "audio/wav"
-          : lower.endsWith(".caf")
-            ? "audio/x-caf"
-            : lower.endsWith(".webm")
-              ? "audio/webm"
-              : "audio/m4a";
-        audioLog("STT.finish.audioReady", { mimeType, durationMs });
-        return { audioBase64, mimeType, durationMs };
+        audioLog("STT.finish.audioReady", { mimeType: "audio/wav", durationMs });
+        return { audioBase64, mimeType: "audio/wav", durationMs };
       } catch (err) {
-        audioError("STT.finish.readAudio", err, { uri });
+        audioError("STT.finish.readAudio", err, { filePath });
         return null;
       } finally {
         setStateTracked("idle");
         setElapsedMs(0);
       }
     },
-    [recorder, stopTicker, setStateTracked],
+    [stopTicker, setStateTracked],
   );
 
   const stop = useCallback(() => finish(true), [finish]);

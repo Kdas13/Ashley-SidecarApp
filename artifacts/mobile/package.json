@@ -65,6 +65,7 @@
     "expo-image-manipulator": "~14.0.8",
     "expo-media-library": "~18.2.1",
     "expo-notifications": "~0.32.17",
-    "expo-sharing": "~14.0.8"
+    "expo-sharing": "~14.0.8",
+    "react-native-audio-record": "^0.2.2"
   }
 }
