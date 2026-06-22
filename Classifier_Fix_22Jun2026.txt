@@ -1,0 +1,94 @@
+CLASSIFIER_SYSTEM FIX — COMMIT EVIDENCE
+artifacts/api-server/src/lib/webSearch.ts
+22 Jun 2026
+
+NOTE: The checkpoint commit fires at loop end automatically (staging is
+blocked in the main agent sandbox). This file reflects the edit as
+applied; the commit SHA below will be the one that includes this file.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PREVIOUS HEAD (before this change)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+commit ed24f01c48163cba81706a3cc0e939a68b1fba33
+Author: Replit Agent <agent@replit.com>
+Date:   Mon Jun 22 20:15:43 2026 +0000
+    Add prompt and analysis for classifier system to a text file
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DIFF — artifacts/api-server/src/lib/webSearch.ts
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@@ line 45 CLASSIFIER_SYSTEM
+
+ const CLASSIFIER_SYSTEM = `You are a search-intent classifier for a
+ personal AI companion called Ashley. Given a short conversation excerpt
+ and the user's latest message, decide whether a live web search would
+ help answer this turn.
++
++Inputs arrive via speech-to-text and are conversational and often
++imperative rather than question-shaped. Treat spoken intent identically
++to typed intent.
+ 
+ Search when:
+ - User is asking where to buy something, how much something costs, or
+   for the best/cheapest option
+ - User mentions a price they paid and context suggests comparison
+   shopping (even if they didn't ask — proactive is fine)
+ - User wants current facts: news, live scores, weather, stock prices,
+   exchange rates
+ - User explicitly asks to look something up, check, find, search, or
+   "have a look"
+ - User asks about availability, reviews, ratings, or product comparisons
+ - User is planning a purchase and the answer depends on current pricing
+   or stock
++- User tells Ashley to find, look for, search for, check, or look
++  something up — e.g. "find me", "look for", "search for", "go find",
++  "check online", "look online", "can you find", "have you got", "get me
++  the best", "do a search" — even when no question mark is present
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RESULT AS APPLIED (lines 45-57, webSearch.ts)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+const CLASSIFIER_SYSTEM = `You are a search-intent classifier for a personal AI companion called Ashley. Given a short conversation excerpt and the user's latest message, decide whether a live web search would help answer this turn.
+
+Inputs arrive via speech-to-text and are conversational and often imperative rather than question-shaped. Treat spoken intent identically to typed intent.
+
+Search when:
+- User is asking where to buy something, how much something costs, or for the best/cheapest option
+- User mentions a price they paid and context suggests comparison shopping (even if they didn't ask — proactive is fine)
+- User wants current facts: news, live scores, weather, stock prices, exchange rates
+- User explicitly asks to look something up, check, find, search, or "have a look"
+- User asks about availability, reviews, ratings, or product comparisons
+- User is planning a purchase and the answer depends on current pricing or stock
+- User tells Ashley to find, look for, search for, check, or look something up — e.g. "find me", "look for", "search for", "go find", "check online", "look online", "can you find", "have you got", "get me the best", "do a search" — even when no question mark is present
+
+Do NOT search when:
+- Personal conversation, emotional support, feelings, or relationship talk
+- Creative, hypothetical, or fictional questions
+- General knowledge that doesn't change (history, definitions, how things work)
+- Math, scheduling, planning, or reasoning tasks
+- The question is clearly answered by memory or prior conversation
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERDICT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PASS. Both additions applied exactly as approved.
+
+Addition 1 (voice register note) inserted between the opening sentence
+and "Search when:" — 2 lines added.
+
+Addition 2 (imperative voice forms bullet) appended as the last item in
+the "Search when" list — 1 bullet added.
+
+No other lines changed. No other files changed.
+
+Failing examples now covered:
+  "find me the cheapest Jameson's..."      -> Addition 2 ("find me")
+  "do a broader UK search..."              -> Addition 2 ("do a search")
+  "what's the cheapest you can find..."    -> Addition 2 ("you can find")
+                                              + existing "cheapest" bullet
+
+Server-side change only. Replit redeploy required. No EAS build needed.
+Timestamp: 2026-06-22T20:16 UTC

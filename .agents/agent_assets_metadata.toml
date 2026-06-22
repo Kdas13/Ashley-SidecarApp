@@ -629,3 +629,9 @@ id = "Kt2r8gIyBxOUUbNNWuP3r"
 uri = "file://Classifier_System_Prompt_22Jun2026.txt"
 type = "text"
 title = "Classifier System Prompt — Current Text + Analysis"
+
+[[outputs]]
+id = "H2Z9WjwABOPHdwRxOZ9qB"
+uri = "file://Classifier_Fix_22Jun2026.txt"
+type = "text"
+title = "Classifier Fix — Commit Evidence"

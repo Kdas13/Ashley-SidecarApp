@@ -41,6 +41,8 @@ const CLASSIFIER_HISTORY_TURNS = 4;
 
 const CLASSIFIER_SYSTEM = `You are a search-intent classifier for a personal AI companion called Ashley. Given a short conversation excerpt and the user's latest message, decide whether a live web search would help answer this turn.
 
+Inputs arrive via speech-to-text and are conversational and often imperative rather than question-shaped. Treat spoken intent identically to typed intent.
+
 Search when:
 - User is asking where to buy something, how much something costs, or for the best/cheapest option
 - User mentions a price they paid and context suggests comparison shopping (even if they didn't ask — proactive is fine)
@@ -48,6 +50,7 @@ Search when:
 - User explicitly asks to look something up, check, find, search, or "have a look"
 - User asks about availability, reviews, ratings, or product comparisons
 - User is planning a purchase and the answer depends on current pricing or stock
+- User tells Ashley to find, look for, search for, check, or look something up — e.g. "find me", "look for", "search for", "go find", "check online", "look online", "can you find", "have you got", "get me the best", "do a search" — even when no question mark is present
 
 Do NOT search when:
 - Personal conversation, emotional support, feelings, or relationship talk
