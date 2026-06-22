@@ -330,6 +330,9 @@ wss.on("connection", (ws: any, _req: any, deviceId: string) => {
       return; // stale message — already logged by validateMessage
     }
 
+    // Keepalive ping — no-op, just resets the proxy's inactivity timer.
+    if (msg["type"] === "ping") return;
+
     // P1-4 Stage 2: speech_interim — intent pre-classification only.
     if (msg["type"] === "speech_interim") {
       const interimTranscript = ((msg["transcript"] as string | undefined) ?? "").trim();

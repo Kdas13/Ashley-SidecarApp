@@ -185,6 +185,7 @@ export function useVoiceCall(): {
   }, []);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const chunkBufRef = useRef<Uint8Array[]>([]);
   const playQueueRef = useRef<string[]>([]);
   const playerRef = useRef<AudioPlayer | null>(null);
@@ -216,7 +217,6 @@ export function useVoiceCall(): {
   const activeSilenceMsRef      = useRef<number>(SILENCE_MS);
   const reconnectAttemptsRef  = useRef(0);
   const connectRef            = useRef<() => void>(() => {});
-  const keepalivePingRef      = useRef<ReturnType<typeof setInterval> | null>(null);
   // ttsServerDoneRef: true once the server has sent tts_done (all chunks sent).
   // ttsCompleteRef:   true once the device has finished PLAYING all queued audio.
   // Both must be true before openMic is allowed to run.
@@ -934,7 +934,8 @@ export function useVoiceCall(): {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      keepalivePingRef.current = setInterval(() => {
+      if (pingIntervalRef.current !== null) clearInterval(pingIntervalRef.current);
+      pingIntervalRef.current = setInterval(() => {
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           try { wsRef.current.send(JSON.stringify({ type: "ping" })); } catch { /* ignore */ }
         }
@@ -947,11 +948,11 @@ export function useVoiceCall(): {
       setError("Connection dropped — reconnecting...");
     };
     ws.onclose = () => {
-      wsRef.current = null;
-      if (keepalivePingRef.current !== null) {
-        clearInterval(keepalivePingRef.current);
-        keepalivePingRef.current = null;
+      if (pingIntervalRef.current !== null) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
       }
+      wsRef.current = null;
       vadActiveRef.current = false;
       clearAutoSubmitTimer();
       stopPlayback();
@@ -982,9 +983,9 @@ export function useVoiceCall(): {
   // ── Disconnect ────────────────────────────────────────────────────────────
 
   const disconnect = useCallback((): void => {
-    if (keepalivePingRef.current !== null) {
-      clearInterval(keepalivePingRef.current);
-      keepalivePingRef.current = null;
+    if (pingIntervalRef.current !== null) {
+      clearInterval(pingIntervalRef.current);
+      pingIntervalRef.current = null;
     }
     clearAutoSubmitTimer();
     vadActiveRef.current = false;
@@ -1004,9 +1005,9 @@ export function useVoiceCall(): {
 
   useEffect(() => {
     return () => {
-      if (keepalivePingRef.current !== null) {
-        clearInterval(keepalivePingRef.current);
-        keepalivePingRef.current = null;
+      if (pingIntervalRef.current !== null) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
       }
       clearAutoSubmitTimer();
       if (vadProbeTimerRef.current !== null) {
