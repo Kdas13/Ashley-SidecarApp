@@ -25,7 +25,7 @@ import { getDeviceIdSync } from "./deviceId";
 
 // ── VAD config ────────────────────────────────────────────────────────────────
 
-const SILENCE_DB    = -70;    // was -45; live testing shows TV noise at -55..-64 dBFS, child voice at -67 dBFS — floor raised to exclude measured background noise
+const SILENCE_DB    = -28;    // calibrated on device: Kane's voice -23 dBFS (triggers), TV -30 dBFS (blocked), child nearby -45 dBFS (blocked)
 const SILENCE_MS    = 3500;   // silence tolerance once significant speech has been detected
 const MIN_SPEECH_MS = 500;    // was 200 — too short, catching non-speech sounds
 
