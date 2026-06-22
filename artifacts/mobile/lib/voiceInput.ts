@@ -80,12 +80,10 @@ export function useVoiceRecorder(): VoiceRecorder {
       //   callback fires, rawType=number, <0 → metering working, VAD bug only
       if (diagCountRef.current < 30) {
         diagCountRef.current++;
-        audioLog("DIAG:metering", {
-          n: diagCountRef.current,
-          rawType: typeof raw,
-          rawValue: raw ?? null,
-          isRecording: (status as RecordingStatus & { isRecording?: boolean }).isRecording ?? null,
-        });
+        // Bright prefix so the line stands out against fast-scrolling Metro output.
+        console.log(
+          `===DIAG:metering=== n=${diagCountRef.current} rawType=${typeof raw} rawValue=${raw ?? null} isRecording=${(status as RecordingStatus & { isRecording?: boolean }).isRecording ?? null}`,
+        );
       }
       const m = raw;
       if (typeof m === "number" && Number.isFinite(m)) {
