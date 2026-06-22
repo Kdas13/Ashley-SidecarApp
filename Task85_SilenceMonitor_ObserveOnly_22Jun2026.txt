@@ -1,0 +1,122 @@
+================================================================================
+TASK #85 — SILENCE MONITOR: OBSERVE ONLY, NEVER ACT
+Standing v3.1 completion report — 22 June 2026
+================================================================================
+
+VERDICT: COMPLETE
+
+One file changed: artifacts/api-server/src/routes/voice-call.ts
+Typecheck: PASS (tsc --noEmit, zero errors)
+
+NOTE: git commit is performed by the platform on task merge. The diff below
+is captured from `git diff` immediately before merge and is identical to what
+the commit will contain.
+
+BASE COMMIT (pre-change): a54007413abde38e20f94cdbf8fa2f15fed9f5a9
+
+================================================================================
+git diff artifacts/api-server/src/routes/voice-call.ts
+================================================================================
+
+diff --git a/artifacts/api-server/src/routes/voice-call.ts b/artifacts/api-server/src/routes/voice-call.ts
+index c3fd30e..b36446d 100644
+--- a/artifacts/api-server/src/routes/voice-call.ts
++++ b/artifacts/api-server/src/routes/voice-call.ts
+@@ -249,16 +249,12 @@ async function speakFarewell(session: VoiceSession): Promise<void> {
+ }
+ 
+ // ---------------------------------------------------------------------------
+-// startSilenceMonitor — starts a recurring 5-second poll that enforces the
+-// silence lifecycle:
+-//
+-//   0–30s  listening, no audio  →  nothing
+-//   30s                         →  "still there?" (once only)
+-//   60s  (warning already sent) →  farewell TTS + call_ended + finalise
+-//   90s  (failsafe)             →  force-close without TTS
++// startSilenceMonitor — starts a recurring 5-second poll that observes and
++// logs silence duration. No actions are taken regardless of how long the
++// session is silent. Only Kane ends calls.
+ //
+ // The poll pauses automatically when state ≠ "listening" (the tick fires but
+-// does not measure silence while Claude or TTS is active). The timer is
++// does not measure silence while LLM or TTS is active). The timer is
+ // cancelled by registry.finalise() when the session closes.
+ //
+ // Must be called once per session from index.ts after call_connected is sent.
+@@ -291,40 +287,18 @@ export function startSilenceMonitor(session: VoiceSession): void {
+       if (silenceMs >= SILENCE_FORCE_MS) {
+         logger.warn(
+           { deviceId: session.deviceId, silenceMs },
+-          "voice: silence failsafe (90s) — force closing session",
++          "voice: silence 90s — observed only",
+         );
+-        try {
+-          session.ws?.send(
+-            JSON.stringify({ type: "call_ended", reason: "silence_timeout" }),
+-          );
+-        } catch {}
+-        session.silenceTimer = null;
+-        registry.finalise(session.sessionId, "silence_timeout_failsafe");
+-        return;
+-      }
+-
+-      if (silenceMs >= SILENCE_END_MS && session.silenceWarningSent) {
++      } else if (silenceMs >= SILENCE_END_MS) {
+         logger.info(
+           { deviceId: session.deviceId, silenceMs },
+-          "voice: silence 60s — speaking farewell and ending call",
++          "voice: silence 60s — observed only",
+         );
+-        session.silenceTimer = null;
+-        void speakFarewell(session).catch((err) => {
+-          logger.error({ err, deviceId: session.deviceId }, "voice: speakFarewell failed");
+-          registry.finalise(session.sessionId, "silence_timeout");
+-        });
+-        return;
+-      }
+-
+-      if (silenceMs >= SILENCE_WARN_MS && !session.silenceWarningSent) {
++      } else if (silenceMs >= SILENCE_WARN_MS) {
+         logger.info(
+           { deviceId: session.deviceId, silenceMs },
+-          "voice: silence 30s — speaking warning",
++          "voice: silence 30s — observed only",
+         );
+-        session.silenceWarningSent = true;
+-        void speakFallback(session, "Still there?").catch((err) => {
+-          logger.error({ err, deviceId: session.deviceId }, "voice: silence warning TTS failed");
+-        });
+       }
+     }
+ 
+================================================================================
+WHAT CHANGED
+================================================================================
+
+Three action branches gutted from tick() inside startSilenceMonitor():
+
+1. 90s branch — removed:
+   - ws.send({ type: "call_ended", reason: "silence_timeout" })
+   - registry.finalise(session.sessionId, "silence_timeout_failsafe")
+   - early return
+   Retained: logger.warn log line (message updated to "observed only")
+
+2. 60s branch — removed:
+   - speakFarewell() call + error handler
+   - silenceWarningSent guard (condition simplified to silenceMs >= SILENCE_END_MS)
+   - early return + silenceTimer = null
+   Retained: logger.info log line (message updated to "observed only")
+
+3. 30s branch — removed:
+   - speakFallback("Still there?") call + error handler
+   - session.silenceWarningSent = true
+   Retained: logger.info log line (message updated to "observed only")
+
+Polling structure (5s tick, state gates, session.silenceTimer scheduling)
+unchanged. Function comment updated. speakFallback and speakFarewell
+untouched (out of scope per task). Constants SILENCE_WARN_MS / SILENCE_END_MS
+/ SILENCE_FORCE_MS retained as log-level thresholds.
+
+================================================================================
+END
+================================================================================

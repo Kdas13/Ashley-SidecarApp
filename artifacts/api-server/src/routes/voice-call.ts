@@ -249,16 +249,12 @@ async function speakFarewell(session: VoiceSession): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// startSilenceMonitor — starts a recurring 5-second poll that enforces the
-// silence lifecycle:
-//
-//   0–30s  listening, no audio  →  nothing
-//   30s                         →  "still there?" (once only)
-//   60s  (warning already sent) →  farewell TTS + call_ended + finalise
-//   90s  (failsafe)             →  force-close without TTS
+// startSilenceMonitor — starts a recurring 5-second poll that observes and
+// logs silence duration. No actions are taken regardless of how long the
+// session is silent. Only Kane ends calls.
 //
 // The poll pauses automatically when state ≠ "listening" (the tick fires but
-// does not measure silence while Claude or TTS is active). The timer is
+// does not measure silence while LLM or TTS is active). The timer is
 // cancelled by registry.finalise() when the session closes.
 //
 // Must be called once per session from index.ts after call_connected is sent.
@@ -291,40 +287,18 @@ export function startSilenceMonitor(session: VoiceSession): void {
       if (silenceMs >= SILENCE_FORCE_MS) {
         logger.warn(
           { deviceId: session.deviceId, silenceMs },
-          "voice: silence failsafe (90s) — force closing session",
+          "voice: silence 90s — observed only",
         );
-        try {
-          session.ws?.send(
-            JSON.stringify({ type: "call_ended", reason: "silence_timeout" }),
-          );
-        } catch {}
-        session.silenceTimer = null;
-        registry.finalise(session.sessionId, "silence_timeout_failsafe");
-        return;
-      }
-
-      if (silenceMs >= SILENCE_END_MS && session.silenceWarningSent) {
+      } else if (silenceMs >= SILENCE_END_MS) {
         logger.info(
           { deviceId: session.deviceId, silenceMs },
-          "voice: silence 60s — speaking farewell and ending call",
+          "voice: silence 60s — observed only",
         );
-        session.silenceTimer = null;
-        void speakFarewell(session).catch((err) => {
-          logger.error({ err, deviceId: session.deviceId }, "voice: speakFarewell failed");
-          registry.finalise(session.sessionId, "silence_timeout");
-        });
-        return;
-      }
-
-      if (silenceMs >= SILENCE_WARN_MS && !session.silenceWarningSent) {
+      } else if (silenceMs >= SILENCE_WARN_MS) {
         logger.info(
           { deviceId: session.deviceId, silenceMs },
-          "voice: silence 30s — speaking warning",
+          "voice: silence 30s — observed only",
         );
-        session.silenceWarningSent = true;
-        void speakFallback(session, "Still there?").catch((err) => {
-          logger.error({ err, deviceId: session.deviceId }, "voice: silence warning TTS failed");
-        });
       }
     }
 
