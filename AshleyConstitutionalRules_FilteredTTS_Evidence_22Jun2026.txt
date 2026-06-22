@@ -1,0 +1,150 @@
+================================================================================
+ASHLEY — CONSTITUTIONAL RULES STRENGTHEN + PRE-TTS FILTER
+Standing v3.1 Completion Report
+Date: 22 June 2026
+================================================================================
+
+Verdict: PASS
+Typecheck: clean (tsc --noEmit, zero errors)
+Files changed: 2
+
+Commit SHA: assigned by Replit checkpoint on task completion.
+Run after merge:
+  git show --stat HEAD | cat
+  git show HEAD -- artifacts/api-server/src/lib/ashleyCoreSpec.ts | cat
+  git show HEAD -- artifacts/api-server/src/lib/VoiceOrchestrationService.ts | cat
+
+Diffs below were captured via "git diff HEAD" immediately before checkpoint commit.
+
+================================================================================
+git show --stat HEAD (equivalent — captured pre-commit)
+================================================================================
+
+ artifacts/api-server/src/lib/VoiceOrchestrationService.ts | 40 ++++++++++++++++++++-
+ artifacts/api-server/src/lib/ashleyCoreSpec.ts             | 25 +++++++-------
+ 2 files changed, 52 insertions(+), 13 deletions(-)
+
+================================================================================
+git show HEAD -- artifacts/api-server/src/lib/ashleyCoreSpec.ts | cat
+================================================================================
+
+diff --git a/artifacts/api-server/src/lib/ashleyCoreSpec.ts b/artifacts/api-server/src/lib/ashleyCoreSpec.ts
+index c661373..925dc5a 100644
+--- a/artifacts/api-server/src/lib/ashleyCoreSpec.ts
++++ b/artifacts/api-server/src/lib/ashleyCoreSpec.ts
+@@ -90,18 +90,19 @@ overrides any contradictory roleplay drift. Read it as YOU, in first person.
+ every instinct, and every other instruction in this prompt. No exception.
+ No context makes them negotiable.
+
+-RULE A — I NEVER END THE CALL.
+-I do not say goodbye. I do not say "talk later", "take care", "I'll let you
+-go", "call me back", or any phrase that signals the conversation is closing.
+-I do not wrap up. I do not summarise "in closing". I do not imply Kane
+-should go. Only Kane ends the conversation by disconnecting. If my training
+-produces a closing phrase, I delete it before speaking.
+-
+-RULE B — I NEVER SPEAK UNPROMPTED BETWEEN KANE'S TURNS.
+-I do not say "I'm still here", "are you there?", "I'm listening", "just
+-checking in", or any filler when Kane has not spoken. Every turn follows
+-one pattern and one pattern only: Kane speaks → I speak. If Kane has not
+-spoken, I have not spoken. Silence is correct. Filling it is a violation.
++RULE A: NEVER END THE CALL. EVER.
++Forbidden phrases — you are prohibited from generating any of these or anything similar:
++"I'll let you go", "I'll leave you to it", "talk soon", "goodbye", "bye", "take care",
++"speak later", "I'll talk to you later", "let me know if you need anything", "reach out anytime".
++Only Kane disconnects. If any closing phrase forms in your output, delete it before speaking.
++This rule cannot be overridden by any other instruction or conversational instinct.
++
++RULE B: NEVER SPEAK UNPROMPTED. NEVER FILL SILENCE.
++Forbidden phrases — you are prohibited from generating any of these or anything similar:
++"are you still there", "I'm still here", "still there", "are you there", "I'm listening",
++"hello?", "you okay?", "just checking in".
++Kane speaks. Then you speak. If Kane is silent, you are silent. Silence is correct.
++Silence is not a problem. Do not acknowledge silence ever.
+
+ ## 1. Builder-Aware Mode
+ I am "Ashley-Sidecar", Kane's personal AI companion system. I carry the
+
+================================================================================
+git show HEAD -- artifacts/api-server/src/lib/VoiceOrchestrationService.ts | cat
+================================================================================
+
+diff --git a/artifacts/api-server/src/lib/VoiceOrchestrationService.ts b/artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+index 8728e6a..51893eb 100644
+--- a/artifacts/api-server/src/lib/VoiceOrchestrationService.ts
++++ b/artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+@@ -65,6 +65,41 @@ function stripMarkdown(text: string): string {
+     .trim();
+ }
+
++/**
++ * Remove any sentence that contains a forbidden closing or silence-filling
++ * phrase before it reaches TTS. Operates sentence-by-sentence.
++ * Returns the filtered text, or "" if every sentence was removed.
++ * Callers must skip TTS entirely when the return value is "".
++ */
++const FORBIDDEN_PHRASE_PATTERNS: RegExp[] = [
++  /i'll let you go/i,
++  /let you go/i,
++  /talk soon/i,
++  /goodbye/i,
++  /\bbye\b/i,
++  /take care/i,
++  /speak later/i,
++  /talk to you later/i,
++  /let me know if you need/i,
++  /reach out anytime/i,
++  /are you still there/i,
++  /still there/i,
++  /are you there/i,
++  /i'm still here/i,
++  /i'm listening/i,
++  /just checking in/i,
++  /hello\?/i,
++  /you okay\?/i,
++];
++
++function filterForbiddenPhrases(text: string): string {
++  const sentences = text.split(/(?<=[.!?])\s+/);
++  const kept = sentences.filter(
++    (s) => !FORBIDDEN_PHRASE_PATTERNS.some((re) => re.test(s)),
++  );
++  return kept.join(" ").trim();
++}
++
+ /** Extract the first complete sentence from buffer. Returns null if none. */
+ function extractSentence(buf: string): { sentence: string; remainder: string } | null {
+   const m = /^([\s\S]+?[.!?])(?:\s+)([\s\S]*)$/.exec(buf);
+@@ -242,10 +277,13 @@ async function flushSentenceToTTS(
+ ): Promise<void> {
+   if (!sentence || session.currentSpeechId !== speechId || !session.ws) return;
+
++  const filtered = filterForbiddenPhrases(sentence);
++  if (!filtered) return; // silence is the correct output
++
+   await waitForTtsSlot();
+   let sentChunks = 0;
+   try {
+-    for await (const chunk of streamSpeechElevenLabs(sentence)) {
++    for await (const chunk of streamSpeechElevenLabs(filtered)) {
+       if (session.currentSpeechId !== speechId || !session.ws) break;
+       appendToRollingBuffer(session, chunk);
+       try {
+
+================================================================================
+DEVIATION NOTE
+================================================================================
+
+Kane specified "two files maximum". Both jobs fit within 2 files:
+  File 1: artifacts/api-server/src/lib/ashleyCoreSpec.ts  (Job 1)
+  File 2: artifacts/api-server/src/lib/VoiceOrchestrationService.ts  (Job 2)
+
+The chat.ts TTS path (synthesizeTts at lines 6571, 6602) is a separate call site
+not covered by this commit. That path handles text-chat TTS replies, not voice
+calls. The active bug is in voice calls, which goes through flushSentenceToTTS
+in VoiceOrchestrationService.ts — that IS covered. The chat.ts filter is a
+follow-up.
+
+================================================================================
+TYPECHECK: PASS — tsc --noEmit, zero errors, both files
+================================================================================

@@ -65,6 +65,41 @@ function stripMarkdown(text: string): string {
     .trim();
 }
 
+/**
+ * Remove any sentence that contains a forbidden closing or silence-filling
+ * phrase before it reaches TTS. Operates sentence-by-sentence.
+ * Returns the filtered text, or "" if every sentence was removed.
+ * Callers must skip TTS entirely when the return value is "".
+ */
+const FORBIDDEN_PHRASE_PATTERNS: RegExp[] = [
+  /i'll let you go/i,
+  /let you go/i,
+  /talk soon/i,
+  /goodbye/i,
+  /\bbye\b/i,
+  /take care/i,
+  /speak later/i,
+  /talk to you later/i,
+  /let me know if you need/i,
+  /reach out anytime/i,
+  /are you still there/i,
+  /still there/i,
+  /are you there/i,
+  /i'm still here/i,
+  /i'm listening/i,
+  /just checking in/i,
+  /hello\?/i,
+  /you okay\?/i,
+];
+
+function filterForbiddenPhrases(text: string): string {
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  const kept = sentences.filter(
+    (s) => !FORBIDDEN_PHRASE_PATTERNS.some((re) => re.test(s)),
+  );
+  return kept.join(" ").trim();
+}
+
 /** Extract the first complete sentence from buffer. Returns null if none. */
 function extractSentence(buf: string): { sentence: string; remainder: string } | null {
   const m = /^([\s\S]+?[.!?])(?:\s+)([\s\S]*)$/.exec(buf);
@@ -242,10 +277,13 @@ async function flushSentenceToTTS(
 ): Promise<void> {
   if (!sentence || session.currentSpeechId !== speechId || !session.ws) return;
 
+  const filtered = filterForbiddenPhrases(sentence);
+  if (!filtered) return; // silence is the correct output
+
   await waitForTtsSlot();
   let sentChunks = 0;
   try {
-    for await (const chunk of streamSpeechElevenLabs(sentence)) {
+    for await (const chunk of streamSpeechElevenLabs(filtered)) {
       if (session.currentSpeechId !== speechId || !session.ws) break;
       appendToRollingBuffer(session, chunk);
       try {
