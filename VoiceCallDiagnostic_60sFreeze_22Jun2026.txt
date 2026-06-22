@@ -1,0 +1,519 @@
+VOICE CALL 60-SECOND FREEZE — FULL DIAGNOSTIC TRACE
+Ashley-Sidecar API Server + useVoiceCall
+Produced: 22 Jun 2026
+Task #85 confirmed deployed. Behaviour persists.
+No code changes in this document. Architecture only.
+
+================================================================================
+1.  WHAT THE SILENCE MONITOR TICK DOES AT 60s (POST TASK #85)
+================================================================================
+
+File: artifacts/api-server/src/routes/voice-call.ts, lines 262-310
+
+The function startSilenceMonitor() schedules a recursive setTimeout(tick, 5_000).
+On every tick it inspects three threshold constants:
+
+    SILENCE_WARN_MS  = 30_000   (was: speakFallback "Still there?")
+    SILENCE_END_MS   = 60_000   (was: speakFarewell + finalise)
+    SILENCE_FORCE_MS = 90_000   (was: force-close no TTS)
+
+Since Task #85, the exact code at each threshold is:
+
+    silenceMs >= 90_000:  logger.warn("voice: silence 90s — observed only")
+    silenceMs >= 60_000:  logger.info("voice: silence 60s — observed only")
+    silenceMs >= 30_000:  logger.info("voice: silence 30s — observed only")
+
+    After all three branches: session.silenceTimer = setTimeout(tick, 5_000)
+
+The three log branches are gated behind:
+    (session.state === "listening" || session.state === "active")
+    && !session.awaitingPlaybackConfirm
+
+There is NO session state mutation anywhere in tick(). The session object is
+touched only to read state/awaitingPlaybackConfirm and to write silenceTimer
+(the next tick handle). tick() does not set any flag, does not send any WS
+message, and does not call any function that mutates session state.
+
+CONCLUSION: The silence monitor is observationally clean after Task #85.
+It cannot be the proximate cause of the 60s freeze.
+
+
+================================================================================
+2.  EVERY OTHER TIMER, WATCHDOG, OR STATE MACHINE IN THE STACK
+================================================================================
+
+2A. markRecovering() recovery timer — EXACT 60-SECOND TIMER
+------------------------------------------------------------
+File: artifacts/api-server/src/lib/VoiceSessionRegistry.ts, lines 304-344
+
+    export function markRecovering(sessionId: string): void {
+      session.state = "recovering";
+      session.ws = null;
+      const generationAtStart = session.connectionGeneration;
+
+      session.recoveryTimer = setTimeout(() => {
+        if (current.state === "recovering" &&
+            current.connectionGeneration === generationAtStart) {
+          finalise(sessionId, "recovery_timeout");
+        }
+      }, 60_000);    // <-- EXACT 60,000 ms
+    }
+
+Who calls it:
+    ws.on("close") in artifacts/api-server/src/index.ts, line 469.
+    Triggered whenever the server-side WebSocket closes for any reason.
+
+What it does IMMEDIATELY (synchronous, before the timer fires):
+    session.state = "recovering"
+    session.ws = null
+    Logs CALL_RECOVERING
+
+What the timer does 60s after the WS closes (if no reconnect arrived):
+    Calls finalise(sessionId, "recovery_timeout") — session removed from registry.
+
+The timer itself is NOT the freeze. It is the cleanup window.
+The freeze is caused by what happens during the reconnect that this
+ws.on("close") event triggers.
+
+Race safety: the timer checks both state === "recovering" AND
+connectionGeneration unchanged before finalising, so a concurrent
+reclaimSession() always wins cleanly.
+
+
+2B. Zombie cleanup interval
+---------------------------
+File: artifacts/api-server/src/lib/VoiceOrchestrationService.ts, lines 39-40
+
+    ZOMBIE_CLEANUP_INTERVAL_MS = 15_000   (polls every 15s)
+    ZOMBIE_TIMEOUT_MS          = 90_000   (fires at 90s without heartbeat)
+
+Fires at 90s, not 60s. Not relevant to the 60s mark.
+
+
+2C. playbackConfirmTimeout — 15-second safety valve, per turn
+--------------------------------------------------------------
+File: voice-call.ts lines 198-224 (speakFallback path)
+      VoiceOrchestrationService.ts lines 718-744 (main LLM pipeline path)
+
+Two locations both arm a 15_000ms timeout after response_end is sent.
+Both clear any pre-existing timeout before setting a new one.
+The timer clears awaitingPlaybackConfirm and resets session.state = "listening"
+if playback_confirmed never arrives from the client.
+
+Key properties:
+    - Does not accumulate across turns. clearTimeout before every setTimeout.
+    - Fires on the SERVER only. Does not directly touch ttsCompleteRef.
+    - Indirect effect only: if awaitingPlaybackConfirm stays true, new
+      speech_final messages are queued as pendingUtterance. Self-heals at 15s.
+
+CONCLUSION: The 15s timer cannot accumulate to 60s and is not the direct
+cause of the client mic being blocked. See Section 5 for whether the
+server-side self-heal is sufficient on its own.
+
+
+2D. VAD delay timer — 500ms per openMic()
+------------------------------------------
+One-shot, 500ms, sets vadActiveRef=true. Not relevant.
+
+
+2E. VAD probe timer — 2s per openMic()
+----------------------------------------
+Logging only. No state effect. Not relevant.
+
+
+2F. autoSubmit timer — 4s per openMic()
+-----------------------------------------
+File: useVoiceCall.ts, lines 747-758
+
+    autoSubmitTimerRef.current = setTimeout(() => {
+      autoSubmitTimerRef.current = null;
+      if (phaseRef.current === "listening" || phaseRef.current === "user_speaking") {
+        void submitSegmentRef.current();
+      }
+    }, 4000);
+
+Armed every time openMic() completes successfully.
+This timer IS directly relevant to the freeze mechanism — see Section 6.
+
+
+================================================================================
+3.  WHAT THE INTERRUPT BUTTON DOES EXACTLY
+================================================================================
+
+File: useVoiceCall.ts, lines 1018-1031
+
+    const interrupt = useCallback((): void => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      if (phaseRef.current !== "speaking") return;   // GATE
+      stopPlayback();
+      turnGenRef.current++;
+      void playNextRef.current();
+      ws.send(JSON.stringify({ type: "interrupt" }));
+    }, [stopPlayback, addLog]);
+
+Client: stops playback, increments turnGenRef (stales in-flight audio writes),
+kicks playNext drain, sends "interrupt" message.
+
+Server (index.ts lines 390-450):
+    registry.cancelCurrentTurn(session, "user_interrupt")
+        — clears currentSpeechId/turnId/responseId, fires AbortController
+    session.state = "listening"
+    clearTimeout(session.playbackConfirmTimeout)
+    session.awaitingPlaybackConfirm = false
+    session.responseComplete = false
+    ws.send(interrupt_ack)
+
+Client receives interrupt_ack (useVoiceCall.ts lines 875-879):
+    ttsCompleteRef.current = true
+    stopPlayback()
+    setPhaseSync("listening")
+    void openMicRef.current()
+
+Why pressing Interrupt unfreezes the call:
+    The freeze state is phaseRef.current === "speaking" with
+    ttsCompleteRef.current === false.
+
+    interrupt() entry gate requires phaseRef === "speaking" — this is why
+    Interrupt can be pressed at all during the freeze.
+
+    interrupt_ack unconditionally sets ttsCompleteRef = true, bypassing
+    the playNext drain gate entirely. openMic() then passes its entry gate
+    and the mic reopens.
+
+    The fact that Interrupt recovers the call is diagnostic proof:
+    the frozen state is phaseRef === "speaking" AND ttsCompleteRef === false.
+
+
+================================================================================
+4.  PATHS THAT BLOCK openMic() WITHOUT TTS INVOLVEMENT
+================================================================================
+
+File: useVoiceCall.ts, lines 666-767
+
+openMic() has four hard return points at entry:
+
+    Line 667: if (!wsRef.current || wsRef.current.readyState !== OPEN) return
+    Line 668: if (phaseRef.current === "ended") return
+    Line 669: if (!ttsCompleteRef.current) return   // THE FREEZE GATE
+    Line 673: if (micOpeningRef.current) return      // mutex
+
+ttsCompleteRef lifecycle:
+
+    Initialised: useRef(true)   — mic can open on first call_connected
+
+    Set FALSE: speech_start handler, kind="main" only (line 813).
+        chunkBufRef=[], ttsCompleteRef=false, ttsServerDoneRef=false,
+        responseEndReceivedRef=false, alreadyConfirmedRef=false, turnGenRef++
+
+    Set TRUE: three paths only:
+        (a) interrupt_ack received (line 876)
+        (b) reconnect_ok received (line 883)
+            NOTE: the server sends call_connected on reconnect, not
+            reconnect_ok. Path (b) is currently unreachable in this codebase.
+        (c) playNext() drain, lines 324-329:
+            if (phaseRef.current === "speaking") {
+              if (ttsServerDoneRef.current) {
+                ttsCompleteRef.current = true
+                setPhaseSync("listening")
+                void openMicRef.current()
+              }
+            }
+
+CRITICAL CONSTRAINT on path (c):
+    This branch fires only when ALL THREE conditions hold simultaneously:
+      1. phaseRef.current === "speaking"
+      2. ttsServerDoneRef.current === true  (tts_done(main) received)
+      3. playNext() is invoked after the queue drains
+
+    If phaseRef is not "speaking" when tts_done arrives and the queue is
+    already empty, the branch is never entered. ttsCompleteRef stays false
+    indefinitely until an interrupt_ack clears it. There is no timeout,
+    no background task, no other mechanism that resets it.
+
+Non-TTS-related paths that block openMic():
+    - WS not open (line 667) — connection dropped or terminated
+    - phase === "ended" (line 668) — deliberate call end
+    - ttsCompleteRef === false (line 669) — phase mismatch at drain time
+
+
+================================================================================
+5.  THE playbackConfirmTimeout — CAN IT ACCUMULATE OR CAUSE THE 60s BLOCK?
+================================================================================
+
+Direct answer: No, it cannot accumulate.
+
+Each location that sets playbackConfirmTimeout calls clearTimeout on the
+prior handle before setting a new one. The maximum outstanding timer at
+any instant is one 15-second handle. It does not stack.
+
+However there is a confirmed secondary freeze path from this timer:
+
+    The server's 15s safety valve fires (awaitingPlaybackConfirm=true for
+    15s with no playback_confirmed from client). The server resets itself:
+    awaitingPlaybackConfirm=false, state="listening". It does NOT send any
+    WS message to the client.
+
+    The client remains stuck: phaseRef="speaking", ttsCompleteRef=false.
+
+    The server thinks the session is healthy ("listening"). The client is
+    frozen. No message from the server will trigger path (c) in playNext
+    because tts_done was already received and acknowledged (or never arrived).
+
+    Result: the call silently stalls. The server is ready for the next
+    turn but the client's mic never opens. Only Interrupt recovers.
+
+    This is a lower-probability path than the reconnect race (Section 6)
+    but is possible on any turn where playback_confirmed is never sent
+    (e.g. audio file write fails, player never fires didJustFinish).
+
+
+================================================================================
+6.  THE ACTUAL ROOT CAUSE CHAIN
+================================================================================
+
+PREMISE: The Replit reverse proxy closes WebSocket connections after
+approximately 60 seconds of inactivity. "Inactivity" for the proxy appears
+to mean no TEXT frames — binary PCM audio frames from the microphone may not
+reset the proxy timer. The connection close is reported as code 1006.
+
+This matches the symptom: consistent freeze at the 60-second mark.
+
+--- EVENT SEQUENCE ---
+
+T+0s    Call starts. session.state="active".
+        call_connected sent.
+        CLIENT: openMic() called.
+            ttsCompleteRef=true — passes gate — mic opens.
+            autoSubmitTimerRef armed for T+4s.
+
+T+0-60s Silence cycle. autoSubmit fires at T+4s, T+8s, T+12s...
+        submitSegment captures audio. Transcript is empty or filtered
+        (hallucination guards). openMic() called again. New 4s autoSubmit.
+        Repeat every 4 seconds. Binary audio frames flow server-ward.
+        No TEXT frames flow in either direction.
+
+T+60s   Replit proxy fires idle timeout. WS closed (code 1006).
+
+SERVER at T+60s:
+        ws.on("close") fires.
+        lastReconnectCause = "network_drop" (code 1006).
+        registry.markRecovering(sessionId):
+            session.state = "recovering"
+            session.ws = null
+            60s recovery timer starts.
+
+CLIENT at T+60s:
+        ws.onclose fires.
+        stopPlayback() — queue cleared, players stopped, chunkBuf=[].
+        vadActiveRef=false. clearAutoSubmitTimer().
+        phaseRef !== "ended" — reconnect attempt taken.
+        reconnectAttemptsRef++ (now 1).
+        setPhaseSync("connecting").
+        setTimeout(connectRef.current, 1500).
+
+T+61.5s CLIENT creates new WS.
+
+SERVER receives new connection from same deviceId:
+        reclaimSession(deviceId) — finds session state="recovering" — success.
+            recoveryTimer cleared.
+            connectionGeneration++ (e.g. 1 -> 2).
+            session.state = "active".
+            session.ws = new socket.
+        call_connected sent (reconnected=true, connectionGeneration=2).
+        startSilenceMonitor(session) — silence tick restarted.
+        VoiceOrchestrationService.startOrchestration(session, ws) — zombie timer.
+        handleReconnect(session, ws) called — ASYNC, fire-and-forget.
+
+CLIENT receives call_connected:
+        setSessionId(...)
+        reconnectAttemptsRef = 0
+        await openMicRef.current()         <-- IMMEDIATELY
+            ttsCompleteRef=true at this point — passes gate.
+            mic opens (async, 300-500ms for permission + recorder.start()).
+            NEW autoSubmitTimerRef armed for T+65.5s.
+            NEW VAD delay armed for 500ms.
+
+--- THE RECONNECT TTS: TWO DIVERGING PATHS ---
+
+handleReconnect() (VoiceOrchestrationService.ts lines 938-1059) starts with
+an async DB query for a committed call summary. The call_connected message
+was already sent synchronously before handleReconnect was called. There is
+always a 50-500ms window before handleReconnect can send anything.
+
+PATH A: No committed summary (typical for a call with no completed turns).
+    handleReconnect calls:
+        speakClipOrText(session, "call-dropped",
+            "Sorry about that — looks like we dropped. Where were we?", "main")
+    which calls speakFallback() internally.
+
+    speakFallback sends the FULL handshake lifecycle:
+        speech_start(main) -> binary audio -> sentence_end -> response_end
+        -> awaits playback_confirmed -> tts_done(main)
+
+    On client:
+        speech_start(main) -> ttsCompleteRef=false
+        audio buffered -> flushChunkBuffer -> queue push -> playNext -> "speaking"
+        response_end -> responseEndReceivedRef=true
+        queue drains with responseEndReceivedRef=true ->
+            sends playback_confirmed (alreadyConfirmedRef=false, gate passes)
+        server: handlePlaybackConfirmed():
+            clears playbackConfirmTimeout
+            awaitingPlaybackConfirm=false
+            sends tts_done(main)
+        client: tts_done(main) -> ttsServerDoneRef=true -> playNext():
+            queue empty, phase="speaking", ttsServerDoneRef=true
+            -> ttsCompleteRef=true -> openMicRef() -> mic opens.
+
+    PATH A NOMINAL SUCCESS. The lifecycle is complete and symmetric.
+
+    PATH A FAILURE: audio is empty (sentChunks=0 in speakFallback line 170).
+    This happens if the ElevenLabs TTS call fails or returns nothing.
+    speakFallback returns without sending sentence_end, response_end, or
+    tts_done. ttsCompleteRef stays false. phaseRef stays "speaking" (or
+    remains "listening" if no audio arrived — then the 4s autoSubmit fires
+    and submits, transitioning to "thinking"). Either way, the mic is blocked.
+
+
+PATH B: Committed summary exists.
+    handleReconnect runs a Claude LLM stream, then manually sends:
+        speech_start(main)
+        flushSentenceToTTS (binary audio + sentence_end)
+        tts_done(main)   <-- DIRECTLY, with NO response_end
+
+    (VoiceOrchestrationService.ts lines 1009-1046)
+
+    On client:
+        speech_start(main) -> ttsCompleteRef=false
+        audio -> queue -> playNext -> phase="speaking"
+        tts_done(main) arrives -> ttsServerDoneRef=true -> playNext():
+
+            In playNext drain (lines 319-354):
+            if (phaseRef.current === "speaking") {
+              if (ttsServerDoneRef.current) {
+                ttsCompleteRef.current = true        <-- PATH C fires here
+                void openMicRef.current()
+              } else if (responseEndReceivedRef.current) {
+                // send playback_confirmed
+              } else {
+                // inter-sentence gap — do nothing
+              }
+            }
+
+    PATH B succeeds if AND ONLY IF phaseRef.current === "speaking" when
+    tts_done arrives and the queue has already drained.
+
+    PATH B FAILURE (the race that causes the 60s freeze):
+
+    The call_connected openMic() armed an autoSubmit timer at T+61.5s for
+    T+65.5s. handleReconnect's LLM call typically takes 100ms-3s.
+
+    Race window: the LLM latency approaches or exceeds the 4s autoSubmit.
+
+    Failure sequence:
+        T+61.5s  call_connected -> openMic() -> phase="listening" -> autoSubmit=4s
+        T+62.0s  handleReconnect begins DB query
+        T+62.5s  DB query complete, LLM stream begins (Anthropic, forceProvider)
+        T+65.0s  LLM still streaming (slow model response or long text)
+        T+65.5s  autoSubmit fires. phaseRef="listening" (no audio yet from
+                 handleReconnect because LLM is still generating).
+                 submitSegment() runs -> recorder.stop() -> STT fetch.
+        T+66.0s  STT returns non-empty transcript (or hallucination that passes
+                 both blind gates on this device).
+                 speech_final sent to server.
+                 phase="thinking".
+        T+66.5s  handleReconnect LLM finishes -> sends speech_start(main).
+                 ttsCompleteRef=false (again; it was already false).
+                 audio arrives -> playNext -> setPhaseSync("speaking").
+        T+66.5s  Server also starts processing the user speech_final:
+                 handleVoiceTurn -> LLM -> speech_start(main) -> more audio.
+                 Two speech_start(main) events in flight.
+        T+67.0s  handleReconnect tts_done(main) arrives.
+                 ttsServerDoneRef=true -> playNext():
+                     queue empty at this moment? Possibly.
+                     phaseRef.current = ??? 
+                     If phase is "thinking" (user turn still processing): FAILS.
+                     The "speaking" gate is not met.
+                     ttsCompleteRef stays false.
+        T+67.5s  User turn LLM audio starts: speech_start(main) sets
+                 ttsCompleteRef=false AGAIN, turnGenRef++.
+                 Audio plays -> phase="speaking".
+                 response_end sent by main pipeline -> playback_confirmed sent
+                 -> tts_done(main) -> playNext drain:
+                     ttsServerDoneRef=true, phase="speaking" -> ttsCompleteRef=true?
+                     Only if this tts_done is the LAST one processed. But the
+                     handleReconnect tts_done already set ttsServerDoneRef=true
+                     and was NOT consumed by the "speaking" branch. The state
+                     machine is now uncertain depending on race ordering.
+
+    Simplified version of the failure:
+        The 4s autoSubmit fires before the reconnect TTS audio has reached
+        the phone and started playing (phase still "listening"). submitSegment
+        transitions phase to "submitting" -> "thinking". When the reconnect
+        TTS audio eventually arrives, tts_done comes while phase is "thinking",
+        not "speaking". The playNext safety-drain branch
+            if (phaseRef.current === "speaking")
+        is never entered. ttsCompleteRef stays false. The mic is permanently
+        blocked until interrupt_ack.
+
+
+================================================================================
+7.  COMPLETE SUMMARY OF THE 60-SECOND MARK
+================================================================================
+
+At T+60s the following happens:
+
+1.  Replit proxy fires idle timeout (no text frames in 60s).
+    WS closed, code 1006.
+
+2.  SERVER: ws.on("close") -> registry.markRecovering(sessionId).
+    session.state="recovering", session.ws=null.
+    60s cleanup timer starts.
+
+3.  CLIENT: ws.onclose -> stopPlayback() -> vadActiveRef=false ->
+    clearAutoSubmitTimer() -> reconnect attempt after 1.5s.
+
+4.  T+61.5s: Client reconnects. Server: reclaimSession() ->
+    session.state="active", new ws attached. call_connected sent.
+    handleReconnect() called fire-and-forget.
+
+5.  Client: call_connected -> openMic(). ttsCompleteRef=true.
+    Mic opens. autoSubmit armed for T+65.5s.
+
+6.  handleReconnect() does async DB query + (optionally) LLM.
+    Eventually sends speech_start(main) -> ttsCompleteRef=false.
+
+7.  Race window: 4 seconds (autoSubmit T+65.5s vs. reconnect TTS audio
+    reaching the client and starting playback to push phase to "speaking").
+    If LLM latency is >3.5s, or if network delay holds back the audio,
+    the autoSubmit fires first.
+
+8.  autoSubmit fires while phase="listening" -> submitSegment ->
+    phase="submitting" -> "thinking".
+
+9.  Reconnect TTS tts_done(main) arrives -> ttsServerDoneRef=true ->
+    playNext() -> queue empty -> if (phase === "speaking") FAILS
+    (phase is "thinking") -> ttsCompleteRef stays false.
+
+10. Frozen state: phase="speaking" (set by the subsequent user turn's
+    audio playback), ttsCompleteRef=false.
+    openMic() gate at line 669 blocks every call.
+
+11. User presses Interrupt -> interrupt_ack -> ttsCompleteRef=true ->
+    openMic() -> mic reopens.
+
+
+================================================================================
+8.  DEAD CODE NOTE
+================================================================================
+
+The constants SILENCE_WARN_MS, SILENCE_END_MS, SILENCE_FORCE_MS and the
+field silenceWarningSent (VoiceSessionRegistry.ts) have no functional effect
+post-Task #85. They are read only for logging. The function speakFarewell()
+(voice-call.ts lines 238-249) is defined but never called by any live code
+path. These are harmless but add noise to future audits.
+
+
+================================================================================
+END OF DIAGNOSTIC
+================================================================================

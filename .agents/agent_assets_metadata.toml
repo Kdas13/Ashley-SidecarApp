@@ -593,3 +593,9 @@ id = "qlSyeYaTeQYdnxAbZ5sxf"
 uri = "file://Task85_Evidence_22Jun2026.txt"
 type = "text"
 title = "Task #85 Evidence — git show HEAD — 22 Jun 2026"
+
+[[outputs]]
+id = "BmHxOfKxE4vU-27hJlFhS"
+uri = "file://VoiceCallDiagnostic_60sFreeze_22Jun2026.txt"
+type = "text"
+title = "Voice Call 60s Freeze Diagnostic"
