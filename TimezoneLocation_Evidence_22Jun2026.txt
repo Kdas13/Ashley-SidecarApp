@@ -1,0 +1,153 @@
+TIMEZONE + LOCATION LOCK — INSERTION POINT EVIDENCE
+Job: Lock Ashley to Kane's timezone and location permanently
+22 Jun 2026 — read-only, no changes made
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. PROFILE SCHEMA — CURRENT FIELDS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+File: lib/db/src/schema/ashley.ts
+
+  Line 80: // IANA timezone string (e.g. "Europe/London", "America/New_York").
+  Line 87: timezone: text("timezone").notNull().default("UTC"),
+
+VERDICT: timezone field EXISTS. Default is "UTC".
+          homeLocation field DOES NOT EXIST — no column for location anywhere
+          in the ashley profile schema.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2. WHERE TIMEZONE IS CURRENTLY READ AND SAVED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+File: artifacts/api-server/src/routes/chat.ts, lines 1131-1143
+
+  If clientTimezone arrives in the request header and differs from
+  profile.timezone, it is saved back to the DB (fire-and-forget).
+  This means chat turns keep the timezone column up to date automatically
+  when the mobile app sends its IANA timezone in the header.
+
+  Kane's timezone (Europe/London) will already be in the DB if he has
+  sent any recent chat message from the mobile. It is NOT guaranteed to
+  be there for voice calls because the voice path does not perform this
+  save.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3. WHERE SYSTEM PROMPTS ARE ASSEMBLED — EXACT LINE NUMBERS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SHARED FUNCTION: buildSystemPrompt()
+  File: artifacts/api-server/src/lib/ashleyCoreSpec.ts, line 419
+  Signature: buildSystemPrompt(profile, memories, summaries, opts?)
+  Used by: both chat.ts and VoiceContextAssembler.ts
+  This is the single source of truth for the core Ashley personality,
+  profile, memories, and behaviour rules.
+
+── CHAT PATH ──────────────────────────────────────────
+
+  File: artifacts/api-server/src/routes/chat.ts
+
+  buildTimeContext() defined at: line 383
+    Takes clientNow, clientTimezone, previousMessageAt.
+    Produces the "## Time context" block with local time + timezone.
+
+  Main chat reply systemPrompt assembled at: line 1208
+    const timeContext = buildTimeContext(clientNow, clientTimezone, previousMessageAt);  // line 1203
+    let systemPrompt = `${timeContext}\n\n${buildSystemPrompt(...)}...`  // line 1208
+
+  Streaming chat reply systemPrompt assembled at: line 4876
+    const timeContext = buildTimeContext(...);  // line 4871
+    const baseSystemPrompt = `${timeContext}\n\n${buildSystemPrompt(...)}...`  // line 4876
+
+  Vision/photo reply systemPrompt assembled at: line 6211
+    const timeContext = buildTimeContext(...);  // line 6199
+    const systemPrompt = `${timeContext}\n\n${buildSystemPrompt(...)}...`  // line 6211
+
+  In all three chat paths: timeContext (including timezone) is
+  PREPENDED to buildSystemPrompt output. The timezone comes from
+  the clientTimezone request header, NOT the profile column.
+
+── VOICE PATH ─────────────────────────────────────────
+
+  File: artifacts/api-server/src/lib/VoiceContextAssembler.ts
+
+  System prompt assembled at: lines 103-158
+    const systemParts: string[] = [
+      buildSystemPrompt(voiceProfile, memories, convSummaries, {...}),  // line 104
+      VOICE_MODE_ADDENDUM,                                               // line 107
+    ];
+    // ...reconnect preamble, interruption context, direct question hint...
+    const systemPrompt = systemParts.join("\n\n");  // line 158
+
+  CRITICAL GAP: buildTimeContext() is NOT called here.
+  The voice path has NO time context block and NO timezone in the
+  system prompt at all. Ashley has no idea what time it is or where
+  Kane is during a voice call.
+
+  File: artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+
+  ctx assembled via VoiceContextAssembler.assemble() at: line 514
+  Web lookup block appended at: line 631 (if search fired)
+  ctx.systemPrompt passed to LLM at: line 646
+
+  Secondary systemPrompt (reconnect acknowledgment only): line 1006
+  This is a one-off string for drop/reconnect — not the main call prompt.
+  Not relevant to the timezone fix.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4. IS THERE A SINGLE SHARED ASSEMBLY FUNCTION?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PARTIALLY. buildSystemPrompt() in ashleyCoreSpec.ts is shared.
+buildTimeContext() is defined only in chat.ts and is NOT shared —
+it is called locally in each chat handler and never imported by
+VoiceContextAssembler.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5. PROPOSED INSERTION POINTS FOR THE FIX
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+APPROACH A — Hardcode into ashleyCoreSpec.ts buildSystemPrompt()
+  Insert a permanent "## Location & timezone" block inside
+  buildSystemPrompt() itself, so it applies to ALL paths (chat, voice,
+  streaming, vision) with no other file changes.
+  One file. No schema change. No migration.
+
+  Where: ashleyCoreSpec.ts, inside buildSystemPrompt() near the top
+         of the returned string — after the liveState block.
+  Content to inject (verbatim, always on):
+    "## Kane's location & timezone (permanent, do not ask)
+     Kane is based in Lincoln, UK.
+     His timezone is Europe/London (GMT in winter, BST in summer).
+     Use this for any price/availability answers, store lookups,
+     delivery estimates, or time-of-day references. Never ask him
+     where he is or what timezone he is in."
+
+  PRO: One change, covers every path including future ones.
+  CON: Hardcoded to Kane — not portable if this ever becomes
+       multi-user. Acceptable at current single-user scale.
+
+APPROACH B — Add homeLocation column to profile schema + use it in
+              buildSystemPrompt()
+  Adds a text("home_location") column to ashley.ts schema.
+  Requires a manual migration SQL (drizzle-kit is broken in this repo).
+  Then buildSystemPrompt reads profile.homeLocation and injects it.
+  Kane's row would be updated via a one-off SQL insert.
+
+  PRO: Proper per-user field, survives multi-user.
+  CON: Schema change + migration + manual DB update. More moving parts.
+
+APPROACH C — Fix the voice path gap separately by calling
+              buildTimeContext() in VoiceContextAssembler
+  Move buildTimeContext() from chat.ts to ashleyCoreSpec.ts (or a
+  shared util), then call it in VoiceContextAssembler.assemble()
+  using profile.timezone as the fallback when no clientNow/tz header.
+
+  PRO: Fixes the voice timezone gap properly using the stored profile tz.
+  CON: Only fixes timezone, not location. Doesn't cover all gaps alone.
+
+RECOMMENDED: Approach A for location (hardcode Lincoln/Europe/London
+             into buildSystemPrompt — single-user, clean, immediate).
+             Combined with Approach C to fix the voice time context gap
+             so Ashley knows the actual time during calls.
+
+Awaiting your decision on approach before any changes.
