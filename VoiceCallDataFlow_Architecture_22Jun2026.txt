@@ -1,0 +1,729 @@
+================================================================================
+VOICE CALL — COMPLETE DATA FLOW DIAGRAM
+Architecture Audit, 22 June 2026. Read-only. No changes.
+================================================================================
+
+KEY:
+  [FILE]  = file path (relative to workspace root)
+  IN:     = data received at this step
+  OUT:    = data produced / sent on
+  GATE:   = condition that can interrupt or divert the flow
+  TIMER:  = autonomous timer that fires independently of the main flow
+
+All source line numbers are approximate and may drift with edits.
+
+================================================================================
+SECTION 1 — MOBILE CLIENT: MIC OPEN TO SPEECH_FINAL
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+STEP M1 — Mic initialisation
+[FILE]  artifacts/mobile/lib/voiceInput.ts  ~line 83
+[FILE]  artifacts/mobile/lib/useVoiceCall.ts  ~line 203
+
+IN:     User taps the call button; connect() called.
+        WS opens to wss://<domain>/api/voice/call.
+        After call_connected arrives from server, openMic() is called.
+
+OUT:    AudioRecord.init() called once on mount with:
+          sampleRate: 16000, channels: 1, bitsPerSample: 16
+          audioSource: 7 (VOICE_COMMUNICATION — enables hardware AEC/NS/AGC)
+          wavFile: "voice_input.wav"
+        AudioRecord.on("data", ...) registered — fires every ~100ms with
+        base64-encoded raw PCM chunk.
+        recorder.start() called.
+        A 500ms VAD_DELAY timer is started; vadActiveRef=false until it fires.
+
+GATE:   mic permission not granted → ensurePermission() fails, call never starts.
+GATE:   VAD_DELAY_MS (500ms) after recorder.start() before VAD activates.
+        Purpose: blocks the ~300-400ms Bluetooth A2DP buffer drain echo window.
+────────────────────────────────────────────────────────────────────────────────
+
+STEP M2 — PCM amplitude metering
+[FILE]  artifacts/mobile/lib/voiceInput.ts  ~line 86
+
+IN:     Raw PCM chunk from AudioRecord 'data' event (base64 string, ~100ms).
+
+PROCESSING:
+  1. atob(chunk) → binary string of 16-bit LE samples
+  2. Iterate pairs of bytes: byte[i] | (byte[i+1] << 8) → unsigned int16
+  3. If > 32767: subtract 65536 → signed int16
+  4. Track max absolute value across all samples in this chunk
+  5. dBFS = max > 0 ? 20 * log10(max / 32768) : -160
+
+OUT:    meteringRef.current = dBFS (range: -160 to ~0)
+        setMetering(dBFS) → triggers React state update → VAD effect fires
+
+NOTE:   -160 dBFS is a floor sentinel, produced only when every sample is
+        exactly zero (true hardware silence or mic not yet producing data).
+        Computed from raw PCM buffer — immune to Samsung DSP/AGC suppression
+        of getMaxAmplitude().
+────────────────────────────────────────────────────────────────────────────────
+
+STEP M3 — VAD loop (client-side silence detection)
+[FILE]  artifacts/mobile/lib/useVoiceCall.ts  ~line 592
+
+Fires on every change to recorder.metering (i.e. every ~100ms PCM chunk).
+Thresholds (all tunable at top of file):
+  SILENCE_DB    = -28 dBFS
+  SILENCE_MS    = 3500ms  (standard silence tolerance)
+  SILENCE_MS_SHORT = 4500ms  (for short segments < 1000ms speech)
+  SILENCE_THRESHOLD_SHORT_MS = 1000ms
+  MIN_SPEECH_MS = 500ms  (minimum speech duration to submit)
+  VAD_DELAY_MS  = 500ms  (dead zone after mic open)
+
+GATE:   vadActiveRef.current === false → return immediately (dead zone, or
+        Ashley is speaking).
+GATE:   db === null → probe counter incremented, return immediately.
+        null metering = device does not support PCM amplitude reporting.
+        After 2s probe window closes: if null frames dominate → vadMode="blind",
+        autoSubmit fallback takes over (4s timer, not silence detection).
+
+ON db > SILENCE_DB (speech detected):
+  - isUserSpeakingRef = true
+  - speechStartAtRef = now (if transitioning from silence)
+  - phase set to "user_speaking"
+  - lastSpeechAtRef = now
+  - segmentSpeechMsRef = now - speechStartAtRef
+  - autoSubmit fallback timer RESET on every detected sound (so it only
+    fires after 4s of total silence from the LAST detected sound)
+
+ON db ≤ SILENCE_DB (silence):
+  - If isUserSpeakingRef was true (speech → silence transition):
+    - Compute silenceDuration = now - lastSpeechAtRef
+    - Select threshold:
+        segmentSpeechMsRef < SILENCE_THRESHOLD_SHORT_MS → use SILENCE_MS_SHORT
+        otherwise → use activeSilenceMsRef (default SILENCE_MS = 3500ms,
+        may have been overridden to 800ms by server set_silence_threshold)
+    - If silenceDuration >= threshold → submitSegment()
+
+SPECIAL CASE — db = -160 dBFS:
+  -160 < SILENCE_DB (-28), so it is treated identically to any other silence
+  value. If the user was previously speaking (isUserSpeakingRef=true), the
+  silence counter runs down from lastSpeechAtRef. After activeSilenceMsRef,
+  submitSegment() fires. If the user was never speaking, nothing is submitted
+  from VAD. The server-side silence monitor fires independently at 30s/60s/90s.
+
+TIMER:  autoSubmit (blind mode only) — 4s from last detected sound (or mic
+        open if no sounds). Sets isBlindCaptureRef=true, calls submitSegment().
+────────────────────────────────────────────────────────────────────────────────
+
+STEP M4 — submitSegment() — recording stop + STT
+[FILE]  artifacts/mobile/lib/useVoiceCall.ts  ~line 474
+
+IN:     VAD silence threshold crossed (or autoSubmit timer, or submitNow()).
+
+GATE:   phase is "submitting" / "thinking" / "speaking" → return (blocked).
+
+PROCESSING:
+  1. clearAutoSubmitTimer()
+  2. Cancel vadDelayTimer if running
+  3. vadActiveRef = false (mic closed to VAD)
+  4. phase = "submitting"
+  5. recorder.stop() → RecordedAudio { audioBase64: string, mimeType: string,
+     durationMs: number }  (WAV file at 16kHz/mono/16-bit)
+
+GATE (STT hallucination guard):
+  meteringEverReceivedRef=true (metering device) AND
+  segmentSpeechMsRef < MIN_STT_SPEECH_MS (300ms)
+  → segment dropped as likely near-silence. Reopen mic. Return.
+
+GATE (blind capture — Stage 1, size):
+  isBlindCaptureRef=true AND
+  estimated bytes (audioBase64.length × 0.75) < SIZE_THRESHOLD_BYTES (4000)
+  → drop. Reopen mic. Return.
+
+  6. POST /api/chat/transcribe
+     Headers: Authorization: Bearer <key>, X-Api-Key: <key>, X-Device-Id
+     Body: { audioBase64, mimeType }
+     → Response: { transcript: string }
+
+GATE (blank transcript): tx === "" → reopen mic, return.
+
+GATE (blind capture — Stage 2, transcript filter):
+  isBlindCaptureRef=true AND isBlindTranscriptOk(tx)=false
+  BLIND_HALLUCINATION_LIST includes: "thank you", "thanks", "bye", "hmm",
+  "um", "uh", etc. + single-word transcripts + empty.
+  → drop. Reopen mic. Return.
+
+  7. setUserTranscript(tx) (UI update)
+  8. WS.send({ type: "speech_final", transcript: tx, utteranceId: <random> })
+  9. phase = "thinking" (mic stays closed)
+
+NOTE:   Deepgram is called server-side inside /api/chat/transcribe, not
+        directly from the mobile client. deepgramStream.ts is a separate
+        streaming adapter that is NOT used in this client flow.
+────────────────────────────────────────────────────────────────────────────────
+
+STEP M5 — WS message handling (server → client)
+[FILE]  artifacts/mobile/lib/useVoiceCall.ts  ~line 620+
+
+On "speech_interim" received (not sent by client, sent by server):
+  Intent classification result: set_silence_threshold message may follow.
+
+On "set_silence_threshold" { ms: 800 }:
+  nextSilenceThresholdRef = 800. openMic() picks this up for the NEXT listen
+  window (after Ashley finishes speaking).
+
+On "speech_start" { kind: "main" }:
+  - alreadyConfirmedRef = false (new turn, reset one-shot guard)
+  - turnGenRef++ (turn generation, invalidates stale audio from prior turn)
+  - ttsServerDoneRef = false
+  - responseEndReceivedRef = false
+  - phase = "speaking"
+
+On "speech_start" { kind: "auxiliary" }:
+  - activeSpeechKindRef = "auxiliary"
+  - (main lifecycle refs untouched)
+
+On binary frame (WS binary message):
+  - If activeSpeechKindRef === "auxiliary" → auxChunkBufRef.push(chunk)
+  - Otherwise → chunkBufRef.push(chunk)
+
+On "sentence_end" { kind: "main" }:
+  → flushChunkBuffer():
+    concat Uint8Array chunks → base64 → write MP3 to FileSystem.cacheDirectory
+    (gen check: if turnGenRef changed during async write → discard stale audio)
+    → playQueueRef.push(uri) → playNext()
+
+On "sentence_end" { kind: "auxiliary" }:
+  → flushAuxChunkBuffer(): plays clip on auxPlayer (independent, no lifecycle)
+
+On "response_end":
+  responseEndReceivedRef = true
+  If queue is already empty AND phase="speaking" AND !alreadyConfirmedRef:
+    WS.send({ type: "playback_confirmed" })
+    alreadyConfirmedRef = true
+
+On "tts_done" { kind: "main" }:
+  ttsServerDoneRef = true
+  If queue drained AND ttsCompleteRef:
+    ttsCompleteRef = true → openMic()   (safety-timeout path)
+
+On "STOP_AUDIO_PLAYBACK_IMMEDIATE":
+  stopPlayback() (interruption — all queued audio discarded)
+
+On "call_ended":
+  stopPlayback(), phase = "ended"
+
+On "CALL_TERMINATED_BY_COMMAND":
+  disconnect()
+
+────────────────────────────────────────────────────────────────────────────────
+
+STEP M6 — Audio playback: playNext() mutex
+[FILE]  artifacts/mobile/lib/useVoiceCall.ts  ~line 310
+
+IN:     URI pushed to playQueueRef, playNext() called.
+
+GATE:   playNextRunningRef=true → return immediately (mutex). Running instance
+        drains queue via didJustFinish → playNext loop.
+
+  1. Shift uri from playQueueRef
+  2. If no uri (queue drained):
+     - Check ttsServerDoneRef → if true, openMic() (safety-timeout path)
+     - Else if responseEndReceivedRef → send playback_confirmed (normal path)
+     - Else → inter-sentence gap, do nothing (wait for next sentence)
+  3. createAudioPlayer({ uri }) → player.play()
+  4. addListener("playbackStatusUpdate") → on didJustFinish:
+       playBusyRef = false
+       playNextRunningRef = false (release mutex)
+       player.remove(), deleteAsync(uri)
+       → playNext() (drain next item)
+  5. phase = "speaking"
+
+NOTE:   allowsRecording:true stays active throughout; audio mode NOT toggled
+        between speaking and recording — preserves hardware AEC for the
+        entire call.
+
+────────────────────────────────────────────────────────────────────────────────
+
+STEP M7 — openMic() — mic reopen after Ashley finishes
+[FILE]  artifacts/mobile/lib/useVoiceCall.ts  ~line 472 (via ref)
+
+Preconditions checked before recorder.start():
+  - phase must be "listening" (set before calling openMic)
+  - micOpeningRef=false (mutex: prevents concurrent prepareToRecordAsync)
+  - ttsServerDoneRef AND ttsCompleteRef must both be true
+    (or safety-timeout path overrides this)
+  - turnGenRef snapshot captured before first await
+
+  1. Apply nextSilenceThresholdRef if set (reset to SILENCE_MS after)
+  2. recorder.start()
+  3. Start VAD_DELAY_MS (500ms) timer → vadActiveRef = true after delay
+  4. Reset: isUserSpeakingRef, lastSpeechAtRef, segmentSpeechMsRef,
+     meteringEverReceivedRef, speechStartAtRef, isBlindCaptureRef
+  5. Start 2s VAD probe timer
+  6. If blind mode: start 4s autoSubmit fallback timer
+
+================================================================================
+SECTION 2 — SERVER SIDE: WS RECEIPT TO LLM
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+STEP S1 — WebSocket connection established
+[FILE]  artifacts/api-server/src/routes/index.ts  (WS upgrade handler)
+[FILE]  artifacts/api-server/src/lib/VoiceSessionRegistry.ts
+
+IN:     WS upgrade request with deviceId in headers/query.
+
+  1. registry.create(deviceId, ws) → VoiceSession object
+     Session state fields (relevant subset):
+       state: "listening"
+       currentSpeechId: null
+       llmStreamActive: false
+       awaitingPlaybackConfirm: false
+       responseComplete: false
+       pendingUtterance: null
+       pendingUtteranceId: null
+       silenceWarningSent: false
+       silenceTimer: null
+       lastAudioReceivedAt: null (→ callStartTime used as fallback)
+       callStartTime: new Date()
+       rollingAudioBuffer: Buffer(0)
+       consecutiveContextFailures: 0
+       completedTurnIds: Set()
+       passiveMode: false
+       reconnectAttempts: 0
+       lastActiveHeartbeatAt: new Date()
+
+  2. VoiceOrchestrationService.startOrchestration(session, ws)
+     → starts ZOMBIE_CLEANUP_INTERVAL (15s) interval:
+       if lastActiveHeartbeatAt > ZOMBIE_TIMEOUT_MS (90s) ago → ws.close() +
+       registry.finalise("zombie_cleanup")
+
+  3. startSilenceMonitor(session) (voice-call.ts)
+     → schedules first SILENCE_POLL_MS (5s) tick (see Section 4)
+
+  4. WS.send({ type: "call_connected", sessionId, ... })
+────────────────────────────────────────────────────────────────────────────────
+
+STEP S2 — speech_interim received (intent pre-classification)
+[FILE]  artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+        handleSpeechInterim()  ~line 805
+
+IN:     { type: "speech_interim", transcript: string } from client
+
+  1. session.lastActiveHeartbeatAt = new Date() (heartbeat)
+
+  GATE (Stage 8A — interruption check):
+    if session.llmStreamActive OR session.state==="tts_streaming":
+      handleInterruption() →
+        session.wasInterrupted = true
+        session.interruptedAt = currentResponseText.length
+        session.remainingResponse = currentResponseText.slice(interruptedAt)
+        abortCurrentOutputs() → llmStreamActive=false, currentAbortController.abort(),
+        cancelCurrentTurn(), currentSpeechId=null, state="listening"
+        WS.send({ type: "STOP_AUDIO_PLAYBACK_IMMEDIATE" })
+
+  2. classify(transcript) via VoiceIntentClassifier.ts
+     Categories: DIRECT_QUESTION | CONVERSATIONAL | COMMAND | REPEAT_REQUEST | EMPTY
+
+  3. If DIRECT_QUESTION and !session.intentDetected:
+     session.intentDetected = true
+     session.silenceThreshold = 800
+     WS.send({ type: "set_silence_threshold", ms: 800 })
+────────────────────────────────────────────────────────────────────────────────
+
+STEP S3 — speech_final received (full turn pipeline entry)
+[FILE]  artifacts/api-server/src/routes/voice-call.ts  handleVoiceTurn()
+[FILE]  artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+        handleSpeechFinal()  ~line 833
+
+IN:     { type: "speech_final", transcript: string, utteranceId: string }
+
+  1. session.lastActiveHeartbeatAt = new Date()
+
+  GATE (playback guard):
+    if session.awaitingPlaybackConfirm:
+      session.pendingUtterance = transcript
+      session.pendingUtteranceId = utteranceId
+      return (queued; only one utterance queued at a time — later replaces earlier)
+
+  GATE (Stage 8A — interruption):
+    Same as in speech_interim (see above).
+
+  Stage 3 — normalise:
+    utterance = transcript.replace(/\s+/g, " ").trim()
+    if !utterance → reset intentDetected, silenceThreshold → return
+
+  Stage 4 — classify:
+    classify(utterance) →
+      EMPTY    → return
+      COMMAND  → handleCommand():
+                   "stop"     → abortCurrentOutputs()
+                   "end_call" → abort + CALL_TERMINATED_BY_COMMAND + finalise
+                   "go_quiet" → session.passiveMode = true
+      REPEAT_REQUEST → handleRepeatRequest():
+                   if wasInterrupted or empty buffer → speakClipOrText("say-that-again")
+                   else → WS.send(session.rollingAudioBuffer) (replay)
+      CONVERSATIONAL/DIRECT_QUESTION → continue
+
+  GATE (passive mode):
+    session.passiveMode AND CONVERSATIONAL → discard, return
+    session.passiveMode AND DIRECT_QUESTION → passiveMode = false, continue
+
+  2. If isDirectQuestion(utterance):
+     WS.send({ type: "set_silence_threshold", ms: 800 }) for NEXT listen window
+
+  3. Dedup guard: if lastUserMessageAt was < 500ms ago → skip persist (echo)
+     Else: persistMessage(deviceId, "user", utterance, now) [fire-and-forget]
+
+  4. runLLMAndTTSPipeline(session, utterance, isDirectQuestion)
+
+================================================================================
+SECTION 3 — SERVER SIDE: LLM STREAMING + TTS PIPELINE
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+STEP S4 — runLLMAndTTSPipeline() — the core pipeline
+[FILE]  artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+        runLLMAndTTSPipeline()  ~line 476
+
+Session state set:
+  currentTurnId = new UUID
+  currentResponseText = ""
+  llmStreamActive = true
+  state = "llm_pending"
+  wasInterrupted / remainingResponse / interruptedAt reset
+
+PersistentSessionStateGuard.queue() called (fire-and-forget DB write).
+
+────────────────────────────────────────────────────────────────────────────────
+STEP S5 — Context assembly
+[FILE]  artifacts/api-server/src/lib/VoiceContextAssembler.ts
+        VoiceContextAssembler.assemble()  ~line 75
+
+IN:     sessionId, deviceId, callStartTime, currentUtterance,
+        reconnectCount, isDirectQuestion, wasInterrupted,
+        remainingResponse, passiveMode
+
+QUERIES (parallel):
+  - profile: getOrCreateProfileFor(deviceId)
+  - memories: all memories for deviceId
+  - summaries: all conversationSummaries for deviceId
+  - session history: messages where source='voice_call'
+    AND createdAt >= callStartTime, ordered asc, limit 100
+  - call summaries: committed callSummaries for this sessionId
+
+BUILDS:
+  systemPrompt = buildSystemPrompt(profile, memories, summaries)
+                 = ASHLEY_CORE_SPEC (starts with constitutional rules RULE A/B)
+                 + VOICE_MODE_ADDENDUM
+                 + profile block
+                 + memories block
+                 + summaries block
+
+  messages = session-scoped turn history (voice_call source, this call only)
+             + 100-turn overflow preamble if history overflows
+             + reconnect preamble if reconnectAttempts > 0
+             + interruption context if wasInterrupted
+             + current utterance as final user message
+
+OUT:    { systemPrompt, messages }
+
+GATE:   context assembly failure (DB error):
+  consecutiveContextFailures++
+  if >= 2 → call_ended("context_load_failed") + registry.finalise()
+  else    → speakClipOrText("say-that-again", fallback, "main") + return
+────────────────────────────────────────────────────────────────────────────────
+
+STEP S6 — Send speech_start + arm watchdogs
+[FILE]  artifacts/api-server/src/lib/VoiceOrchestrationService.ts  ~line 552
+
+  1. session.currentSpeechId = speechId (new UUID)
+  2. session.state = "tts_streaming"
+  3. WS.send({ type: "speech_start", kind: "main", speechId, sequenceNumber, ... })
+
+GATE:   WS.send() throws → llmStreamActive=false, state="listening",
+        currentSpeechId=null, return.
+
+TIMER — firstTokenWatchdog (8s):
+  If no LLM token received within FIRST_TOKEN_WATCHDOG_MS:
+    speakClipOrText(session, "thinking", "Hang on, I'm thinking...", "auxiliary")
+    Kind="auxiliary" → goes to auxPlayer on client, does NOT affect main lifecycle.
+
+TIMER — hardBudget (45s):
+  If LLM has not finished within MAX_TURN_BUDGET_MS:
+    registry.cancelCurrentTurn() → AbortController.abort()
+    llmStreamActive = false
+    WS.send({ type: "tts_done", ..., reason: "budget_exceeded" })
+    currentSpeechId = null
+────────────────────────────────────────────────────────────────────────────────
+
+STEP S7 — LLM streaming (Stage 6)
+[FILE]  artifacts/api-server/src/lib/VoiceOrchestrationService.ts  ~line 623
+[FILE]  artifacts/api-server/src/lib/textLLM.ts  (streamChatText)
+
+IN:     { system: systemPrompt, messages, maxTokens: 1024,
+          forceProvider: "gemini", signal: abortController.signal }
+
+  streamChatText() → Gemini 2.5 Flash (ASHLEY_TEXT_PROVIDER=gemini default)
+  (voice call is hardcoded to forceProvider: "gemini"; no env flip for voice)
+
+  For each chunk:
+    GATE: currentTurnId !== turnId OR !llmStreamActive → break (abort/interrupt)
+    On first token: cancel firstTokenWatchdog
+    session.currentResponseText += chunk
+    sentenceBuffer += chunk
+    → extractSentence(sentenceBuffer):
+        Regex: /^([\s\S]+?[.!?])(?:\s+)([\s\S]*)$/
+        Extracts first complete sentence ending in . ! ?
+        Returns { sentence, remainder } or null
+
+    While a sentence is extractable:
+      GATE: session.currentSpeechId !== speechId → break
+      stripMarkdown(sentence) → remove *stage directions*, headings, bullets
+      → flushSentenceToTTS(session, speechId, clean)  (Step S8)
+
+  After stream ends: flush trailing sentenceBuffer (partial sentence without
+  terminal punctuation also gets flushed).
+
+GATE (LLM error — not AbortError):
+  speakClipOrText("say-that-again", fallback, "main")
+
+FINALLY:
+  clearTimeout(hardBudget), clearTimeout(firstTokenWatchdog)
+  currentAbortController = null
+  llmStreamActive = false
+────────────────────────────────────────────────────────────────────────────────
+
+STEP S8 — flushSentenceToTTS() — filter + TTS dispatch
+[FILE]  artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+        flushSentenceToTTS()  ~line 273
+
+IN:     sentence (markdown-stripped, complete sentence from LLM stream)
+
+GATE:   !sentence OR currentSpeechId !== speechId OR !ws → return
+
+POST-GENERATION FILTER — filterForbiddenPhrases(sentence)
+  Split text on sentence boundaries (?<=[.!?])\s+
+  For each sub-sentence, test against FORBIDDEN_PHRASE_PATTERNS (18 patterns):
+
+  Closing phrases (RULE A):
+    /i'll let you go/i      /let you go/i          /talk soon/i
+    /goodbye/i              /\bbye\b/i (whole word) /take care/i
+    /speak later/i          /talk to you later/i    /let me know if you need/i
+    /reach out anytime/i
+
+  Silence-filling phrases (RULE B):
+    /are you still there/i  /still there/i         /are you there/i
+    /i'm still here/i       /i'm listening/i        /just checking in/i
+    /hello\?/i              /you okay\?/i
+
+  If a sub-sentence matches ANY pattern → the entire sub-sentence is dropped.
+  Surviving sub-sentences rejoined with " ".
+  If ALL sub-sentences dropped → return "".
+
+GATE:   filtered === "" → return immediately. streamSpeechElevenLabs NOT called.
+        No audio sent. No sentence_end. Silence is the correct output.
+
+TTS CONCURRENCY POOL:
+  waitForTtsSlot(): spin until ttsInFlight < CONCURRENT_TTS_POOL_LIMIT (2)
+  ttsInFlight++ before ElevenLabs call, -- in finally
+
+  streamSpeechElevenLabs(filtered)
+  → ElevenLabs streaming TTS (ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID required)
+  → Yields Buffer chunks (MP3 audio)
+
+  For each chunk:
+    GATE: currentSpeechId !== speechId OR !ws → break (interrupted)
+    appendToRollingBuffer(session, chunk) [for REPEAT_REQUEST replay]
+    WS.send(chunk) [binary frame to client]
+
+GATE (TTS error — not AbortError): log warning, skip sentence (call continues)
+FINALLY: releaseTtsSlot()
+
+  After all chunks sent for this sentence:
+    GATE: sentChunks > 0 AND currentSpeechId === speechId AND ws
+    WS.send({ type: "sentence_end", kind: "main", speechId, timestamp })
+────────────────────────────────────────────────────────────────────────────────
+
+STEP S9 — response_end + playback_confirmed handshake
+[FILE]  artifacts/api-server/src/lib/VoiceOrchestrationService.ts  ~line 690
+
+After all sentences flushed (LLM stream complete):
+
+  GATE: currentSpeechId === speechId (turn not interrupted)
+
+  1. session.responseComplete = true
+  2. WS.send({ type: "response_end", kind: "main", speechId,
+               responseText: currentResponseText, sequenceNumber, ... })
+  3. session.awaitingPlaybackConfirm = true
+
+TIMER — playbackConfirmTimeout (15s):
+  If playback_confirmed NOT received within 15s:
+    awaitingPlaybackConfirm = false
+    responseComplete = false
+    currentSpeechId = null
+    state = "listening"
+    If pendingUtterance: process it now (handleSpeechFinal)
+
+  4. session.lastResponseBuffer = currentResponseText
+  5. persistMessage(deviceId, "ashley", currentResponseText, now) [fire-and-forget]
+     (dedup: turnId added to completedTurnIds to prevent double-write)
+  6. session.state = "listening"
+     session.currentTurnId = null
+────────────────────────────────────────────────────────────────────────────────
+
+STEP S10 — handlePlaybackConfirmed()
+[FILE]  artifacts/api-server/src/lib/VoiceOrchestrationService.ts  ~line 342
+
+IN:     { type: "playback_confirmed" } from client
+
+GATE:   !session.responseComplete → ignore (stale, before response_end)
+GATE:   !session.awaitingPlaybackConfirm → ignore (unexpected)
+
+  1. clearTimeout(playbackConfirmTimeout)
+  2. awaitingPlaybackConfirm = false
+  3. responseComplete = false
+  4. WS.send({ type: "tts_done", kind: "main", speechId,
+               responseText: currentResponseText, sequenceNumber, ... })
+  5. currentSpeechId = null
+  6. state = "listening"
+  7. If pendingUtterance → handleSpeechFinal(session, u, uid) [deferred turn]
+
+================================================================================
+SECTION 4 — SERVER-SIDE SILENCE MONITOR (INDEPENDENT TIMER)
+================================================================================
+
+[FILE]  artifacts/api-server/src/routes/voice-call.ts
+        startSilenceMonitor()  ~line 266
+
+Started once per session from index.ts after call_connected is sent.
+Runs on its own 5-second poll interval (SILENCE_POLL_MS = 5000ms).
+The clock is: Date.now() - (session.lastAudioReceivedAt ?? session.callStartTime)
+
+TICK LOGIC:
+
+  GATE: state === "closed" / "failed" / "closing" → stop polling, return.
+  GATE: state NOT IN ("listening", "active") → skip measurement this tick
+        (don't count silence while LLM or TTS is active).
+  GATE: session.awaitingPlaybackConfirm → skip measurement this tick.
+
+  Measure silenceMs = elapsed since lastAudioReceivedAt (or callStartTime).
+
+  silenceMs >= SILENCE_FORCE_MS (90s):
+    WS.send({ type: "call_ended", reason: "silence_timeout" })
+    registry.finalise("silence_timeout_failsafe")
+    Poll stops. No TTS.
+
+  silenceMs >= SILENCE_END_MS (60s) AND silenceWarningSent=true:
+    speakFarewell(session):
+      speakFallback(session, "I'll let you go — call me back when you're ready.")
+      WS.send({ type: "call_ended", reason: "silence_timeout" })
+      registry.finalise("silence_timeout")
+    Poll stops.
+
+  silenceMs >= SILENCE_WARN_MS (30s) AND !silenceWarningSent:
+    session.silenceWarningSent = true
+    speakFallback(session, "Still there?")
+
+  Schedule next tick: setTimeout(tick, SILENCE_POLL_MS = 5000ms)
+
+────────────────────────────────────────────────────────────────────────────────
+CRITICAL NOTE — SILENCE MONITOR BYPASSES filterForbiddenPhrases
+
+  speakFallback() in voice-call.ts calls streamSpeechElevenLabs() DIRECTLY.
+  It does NOT go through flushSentenceToTTS() in VoiceOrchestrationService.ts.
+  Therefore filterForbiddenPhrases() is NOT applied to these strings.
+
+  "Still there?"  — matches /still there/i (FORBIDDEN_PHRASE_PATTERNS[11])
+                    but WILL be spoken by the 30s silence monitor.
+  "I'll let you go — call me back when you're ready."
+                  — matches /let you go/i (FORBIDDEN_PHRASE_PATTERNS[1])
+                    but WILL be spoken by the 60s silence monitor.
+
+  These are hardcoded strings in a different function (speakFallback) that
+  predates the filter. The filter only covers the LLM output path.
+
+================================================================================
+SECTION 5 — WHAT HAPPENS AT -160 dBFS
+================================================================================
+
+Trigger: AudioRecord.on("data") fires with a chunk where every sample = 0,
+producing: dBFS = 20 * log10(0 / 32768) → handled specially as -160.
+
+Step-by-step when mic is in listening state and -160 arrives:
+
+  1. voiceInput.ts:  meteringRef = -160, setMetering(-160)
+  2. useVoiceCall.ts VAD effect fires:
+       db === null? No (-160 is not null). vadProbeUsableRef++.
+       meteringEverReceivedRef = true.
+       vadActiveRef.current? If still in 500ms delay → return.
+       db (-160) > SILENCE_DB (-28)? NO → silence branch.
+  3. isUserSpeakingRef?
+       YES (was speaking): no transition needed; isUserSpeakingRef stays true.
+         Check silence duration: now - lastSpeechAtRef.
+         If silence duration >= activeSilenceMsRef → submitSegment() fires.
+       NO (never spoken this segment): no change. VAD loop does nothing.
+         autoSubmit timer (blind mode only) counts down independently.
+         Server-side silence monitor counts down independently.
+  4. If submitSegment() fires: same flow as Step M4 above.
+     STT hallucination guard: segmentSpeechMsRef likely < MIN_STT_SPEECH_MS
+     if speech was very brief → segment dropped.
+  5. If submitSegment() does NOT fire (was never speaking):
+     Server-side silence monitor polls every 5s against lastAudioReceivedAt.
+     At 30s: "Still there?" (speakFallback — bypasses filter, see Section 4)
+     At 60s: farewell + call_ended
+     At 90s: force close
+
+SEQUENCE WHEN USER GOES COMPLETELY SILENT FROM THE START:
+  T+0s:    mic open, VAD delay starts
+  T+0.5s:  VAD active, -160 readings every ~100ms, no submission (never spoke)
+  T+5s:    silence monitor first tick: silenceMs ~5s, no action
+  T+30s:   silence monitor tick: silenceMs >= 30s, silenceWarningSent=false
+             → speakFallback("Still there?") → state changes to tts_streaming
+               → monitor skips measurement while tts/playback active
+             → silenceWarningSent = true
+  T+60s:   silence monitor tick: silenceMs >= 60s, silenceWarningSent=true
+             → speakFarewell() → "I'll let you go..." + call_ended + finalise
+  T+90s:   failsafe (only reached if 60s path failed):
+             → direct call_ended + finalise, no TTS
+
+================================================================================
+SECTION 6 — COMPLETE GATE SUMMARY TABLE
+================================================================================
+
+Gate                             File / Location                  Effect
+───────────────────────────────────────────────────────────────────────────────
+VAD_DELAY_MS (500ms)             useVoiceCall.ts ~L47             vadActive blocked
+VAD null metering                useVoiceCall.ts ~L598            blind mode fallback
+isUserSpeakingRef=false          useVoiceCall.ts ~L606            no submission
+STT speech < 300ms               useVoiceCall.ts ~L503            segment dropped
+Blind size < 4000 bytes          useVoiceCall.ts ~L517            segment dropped
+Blind transcript filter          useVoiceCall.ts ~L558            segment dropped
+Phase = submitting/thinking/
+  speaking at submitSegment      useVoiceCall.ts ~L475            blocked
+WS not OPEN at speech_final      useVoiceCall.ts ~L568            error + ended
+awaitingPlaybackConfirm at
+  speech_final                   VoiceOrch.ts ~L844              queued (1 max)
+Empty transcript after STT       VoiceOrch.ts ~L862              return (no turn)
+EMPTY intent class               VoiceOrch.ts ~L874              return
+COMMAND intent class             VoiceOrch.ts ~L876              dispatched, return
+passiveMode + CONVERSATIONAL     VoiceOrch.ts ~L888              discarded, return
+Context assembly failure ≥2      VoiceOrch.ts ~L534              call_ended
+Context assembly failure <2      VoiceOrch.ts ~L542              "say that again"
+speech_start WS.send() fail      VoiceOrch.ts ~L569              return, listening
+firstTokenWatchdog (8s)          VoiceOrch.ts ~L614              auxiliary "thinking"
+hardBudget (45s)                 VoiceOrch.ts ~L584              abort + tts_done
+LLM AbortError                   VoiceOrch.ts ~L669              expected, silent
+LLM other error                  VoiceOrch.ts ~L672              "lost my train"
+currentSpeechId mismatch         VoiceOrch.ts ~L278              flushSentence skip
+filterForbiddenPhrases → ""      VoiceOrch.ts ~L281              TTS skipped, silence
+TTS concurrency pool (max 2)     VoiceOrch.ts ~L110              waitForTtsSlot spin
+TTS AbortError                   VoiceOrch.ts ~L297              expected, silent
+TTS other error                  VoiceOrch.ts ~L298              log warn, skip
+sentChunks=0 at sentence_end     VoiceOrch.ts ~L310              sentence_end suppressed
+playback_confirmed before
+  response_end                   VoiceOrch.ts ~L343              ignored
+playbackConfirmTimeout (15s)     VoiceOrch.ts ~L721              reset to listening
+Silence monitor gate: state not
+  "listening"/"active"           voice-call.ts ~L284             tick skipped
+Silence monitor gate:
+  awaitingPlaybackConfirm        voice-call.ts ~L287             tick skipped
+Zombie cleanup (90s heartbeat)   VoiceOrch.ts ~L783              ws.close + finalise
+
+================================================================================
+END OF REPORT
+================================================================================
