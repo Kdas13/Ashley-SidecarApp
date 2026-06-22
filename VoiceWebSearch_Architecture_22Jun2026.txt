@@ -1,0 +1,159 @@
+ASHLEY VOICE PIPELINE — WEB SEARCH ARCHITECTURE ANALYSIS
+22 Jun 2026
+No code changes — read-only investigation.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. DOES ASHLEY HAVE A LIVE WEB SEARCH TOOL?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Yes — but NOT wired into the voice pipeline. It exists in the text/SSE
+chat pipeline only.
+
+Tool:    Tavily Search API  (https://api.tavily.com/search)
+Code:    artifacts/api-server/src/lib/webSearch.ts
+Key:     TAVILY_API_KEY environment variable (optional; if absent, the
+         "unavailable" status block is injected instead of results)
+
+Entry point that the text chat uses:
+  maybeRunWebLookup(userMessage, recentHistory, builderAware)
+
+Where it fires in text chat:
+  artifacts/api-server/src/routes/chat.ts, line ~4897
+  — inside the /api/chat/stream SSE handler (the route the mobile app uses
+    for text messages).
+  — fires on every new user turn (not "continue" mode).
+
+Where it does NOT fire:
+  artifacts/api-server/src/index.ts   — the voice WebSocket handler
+  artifacts/api-server/src/routes/voice-call.ts
+  artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+  All three were grepped: zero references to maybeRunWebLookup, webSearch,
+  or Tavily.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2. HOW THE TEXT CHAT WEB SEARCH PIPELINE WORKS
+   (for reference — this is what the voice pipeline is missing)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Step 1 — LLM intent classifier (Gemini Flash, 3s hard timeout)
+  classifySearchIntent() runs BEFORE the main LLM call.
+  It reads the user's message plus up to 4 recent turns for context.
+  System prompt tells it to search for: price queries, availability,
+  purchase intent, live facts (news, scores, weather, exchange rates),
+  "have a look / find / check / search" phrasing.
+  It returns either:
+    { search: true, query: "<optimised 5-10 word UK-focused query>" }
+    { search: false }
+  On classifier failure (timeout, parse error) it returns null → no search.
+  This costs essentially nothing (maxTokens: 60, Gemini Flash).
+
+Step 2 — Tavily call (5s hard timeout, max 5 results)
+  tavilySearch(query) POSTs to Tavily with search_depth: "basic".
+  Each result snippet is hard-capped at 320 chars to limit token cost.
+
+Step 3 — System prompt injection
+  On success: a === WEB LOOKUP: results === block is appended to the
+  system prompt, containing the results and voice rules telling Ashley
+  to answer first, cite sources casually, and signal the lookup once.
+  On empty/failed/unavailable: a status block is still injected so Ashley
+  knows the lookup ran but didn't deliver — she's told to flag staleness
+  and not fabricate fresh facts.
+  The main LLM then runs with the enriched system prompt.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3. WHAT CURRENTLY HAPPENS ON A VOICE QUERY LIKE
+   "find me the cheapest bottle of Jameson's in Lincoln"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The voice pipeline path:
+  User speaks → STT (Deepgram nova-3 or Whisper fallback)
+             → speech_final sent to server
+             → VoiceOrchestrationService.handleSpeechFinal()
+             → builds systemPrompt from ashleyCoreSpec only
+             → streamChatText() → Gemini 2.5 Flash (or Claude Sonnet 4.6)
+             → TTS chunks streamed back
+
+No classifier runs. No Tavily call. No lookup block in the system prompt.
+
+Gemini (or Claude) answers entirely from training-data knowledge with its
+knowledge cutoff. For "cheapest Jameson's in Lincoln" it will guess based
+on general knowledge of UK off-licences and supermarkets — it cannot tell
+the user which specific shop in Lincoln has stock or a current price.
+
+Section 9 of the Core Spec (ashleyCoreSpec.ts) is in the voice system
+prompt and tells Ashley not to present fresh facts as if she'd just checked.
+Whether Ashley reliably respects that caveat under conversational pressure
+is LLM behaviour, not a code guarantee.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4. OTHER LIVE DATA TOOLS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+None. There is no:
+  - Weather API integration (weather appears as an image-composition field
+    in visualSpec.ts for selfie backgrounds — not a live data call)
+  - Price API
+  - Maps or geocoding API
+  - Exchange rate / finance API
+  - Any other live data tool beyond Tavily
+
+Tavily is the only external live-data provider and it is only called from
+the text chat path.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5. WHAT WOULD BE NEEDED TO ADD LIVE WEB SEARCH TO VOICE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+This is a single-file change plus the env var. All the machinery already
+exists.
+
+Prerequisite:
+  TAVILY_API_KEY must be set as a Replit secret on the API Server artifact.
+  (It may already be set — check Secrets. If it's not set, the system
+  degrades gracefully to the "unavailable" status block, which is still
+  better than silence.)
+
+Code change — VoiceOrchestrationService.ts:
+  The service builds a systemPrompt before calling streamChatText().
+  Add a call to maybeRunWebLookup() at that point, identical to how
+  chat.ts does it at line 4897:
+
+    import { maybeRunWebLookup } from "../webSearch";   // at top of file
+
+    // before the streamChatText call:
+    const lookup = await maybeRunWebLookup(
+      userMessage,          // the STT transcript for this turn
+      recentHistory,        // last 4 turns already available in the service
+      builderAware,         // from session profile
+    );
+    if (lookup) {
+      systemPrompt = `${systemPrompt}\n\n${lookup.block}`;
+    }
+
+Timing cost:
+  Classifier: Gemini Flash, ~3s hard timeout, 60 tokens. Fires only when
+  intent is detected — most turns (personal chat, emotional, general
+  knowledge) return {search: false} very quickly.
+  Tavily call: 5s hard timeout. Only runs when classifier says yes.
+  In the worst case (classifier + Tavily both near timeout) this adds up to
+  ~8s before the LLM call starts. That is noticeable in voice. In practice,
+  the classifier is fast (~500ms–1s) and Tavily is ~1–2s on a normal query.
+
+Voice-specific considerations:
+  - The existing block formatting in webSearch.ts already has "voice rules"
+    baked in (answer first, cite sources casually, signal lookup once, no
+    mention of Tavily by name). These were designed for the text chat but
+    apply equally to voice.
+  - "Cheapest Jameson's in Lincoln" will get useful supermarket/off-licence
+    results. Tesco pricing is publicly indexed. However Tavily's basic depth
+    search does not hit real-time inventory systems or dynamic price APIs —
+    it returns web page snippets, which for a Tesco or Asda product page
+    will include a displayed price that may be current or may be cached.
+  - For genuinely live stock/price queries the honest answer is: Tavily
+    gets you significantly closer to current than training data, but it is
+    not a price API — treat results as a strong indication, not a guarantee.
+
+No other files need to change. The route handler in index.ts calls
+VoiceOrchestrationService and does not need to be touched. The
+ashleyCoreSpec system prompt already handles the "I just checked" voice
+for the web lookup blocks.

@@ -599,3 +599,9 @@ id = "BmHxOfKxE4vU-27hJlFhS"
 uri = "file://VoiceCallDiagnostic_60sFreeze_22Jun2026.txt"
 type = "text"
 title = "Voice Call 60s Freeze Diagnostic"
+
+[[outputs]]
+id = "nb4TGLPrnuR0HiIoPFBud"
+uri = "file://VoiceWebSearch_Architecture_22Jun2026.txt"
+type = "text"
+title = "Voice Web Search Architecture Analysis"
