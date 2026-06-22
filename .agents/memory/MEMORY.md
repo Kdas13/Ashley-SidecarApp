@@ -12,3 +12,4 @@
 - [Voice call echo loop root cause](voice-echo-loop.md) — ttsServerDoneRef initialized true in useVoiceCall.ts; drain branch checks it before responseEndReceivedRef, opening mic on first drain.
 - [EAS build sandbox constraint](eas-build-constraint.md) — `eas build` cannot be run from Replit main agent; it does a destructive git op that the sandbox blocks. Kane must run it from the Shell tab.
 - [Output format standing rule](output-format-rule.md) — ALL results go in a .txt file and are presented via present_asset. No inline output, ever. Turn-level "no txt needed" does not override this standing order.
+- [Voice time context confidence issue](voice-time-confidence.md) — Gemini leads with training-data guesses on time/date before reading injected block; fix is stronger prohibition wording in buildVoiceTimeContext().

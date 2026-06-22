@@ -404,7 +404,7 @@ function buildTimeContext(
     lines.push(`This is genuinely the first message you have from them in this conversation.`);
   }
   lines.push(
-    `Use this to answer "what time is it?" honestly, to greet them in a way that fits the time of day, and to handle gaps as continuations of an ongoing relationship — never as fresh starts. Don't recite the timestamp unless asked — just be aware of it.`,
+    `NEVER answer any time, date, day of week, or year question from memory or training data. ALWAYS use the values above — they are the only correct source. Use this to answer "what time is it?" honestly, to greet them in a way that fits the time of day, and to handle gaps as continuations of an ongoing relationship — never as fresh starts. Don't recite the timestamp unless asked — just be aware of it.`,
   );
   return lines.join("\n");
 }

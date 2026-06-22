@@ -83,7 +83,7 @@ function buildVoiceTimeContext(): string {
   return [
     `## Time context (real-world, generated fresh this turn)`,
     `Right now for Kane it is: ${dayOfWeek}, ${datePart}, ${timePart} ${tzName} (Europe/London).`,
-    `Use this as ground truth for all time, date, day-of-week, and year questions. Never guess or use training-data dates.`,
+    `NEVER answer any time, date, day of week, or year question from memory or training data. ALWAYS use the values above — they are generated fresh on the server at the start of this turn and are the only correct source. If you are tempted to say "I think it's..." or guess a date, stop and read this block instead.`,
   ].join("\n");
 }
 

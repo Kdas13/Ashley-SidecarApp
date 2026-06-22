@@ -1,0 +1,71 @@
+TIME CONTEXT CONFIDENCE FIX — COMMIT EVIDENCE
+Issue: Gemini answers time/date from training-data intuition before
+reading the injected time context block.
+Fix: Hard NEVER/ALWAYS prohibition added to all time context blocks.
+22 Jun 2026
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PREVIOUS HEAD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+commit d77d9cbc032289629fd08390e113ac6e97a07450
+    Add file detailing timezone and location findings
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILE 1 — artifacts/api-server/src/lib/VoiceContextAssembler.ts
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BEFORE (line 89):
+  `Use this as ground truth for all time, date, day-of-week, and year
+  questions. Never guess or use training-data dates.`
+
+AFTER (line 89):
+  `NEVER answer any time, date, day of week, or year question from memory
+  or training data. ALWAYS use the values above — they are generated fresh
+  on the server at the start of this turn and are the only correct source.
+  If you are tempted to say "I think it's..." or guess a date, stop and
+  read this block instead.`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILE 2 — artifacts/api-server/src/routes/chat.ts
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+BEFORE (line 409-410, inside buildTimeContext()):
+  `Use this to answer "what time is it?" honestly, to greet them in a way
+  that fits the time of day, and to handle gaps as continuations of an
+  ongoing relationship — never as fresh starts. Don't recite the timestamp
+  unless asked — just be aware of it.`
+
+AFTER (line 409-410):
+  `NEVER answer any time, date, day of week, or year question from memory
+  or training data. ALWAYS use the values above — they are the only correct
+  source. Use this to answer "what time is it?" honestly, to greet them in
+  a way that fits the time of day, and to handle gaps as continuations of
+  an ongoing relationship — never as fresh starts. Don't recite the
+  timestamp unless asked — just be aware of it.`
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ADDITIONAL WORK DONE THIS SESSION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Memory written:
+  .agents/memory/voice-time-confidence.md — documents the root cause
+  and the fix pattern so it is available at next session start.
+  .agents/memory/MEMORY.md — index updated with pointer.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERDICT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PASS. Two files changed as targeted. No other lines touched.
+
+Coverage:
+  Voice calls   — VoiceContextAssembler.ts buildVoiceTimeContext()
+  Chat reply    — chat.ts buildTimeContext() (covers main, streaming,
+                  and vision reply paths — all three call this function)
+
+Root cause addressed: soft "use this as ground truth" phrasing replaced
+with explicit NEVER/ALWAYS prohibition at both call sites. Gemini is
+given no room to prefer training-data intuition over the injected block.
+
+Server-side only. Replit redeploy required. No EAS build needed.
+Timestamp: 2026-06-22T21:35 UTC

@@ -659,3 +659,9 @@ id = "XT21d1caNX51ntGTNTx1K"
 uri = "file://TimezoneLocation_Fix_22Jun2026.txt"
 type = "text"
 title = "Timezone + Location Fix — Commit Evidence"
+
+[[outputs]]
+id = "hpQ1s6ME5nKBZL77hTdd5"
+uri = "file://TimeContext_ConfidenceFix_22Jun2026.txt"
+type = "text"
+title = "Time Context Confidence Fix — Commit Evidence"
