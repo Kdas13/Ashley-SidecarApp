@@ -68,6 +68,26 @@ export interface AssembledContext {
 }
 
 // ---------------------------------------------------------------------------
+// Time context — server-generated, Europe/London, never from client headers
+// ---------------------------------------------------------------------------
+
+function buildVoiceTimeContext(): string {
+  const now = new Date();
+  const tz = "Europe/London";
+  const fmt = (opts: Intl.DateTimeFormatOptions) =>
+    new Intl.DateTimeFormat("en-GB", { timeZone: tz, ...opts }).format(now);
+  const dayOfWeek  = fmt({ weekday: "long" });
+  const datePart   = fmt({ day: "numeric", month: "long", year: "numeric" });
+  const timePart   = fmt({ hour: "2-digit", minute: "2-digit", hour12: false });
+  const tzName     = fmt({ timeZoneName: "short" }).split(", ").pop() ?? tz;
+  return [
+    `## Time context (real-world, generated fresh this turn)`,
+    `Right now for Kane it is: ${dayOfWeek}, ${datePart}, ${timePart} ${tzName} (Europe/London).`,
+    `Use this as ground truth for all time, date, day-of-week, and year questions. Never guess or use training-data dates.`,
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -101,6 +121,7 @@ export class VoiceContextAssembler {
     const voiceProfile = { ...profile, voiceMode: true };
 
     const systemParts: string[] = [
+      buildVoiceTimeContext(),
       buildSystemPrompt(voiceProfile, memories, convSummaries, {
         imageGenerationEnabled: false,
       }),

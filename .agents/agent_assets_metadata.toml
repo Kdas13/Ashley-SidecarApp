@@ -653,3 +653,9 @@ id = "2xnra2zDeUxlUbmCd-O52"
 uri = "file://TimezoneLocation_Evidence_22Jun2026.txt"
 type = "text"
 title = "Timezone + Location — Insertion Point Evidence"
+
+[[outputs]]
+id = "XT21d1caNX51ntGTNTx1K"
+uri = "file://TimezoneLocation_Fix_22Jun2026.txt"
+type = "text"
+title = "Timezone + Location Fix — Commit Evidence"

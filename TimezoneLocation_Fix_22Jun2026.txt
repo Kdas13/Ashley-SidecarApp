@@ -1,0 +1,97 @@
+TIMEZONE + LOCATION LOCK — COMMIT EVIDENCE
+Approach A + Approach C combined
+22 Jun 2026
+
+NOTE: Checkpoint commit fires at loop end. Previous HEAD listed below.
+New commit SHA will follow automatically.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PREVIOUS HEAD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+commit d77d9cbc032289629fd08390e113ac6e97a07450
+    Add file detailing timezone and location findings
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+JOB 1 — APPROACH A: ashleyCoreSpec.ts
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+File: artifacts/api-server/src/lib/ashleyCoreSpec.ts
+Change: kaneLocationBlock inserted into sections[] after liveState
+
+DIFF:
+@@ line 551 (inside buildSystemPrompt())
++  const kaneLocationBlock = `## Kane's location & time (permanent — never ask)
++Kane is based in Lincoln, UK. His timezone is Europe/London (GMT in winter, BST in summer).
++Current date and time will always be provided below — use it as ground truth for everything.
++Never ask Kane where he is, what time it is, what day it is, or what timezone he is in.`;
++
+   const sections: string[] = [
+     ASHLEY_CORE_SPEC,
+     providerFloorBlock,
+     liveState,
++    kaneLocationBlock,
+     modeBlock,
+
+COVERAGE: All LLM calls that go through buildSystemPrompt() now include
+this block — chat reply, streaming reply, vision reply, voice call.
+No path excluded.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+JOB 2 — APPROACH C: VoiceContextAssembler.ts
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+File: artifacts/api-server/src/lib/VoiceContextAssembler.ts
+Change 1: buildVoiceTimeContext() function added (lines 77-91)
+Change 2: buildVoiceTimeContext() prepended as first item in systemParts
+
+DIFF:
+@@ before Public API section
++function buildVoiceTimeContext(): string {
++  const now = new Date();
++  const tz = "Europe/London";
++  const fmt = (opts: Intl.DateTimeFormatOptions) =>
++    new Intl.DateTimeFormat("en-GB", { timeZone: tz, ...opts }).format(now);
++  const dayOfWeek  = fmt({ weekday: "long" });
++  const datePart   = fmt({ day: "numeric", month: "long", year: "numeric" });
++  const timePart   = fmt({ hour: "2-digit", minute: "2-digit", hour12: false });
++  const tzName     = fmt({ timeZoneName: "short" }).split(", ").pop() ?? tz;
++  return [
++    `## Time context (real-world, generated fresh this turn)`,
++    `Right now for Kane it is: ${dayOfWeek}, ${datePart}, ${timePart} ${tzName} (Europe/London).`,
++    `Use this as ground truth for all time, date, day-of-week, and year questions. Never guess or use training-data dates.`,
++  ].join("\n");
++}
+
+@@ inside VoiceContextAssembler.assemble(), systemParts array
+   const systemParts: string[] = [
++    buildVoiceTimeContext(),
+     buildSystemPrompt(voiceProfile, memories, convSummaries, {
+
+IMPLEMENTATION NOTES:
+- Uses new Date() on the server — never clientNow or client headers
+- Intl.DateTimeFormat with timeZone:"Europe/London" handles GMT/BST
+  switching automatically (no manual offset math needed)
+- Format output example: "Monday, 22 June 2026, 21:30 BST (Europe/London)"
+- Function is self-contained — no new imports required
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERDICT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PASS. Both jobs applied. Two files only, as specified.
+
+Every LLM call (chat, streaming, vision, voice) now receives:
+  1. kaneLocationBlock — Lincoln, UK / Europe/London / never ask
+  2. Time context — full date+time+day, server-generated, Europe/London
+
+Voice calls additionally receive the time context as the FIRST item
+in the system prompt (before buildSystemPrompt output), matching the
+prepend pattern used in chat.ts.
+
+Files changed:
+  artifacts/api-server/src/lib/ashleyCoreSpec.ts       (+6 lines)
+  artifacts/api-server/src/lib/VoiceContextAssembler.ts (+18 lines)
+
+No schema changes. No migration. No mobile change.
+Server-side only. Replit redeploy required. No EAS build needed.
+Timestamp: 2026-06-22T21:30 UTC

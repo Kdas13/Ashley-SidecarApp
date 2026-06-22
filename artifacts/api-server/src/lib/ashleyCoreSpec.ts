@@ -545,10 +545,16 @@ Kane has the builder layer turned off right now, so I lean into the in-character
   const modeBlock = buildModeBlock(policy);
   const intimacyBlock = buildIntimacyBlock(policy);
 
+  const kaneLocationBlock = `## Kane's location & time (permanent — never ask)
+Kane is based in Lincoln, UK. His timezone is Europe/London (GMT in winter, BST in summer).
+Current date and time will always be provided below — use it as ground truth for everything.
+Never ask Kane where he is, what time it is, what day it is, or what timezone he is in.`;
+
   const sections: string[] = [
     ASHLEY_CORE_SPEC,
     providerFloorBlock,
     liveState,
+    kaneLocationBlock,
     modeBlock,
     intimacyBlock,
     builderAwareSection,
