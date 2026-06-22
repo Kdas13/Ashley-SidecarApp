@@ -1,0 +1,58 @@
+TAVILY COUNTRY PARAMETER FIX — COMMIT EVIDENCE
+artifacts/api-server/src/lib/webSearch.ts, line 211
+22 Jun 2026
+
+NOTE: Checkpoint commit fires at loop end. SHA below is the pre-change
+HEAD; the new commit will immediately follow.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PREVIOUS HEAD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+commit ea1ae5ad95320fb7fd7e48a64ee2910163919453
+    Add rule for consistent output formatting
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DIFF
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+--- a/artifacts/api-server/src/lib/webSearch.ts
++++ b/artifacts/api-server/src/lib/webSearch.ts
+@@ -208,7 +208,7 @@
+       body: JSON.stringify({
+         query:        biasQueryForUK(trimmed),
+         search_depth: "basic",
+         max_results:  MAX_RESULTS,
+-        country:      "gb",
++        country:      "United Kingdom",
+       }),
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RESULT AS APPLIED (lines 207-213)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+      body: JSON.stringify({
+        query:        biasQueryForUK(trimmed),
+        search_depth: "basic",
+        max_results:  MAX_RESULTS,
+        country:      "United Kingdom",
+      }),
+      signal: ac.signal,
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERDICT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PASS. One value changed in one file. No other lines touched.
+
+Root cause resolved: Tavily was returning HTTP 400 "Invalid country"
+because "gb" is an ISO code, not the full name Tavily expects.
+"United Kingdom" is the correct value per the Tavily docs.
+
+Combined with the classifier fix (commit a2608f5), the full voice
+search pipeline should now be operational:
+  Classifier fires -> biasQueryForUK() appends UK context ->
+  Tavily POST with country:"United Kingdom" -> results injected ->
+  Ashley responds with live prices.
+
+Server-side change only. Replit redeploy required. No EAS build needed.
+Timestamp: 2026-06-22T20:30 UTC

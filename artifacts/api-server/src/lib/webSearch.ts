@@ -205,7 +205,7 @@ export async function tavilySearch(
         query:        biasQueryForUK(trimmed),
         search_depth: "basic",
         max_results:  MAX_RESULTS,
-        country:      "gb",
+        country:      "United Kingdom",
       }),
       signal: ac.signal,
     });
