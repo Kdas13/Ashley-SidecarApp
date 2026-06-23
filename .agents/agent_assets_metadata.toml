@@ -719,3 +719,9 @@ id = "I6Ng6lZp6gNc6mnDqB7-_"
 uri = "file://VoiceCall_LogAnalysis_11h09_23Jun2026.txt"
 type = "text"
 title = "Voice Call Log Analysis — 11:09 UTC 23 Jun 2026"
+
+[[outputs]]
+id = "KNOhfZ75uffhS9E2cM4O9"
+uri = "file://VoiceCall_GeminiFallback_Analysis_23Jun2026.txt"
+type = "text"
+title = "Voice Call — Gemini 503 Fallback Analysis"

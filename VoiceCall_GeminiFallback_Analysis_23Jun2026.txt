@@ -1,0 +1,211 @@
+VOICE CALL — GEMINI 503 FALLBACK ANALYSIS
+Read-only. No changes made.
+23 Jun 2026
+
+Files read:
+  artifacts/api-server/src/lib/VoiceOrchestrationService.ts  (lines 660-767)
+  artifacts/api-server/src/lib/textLLM.ts                    (full, 213 lines)
+  artifacts/api-server/src/routes/chat.ts                    (grep only)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q1 — Exact code at the LLM call — structure and parameters
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The LLM call is at lines 685-692 of VoiceOrchestrationService.ts:
+
+    const stream = streamChatText({
+      system:        ctx.systemPrompt,
+      messages:      ctx.messages,
+      maxTokens:     VOICE_MAX_TOKENS,
+      forceProvider: "gemini",       // ← the lock
+      signal:        controller.signal,
+    });
+
+Note: line 674 (as cited in the request) is actually the opening brace of a
+logger.info() call for web lookup injection. The forceProvider line is 690.
+
+streamChatText signature (textLLM.ts lines 103-105):
+  export async function* streamChatText(opts: StreamOpts): AsyncGenerator<string>
+
+  StreamOpts = GenerateOpts & { signal?: AbortSignal }
+  GenerateOpts = {
+    system:         string
+    messages:       LLMMessage[]
+    maxTokens:      number
+    forceProvider?: "anthropic" | "gemini"   // pins provider, bypasses env
+    geminiModel?:   string                   // overrides GEMINI_CHAT_MODEL
+  }
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q2 — How does the chat lane implement its Anthropic fallback?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The fallback lives in textLLM.ts, not in chat.ts. chat.ts calls streamChatText
+without forceProvider, so textLLM.ts owns the fallback logic.
+
+textLLM.ts lines 134-190 (Gemini catch block inside streamChatText):
+
+  catch (err) {
+    // AbortErrors: propagate immediately.
+    if (err instanceof Error && err.name === "AbortError") throw err;
+
+    // Retry 429s only if no content has been yielded yet.
+    if (isRateLimit(err) && !hasYielded && attempt < RETRY_DELAYS_MS.length) {
+      lastErr = err;
+      logger.warn(..., "Gemini rate limit on streamChatText — retrying");
+      continue;     // retry loop: up to 3 attempts with 1s/2s/4s backoff
+    }
+
+    // After retry exhaustion:
+    if (isRateLimit(err) && !hasYielded) {
+      if (opts.forceProvider === "gemini") {
+        // DELIBERATELY BLOCKED for force-pinned calls.
+        logger.warn(..., "throwing, no Anthropic fallback");
+        throw err;
+      }
+      // Non-forced: fall back to Anthropic Claude.
+      logger.warn(..., "Gemini rate limit exhausted — falling back to Anthropic");
+      const stream = anthropic.messages.stream({ model: "claude-sonnet-4-6", ... });
+      for await (const ev of stream) { yield ev.delta.text; }
+      return;
+    }
+    throw err;   // all other errors: propagate immediately
+  }
+
+KEY: isRateLimit() checks ONLY for 429 (HTTP status or RATELIMIT_EXCEEDED message).
+  function isRateLimit(err: unknown): boolean {
+    const status = (err as Record<string,unknown>).status;
+    if (status === 429) return true;
+    const msg = (err as { message?: string }).message ?? "";
+    return msg.includes("RATELIMIT_EXCEEDED") || msg.includes("429");
+  }
+
+503s are NOT matched by isRateLimit. They fall through to:
+  throw err;   // line 186 — immediate propagation, no retry, no fallback.
+
+So the Anthropic fallback that exists in chat.ts does NOT apply to 503 errors
+at all, even for non-forced calls. The fallback only covers 429s.
+
+The comment at lines 149-152 explains why forceProvider=gemini blocks fallback:
+  "The Anthropic integration throttles even harder on turn 2+, making the hang
+   longer, not shorter. The caller (voice orchestration) will play a graceful
+   error clip and re-enter listening state."
+
+This reasoning applies to quota exhaustion (429). It does NOT apply to
+503 (service unavailable) — Anthropic is unaffected by Gemini being down.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q3 — Minimal change to add Anthropic fallback on 5xx in voice
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Two files: textLLM.ts and VoiceOrchestrationService.ts.
+
+CHANGE 1 — textLLM.ts: add isUnavailable() and 503 fallback path
+
+Add alongside isRateLimit():
+
+  // Returns true when the error is a provider-side service unavailability (503).
+  // 503 is distinct from 429 — Gemini is down, not quota-exhausted. Anthropic
+  // is unaffected, so immediate fallback (no retry) is the right action.
+  function isUnavailable(err: unknown): boolean {
+    if (!err || typeof err !== "object") return false;
+    const status = (err as Record<string, unknown>).status;
+    if (status === 503) return true;
+    const msg = (err as { message?: string }).message ?? "";
+    return msg.includes("UNAVAILABLE") || msg.includes("503");
+  }
+
+In the Gemini catch block, after the isRateLimit handling and before throw err:
+
+  // 503 / service unavailable — Gemini is down, not rate-limited.
+  // Do not retry (it won't recover in seconds). Fall back to Anthropic
+  // immediately if not force-pinned, otherwise throw.
+  if (isUnavailable(err) && !hasYielded) {
+    if (opts.forceProvider === "gemini") {
+      logger.warn({ attempt, model: opts.geminiModel ?? GEMINI_CHAT_MODEL },
+        "Gemini unavailable (503) on streamChatText (forceProvider=gemini) — throwing");
+      throw err;
+    }
+    logger.warn({ attempt },
+      "Gemini unavailable (503) on streamChatText — falling back to Anthropic");
+    const stream = anthropic.messages.stream(
+      { model: "claude-sonnet-4-6", max_tokens: Math.min(opts.maxTokens, 8192),
+        system: opts.system, messages: opts.messages },
+      { signal: opts.signal },
+    );
+    for await (const ev of stream) {
+      if (ev.type === "content_block_delta" && ev.delta.type === "text_delta"
+          && ev.delta.text) {
+        yield ev.delta.text;
+      }
+    }
+    return;
+  }
+
+CHANGE 2 — VoiceOrchestrationService.ts: remove forceProvider: "gemini"
+
+  const stream = streamChatText({
+    system:    ctx.systemPrompt,
+    messages:  ctx.messages,
+    maxTokens: VOICE_MAX_TOKENS,
+    // forceProvider removed — voice uses activeChatProvider() (env default).
+    // This allows the 503 fallback in textLLM.ts to engage when Gemini is down.
+    // Gemini is still used by default (ASHLEY_TEXT_PROVIDER=gemini).
+    signal:    controller.signal,
+  });
+
+WHY this is safe:
+  - ASHLEY_TEXT_PROVIDER=gemini is the current env default, so Gemini is still
+    the first-choice provider. Nothing changes on happy path.
+  - 429 exhaustion: already falls back to Anthropic for non-forced calls.
+  - 503 (Gemini down): new isUnavailable path → immediate Anthropic fallback,
+    no retry delay, turn completes.
+  - forceProvider:"gemini" removal does NOT affect the existing error-clip path
+    (speakClipOrText "say-that-again") — that still fires for any non-503,
+    non-abort, non-recovered error.
+
+WHY the forceProvider=gemini comment logic is preserved:
+  The existing comment ("Anthropic throttles harder on turn 2+") was written for
+  429s under quota pressure. For 503 the inverse is true — Anthropic is fully
+  available. The new code keeps forceProvider=gemini throwing on 503 for callers
+  that genuinely need Gemini-only (e.g. structured output paths). Voice is no
+  longer one of them.
+
+CHANGE SCOPE: 2 files, minimal line count.
+  textLLM.ts:                ~15 new lines (isUnavailable + fallback branch)
+  VoiceOrchestrationService: 2 lines removed (forceProvider line + its comment)
+
+RISK: streaming voice turns now may use Anthropic when Gemini is 503. Anthropic
+voice replies will sound slightly different (wordier, more formal by default).
+The constitutional prompt and ashleyCoreSpec voice rules still apply — they are
+in the system prompt, not provider-specific. Monitor first call after deploy.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q4 — Does the search classifier need a fallback?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+NO. Failing silently is acceptable for the search classifier.
+
+The logs confirm this already works correctly:
+  11:09:15.675  [warn] Search intent classifier failed — skipping web lookup
+  (execution continued normally to the main LLM call)
+
+The classifier uses generateChatText (non-streaming). maybeRunWebLookup already
+wraps this in a try-catch and returns null on failure — the voice turn proceeds
+without web enrichment. A degraded-but-present Ashley response is the correct
+outcome when the search classifier 503s.
+
+Adding an Anthropic fallback to the classifier would add latency (it's on the
+hot path before the LLM stream) with negligible benefit — the search context
+is optional, not required for a response. Leave as-is.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IMPLEMENTATION SUMMARY (awaiting approval)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Files to change: 2
+  textLLM.ts:                  add isUnavailable(), add 503 fallback branch
+  VoiceOrchestrationService.ts: remove forceProvider: "gemini" from voice call
+
+No EAS build needed. Server redeploy required.
+No new dependencies.
