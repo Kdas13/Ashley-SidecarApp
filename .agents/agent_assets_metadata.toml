@@ -665,3 +665,9 @@ id = "hpQ1s6ME5nKBZL77hTdd5"
 uri = "file://TimeContext_ConfidenceFix_22Jun2026.txt"
 type = "text"
 title = "Time Context Confidence Fix — Commit Evidence"
+
+[[outputs]]
+id = "c3nrVBIVrRTQefXOQTCar"
+uri = "file://BraveSearch_Evidence_23Jun2026.txt"
+type = "text"
+title = "Brave Search Fallback — Evidence"

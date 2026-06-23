@@ -1,0 +1,142 @@
+BRAVE SEARCH FALLBACK — EVIDENCE FILE
+Job: Add Brave Search as fallback when Tavily returns poor results.
+23 Jun 2026 — read-only, no changes made.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q1. WHERE DOES TAVILY RETURN AND EVALUATE ITS RESULTS?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Function: tavilySearch(query)
+File: artifacts/api-server/src/lib/webSearch.ts, lines 183-263
+
+  Line 183:  export async function tavilySearch(query) -> Promise<WebSearchResult[]>
+  Line 238:  rawResults extracted from parsed.results (Tavily JSON response)
+  Line 246:  results[] built by iterating rawResults, filtering nulls/missing fields
+  Line 262:  return results   <- final array returned to caller
+
+Function: maybeRunWebLookup()
+File: artifacts/api-server/src/lib/webSearch.ts, lines 409-465
+
+  Line 423:  const results = await tavilySearch(query)
+  Line 424:  if (results.length === 0)  <- ONLY quality check that exists
+  Line 425:    return { kind: "empty", block: ..., query }
+  Line 431:  return { kind: "success", block: ..., results, query }
+               <- ANY non-zero result count goes straight to success
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q2. WHAT DOES "POOR RESULTS" LOOK LIKE IN THE RETURN OBJECT?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WebSearchResult type (lines 17-21):
+  { title: string; url: string; content: string }
+
+No confidence score. No relevance score. No UK/non-UK flag.
+The only quality signal currently is result COUNT.
+
+Current behaviour:
+  0 results  -> kind: "empty"   (Ashley acknowledges nothing came back)
+  1+ results -> kind: "success" (even 1 result from a US site = success)
+
+"Poor results" has no definition in the current code. Options for
+defining the Brave fallback trigger:
+  - Count threshold: results.length < 2 (fewer than 2 results = poor)
+  - URL heuristic: all results are from non-UK domains
+    -- fragile and expensive; not recommended
+
+RECOMMENDATION: count < 2 as fallback trigger. Tavily with
+country:"United Kingdom" should return 3-5 results for a well-formed
+query. If it returns 0 or 1, fire Brave. Simple and reliable.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q3. IS BRAVE_API_KEY ALREADY IN REPLIT SECRETS?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+No. printenv grep for BRAVE returned nothing.
+A new secret needs to be added before the fallback fires in production.
+
+Brave Search API:
+  https://api.search.brave.com/
+  Free tier: 2,000 queries/month (sufficient for fallback-only use)
+
+Endpoint:
+  GET https://api.search.brave.com/res/v1/web/search
+  Header: X-Subscription-Token: <BRAVE_API_KEY>
+  Params: q=<query>&count=5&country=GB&search_lang=en
+
+Kane needs to add BRAVE_API_KEY as a Replit secret on the API Server
+artifact. Without it the fallback silently returns [] and Tavily
+behaviour is unchanged.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q4. EXACT INSERTION POINT AND FALLBACK CHAIN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Current code (maybeRunWebLookup, lines 422-436):
+
+  try {
+    const results = await tavilySearch(query);        // line 423
+    if (results.length === 0) {                        // line 424
+      return {                                          // line 425
+        kind: "empty",
+        block: formatWebStatusBlock(query, "empty", builderAware),
+        query,
+      };
+    }
+    return {                                           // line 431
+      kind: "success",
+      block: formatWebResultsBlock(query, results, builderAware),
+      results,
+      query,
+    };
+
+Proposed change — replace lines 422-436 with:
+
+  const BRAVE_FALLBACK_THRESHOLD = 2;
+
+  try {
+    let results = await tavilySearch(query);
+
+    if (results.length < BRAVE_FALLBACK_THRESHOLD) {
+      const braveResults = await braveSearch(query);
+      if (braveResults.length > results.length) {
+        results = braveResults;
+        logger.info(
+          { query, resultCount: results.length },
+          "Web search: Brave fallback used",
+        );
+      }
+    }
+
+    if (results.length === 0) {
+      return { kind: "empty", block: formatWebStatusBlock(...), query };
+    }
+    return { kind: "success", block: formatWebResultsBlock(...), results, query };
+  }
+
+New function braveSearch() to add above maybeRunWebLookup (~35 lines):
+
+  async function braveSearch(query: string): Promise<WebSearchResult[]>
+
+  - Reads BRAVE_API_KEY from process.env
+  - If absent: returns [] silently — never throws, fallback is optional
+  - GET https://api.search.brave.com/res/v1/web/search
+    ?q=<biasQueryForUK(query)>&count=5&country=GB&search_lang=en
+  - 5s timeout (same as TAVILY_TIMEOUT_MS)
+  - Maps Brave result shape to WebSearchResult[]:
+      Brave field "description" -> WebSearchResult "content"
+      Brave fields title, url   -> same names, direct map
+  - Returns [] on any error — never throws
+
+One file only: artifacts/api-server/src/lib/webSearch.ts
+Lines added: ~40 (braveSearch function + threshold const + check block)
+No other files. No schema change. No mobile change.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OPEN POINT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Brave result shape (Web Search API v1):
+  { title, url, description }   <- "description" not "content"
+
+Direct mapping: description -> content in WebSearchResult.
+No structural issue. Confirming field name before implementation.
