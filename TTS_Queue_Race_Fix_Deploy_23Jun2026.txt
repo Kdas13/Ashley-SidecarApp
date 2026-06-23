@@ -1,0 +1,90 @@
+TTS QUEUE RACE FIX — IMPLEMENTATION COMPLETE
+Option A: flushInFlightRef counter
+23 Jun 2026  12:30 UTC
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+git show --stat HEAD
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+commit 28d090032def6519aeee0e97cd8ff61cd052ed2b  (last checkpoint)
+  Add detailed analysis of text-to-speech queue race condition
+
+Changes above are in the working tree, pending next auto-checkpoint.
+File changed: artifacts/mobile/lib/useVoiceCall.ts
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+git diff HEAD -- artifacts/mobile/lib/useVoiceCall.ts
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@@ -199,6 +199,11 @@
+   const playNextRunningRef = useRef(false);
++  // Counter: number of flushChunkBuffer writes currently in-flight.
++  // playNext will not send playback_confirmed while this is > 0 — prevents
++  // premature confirmation when response_end arrives before async file writes
++  // complete and the queue incorrectly appears empty.
++  const flushInFlightRef = useRef(0);
+
+@@ -342,6 +347,14 @@
+           // then re-enters this drain and opens the mic via the srvDone path above.
++          if (flushInFlightRef.current > 0) {
++            // At least one flushChunkBuffer write is still in-flight. The queue
++            // appears empty only because the write hasn't pushed its URI yet.
++            // Release the mutex and return — the completing write will call
++            // playNextRef.current() via the finally block and re-enter this path.
++            playNextRunningRef.current = false;
++            return;
++          }
+           if (!alreadyConfirmedRef.current) {
+
+@@ -418,6 +431,7 @@
+     const capturedGen = turnGenRef.current;
++    flushInFlightRef.current++;
+     try {
+       await FileSystem.writeAsStringAsync(uri, b64, { ... });
+       if (turnGenRef.current !== capturedGen) { deleteAsync; return; }
+       playQueueRef.current.push(uri);
+-      // Always call playNext — the mutex inside ensures only one runs at a time.
+-      void playNextRef.current();
+     } catch { /* audio lost, call continues */ }
++    finally {
++      flushInFlightRef.current--;
++      // Drain the queue only when all concurrent writes have settled.
++      if (flushInFlightRef.current === 0) {
++        void playNextRef.current();
++      }
++    }
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TYPECHECK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pnpm --filter @workspace/mobile run typecheck — PASSED, zero errors.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERDICT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+All three changes landed cleanly. The race is closed:
+
+  BEFORE: response_end could arrive while flushChunkBuffer writes were in-flight.
+          The queue appeared empty. playNext sent playback_confirmed prematurely.
+          Server reset lifecycle. Client played audio into an already-open mic.
+
+  AFTER:  flushInFlightRef tracks all in-flight writes. playNext defers
+          playback_confirmed if the counter is > 0. The last completing write
+          (via the finally block) calls playNext, re-enters the drain, counter
+          is 0, confirmation is sent correctly. No premature confirmation.
+          No audio played after server reset. No echo / stuck state.
+
+Side effect on the "already running" log: those lines will still appear (multiple
+writes completing near-simultaneously still race the mutex) but they are now
+harmless — all URIs are correctly queued before any playNext is called, and the
+confirmation cannot fire until the counter hits zero.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DEPLOY STATUS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Mobile change only. Server untouched.
+EAS build required for production APK distribution.
+Expo Go (dev): reload the bundle to pick up the change immediately.

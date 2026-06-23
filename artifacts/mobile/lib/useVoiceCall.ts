@@ -199,6 +199,11 @@ export function useVoiceCall(): {
   // before the first microtask runs) return early — the running instance
   // drains the queue via the didJustFinish → playNext loop.
   const playNextRunningRef = useRef(false);
+  // Counter: number of flushChunkBuffer writes currently in-flight.
+  // playNext will not send playback_confirmed while this is > 0 — prevents
+  // premature confirmation when response_end arrives before async file writes
+  // complete and the queue incorrectly appears empty.
+  const flushInFlightRef = useRef(0);
 
   const playNextRef = useRef<() => Promise<void>>(async () => {});
   const recorder = useVoiceRecorder();
@@ -342,6 +347,14 @@ export function useVoiceCall(): {
           // Fires from "thinking" when all sentences were filtered (no audio played):
           // sending playback_confirmed triggers the server to send tts_done, which
           // then re-enters this drain and opens the mic via the srvDone path above.
+          if (flushInFlightRef.current > 0) {
+            // At least one flushChunkBuffer write is still in-flight. The queue
+            // appears empty only because the write hasn't pushed its URI yet.
+            // Release the mutex and return — the completing write will call
+            // playNextRef.current() via the finally block and re-enter this path.
+            playNextRunningRef.current = false;
+            return;
+          }
           if (!alreadyConfirmedRef.current) {
             if (wsRef.current?.readyState === WebSocket.OPEN) {
               alreadyConfirmedRef.current = true;
@@ -418,6 +431,7 @@ export function useVoiceCall(): {
     if (!dir) return;
     const uri = `${dir}vc-${Date.now()}-${Math.random().toString(36).slice(2)}.mp3`;
     const capturedGen = turnGenRef.current;
+    flushInFlightRef.current++;
     try {
       await FileSystem.writeAsStringAsync(uri, b64, {
         encoding: FileSystem.EncodingType.Base64,
@@ -428,9 +442,16 @@ export function useVoiceCall(): {
         return;
       }
       playQueueRef.current.push(uri);
-      // Always call playNext — the mutex inside ensures only one runs at a time.
-      void playNextRef.current();
     } catch { /* audio lost, call continues */ }
+    finally {
+      flushInFlightRef.current--;
+      // Drain the queue only when all concurrent writes have settled.
+      // This prevents response_end from sending playback_confirmed while
+      // writes are still in-flight and the queue incorrectly appears empty.
+      if (flushInFlightRef.current === 0) {
+        void playNextRef.current();
+      }
+    }
   }, []);
 
   // Fire-and-forget: decode and play the current aux chunk buffer independently
