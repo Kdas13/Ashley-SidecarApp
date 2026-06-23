@@ -1,0 +1,177 @@
+VOICE INPUT — BLUETOOTH SCO / GALAXY BUDS MIC ANALYSIS
+Read-only. No changes made.
+23 Jun 2026
+File read: artifacts/mobile/lib/voiceInput.ts (248 lines, fully read)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q1 — Where does AudioRecord initialise and start — exact lines
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+INITIALISE — line 84, inside a useEffect (lines 83-103) that runs once on mount:
+
+    AudioRecord.init(AUDIO_OPTIONS);
+
+    AUDIO_OPTIONS (lines 54-60):
+      sampleRate:   16000
+      channels:     1
+      bitsPerSample: 16
+      audioSource:  7  // MediaRecorder.AudioSource.VOICE_COMMUNICATION
+      wavFile:      "voice_input.wav"
+
+START — line 150, inside the `start` useCallback (lines 134-178):
+
+    AudioRecord.start();
+
+The comment at lines 146-148 is relevant:
+  "react-native-audio-record acquires audio focus internally on start().
+   No explicit setAudioModeAsync needed; VOICE_COMMUNICATION AEC stays
+   active throughout the session via the audioSource configuration."
+
+STOP — line 190, inside the `finish` useCallback (lines 180-239):
+
+    filePath = await AudioRecord.stop();
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q2 — Is there any AudioManager mode setting or Bluetooth SCO request?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+NO. Confirmed absent across the entire 248-line file:
+
+  - No `AudioManager` import or reference
+  - No `startBluetoothSco` / `stopBluetoothSco`
+  - No `setMode` / `setBluetoothScoOn` / `setSpeakerphoneOn`
+  - No `NativeModules` import
+  - No `InCallManager` reference
+  - No `setAudioModeAsync` (expo-av Audio module)
+
+The only audio routing present is `audioSource: 7` (VOICE_COMMUNICATION), which
+activates hardware AEC/NS/AGC on the currently-routed input device. It does NOT
+itself select which input device Android uses — that is an AudioManager routing
+decision made separately.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q3 — What React Native APIs are available for Bluetooth SCO / HFP?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ANDROID REQUIREMENT (root cause):
+
+For Android to route microphone input through a paired BT headset's SCO mic,
+two things must happen in addition to acquiring audio focus:
+
+  1. AudioManager.setMode(AudioManager.MODE_IN_COMMUNICATION)
+     -- switches from MODE_NORMAL (3.5mm / built-in default) to the
+        VoIP audio mode, which enables BT SCO routing.
+
+  2. AudioManager.startBluetoothSco()
+     -- explicitly requests the BT SCO connection and waits for
+        ACTION_SCO_AUDIO_STATE_UPDATED broadcast to confirm.
+
+  3. AudioManager.setBluetoothScoOn(true)
+     -- routes the active audio session through the SCO channel.
+
+For cleanup when recording stops:
+  AudioManager.stopBluetoothSco()
+  AudioManager.setBluetoothScoOn(false)
+  AudioManager.setMode(AudioManager.MODE_NORMAL)
+
+react-native-audio-record DOES NOT expose any of these. It wraps AudioRecord
+for raw PCM capture only. It sets audio focus (AUDIOFOCUS_GAIN_TRANSIENT) but
+does not set AudioManager mode or request BT SCO.
+
+expo-av Audio.setAudioModeAsync DOES NOT expose BT SCO routing either. Its
+allowsRecordingIOS flag and Android equivalents affect focus and session
+category, not BT SCO.
+
+OPTIONS TO REACH AudioManager FROM JS:
+
+  OPTION A — react-native-incall-manager (recommended)
+  Standard package for this exact use case: VoIP apps that need BT SCO,
+  speaker routing, and proximity sensor. Actively maintained.
+
+    InCallManager.start({ media: 'audio' })
+      -- sets MODE_IN_COMMUNICATION + startBluetoothSco() + setBluetoothScoOn(true)
+      -- equivalent to what a standard phone call app does on answer
+
+    InCallManager.stop()
+      -- reverses all of the above, returns to MODE_NORMAL
+
+  Requires: pnpm exec expo install react-native-incall-manager
+  Requires: EAS build (native module — Java/Kotlin)
+
+  OPTION B — custom native module (minimal, no new dependency)
+  A 30-line Kotlin module exposing two methods:
+    startBluetoothSco()  -- sets MODE_IN_COMMUNICATION + startBluetoothSco()
+    stopBluetoothSco()   -- stopBluetoothSco() + setBluetoothScoOn(false) + MODE_NORMAL
+  Called via NativeModules.BluetoothSco.startBluetoothSco() from JS.
+
+  Requires: EAS build.
+
+  OPTION C — no native change (insufficient)
+  There is no JS-only path to AudioManager SCO routing on Android.
+  expo-modules, react-native-audio-record, and expo-av do not surface it.
+  Any fix requires an EAS build.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q4 — Minimal change to activate / deactivate Bluetooth SCO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+RECOMMENDED APPROACH: react-native-incall-manager (Option A)
+
+WHY NOT OPTION B: the custom module would need to replicate InCallManager's
+SCO state listener logic (ACTION_SCO_AUDIO_STATE_UPDATED) to know when the
+BT device is actually ready, handle the race between startBluetoothSco() and
+AudioRecord.start() (BT SCO negotiation takes ~300ms), and clean up safely on
+unexpected disconnection. InCallManager already handles all of this.
+
+CHANGES REQUIRED:
+
+  1. Install:
+       pnpm exec expo install react-native-incall-manager
+
+  2. voiceInput.ts — start() callback, before AudioRecord.start() (line 150):
+       import InCallManager from 'react-native-incall-manager';
+       ...
+       // Request BT SCO so Galaxy Buds (or any HFP headset) mic is used.
+       // Must happen before AudioRecord.start() — BT SCO negotiation is async
+       // (~300ms) but AudioRecord will latch onto the correct route as long as
+       // SCO is requested first. MODE_IN_COMMUNICATION is set by InCallManager.
+       if (Platform.OS === 'android') {
+         InCallManager.start({ media: 'audio' });
+       }
+       AudioRecord.start();
+
+  3. voiceInput.ts — finish() callback, after AudioRecord.stop() resolves (line 191):
+       // Release BT SCO and restore normal audio mode.
+       if (Platform.OS === 'android') {
+         InCallManager.stop();
+       }
+
+  4. EAS build required. No server change needed.
+
+TIMING NOTE: startBluetoothSco() is async at the Android layer (~200-400ms for
+SCO negotiation). InCallManager.start() fires it and returns immediately — it does
+not block until SCO is confirmed. In practice AudioRecord latches the BT mic once
+SCO is active (which happens within the first few PCM frames). The first ~400ms of
+a recording may come from the built-in mic if the BT device is slow to negotiate;
+on Galaxy Buds this transition is typically imperceptible (<200ms). If the full
+first segment must be guaranteed BT, a 300ms delay between InCallManager.start()
+and AudioRecord.start() can be added, at the cost of a slight start lag.
+
+RISK: InCallManager also affects the earpiece/speaker routing (setBluetoothScoOn
+routes playback through the BT headset too). Confirm that TTS playback via expo-audio
+still sounds correct on device after the change — expo-audio uses its own audio
+session and should be unaffected, but worth verifying on the first EAS build.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SUMMARY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Root cause confirmed: voiceInput.ts never sets AudioManager mode or requests
+BT SCO. Android defaults to built-in/wired mic in MODE_NORMAL. Galaxy Buds
+work for standard calls because the Phone app calls startBluetoothSco() on
+answer — Ashley never does.
+
+Fix: react-native-incall-manager, 3 lines of change in voiceInput.ts.
+EAS build required. No server change.
+
+Awaiting approval before any implementation.

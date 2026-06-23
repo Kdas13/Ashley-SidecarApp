@@ -701,3 +701,9 @@ id = "6vQ6E8z1YGqwRGdGgxBlb"
 uri = "file://VoiceCall_ForbiddenPhrases_BuilderSuppression_23Jun2026.txt"
 type = "text"
 title = "Voice Call — Forbidden Phrases, Fundamental Output Rule, Builder Suppression"
+
+[[outputs]]
+id = "NVYQa9CYAZrcFZxVyIQgj"
+uri = "file://VoiceInput_BluetoothSCO_Analysis_23Jun2026.txt"
+type = "text"
+title = "Voice Input — Bluetooth SCO / Galaxy Buds Mic Analysis"
