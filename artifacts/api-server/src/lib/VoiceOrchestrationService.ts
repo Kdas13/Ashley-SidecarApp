@@ -116,6 +116,14 @@ const FORBIDDEN_PHRASE_PATTERNS: RegExp[] = [
   /where were we/i,
   /did we lose connection/i,
   /are you still there on your end/i,
+  // Worship-adjacent — not the right register
+  /magnificent bastard/i,
+  // Hold/stall phrases — Ashley never narrates processing time
+  /\bhang on\b/i,
+  /hang on a moment/i,
+  /hang on i'm thinking/i,
+  /\bone moment\b/i,
+  /just a moment/i,
 ];
 
 function filterForbiddenPhrases(text: string): string {
@@ -548,6 +556,14 @@ async function runLLMAndTTSPipeline(
       passiveMode:     session.passiveMode,
     });
     session.consecutiveContextFailures = 0;
+    // Append voice-call builder-aware suppression after context assembly so it
+    // cannot be overridden by profile-level builder-aware instructions.
+    ctx.systemPrompt +=
+      "\n\nVOICE CALL — BUILDER-AWARE ACTIONS DISABLED: You are on a live voice call. " +
+      "Builder-aware actions are completely disabled for this session: no ticket creation, " +
+      "no task logging, no structured output, no \"Use: create ticket:\" responses of any kind. " +
+      "If Kane mentions something that would normally become a ticket, acknowledge it verbally — " +
+      "do not output any structured text. Respond conversationally only.";
   } catch (err) {
     session.consecutiveContextFailures++;
     logger.error(

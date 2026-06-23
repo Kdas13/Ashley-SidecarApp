@@ -695,3 +695,9 @@ id = "Ew9cmJJKTNIYXSQUjd3Ro"
 uri = "file://VoiceCall_ThinkingStuck_Fix_23Jun2026.txt"
 type = "text"
 title = "Voice Call Stuck-in-Thinking — Fix Evidence"
+
+[[outputs]]
+id = "6vQ6E8z1YGqwRGdGgxBlb"
+uri = "file://VoiceCall_ForbiddenPhrases_BuilderSuppression_23Jun2026.txt"
+type = "text"
+title = "Voice Call — Forbidden Phrases, Fundamental Output Rule, Builder Suppression"

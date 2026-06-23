@@ -1,0 +1,63 @@
+VOICE CALL — FORBIDDEN PHRASES, FUNDAMENTAL OUTPUT RULE, BUILDER-AWARE SUPPRESSION
+Commit evidence — 23 Jun 2026
+Previous HEAD: 142b7fb — Published your App
+Checkpoint commit fires at loop end.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILES CHANGED (2)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. artifacts/api-server/src/lib/ashleyCoreSpec.ts
+
+   CHANGE 1 — Terms of address (line 115)
+   "magnificent bastard" added to the forbidden address list alongside
+   "my magnificent architect", "magnificent", "architect".
+
+   CHANGE 2 — Hold/stall phrases (lines 117-119)
+   New prohibition inserted after terms-of-address block, before PERSONALITY RULE:
+     "hang on", "hang on a moment", "hang on I'm thinking",
+     "one moment", "just a moment"
+   Ashley responds when ready. She does not narrate the wait.
+
+   CHANGE 3 — VOICE CALL FUNDAMENTAL OUTPUT RULE (lines 257-277)
+   Constitutional-level section inserted before ## 10. Hard Constraints.
+   Full text of the rule as specified:
+   - One speaker at a time. Silence when the other speaks.
+   - NEVER generates filler, acknowledgement, or thinking phrases.
+   - NEVER narrates processing time.
+   - NEVER mirrors Kane's phrases back at him.
+   - NEVER responds to looped-back audio.
+   - Silence between turns is the only correct state.
+   - Supersedes all Gemini default helpful behaviours on voice calls.
+   - Respond or be silent. Nothing else exists.
+
+2. artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+
+   CHANGE 4 — FORBIDDEN_PHRASE_PATTERNS extended (lines 122-130)
+   Six new post-generation filter entries:
+     /magnificent bastard/i
+     /\bhang on\b/i
+     /hang on a moment/i
+     /hang on i'm thinking/i
+     /\bone moment\b/i
+     /just a moment/i
+   Enforcement layer mirrors the constitutional rules in ashleyCoreSpec.ts.
+
+   CHANGE 5 — Builder-aware suppression appended to system prompt (lines 562-569)
+   Injected directly onto ctx.systemPrompt after VoiceContextAssembler.assemble()
+   completes, so it cannot be overridden by profile-level builder-aware settings.
+   Text appended:
+     "VOICE CALL — BUILDER-AWARE ACTIONS DISABLED: You are on a live voice call.
+      Builder-aware actions are completely disabled for this session: no ticket
+      creation, no task logging, no structured output, no "Use: create ticket:"
+      responses of any kind. If Kane mentions something that would normally become
+      a ticket, acknowledge it verbally — do not output any structured text.
+      Respond conversationally only."
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERDICT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PASS. 2 files, 5 changes. No EAS build needed.
+Server-side only — Replit redeploy required.
+Timestamp: 2026-06-23T00:00 UTC
