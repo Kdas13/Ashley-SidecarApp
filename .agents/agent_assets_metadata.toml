@@ -671,3 +671,9 @@ id = "c3nrVBIVrRTQefXOQTCar"
 uri = "file://BraveSearch_Evidence_23Jun2026.txt"
 type = "text"
 title = "Brave Search Fallback — Evidence"
+
+[[outputs]]
+id = "7oJ7aCoCPqlD_hYorxvtu"
+uri = "file://BraveSearch_Commit_23Jun2026.txt"
+type = "text"
+title = "Brave Search Parallel Provider — Commit Evidence"

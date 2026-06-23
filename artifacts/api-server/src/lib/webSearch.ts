@@ -393,8 +393,67 @@ export type WebLookupOutcome =
   | { kind: "unavailable"; block: string; query: string };
 
 /**
- * Stage 2: LLM classifier + tavilySearch + block formatting with full
- * failure-safety.
+ * Brave Search fallback — fires in parallel with Tavily. Returns results in
+ * the shared WebSearchResult shape. NEVER throws — if BRAVE_API_KEY is unset
+ * or the request fails for any reason, returns [] silently.
+ */
+async function braveSearch(query: string): Promise<WebSearchResult[]> {
+  const key = process.env["BRAVE_API_KEY"];
+  if (!key || !key.trim()) return [];
+
+  const trimmed = biasQueryForUK(query.trim().slice(0, MAX_QUERY_LEN));
+  if (!trimmed) return [];
+
+  const searchUrl = new URL("https://api.search.brave.com/res/v1/web/search");
+  searchUrl.searchParams.set("q", trimmed);
+  searchUrl.searchParams.set("count", String(MAX_RESULTS));
+  searchUrl.searchParams.set("country", "GB");
+  searchUrl.searchParams.set("search_lang", "en");
+
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), TAVILY_TIMEOUT_MS);
+
+  try {
+    const resp = await fetch(searchUrl.toString(), {
+      headers: { "X-Subscription-Token": key },
+      signal: ac.signal,
+    });
+    clearTimeout(timer);
+    if (!resp.ok) return [];
+
+    const parsed: unknown = await resp.json().catch(() => null);
+    if (!parsed || typeof parsed !== "object") return [];
+
+    const web = (parsed as Record<string, unknown>)["web"];
+    if (!web || typeof web !== "object") return [];
+    const rawResults = (web as Record<string, unknown>)["results"];
+    if (!Array.isArray(rawResults)) return [];
+
+    const results: WebSearchResult[] = [];
+    for (const r of rawResults) {
+      if (!r || typeof r !== "object") continue;
+      const obj = r as Record<string, unknown>;
+      const title   = typeof obj["title"]       === "string" ? obj["title"].trim()       : "";
+      const url     = typeof obj["url"]         === "string" ? obj["url"].trim()         : "";
+      const content = typeof obj["description"] === "string" ? obj["description"].trim() : "";
+      if (!title || !url) continue;
+      results.push({
+        title:   title.slice(0, 200),
+        url,
+        content: content.slice(0, MAX_SNIPPET_LEN),
+      });
+      if (results.length >= MAX_RESULTS) break;
+    }
+    return results;
+  } catch {
+    clearTimeout(timer);
+    return [];
+  }
+}
+
+/**
+ * Stage 2: LLM classifier + tavilySearch + braveSearch (parallel) + block
+ * formatting with full failure-safety.
  *
  * Returns a discriminated outcome (success/empty/failed/unavailable) when
  * the classifier decides to search, or null when it doesn't. Logs but NEVER
@@ -420,7 +479,27 @@ export async function maybeRunWebLookup(
   const query = classification.query;
 
   try {
-    const results = await tavilySearch(query);
+    const [tavilyResults, braveResults] = await Promise.all([
+      tavilySearch(query),
+      braveSearch(query),
+    ]);
+
+    // Merge and deduplicate by URL — Tavily first (primary provider).
+    const seen = new Set<string>();
+    const results: WebSearchResult[] = [];
+    for (const r of [...tavilyResults, ...braveResults]) {
+      if (!seen.has(r.url)) {
+        seen.add(r.url);
+        results.push(r);
+        if (results.length >= MAX_RESULTS) break;
+      }
+    }
+
+    logger.info(
+      { query, tavilyCount: tavilyResults.length, braveCount: braveResults.length, mergedCount: results.length },
+      `Web search: tavily=${tavilyResults.length} brave=${braveResults.length} merged=${results.length}`,
+    );
+
     if (results.length === 0) {
       return {
         kind: "empty",

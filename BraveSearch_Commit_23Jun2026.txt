@@ -1,0 +1,79 @@
+BRAVE SEARCH PARALLEL PROVIDER — COMMIT EVIDENCE
+artifacts/api-server/src/lib/webSearch.ts
+23 Jun 2026
+
+NOTE: Checkpoint commit fires at loop end.
+Previous HEAD: 8996109 — Add evidence for Brave Search fallback implementation
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CHANGES APPLIED — ONE FILE ONLY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ADDITION 1 — braveSearch() function (lines 398-455)
+  Inserted above maybeRunWebLookup().
+
+  async function braveSearch(query): Promise<WebSearchResult[]>
+  - Reads BRAVE_API_KEY from process.env
+  - Absent/empty key: returns [] silently, never throws
+  - biasQueryForUK() applied to query before sending
+  - GET https://api.search.brave.com/res/v1/web/search
+    ?q=<query>&count=5&country=GB&search_lang=en
+  - Header: X-Subscription-Token: <key>
+  - 5s timeout (reuses TAVILY_TIMEOUT_MS)
+  - Maps Brave result shape to WebSearchResult:
+      obj["description"] -> content   (Brave uses "description" not "content")
+      obj["title"]       -> title
+      obj["url"]         -> url
+  - Same MAX_SNIPPET_LEN cap as Tavily results
+  - Returns [] on any error (network, timeout, bad JSON, non-200) — never throws
+
+ADDITION 2 — maybeRunWebLookup() try block (lines 484-518)
+  Parallel execution replaces sequential Tavily-only call.
+
+  BEFORE:
+    const results = await tavilySearch(query);
+    if (results.length === 0) { return kind:"empty" }
+    return kind:"success"
+
+  AFTER:
+    const [tavilyResults, braveResults] = await Promise.all([
+      tavilySearch(query),
+      braveSearch(query),
+    ]);
+
+    // Deduplicate by URL — Tavily first (primary provider)
+    const seen = new Set<string>();
+    const results: WebSearchResult[] = [];
+    for (const r of [...tavilyResults, ...braveResults]) {
+      if (!seen.has(r.url)) {
+        seen.add(r.url);
+        results.push(r);
+        if (results.length >= MAX_RESULTS) break;
+      }
+    }
+
+    logger.info({ tavilyCount, braveCount, mergedCount },
+      "Web search: tavily=X brave=Y merged=Z");
+
+    if (results.length === 0) { return kind:"empty" }
+    return kind:"success" with merged results
+
+  Catch block unchanged — Tavily errors (unavailable/failed) still
+  propagate as before. braveSearch() absorbs its own errors internally.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERDICT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PASS. One file changed. Both additions applied as specified.
+
+Parallel execution: Tavily and Brave fire simultaneously via Promise.all.
+Merge: URL-deduplicated, Tavily results prioritised, capped at MAX_RESULTS (5).
+Log: tavily=X brave=Y merged=Z at info level every search turn.
+Safety: BRAVE_API_KEY absent -> braveSearch returns [], behaviour unchanged.
+
+BRAVE_API_KEY must be added as a Replit secret on the API Server artifact
+before Brave results appear in production.
+
+Server-side only. Replit redeploy required. No EAS build needed.
+Timestamp: 2026-06-23T00:00 UTC
