@@ -1,0 +1,192 @@
+TTS QUEUE RACE CONDITION — READ-ONLY ANALYSIS
+No changes made.
+23 Jun 2026
+
+Files read:
+  artifacts/mobile/lib/useVoiceCall.ts  (lines 190-480, 845-900)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q1 — Where is playNext() and how does it determine "already running"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Defined at line 315 of useVoiceCall.ts as a useCallback.
+
+The guard (lines 318-321):
+  if (playNextRunningRef.current) {
+    addLog("playNext: skip — already running");
+    return;
+  }
+  playNextRunningRef.current = true;
+
+playNextRunningRef is a plain ref (not state). Reads and writes are synchronous
+and cause no re-renders. It acts as a boolean mutex.
+
+playNextRunningRef is released in three places:
+  Line 363: queue was empty (drain complete) — released, then return.
+  Line 391: didJustFinish listener — released BEFORE recursing so the next
+            call can enter. Then: void playNextRef.current().
+  Line 401: catch block on createAudioPlayer — released, then retry.
+
+Once playNext successfully shifts a URI and calls player.play(), the mutex stays
+true until the didJustFinish event fires.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q2 — How sentence_end chunks are dispatched
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WS message handler (lines 855-864):
+  case "sentence_end": {
+    await flushChunkBuffer();   // async, yields to event loop
+    break;
+  }
+
+The handler is async. There is NO serialization mechanism — no message queue,
+no per-message mutex, no "one message at a time" guard. When the handler hits
+`await flushChunkBuffer()` and yields, the JS event loop can process the next
+queued WS message and start a second concurrent execution of the handler.
+
+flushChunkBuffer (lines 411-434):
+  const chunks = chunkBufRef.current;    // synchronous grab
+  chunkBufRef.current = [];              // synchronous clear
+  ...
+  await FileSystem.writeAsStringAsync(uri, b64, ...);  // YIELDS HERE
+  if (turnGenRef.current !== capturedGen) { deleteAsync; return; }
+  playQueueRef.current.push(uri);        // push AFTER write completes
+  void playNextRef.current();            // trigger drain
+
+Critical: the URI is pushed to playQueueRef ONLY AFTER the async file write
+completes. Between write-start and write-completion the queue does not yet
+contain that URI.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q3 — What happens to chunks arriving while isPlaying=true
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+In the normal (non-race) case: QUEUED, not dropped.
+
+flushChunkBuffer always pushes the URI to playQueueRef before calling playNext.
+If the mutex blocks the playNext call, the URI is already in the queue. When
+the current track finishes, didJustFinish releases the mutex and calls playNext,
+which shifts the next URI.
+
+The mutex alone does not drop audio. The problem is not queuing — it is the
+timing of when playNext inspects the queue relative to when writes complete.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q4 — The race condition: why multiple logs fire at the same millisecond
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SERVER BEHAVIOUR:
+For a fast LLM response (2-3 short sentences), VoiceOrchestrationService
+may TTS all sentences nearly simultaneously and dispatch sentence_end(1),
+sentence_end(2), response_end within the same network burst.
+
+CLIENT ASYNC RE-ENTRANCE:
+The WS onmessage handler is async and not serialized. When handler for message 1
+hits `await flushChunkBuffer()` and yields, the event loop processes the next
+queued WS message, starting a second concurrent execution.
+
+Annotated timeline for a 2-sentence response arriving in a burst:
+
+  T+0ms  sentence_end(1) → handler A → flushChunkBuffer → grabs chunks(1),
+         clears buffer → await FileSystem.write(uri1) → YIELDS
+
+  T+0ms  sentence_end(2) → handler B → flushChunkBuffer → grabs chunks(2),
+         clears buffer → await FileSystem.write(uri2) → YIELDS
+
+  T+0ms  response_end → handler C → responseEndReceivedRef = true
+         → !playNextRunningRef.current is TRUE (writes still in-flight, no
+           playNext has run yet, queue is empty)
+         → void playNextRef.current() fires:
+             queue is EMPTY  (both URIs still being written to disk)
+             ttsServerDoneRef = false
+             responseEndReceivedRef = TRUE
+             → playback_confirmed SENT       ← PREMATURE CONFIRMATION
+             → alreadyConfirmedRef = true
+             → playNextRunningRef = false, return
+
+  T+10ms  write(uri1) completes → push uri1 → void playNext()
+          → mutex free → enters → shifts uri1 → player starts
+          → playNextRunningRef = true
+
+  T+10ms  write(uri2) completes → push uri2 → void playNext()
+          → "playNext: skip — already running"   ← OBSERVED LOG LINE
+
+  T+x    uri1 finishes → didJustFinish → releases mutex → playNext → plays uri2
+
+THE FAILURE:
+  playback_confirmed was sent at T+0ms when the queue appeared empty, but both
+  URIs were still being written to disk. The server receives confirmation and
+  sends tts_done, resetting its lifecycle state. The client then plays uri1 and
+  uri2 after the server has already moved on — mic opens while audio is still
+  playing.
+
+  Observed as: first sentence plays, then silence, then second sentence plays
+  into an already-listening server (server transcribes Ashley's own audio as
+  user speech). OR: echo feedback loop. Requires manual interrupt to recover.
+
+  The "same millisecond" log lines are the simultaneous completion of concurrent
+  FileSystem.writeAsStringAsync calls — all called void playNext() within
+  microseconds of each other. The mutex fires correctly, but the premature
+  confirmation already happened before any write completed.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q5 — Minimal fix: sequential processing
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ROOT CAUSE IN ONE SENTENCE:
+  response_end can trigger playNext and send playback_confirmed while
+  flushChunkBuffer writes are still in-flight, making the queue appear
+  empty when it is not.
+
+OPTION A — flushInFlightRef counter (recommended)
+  1 file. ~10 new lines. No new dependencies.
+
+  Add alongside the existing mutex ref:
+    const flushInFlightRef = useRef(0);
+
+  In flushChunkBuffer, wrap the async body:
+    flushInFlightRef.current++;
+    try {
+      await FileSystem.writeAsStringAsync(...);
+      if (turnGenRef.current !== capturedGen) { deleteAsync; return; }
+      playQueueRef.current.push(uri);
+      // remove the existing void playNextRef.current() call here —
+      // the finally block below drives the drain instead
+    } finally {
+      flushInFlightRef.current--;
+      if (flushInFlightRef.current === 0) {
+        void playNextRef.current();  // drain only when all writes settled
+      }
+    }
+
+  In playNext, before the playback_confirmed send block, add one guard:
+    if (flushInFlightRef.current > 0) {
+      // A write is still in-flight — it will call playNext when it lands.
+      playNextRunningRef.current = false;
+      return;
+    }
+
+  Effect: playback_confirmed is never sent while any URI is still being written
+  to disk. The last completing write triggers the drain. No change to didJustFinish,
+  the player lifecycle, or any other queue logic.
+
+OPTION B — serialize the WS message handler
+  Wrap onmessage in a promise chain so messages are processed strictly in order:
+    let msgChain = Promise.resolve();
+    ws.onmessage = (raw) => {
+      msgChain = msgChain.then(() => handleMessage(raw));
+    };
+  Eliminates all async re-entrance. But adds sequential write latency on
+  multi-sentence responses — sentence_end(2) cannot start writing until
+  sentence_end(1)'s write completes. Slower on exactly the fast-response case
+  that already works today.
+
+RECOMMENDATION: Option A.
+  Closes the specific confirmed race. Does not add latency. Minimal blast radius.
+
+FILES TO CHANGE (Option A): 1 file
+  artifacts/mobile/lib/useVoiceCall.ts
+
+No EAS build needed for Expo Go dev testing.
+EAS build required for production APK distribution.

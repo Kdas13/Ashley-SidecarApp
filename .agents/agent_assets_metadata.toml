@@ -731,3 +731,9 @@ id = "7PBOjkL7WvmDB79ksIdQW"
 uri = "file://VoiceCall_GeminiFallback_Deploy_23Jun2026.txt"
 type = "text"
 title = "Voice Call — Gemini 503 Fallback — Deployed"
+
+[[outputs]]
+id = "utgiS4k2BWpjOCfNlRVf-"
+uri = "file://TTS_Queue_Race_Analysis_23Jun2026.txt"
+type = "text"
+title = "TTS Queue Race Condition Analysis"
