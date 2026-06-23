@@ -1,0 +1,71 @@
+VOICE INPUT — BLUETOOTH SCO IMPLEMENTATION
+Commit evidence — 23 Jun 2026
+Previous HEAD: df496f2 — Add analysis of Bluetooth microphone recording capabilities
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+git show --stat HEAD (staged, commits at checkpoint)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ artifacts/mobile/lib/voiceInput.ts | 14 ++++++++++++++
+ artifacts/mobile/package.json      |  3 ++-
+ pnpm-lock.yaml                     | 12 ++++++++++++
+ 3 files changed, 28 insertions(+), 1 deletion(-)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+git show HEAD -- artifacts/mobile/lib/voiceInput.ts
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@@ -16,6 +16,7 @@
+ import { useCallback, useEffect, useRef, useState } from "react";
+ import { PermissionsAndroid, Platform } from "react-native";
+ import AudioRecord from "react-native-audio-record";
++import InCallManager from "react-native-incall-manager";
+ import * as FileSystem from "expo-file-system/legacy";
+ import { audioError, audioLog, patchAudioState } from "./audioState";
+
+@@ -146,7 +147,16 @@ export function useVoiceRecorder(): VoiceRecorder {
+     // react-native-audio-record acquires audio focus internally on start().
+     // No explicit setAudioModeAsync needed; VOICE_COMMUNICATION AEC stays
+     // active throughout the session via the audioSource configuration.
++    //
++    // Bluetooth SCO: InCallManager sets MODE_IN_COMMUNICATION and calls
++    // startBluetoothSco() so Galaxy Buds (or any HFP headset) mic is used
++    // instead of the built-in mic. The 300ms delay lets SCO negotiate before
++    // AudioRecord latches the input route.
+     try {
++      if (Platform.OS === "android") {
++        InCallManager.start({ media: "audio" });
++        await new Promise<void>((resolve) => setTimeout(resolve, 300));
++      }
+       AudioRecord.start();
+       patchAudioState({ audioFocusState: "recording" });
+       audioLog("STT.start.recording");
+
+@@ -188,6 +198,10 @@ export function useVoiceRecorder(): VoiceRecorder {
+       let filePath: string;
+       try {
+         filePath = await AudioRecord.stop();
++        // Release BT SCO and restore normal audio mode after recording ends.
++        if (Platform.OS === "android") {
++          InCallManager.stop();
++        }
+         audioLog("STT.finish.stopped", { durationMs, filePath });
+       } catch (err) {
+         audioError("STT.finish.stop", err, { durationMs });
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERDICT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PASS. 1 source file changed (voiceInput.ts), package.json + lockfile updated.
+
+Changes:
+  - react-native-incall-manager ^4.2.1 installed via pnpm exec expo install
+  - Import added (line 22)
+  - start(): InCallManager.start({media:"audio"}) + 300ms SCO negotiation
+    delay before AudioRecord.start(), Android-only guard (lines 159-162)
+  - finish(): InCallManager.stop() after AudioRecord.stop() resolves,
+    Android-only guard (lines 204-207)
+
+Mobile change — EAS build required. No server redeploy needed.
+Timestamp: 2026-06-23T00:00 UTC

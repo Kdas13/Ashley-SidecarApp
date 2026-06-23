@@ -707,3 +707,9 @@ id = "NVYQa9CYAZrcFZxVyIQgj"
 uri = "file://VoiceInput_BluetoothSCO_Analysis_23Jun2026.txt"
 type = "text"
 title = "Voice Input — Bluetooth SCO / Galaxy Buds Mic Analysis"
+
+[[outputs]]
+id = "aR9APpHap0FVmYEJk915s"
+uri = "file://VoiceInput_BluetoothSCO_Impl_23Jun2026.txt"
+type = "text"
+title = "Voice Input — Bluetooth SCO Implementation"

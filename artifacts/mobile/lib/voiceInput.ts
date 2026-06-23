@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PermissionsAndroid, Platform } from "react-native";
 import AudioRecord from "react-native-audio-record";
+import InCallManager from "react-native-incall-manager";
 import * as FileSystem from "expo-file-system/legacy";
 import { audioError, audioLog, patchAudioState } from "./audioState";
 
@@ -146,7 +147,16 @@ export function useVoiceRecorder(): VoiceRecorder {
     // react-native-audio-record acquires audio focus internally on start().
     // No explicit setAudioModeAsync needed; VOICE_COMMUNICATION AEC stays
     // active throughout the session via the audioSource configuration.
+    //
+    // Bluetooth SCO: InCallManager sets MODE_IN_COMMUNICATION and calls
+    // startBluetoothSco() so Galaxy Buds (or any HFP headset) mic is used
+    // instead of the built-in mic. The 300ms delay lets SCO negotiate before
+    // AudioRecord latches the input route.
     try {
+      if (Platform.OS === "android") {
+        InCallManager.start({ media: "audio" });
+        await new Promise<void>((resolve) => setTimeout(resolve, 300));
+      }
       AudioRecord.start();
       patchAudioState({ audioFocusState: "recording" });
       audioLog("STT.start.recording");
@@ -188,6 +198,10 @@ export function useVoiceRecorder(): VoiceRecorder {
       let filePath: string;
       try {
         filePath = await AudioRecord.stop();
+        // Release BT SCO and restore normal audio mode after recording ends.
+        if (Platform.OS === "android") {
+          InCallManager.stop();
+        }
         audioLog("STT.finish.stopped", { durationMs, filePath });
       } catch (err) {
         audioError("STT.finish.stop", err, { durationMs });
