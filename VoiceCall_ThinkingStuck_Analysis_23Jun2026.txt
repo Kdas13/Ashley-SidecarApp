@@ -1,0 +1,206 @@
+VOICE CALL — "STUCK IN THINKING" ROOT CAUSE ANALYSIS
+Read-only evidence. No changes made.
+23 Jun 2026
+
+Files read:
+  artifacts/mobile/lib/useVoiceCall.ts        (1068 lines, fully read)
+  artifacts/mobile/app/voice-call.tsx         (phaseLabel function)
+  artifacts/api-server/src/lib/VoiceOrchestrationService.ts  (key sections)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q1 — playbackConfirmTimeout: value and what it does when it fires
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+`playbackConfirmTimeout` lives SERVER-SIDE in VoiceOrchestrationService.ts.
+There is no `playbackConfirmTimeout` in useVoiceCall.ts at all.
+
+Value: 15 seconds (line 785: `}, 15_000)`).
+
+It starts when the server sends `response_end` (line 755: `session.awaitingPlaybackConfirm = true`).
+It fires if the client has not sent `playback_confirmed` within 15 seconds.
+
+What it does when it fires (lines 762-784):
+  session.awaitingPlaybackConfirm = false
+  session.responseComplete = false
+  session.playbackConfirmTimeout = null
+  session.currentSpeechId = null
+  session.state = "listening"
+  -- processes any pending utterance if one arrived during the wait
+
+CRITICAL: it does NOT send any message to the client. The server silently
+resets its own state to "listening". The client receives nothing and stays
+stuck in whatever phase it was in ("thinking" or "speaking") permanently.
+
+This is a confirmed gap. The server unfreezes itself after 15s but the
+client is never told.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q2 — Can the TTS queue get stuck with no audio actually playing?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+YES. Two distinct failure modes. Mode A is the primary suspect.
+
+-- FAILURE MODE A: phase stays "thinking" with no audio played ---------------
+
+The playNext drain logic (lines 320-354) that opens the mic is gated on:
+
+    if (phaseRef.current === "speaking") { ... }     <- line 324
+
+The phase only advances from "thinking" to "speaking" inside playNext
+(line 367: setPhaseSync("speaking")) -- and only when there is an actual
+URI in the queue to play.
+
+So if speech_start arrives (resetting all lifecycle refs including
+ttsServerDoneRef = false, responseEndReceivedRef = false) but no audio
+ever reaches playQueueRef -- because filterForbiddenPhrases() strips all
+sentences, or TTS fails silently -- then:
+
+  1. Phase stays "thinking" (never advances to "speaking")
+  2. response_end arrives -> responseEndReceivedRef = true -> playNext()
+     called -> queue empty -> drain block SKIPPED (phase !== "speaking") ->
+     playback_confirmed NEVER SENT
+  3. tts_done arrives -> ttsServerDoneRef = true -> playNext() called ->
+     queue empty -> drain block SKIPPED (phase still "thinking") ->
+     mic NEVER OPENED
+  4. Server waits 15s, fires playbackConfirmTimeout, resets silently.
+     Client: stuck in "thinking" forever.
+
+Connection to web search: Brave+Tavily parallel search adds ~3-5s before
+speech_start arrives. During this window the client sits in "thinking". If
+the LLM then produces a response whose sentence(s) get stripped by
+filterForbiddenPhrases() (e.g., a reflexive "sorry about that" as a first
+sentence -- now in the forbidden list), zero audio is queued and this path
+fires. The longer the thinking window, the more likely a filter hit or
+silent TTS failure causes this.
+
+Note also: the new "sorry about that" forbidden phrase added in the last
+commit is broad. It will strip any sentence containing that substring,
+including innocuous ones, potentially leaving zero audio for the turn.
+
+-- FAILURE MODE B: didJustFinish never fires (phase stuck in "speaking") -----
+
+If the expo-audio player silently fails on device, the playbackStatusUpdate
+listener's didJustFinish branch never runs. Consequences:
+
+  - playNextRunningRef.current stays true (mutex never released)
+  - All subsequent playNext() calls return immediately ("already running")
+  - Queue never drains -> ttsCompleteRef never becomes true
+  - openMic() blocked at line 670-673 (if (!ttsCompleteRef.current) return)
+  - Phase stays "speaking" indefinitely
+
+This would show as "Ashley speaking" in the UI, not "Thinking...".
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q3 — What does Interrupt do, and why does it unfreeze the call?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+interrupt() at line 1039:
+
+  1. GUARD (line 1042): if (phaseRef.current !== "speaking") return;
+     Does NOTHING if phase is "thinking". Returns immediately.
+
+  If phase IS "speaking":
+  2. stopPlayback() -- clears playQueueRef, sets playBusyRef=false,
+     playNextRunningRef=false, pauses and removes the player
+  3. turnGenRef.current++ -- invalidates in-flight flushChunkBuffer/openMic
+  4. playNextRef.current() -- drain kick: sends playback_confirmed if
+     responseEndReceivedRef is true (closes the Path C stuck-state)
+  5. ws.send({ type: "interrupt" }) -> server responds with interrupt_ack
+
+  interrupt_ack handler (lines 876-881):
+    ttsCompleteRef.current = true
+    stopPlayback()
+    setPhaseSync("listening")
+    openMicRef.current()
+
+Why does pressing Interrupt unfreeze the call?
+
+  interrupt() is ONLY effective from "speaking" phase. It is a confirmed
+  no-op from "thinking".
+
+  The UI labels (from voice-call.tsx phaseLabel):
+    "thinking"  ->  "Thinking..."
+    "speaking"  ->  "Ashley speaking"
+
+  These are distinct labels. If the call is genuinely stuck in "thinking"
+  phase, pressing Interrupt does nothing -- the guard at line 1042 returns
+  before any state is touched.
+
+  DISCREPANCY: you describe being stuck in "Thinking..." and Interrupt
+  unfreezing it. Two possible explanations:
+
+  A) The call is actually stuck in "speaking" phase (Mode B -- didJustFinish
+     never fired, audio played briefly and silently). You press Interrupt
+     from "speaking" and it works. You see "Ashley speaking" but describe
+     it colloquially as "thinking" because Ashley was mid-process.
+
+  B) Phase IS "thinking" and Interrupt genuinely does nothing. Recovery is
+     coincidental -- the server's 15s timeout resets its own state, a new
+     VAD submit fires on the now-silent call, or you re-speak and the new
+     speech_final unsticks the server.
+
+  Recommended diagnostic: check the voice call audit log (visible on the
+  call screen) at the moment of the stuck state. The log shows every phase
+  transition and WS message. "setPhase: thinking" with no subsequent
+  "setPhase: speaking" confirms Mode A. "setPhase: speaking" followed by
+  "player: started" with no "player: finished" confirms Mode B.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Q4 — Is there a client-side safety timeout on "thinking" state?
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+NO. There is no client-side timeout on "thinking" phase. Zero. None.
+
+If the server never sends speech_start (web search hangs, LLM errors before
+generating a response, network drops), the client stays in "thinking"
+forever with no automatic recovery.
+
+Server-side protections that exist but do NOT unblock the client:
+
+  1. playbackConfirmTimeout (15s) -- server-side only, sends nothing to
+     client. Also: only starts after response_end is sent. If the LLM stream
+     errors before reaching response_end, the 15s timer never starts at all.
+
+  2. Hard budget timeout (VoiceOrchestrationService.ts line 605) -- DOES
+     send a tts_done directly to the client with reason: "budget_exceeded".
+     Client handles this in playNext "safety-timeout path" (line 325-330:
+     if ttsServerDoneRef.current -> ttsCompleteRef = true, mic opens).
+     BUT: this only works if phase is "speaking" when tts_done arrives.
+     If phase is "thinking" (Mode A), the drain block is still skipped.
+
+  3. Zombie session cleanup -- closes WebSocket after ZOMBIE_TIMEOUT_MS of
+     inactivity. Drops the entire call rather than recovering it.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PROPOSED FIX SCOPE (for your approval -- no changes made yet)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FIX 1 (client, useVoiceCall.ts) -- HIGHEST PRIORITY
+Drain-in-thinking guard -- directly addresses Mode A.
+
+  Extend the playNext drain phase check from:
+    if (phaseRef.current === "speaking")
+  to:
+    if (phaseRef.current === "speaking" || phaseRef.current === "thinking")
+
+  When phase is "thinking" and queue is empty with ttsServerDoneRef=true,
+  set ttsCompleteRef=true, setPhaseSync("listening"), openMic(). This covers
+  the case where no audio was ever played for the turn.
+
+FIX 2 (client, useVoiceCall.ts) -- BELT-AND-BRACES
+Client-side thinking safety timeout.
+
+  After setPhaseSync("thinking") at line 579, arm a 20s timeout. If phase
+  is still "thinking" when it fires (no speech_start or tts_done ever
+  arrived), set ttsCompleteRef=true, setPhaseSync("listening"), openMic().
+  Clear the timer in the speech_start(main) WS handler and in interrupt().
+
+FIX 3 (server, VoiceOrchestrationService.ts)
+Notify client when playbackConfirmTimeout fires.
+
+  When the 15s timeout fires, send a tts_done to the client (same shape as
+  the hard-budget tts_done) so the client can recover. Combined with Fix 1,
+  this closes the loop entirely: client opens mic even if phase was
+  "thinking" when tts_done arrives.
+
+Recommend implementing all three. Confirm and I will make the changes.

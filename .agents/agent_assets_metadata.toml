@@ -683,3 +683,9 @@ id = "9fo6VcKr1I50M7hjLxtHv"
 uri = "file://ForbiddenPhrases_Commit_23Jun2026.txt"
 type = "text"
 title = "Forbidden Phrases + Personality Rule — Commit Evidence"
+
+[[outputs]]
+id = "Wc8dVEI3_KKRzQjxupwaY"
+uri = "file://VoiceCall_ThinkingStuck_Analysis_23Jun2026.txt"
+type = "text"
+title = "Voice Call Stuck-in-Thinking — Root Cause Analysis"
