@@ -111,6 +111,11 @@ const FORBIDDEN_PHRASE_PATTERNS: RegExp[] = [
   /\bbabe\b/i,
   /my magnificent architect/i,
   /\bmagnificent\b/i,
+  // Connection-drop acknowledgement — Ashley never references dropped connections
+  /sorry we dropped our connection/i,
+  /where were we/i,
+  /did we lose connection/i,
+  /are you still there on your end/i,
 ];
 
 function filterForbiddenPhrases(text: string): string {
@@ -763,8 +768,26 @@ async function runLLMAndTTSPipeline(
       if (session.awaitingPlaybackConfirm && session.currentSpeechId === speechId) {
         logger.warn(
           { sessionId: session.sessionId },
-          "VoiceOrch: playback_confirmed not received within 15s — resetting to listening",
+          "VoiceOrch: playback_confirmed not received within 15s — notifying client and resetting to listening",
         );
+        // Notify the client so it can recover from a stuck "thinking" or "speaking"
+        // state. Without this the server resets silently and the client hangs forever.
+        const seqTimeout = registry.incrementSequence(session);
+        try {
+          session.ws?.send(
+            JSON.stringify({
+              type:                "tts_done",
+              kind:                "main",
+              speechId,
+              responseText:         session.currentResponseText ?? "",
+              sessionId:            session.sessionId,
+              connectionGeneration: session.connectionGeneration,
+              sequenceNumber:       seqTimeout,
+              timestamp:            Date.now(),
+              reason:               "playback_confirm_timeout",
+            }),
+          );
+        } catch {}
         session.awaitingPlaybackConfirm = false;
         session.responseComplete = false;
         session.playbackConfirmTimeout = null;

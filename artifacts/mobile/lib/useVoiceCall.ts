@@ -211,6 +211,10 @@ export function useVoiceCall(): {
   const speechStartAtRef    = useRef(0);
   const vadActiveRef        = useRef(false); // true only while mic should be running
   const autoSubmitTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Safety timeout: arms on entry to "thinking" phase. Forces back to listening
+  // after 20s if the server never sends speech_start or tts_done (server error,
+  // network drop, or all sentences filtered leaving no audio to play).
+  const thinkingTimeoutRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Intent-based silence threshold: server sends set_silence_threshold before
   // the LLM pipeline; openMic() picks it up and resets to SILENCE_MS afterward.
   const nextSilenceThresholdRef = useRef<number | null>(null);
@@ -321,22 +325,28 @@ export function useVoiceCall(): {
     if (!uri) {
       // Queue drained.
       addLog(`playNext: drained responseEnd=${responseEndReceivedRef.current} srvDone=${ttsServerDoneRef.current} phase=${phaseRef.current}`);
-      if (phaseRef.current === "speaking") {
+      if (phaseRef.current === "speaking" || phaseRef.current === "thinking") {
         if (ttsServerDoneRef.current) {
-          // tts_done already received (server safety timeout path) — open mic directly.
+          // tts_done already received — covers two paths:
+          //   "speaking": server safety-timeout path, audio played but drain never ran.
+          //   "thinking": no audio was ever played (all sentences filtered or TTS empty)
+          //               so phase never advanced beyond thinking. Open mic directly.
           ttsCompleteRef.current = true;
-          addLog("ttsComplete=true — opening mic (safety-timeout path)");
+          addLog(`ttsComplete=true — opening mic (srvDone path, phase=${phaseRef.current})`);
           setPhaseSync("listening");
           void openMicRef.current();
         } else if (responseEndReceivedRef.current) {
           // Server has confirmed all audio sent AND our queue is empty — send confirmation.
           // This is the ONLY valid time to send playback_confirmed. Before response_end
           // arrives, an empty queue means "inter-sentence gap", not "response complete".
+          // Fires from "thinking" when all sentences were filtered (no audio played):
+          // sending playback_confirmed triggers the server to send tts_done, which
+          // then re-enters this drain and opens the mic via the srvDone path above.
           if (!alreadyConfirmedRef.current) {
             if (wsRef.current?.readyState === WebSocket.OPEN) {
               alreadyConfirmedRef.current = true;
               wsRef.current.send(JSON.stringify({ type: "playback_confirmed" }));
-              addLog("WS playback_confirmed → sent (response_end + queue empty)");
+              addLog(`WS playback_confirmed → sent (response_end + queue empty, phase=${phaseRef.current})`);
             }
           } else {
             // Second drain reached this branch (e.g. interrupt() drain kick) —
@@ -578,6 +588,17 @@ export function useVoiceCall(): {
       }));
       setPhaseSync("thinking");
       // Mic stays closed until Ashley finishes (playback queue drain reopens it).
+      // Safety timeout: if speech_start + tts_done never arrive (server error,
+      // network drop, or all sentences filtered leaving no audio), force listening.
+      if (thinkingTimeoutRef.current !== null) clearTimeout(thinkingTimeoutRef.current);
+      thinkingTimeoutRef.current = setTimeout(() => {
+        thinkingTimeoutRef.current = null;
+        if (phaseRef.current !== "thinking") return;
+        addLog("thinking-timeout: 20s — forcing listening");
+        ttsCompleteRef.current = true;
+        setPhaseSync("listening");
+        void openMicRef.current();
+      }, 20_000);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Transcription failed");
       setPhaseSync("listening");
@@ -810,6 +831,12 @@ export function useVoiceCall(): {
             addLog("WS speech_start(aux) — aux buffer reset");
           } else {
             // Main turn speech — reset all lifecycle gates as before.
+            // Clear thinking-phase safety timeout: speech_start means the server
+            // responded and audio is incoming, so the 20s guard is no longer needed.
+            if (thinkingTimeoutRef.current !== null) {
+              clearTimeout(thinkingTimeoutRef.current);
+              thinkingTimeoutRef.current = null;
+            }
             chunkBufRef.current = [];
             ttsCompleteRef.current = false;        // device not done playing
             ttsServerDoneRef.current = false;      // server not done sending
@@ -1041,6 +1068,12 @@ export function useVoiceCall(): {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (phaseRef.current !== "speaking") return;
     addLog("interrupt: tap");
+    // Clear thinking-phase safety timeout (may still be armed from a prior
+    // thinking period that advanced to speaking before the 20s elapsed).
+    if (thinkingTimeoutRef.current !== null) {
+      clearTimeout(thinkingTimeoutRef.current);
+      thinkingTimeoutRef.current = null;
+    }
     stopPlayback();
     // Invalidate current turn: any flushChunkBuffer or openMic already in
     // flight will see a stale gen and discard their result.

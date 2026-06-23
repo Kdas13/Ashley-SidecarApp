@@ -1,0 +1,82 @@
+VOICE CALL — STUCK-IN-THINKING FIX + FORBIDDEN PHRASES
+Commit evidence — 23 Jun 2026
+Previous HEAD: 4664ba1 — Add detailed analysis of voice call thinking state issues
+Checkpoint commit fires at loop end.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILES CHANGED (2)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. artifacts/mobile/lib/useVoiceCall.ts
+
+   FIX 1 — Drain-in-thinking guard (lines 331, 338, 352)
+   Primary bug fix. playNext drain block extended:
+
+     BEFORE: if (phaseRef.current === "speaking") {
+     AFTER:  if (phaseRef.current === "speaking" || phaseRef.current === "thinking") {
+
+   When phase is "thinking" and queue is empty:
+   - ttsServerDoneRef=true  → ttsCompleteRef=true, setPhaseSync("listening"),
+                               openMic() — direct mic open, no handshake needed
+   - responseEndReceived=true, srvDone=false → sends playback_confirmed, which
+     triggers server to send tts_done, which re-enters drain and opens mic via
+     the srvDone branch above
+   - Neither → inter-sentence gap equivalent, do nothing (unchanged)
+
+   Covers: all sentences stripped by filterForbiddenPhrases, empty TTS response,
+   any server path that produces response_end + tts_done but zero audio chunks.
+
+   FIX 2 — Client-side thinking safety timeout (lines 217-220, 596-604, 839-842, 1074-1079)
+
+   thinkingTimeoutRef added near autoSubmitTimerRef.
+
+   Armed at line 596 immediately after setPhaseSync("thinking"):
+     20s timeout. On fire: if phase is still "thinking":
+       ttsCompleteRef=true, setPhaseSync("listening"), openMic()
+     Bails silently if phase already advanced (covers all self-clearing paths).
+
+   Cleared in:
+   - speech_start(main) handler (line 839): server responded, audio incoming
+   - interrupt() (line 1074): advancing from speaking, clear any prior timer
+
+2. artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+
+   FIX 3 — Notify client when 15s playbackConfirmTimeout fires (lines 771-788)
+
+   BEFORE: server reset state silently, sent nothing to client.
+   AFTER:  server sends tts_done to client before resetting, same shape as
+           the hard-budget tts_done:
+             { type:"tts_done", kind:"main", speechId, responseText,
+               reason:"playback_confirm_timeout" }
+
+   Client receives tts_done → sets ttsServerDoneRef=true → playNext() →
+   FIX 1 drain fires for "thinking" OR existing srvDone path for "speaking"
+   → mic opens. Combined with Fix 1 this closes the loop for all stuck-state
+   scenarios regardless of which phase the client is in.
+
+   Additional filter phrases (lines 117-121):
+     /sorry we dropped our connection/i
+     /where were we/i
+     /did we lose connection/i
+     /are you still there on your end/i
+   Added to FORBIDDEN_PHRASE_PATTERNS after terms-of-address group.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERDICT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PASS. Two files changed. All three fixes applied. Four additional filter
+phrases added.
+
+Recovery matrix after these fixes:
+  Stuck in "thinking", tts_done arrives      → Fix 1 opens mic directly
+  Stuck in "thinking", response_end arrives  → Fix 1 sends playback_confirmed
+                                               → server sends tts_done → Fix 1
+  Stuck in "thinking", server never responds → Fix 2 (20s) forces listening
+  Server 15s timeout fires                   → Fix 3 sends tts_done → Fix 1
+
+All paths covered.
+
+Mobile change (useVoiceCall.ts): EAS build required.
+Server change (VoiceOrchestrationService.ts): Replit redeploy required.
+Timestamp: 2026-06-23T00:00 UTC
