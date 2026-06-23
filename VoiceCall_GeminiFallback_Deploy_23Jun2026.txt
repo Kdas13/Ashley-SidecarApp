@@ -1,0 +1,82 @@
+VOICE CALL — GEMINI 503 FALLBACK — IMPLEMENTATION COMPLETE
+23 Jun 2026
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CHANGES MADE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE 1: artifacts/api-server/src/lib/textLLM.ts
+
+  Added isUnavailable() alongside isRateLimit() (lines 62-71):
+    function isUnavailable(err: unknown): boolean {
+      if (!err || typeof err !== "object") return false;
+      const status = (err as Record<string, unknown>).status;
+      if (status === 503) return true;
+      const msg = (err as { message?: string }).message ?? "";
+      return msg.includes("UNAVAILABLE") || msg.includes("503");
+    }
+
+  Added 503 fallback branch in streamChatText Gemini catch block
+  (lines 200-234), after isRateLimit handling, before throw err:
+    - If isUnavailable && !hasYielded && forceProvider === "gemini":
+        log warn + throw (preserve existing forced-Gemini behaviour)
+    - If isUnavailable && !hasYielded && no forceProvider:
+        log warn + immediate Anthropic fallback (claude-sonnet-4-6 stream)
+        returns — no retry delay, no error clip, turn completes normally
+
+FILE 2: artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+
+  Removed forceProvider: "gemini" from streamChatText call (line 690).
+  Comment added: "No forceProvider — uses activeChatProvider() (env
+  default: gemini). This allows the 503 fallback in textLLM.ts to
+  engage when Gemini is down."
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TYPECHECK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+pnpm --filter @workspace/api-server run typecheck — PASSED, zero errors.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RUNTIME STATUS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+API Server workflow restarted and running.
+Changes are live in dev. Replit redeploy required for production.
+No EAS build needed (server-side only).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BEHAVIOUR AFTER THIS CHANGE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Gemini 503 on a voice turn (the 11:09 incident pattern):
+  BEFORE: LLM stream error → "say-that-again" error clip → silence / WS drop
+  AFTER:  isUnavailable catches → immediate Anthropic stream started
+          → turn completes with Claude response → no error clip, no WS drop
+
+Gemini 429 (rate limit) on a voice turn:
+  Unchanged. Retry loop up to 3 times → if exhausted, Anthropic fallback
+  (now enabled by removal of forceProvider=gemini from voice call).
+
+Gemini 503 on non-voice calls (chat lane, proactive, etc.):
+  These never had forceProvider=gemini so the 503 path now applies to
+  them too — same immediate Anthropic fallback behaviour.
+
+Callers that still have forceProvider:"gemini" (structured output paths
+in chat.ts such as scene planning at line 817):
+  Unchanged. isUnavailable block throws for those, as designed.
+
+Search classifier (maybeRunWebLookup) on 503:
+  Unchanged. Already fails silently → skips lookup → LLM runs without
+  web enrichment. No change needed there.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PREVIOUS CHECKPOINT (last committed state)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+commit 8dc73bbcede1ae93f88f58c79d94fcec7e8d336c
+Date:   Tue Jun 23 11:20:37 2026 +0000
+  Add analysis of Gemini 503 error handling and fallback mechanisms
+  (analysis txt files only — not the code changes above)
+
+Code changes above will appear in the next auto-checkpoint.

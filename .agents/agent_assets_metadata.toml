@@ -725,3 +725,9 @@ id = "KNOhfZ75uffhS9E2cM4O9"
 uri = "file://VoiceCall_GeminiFallback_Analysis_23Jun2026.txt"
 type = "text"
 title = "Voice Call — Gemini 503 Fallback Analysis"
+
+[[outputs]]
+id = "7PBOjkL7WvmDB79ksIdQW"
+uri = "file://VoiceCall_GeminiFallback_Deploy_23Jun2026.txt"
+type = "text"
+title = "Voice Call — Gemini 503 Fallback — Deployed"

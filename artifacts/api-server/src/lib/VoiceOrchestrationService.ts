@@ -684,11 +684,12 @@ async function runLLMAndTTSPipeline(
 
   try {
     const stream = streamChatText({
-      system:        ctx.systemPrompt,
-      messages:      ctx.messages,
-      maxTokens:     VOICE_MAX_TOKENS,
-      forceProvider: "gemini",
-      signal:        controller.signal,
+      system:    ctx.systemPrompt,
+      messages:  ctx.messages,
+      maxTokens: VOICE_MAX_TOKENS,
+      // No forceProvider — uses activeChatProvider() (env default: gemini).
+      // This allows the 503 fallback in textLLM.ts to engage when Gemini is down.
+      signal:    controller.signal,
     });
 
     for await (const chunk of stream) {

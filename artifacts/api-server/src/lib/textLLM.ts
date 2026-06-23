@@ -56,6 +56,17 @@ function isRateLimit(err: unknown): boolean {
   return msg.includes("RATELIMIT_EXCEEDED") || msg.includes("429");
 }
 
+// Returns true when the error is a provider-side service unavailability (503).
+// 503 is distinct from 429 — Gemini is down, not quota-exhausted. Anthropic
+// is unaffected, so immediate fallback (no retry) is the right action.
+function isUnavailable(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const status = (err as Record<string, unknown>).status;
+  if (status === 503) return true;
+  const msg = (err as { message?: string }).message ?? "";
+  return msg.includes("UNAVAILABLE") || msg.includes("503");
+}
+
 // Delays in ms between successive retry attempts (attempt 0 uses delays[0], etc.).
 const RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
 
@@ -173,6 +184,41 @@ export async function* streamChatText(
             { signal: opts.signal },
           );
           for await (const ev of stream) {
+            if (
+              ev.type === "content_block_delta" &&
+              ev.delta.type === "text_delta" &&
+              ev.delta.text
+            ) {
+              yield ev.delta.text;
+            }
+          }
+          return;
+        }
+        // 503 / service unavailable — Gemini is down, not quota-exhausted.
+        // No retry (it won't recover in seconds). Fall back to Anthropic
+        // immediately if not force-pinned; throw if force-pinned.
+        if (isUnavailable(err) && !hasYielded) {
+          if (opts.forceProvider === "gemini") {
+            logger.warn(
+              { attempt, model: opts.geminiModel ?? GEMINI_CHAT_MODEL },
+              "Gemini unavailable (503) on streamChatText (forceProvider=gemini) — throwing",
+            );
+            throw err;
+          }
+          logger.warn(
+            { attempt },
+            "Gemini unavailable (503) on streamChatText — falling back to Anthropic",
+          );
+          const fbStream = anthropic.messages.stream(
+            {
+              model:      "claude-sonnet-4-6",
+              max_tokens: Math.min(opts.maxTokens, 8192),
+              system:     opts.system,
+              messages:   opts.messages,
+            },
+            { signal: opts.signal },
+          );
+          for await (const ev of fbStream) {
             if (
               ev.type === "content_block_delta" &&
               ev.delta.type === "text_delta" &&
