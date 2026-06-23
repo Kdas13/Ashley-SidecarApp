@@ -1,0 +1,224 @@
+VOICE CALL SYSTEM AUDIT — 23 Jun 2026
+Read-only. No changes made.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. ALL COMMITS TODAY — CHRONOLOGICAL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TIME   HASH     TYPE       DESCRIPTION / FILES CHANGED
+----   ----     ----       ----------------------------
+04:46  eb4d99d  deploy     Published your App
+05:12  8996109  txt only   Evidence: Brave Search fallback analysis
+05:22  5aa9442  CODE       Brave+Tavily parallel web search
+                             artifacts/api-server/src/lib/webSearch.ts (+85)
+05:26  9b55cc8  deploy     Published your App
+07:29  8bf6aee  CODE       Audio handling + conversational style
+                             VoiceOrchestrationService.ts (+20)
+                             ashleyCoreSpec.ts (+29)
+07:36  17c1b8c  deploy     Published your App
+07:54  4664ba1  txt only   Evidence: thinking state analysis
+08:03  1266668  CODE       Voice stability + new forbidden phrases
+                             VoiceOrchestrationService.ts (+25)
+                             useVoiceCall.ts (+41)  <- thinking timeout, Fix 3
+08:17  142b7fb  deploy     Published your App
+09:06  908836a  CODE       Forbidden phrases expansion + constitutional rules
+                             VoiceOrchestrationService.ts (+16)
+                             ashleyCoreSpec.ts (+27)
+09:12  26820b0  deploy     Published your App
+10:36  df496f2  txt only   Evidence: Bluetooth mic analysis
+10:40  b30e026  CODE       Bluetooth SCO mic routing (Galaxy Buds)
+                             voiceInput.ts (+14)
+                             package.json, pnpm-lock.yaml
+11:15  6f1a699  txt only   Evidence: voice call log analysis (11:09 503)
+11:20  8dc73bb  txt only   Evidence: Gemini 503 fallback analysis
+11:40  31b6e6d  CODE       Gemini 503 -> Anthropic fallback on voice
+                             VoiceOrchestrationService.ts: removed forceProvider:"gemini"
+                             textLLM.ts: isUnavailable() + 503 branch (+46)
+11:48  fb26c8f  deploy     Published your App
+12:18  28d0900  txt only   Evidence: TTS queue race analysis
+12:23  58b3ca4  CODE       TTS premature confirmation race fix
+                             useVoiceCall.ts: flushInFlightRef counter (+25)
+
+CODE COMMITS: 7  |  DEPLOYS: 6  |  TXT-ONLY: 6
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2. VOICE CALL PIPELINE — CURRENT STATE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+── voiceInput.ts ──────────────────────────────────────
+
+Recording library:   react-native-incall-manager (NOT expo-audio useAudioRecorder).
+                     Replaces expo-audio's native "recordingStatusUpdate" which had
+                     polling issues. Uses expo-audio createRecording underneath but
+                     manages the session manually.
+Audio source:        audioSource: 7 = MediaRecorder.AudioSource.VOICE_COMMUNICATION
+                     Preserves hardware echo cancellation (AEC). Set at line 59.
+InCallManager:       PRESENT — imported at line 19, called at lines 157 and 203.
+BT SCO logic:        PRESENT.
+                     On recording start: 300ms delay then
+                       InCallManager.start({ media: "audio" })
+                     Sets MODE_IN_COMMUNICATION and negotiates SCO, routing audio
+                     through the Bluetooth headset mic instead of the built-in mic.
+                     On recording end: InCallManager.stop() restores normal mode.
+Status:              NOT CONFIRMED IN LIVE TESTING. Plumbing is in.
+                     Galaxy Buds test still required to verify SCO negotiation.
+
+── useVoiceCall.ts ────────────────────────────────────
+
+flushInFlightRef:         PRESENT at line 206.
+                          Counter tracking in-flight FileSystem.writeAsStringAsync
+                          calls inside flushChunkBuffer. Incremented before write,
+                          decremented in finally. playNext called only when counter
+                          reaches zero.
+
+thinkingTimeoutRef:       PRESENT at line 222.
+                          20s safety timeout armed on every submitSegment call
+                          (line 615). Fires if phase is still "thinking" after 20s
+                          — forces listening, opens mic. Clears on speech_start
+                          and interrupt.
+
+playback_confirmed guard: PRESENT — two independent layers:
+  Layer 1 — alreadyConfirmedRef (line 250):
+    One-shot per turn. Prevents double-send from interrupt() drain kick.
+    Resets only in speech_start(main) handler.
+  Layer 2 — flushInFlightRef > 0 (line 350):
+    Defers playback_confirmed if any write is still in-flight.
+    Releases mutex and returns; the completing write re-enters playNext
+    via the finally block when counter hits zero.
+
+── VoiceOrchestrationService.ts ───────────────────────
+
+forceProvider on voice LLM:  REMOVED.
+                             Line 690 is now a comment noting its removal.
+                             Voice uses activeChatProvider() = env default
+                             (ASHLEY_TEXT_PROVIDER=gemini). This enables the 503
+                             fallback path in textLLM.ts.
+                             Only remaining forceProvider:"anthropic" is at
+                             line 1081 — a separate intentional call, unrelated
+                             to the main voice LLM stream.
+
+silenceMonitor:              ABSENT.
+                             Grep returned nothing for silenceMonitor, SILENCE_MONITOR,
+                             deadAir, dead_air, noSpeech. If server-side dead-air
+                             detection was planned it has not been implemented.
+
+builderAware suppression:    PRESENT at line 562.
+                             When voice call is active, injects into system prompt:
+                             "VOICE CALL — BUILDER-AWARE ACTIONS DISABLED: You are
+                             on a live voice call."
+                             Suppresses builder-mode responses (code edits, ticket
+                             changes, architecture discussion) for the call duration.
+
+filterForbiddenPhrases:      PRESENT at lines 75-127. 22 patterns in 6 categories:
+
+  Call-closing:    "i'll let you go", "let you go", "talk soon", "goodbye",
+                   "bye", "take care", "speak later", "talk to you later"
+  Silence-filling: "let me know if you need", "reach out anytime",
+                   "are you still there", "still there", "are you there",
+                   "i'm still here", "i'm listening", "just checking in",
+                   "hello?", "you okay?"
+  Audio quality:   "sorry i didn't get that", "i didn't catch that",
+                   "could you repeat that", "sorry i missed that",
+                   "i didn't hear you", "pardon", "can you say that again",
+                   "i couldn't hear you", "sorry about that"
+  Terms of address:"my love", "my dear", "sweetheart", "darling", "hun",
+                   "honey", "babe", "my magnificent architect", "magnificent"
+  Connection refs: "sorry we dropped our connection", "where were we",
+                   "did we lose connection", "are you still there on your end"
+  Worship-adjacent:"magnificent bastard"
+  Hold/stall:      "hang on", "hang on a moment", "hang on i'm thinking",
+                   "one moment", "just a moment"
+
+  Applied sentence-by-sentence. Full sentence dropped on any pattern match.
+  Empty result (all filtered) skips TTS entirely — no silence clip played.
+
+── ashleyCoreSpec.ts ──────────────────────────────────
+
+VOICE CALL FUNDAMENTAL OUTPUT RULE:  PRESENT at lines 254-274.
+  "During a voice call, only one person speaks at a time."
+  Ashley never generates: filler, acknowledgements, thinking phrases,
+  mirroring of Kane's phrases, or responses to her own looped-back audio.
+  "Between turns, silence is the only correct state."
+  Explicitly disables Gemini's default filler/acknowledgement behaviours.
+
+Hard constraints (Section 10):  PRESENT at lines 276-303+.
+  10 rules including: no self-modification, no fabricated ticket progress,
+  no autonomy claims, DIAGNOSTIC OUTPUT HARD BLOCK.
+
+Personality / builderAware toggle:  PRESENT.
+  builderAware at line 485 (reads profile.builderAwareMode).
+  Two-branch system prompt at lines 550/554.
+
+── textLLM.ts ─────────────────────────────────────────
+
+isUnavailable():     PRESENT at lines 59-71.
+                     Detects HTTP 503 via numeric status field and UNAVAILABLE
+                     / "503" message string.
+
+503 fallback branch: PRESENT at lines 197-214.
+                     Inside streamChatText Gemini catch block:
+                       !hasYielded && isUnavailable(err):
+                         forceProvider==="gemini" -> throw (deliberate, no fallback)
+                         else -> immediate Anthropic claude-sonnet-4-6 stream,
+                                 no retry delay
+                     Voice call (no forceProvider after 31b6e6d) takes the else branch.
+                     429 retry logic (3 attempts, 1s/2s/4s backoff) unchanged.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3. KNOWN ISSUES STILL OPEN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[OPEN-1] Bluetooth SCO unconfirmed
+  b30e026 added InCallManager plumbing. SCO negotiation has NOT been
+  tested live with Galaxy Buds. Unknown whether headset mic routes
+  correctly or falls back to built-in mic. Requires physical device test.
+
+[OPEN-2] "playNext: skip — already running" logs still appear
+  The flushInFlightRef fix closes the dangerous race (premature
+  playback_confirmed) but does NOT eliminate these log lines. Multiple
+  concurrent writes still race the mutex at completion. This is now
+  HARMLESS — URIs are queued, playback_confirmed is gated — but the
+  logs will keep appearing. Do not treat future occurrences as a bug.
+
+[OPEN-3] silenceMonitor absent (server-side)
+  No server-side dead-air detection. If a client goes silent after turn
+  completion without sending playback_confirmed, the only recovery is the
+  client-side Fix 3 (15s tts_done fallback) and the 20s thinking timeout.
+  There is no server-initiated timeout for a stalled playback_confirmed.
+
+[OPEN-4] Gemini 429 exhaustion edge case
+  503 -> Anthropic covered. 429 exhaustion retries 3x then falls back to
+  Anthropic (enabled by forceProvider removal). If Anthropic also 429s,
+  the error clip plays. Acceptable edge case, not a regression.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4. REGRESSIONS — NOTHING CONFIRMED BROKEN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[WATCH-1] flushInFlightRef + tts_done interaction
+  tts_done calls flushChunkBuffer then void playNextRef.current().
+  If counter > 0 when tts_done fires, guard releases mutex and returns.
+  Completing writes re-trigger via finally at counter = 0. No audio lost.
+  Correct behaviour confirmed by code trace.
+
+[WATCH-2] thinkingTimeout vs flushInFlightRef
+  If writes somehow exceed 20s, mic opens while URIs still writing.
+  Pathological edge case — writes are local filesystem, normally ms.
+  In practice, 20s timeout fires only on server error / network drop,
+  at which point writes would have already errored or been discarded
+  by the turnGen guard. Not a real regression.
+
+[WATCH-3] Brave Search (5aa9442)
+  webSearch.ts runs Brave + Tavily in parallel (Promise.any).
+  BRAVE_API_KEY unset: Brave fails silently, Tavily runs solo — identical
+  to pre-commit behaviour. BRAVE_API_KEY set: fastest result wins.
+  No regression on the voice path; search failure already caught and
+  skipped silently.
+
+[WATCH-4] Anthropic fallback voice responses (31b6e6d)
+  On Gemini 503, voice turns answered by Claude. Responses may be
+  slightly wordier / more formal. Constitutional rules and voice output
+  rule apply to both providers equally. Not a regression, worth monitoring.
+
+VERDICT: No regressions identified. All 7 code commits today are
+additive or targeted fixes. No existing functionality removed.
