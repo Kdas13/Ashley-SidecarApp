@@ -25,7 +25,7 @@ import { getDeviceIdSync } from "./deviceId";
 
 // ── VAD config ────────────────────────────────────────────────────────────────
 
-const SILENCE_DB    = -28;    // -28 dBFS: sits between Kane's voice (-23 dBFS, must trigger) and TV background (-30 dBFS, must not trigger); child nearby -45 dBFS also blocked
+const SILENCE_DB    = -35;    // -35 dBFS: sits between Kane's voice (-23 dBFS, must trigger) and TV background (-30 dBFS, must not trigger); child nearby -45 dBFS also blocked
 const SILENCE_MS    = 3500;   // silence tolerance once significant speech has been detected
 const MIN_SPEECH_MS = 500;    // was 200 — too short, catching non-speech sounds
 
