@@ -677,3 +677,9 @@ id = "7oJ7aCoCPqlD_hYorxvtu"
 uri = "file://BraveSearch_Commit_23Jun2026.txt"
 type = "text"
 title = "Brave Search Parallel Provider — Commit Evidence"
+
+[[outputs]]
+id = "9fo6VcKr1I50M7hjLxtHv"
+uri = "file://ForbiddenPhrases_Commit_23Jun2026.txt"
+type = "text"
+title = "Forbidden Phrases + Personality Rule — Commit Evidence"

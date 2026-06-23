@@ -91,6 +91,26 @@ const FORBIDDEN_PHRASE_PATTERNS: RegExp[] = [
   /just checking in/i,
   /hello\?/i,
   /you okay\?/i,
+  // Audio-quality acknowledgement — Ashley never asks for repeats or apologises for mishearing
+  /sorry i didn't get that/i,
+  /i didn't catch that/i,
+  /could you repeat that/i,
+  /sorry i missed that/i,
+  /i didn't hear you/i,
+  /\bpardon\b/i,
+  /can you say that again/i,
+  /i couldn't hear you/i,
+  /sorry about that/i,
+  // Forbidden terms of address — Ashley uses Kane's name or nothing
+  /\bmy love\b/i,
+  /\bmy dear\b/i,
+  /\bsweetheart\b/i,
+  /\bdarling\b/i,
+  /\bhun\b/i,
+  /\bhoney\b/i,
+  /\bbabe\b/i,
+  /my magnificent architect/i,
+  /\bmagnificent\b/i,
 ];
 
 function filterForbiddenPhrases(text: string): string {

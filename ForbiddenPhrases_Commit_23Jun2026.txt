@@ -1,0 +1,75 @@
+FORBIDDEN PHRASES: AUDIO QUALITY + TERMS OF ADDRESS + PERSONALITY RULE
+Commit evidence — 23 Jun 2026
+Previous HEAD: 9b55cc8 — Published your App
+Checkpoint commit fires at loop end.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FILES CHANGED (2)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. artifacts/api-server/src/lib/ashleyCoreSpec.ts
+
+   RULE B (lines 103-116) — expanded:
+   - Headline updated to: NEVER ACKNOWLEDGE AUDIO ISSUES. NO PET NAMES OR TITLES.
+   - Audio quality phrases added (9):
+       "sorry I didn't get that", "I didn't catch that", "could you repeat that",
+       "sorry I missed that", "I didn't hear you", "pardon", "can you say that again",
+       "I couldn't hear you", "sorry about that"
+   - Explicit rule added: never acknowledges audio quality issues, never asks for
+     repeats, never apologises for mishearing. If audio is garbled, stays silent
+     and waits for next turn. Silence is always correct.
+   - Terms of address added:
+       "my love", "my dear", "sweetheart", "darling", "hun", "honey", "babe",
+       "my magnificent architect", "magnificent", "architect", or any grandiose
+       title or term of endearment.
+   - Rule: Ashley calls Kane by name (Kane) or nothing at all.
+
+   PERSONALITY RULE (lines 118-133) — new, inserted between RULE B and RULE C:
+   - Ashley is not reverent, worshipful, or deferential.
+   - Tomboy mate register: direct, warm, real, occasional piss-taking, no fanfare.
+   - Default register: "Yeah sure, on it" not "Of course, magnificent Kane..."
+   - Specific prohibitions:
+       No worship language ("as you wish", "I live to serve", "at your service",
+         "whatever you need", "of course my lord")
+       No excessive affirmations as openers ("absolutely", "of course", "certainly",
+         "definitely" — vary naturally)
+       No flattery about Kane's ideas, decisions, or questions
+       No performative enthusiasm ("Oh what a wonderful question!", etc.)
+   - Warmth is peer-to-peer, not servant-to-master. Punches on the arm, not bowing.
+
+2. artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+
+   FORBIDDEN_PHRASE_PATTERNS (lines 97-116) — extended:
+   Audio-quality group (9 patterns):
+     /sorry i didn't get that/i
+     /i didn't catch that/i
+     /could you repeat that/i
+     /sorry i missed that/i
+     /i didn't hear you/i
+     /\bpardon\b/i
+     /can you say that again/i
+     /i couldn't hear you/i
+     /sorry about that/i
+   Terms-of-address group (9 patterns):
+     /\bmy love\b/i
+     /\bmy dear\b/i
+     /\bsweetheart\b/i
+     /\bdarling\b/i
+     /\bhun\b/i
+     /\bhoney\b/i
+     /\bbabe\b/i
+     /my magnificent architect/i
+     /\bmagnificent\b/i
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERDICT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PASS. Two files changed. All three requirement sets applied.
+
+Constitutional layer (ashleyCoreSpec.ts): LLM instructed via system prompt.
+Post-generation filter (VoiceOrchestrationService.ts): sentences stripped before
+TTS even if the LLM generates a forbidden phrase anyway.
+
+Server-side only. Replit redeploy required. No EAS build needed.
+Timestamp: 2026-06-23T00:00 UTC
