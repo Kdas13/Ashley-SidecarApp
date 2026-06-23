@@ -1,0 +1,91 @@
+VOICE CALL LOG ANALYSIS — 11:09 UTC, 23 Jun 2026
+Turn: "Trying to get this audio fixed again."
+Session: 5c037260-f51c-4c57-9f89-9e0f380421c7
+Device: 6e1af2db-fb82-42db-9ced-b34f8af8cc74
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RAW LOG LINES (relevant extract)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+11:09:14.943  [info]  voice: speech_final accepted
+              utteranceId="csworu9o7qj"
+              transcriptPreview="Trying to get this audio fixed again."
+
+11:09:15.675  [warn]  Search intent classifier failed — skipping web lookup
+              err: ApiError 503
+              "This model is currently experiencing high demand.
+               Spikes in demand are usually temporary. Please try again later."
+              (Gemini 503 on classifySearchIntent call)
+
+11:09:16.560  [error] VoiceOrch: LLM stream error
+              err: ApiError 503
+              "This model is currently experiencing high demand.
+               Spikes in demand are usually temporary."
+              (Gemini 503 on the main streamChatText call)
+
+11:09:31.563  [warn]  VoiceOrch: playback_confirmed not received within 15s
+              — notifying client and resetting to listening
+              sessionId="5c037260-f51c-4c57-9f89-9e0f380421c7"
+              (Fix 3 from this session fired — tts_done sent to client)
+
+11:09:50.990  [info]  Voice-call WS: closed — marking recovering
+              code=1006 reason=""
+              (WebSocket dropped ~34s after the turn started)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ANSWERS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. LLM response text generated:
+   NONE. Gemini returned 503 before a single token was emitted.
+   The stream errored at the first chunk — no sentence buffer was
+   ever populated.
+
+2. filterForbiddenPhrases() ran:
+   NO. The error happened upstream of the filter. filterForbiddenPhrases()
+   only runs on sentence text extracted from the LLM stream. With no stream
+   output, it was never called.
+
+3. What the filter removed:
+   NOTHING — filter never ran.
+
+4. What was left after filtering:
+   NOTHING — the LLM errored. The silence you heard was a Gemini 503,
+   not a phrase strip.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ROOT CAUSE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Gemini was rate-limited / unavailable at 11:09 UTC. Both the search
+classifier (a separate Gemini generateContent call) and the main voice
+LLM stream (streamChatText, forceProvider:"gemini") returned 503 within
+1 second of the turn starting.
+
+VoiceOrchestrationService.ts has forceProvider:"gemini" at line 674.
+This means a Gemini outage silences the turn entirely — there is no
+Anthropic retry path on voice calls. The LLM error propagates to the
+catch block, which resets server state but emits nothing to the client
+(except the Fix 3 tts_done that fired at the 15s timeout).
+
+Fix 3 DID fire correctly — "notifying client and resetting to listening"
+is visible at 11:09:31. However the client still dropped (WS 1006 close)
+~19 seconds later. This may be a separate issue: the client received
+tts_done but if phaseRef was not "thinking" at that moment (e.g. already
+moved to something else due to Fix 2's 20s timeout), the recovery may
+not have fully opened the mic before the connection timed out.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+IMPLICATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The forbidden phrase changes, the VOICE CALL FUNDAMENTAL OUTPUT RULE,
+and the stuck-in-thinking fixes are all irrelevant to this specific
+incident. The problem is upstream: Gemini 503 with no fallback provider
+on voice. A Gemini outage produces a completely silent turn regardless
+of any post-generation processing.
+
+Potential fix (separate to this session): add an Anthropic fallback
+to the voice LLM path when Gemini returns 5xx, similar to the fallback
+already available in the chat lane. Would require removing or
+conditionalising forceProvider:"gemini" on voice.
