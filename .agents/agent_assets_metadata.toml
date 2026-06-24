@@ -791,3 +791,9 @@ id = "VgZzM_GrAGbEFnRGZvDCH"
 uri = "file://ImageTagging_DesignBrief_24Jun2026.txt"
 type = "text"
 title = "Image Tagging System — Design Brief"
+
+[[outputs]]
+id = "hAYhF61NNYgSZGOevbvI7"
+uri = "file://ProductionCrash_Diagnosis_24Jun2026.txt"
+type = "text"
+title = "Production Crash Diagnosis"

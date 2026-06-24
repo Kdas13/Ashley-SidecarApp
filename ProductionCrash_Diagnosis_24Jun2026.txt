@@ -1,0 +1,117 @@
+PRODUCTION CRASH DIAGNOSIS
+24 Jun 2026 — "Something went wrong" on APK + Expo Go
+════════════════════════════════════════════════════════
+
+SHORT ANSWER
+────────────
+The production API server entered a crash loop on its own. The mobile app
+is fine. Two root causes in production; neither is fixable from code here.
+
+════════════════════════════════════════════════════════
+ROOT CAUSE 1 — Production server crash loop
+════════════════════════════════════════════════════════
+
+From deployment logs (timestamps ~1782326224, ~1782330208, ~1782331079):
+  [Error] artifact process exited with error error=signal: terminated
+          artifact=artifacts/api-server
+
+The server kept being terminated and restarted by the Replit runtime.
+During each restart window all requests return 500, so the mobile app
+gets a 500 on startup state hydration.
+
+The direct cause of each crash was PostgreSQL auth timeouts:
+  error: Authentication timed out (pg-pool)
+  ...at async evaluateAndSend (proactiveScheduler.ts:303)
+
+The pg-pool exhausted its connection auth budget. This is a Replit
+production database issue — the pool was trying to authenticate new
+connections and the database was not responding in time. It cascaded
+into the proactive scheduler failing, but the scheduler itself catches
+all errors; the crash came from the pg-pool state becoming unrecoverable
+inside the process, leading Replit's runtime to SIGTERM it.
+
+WHAT MAKES THE APP SHOW "SOMETHING WENT WRONG":
+  The mobile startup calls GET /api/state to hydrate the cache.
+  If the server is down, the call fails with a network error or 500.
+  useProfile and useMessages both fall back to the on-device cache.
+  But if the cache is empty (fresh install, app data cleared, or
+  a migration that wiped storage), there is no fallback and the
+  query throws. React Query surfaces this as an unhandled error.
+  Expo's top-level error boundary catches it → the "Something went
+  wrong" screen.
+
+════════════════════════════════════════════════════════
+ROOT CAUSE 2 — Anthropic credit balance is zero
+════════════════════════════════════════════════════════
+
+From deployment logs (~1782329750587):
+  [warn] Proactive message generation failed
+  message: "Your credit balance is too low to access the Anthropic API.
+            Please go to Plans & Billing to upgrade or purchase credits."
+
+The app-open greeting is routing to Anthropic even though the default
+should be Gemini. This means the production deployment either:
+  a) has ASHLEY_TEXT_PROVIDER=anthropic set as a secret/env var, OR
+  b) does not have the Gemini integration connected on the production
+     deployment (so textLLM.ts's Gemini path silently fails and falls
+     back to Anthropic — check textLLM.ts:117 streamChatText branch).
+
+This does NOT crash the server (it's caught and logged as a warn).
+But it means every app-open greeting fails silently, and any direct
+chat message sent while the provider is set to Anthropic will also
+fail with a 400.
+
+════════════════════════════════════════════════════════
+WHAT YOU NEED TO DO
+════════════════════════════════════════════════════════
+
+1. REDEPLOY THE PRODUCTION API SERVER
+   The server is currently in a degraded state from the crash loop.
+   Go to the Deployments tab → Redeploy.
+   The dev server (restarted here) is now healthy; a fresh production
+   deploy will pick up a clean pg-pool and should stabilise the DB
+   connection.
+
+2. CHECK / FIX THE PROVIDER ENV ON PRODUCTION
+   In the production deployment's environment variables:
+   - If ASHLEY_TEXT_PROVIDER=anthropic is set, change it to gemini
+     (or remove it; the default is gemini).
+   - Confirm the Gemini integration is connected on the production
+     deployment (Settings → Integrations, same as dev).
+   - If you want to keep Anthropic as an option in future, top up
+     the Anthropic API credit balance at console.anthropic.com.
+
+3. OPTIONAL — TOP UP ANTHROPIC CREDITS
+   Even with Gemini as default, the summariser and vision-reply paths
+   are pinned to Anthropic (as noted in replit.md Architecture section).
+   Those will fail silently too if the balance is zero. Top up at
+   console.anthropic.com / Plans & Billing.
+
+════════════════════════════════════════════════════════
+DEV SERVER STATUS RIGHT NOW
+════════════════════════════════════════════════════════
+
+Both dev workflows have been restarted this session and are healthy:
+  artifacts/api-server: API Server  — RUNNING, clean boot
+  artifacts/mobile: expo            — RUNNING, bundling
+
+The production APK will keep crashing until step 1 above is done.
+The dev Expo Go build is usable now (scan the new QR).
+
+════════════════════════════════════════════════════════
+IS THERE A CODE FIX?
+════════════════════════════════════════════════════════
+
+The mobile's fallback-to-cache logic in useProfile and useMessages is
+correct. The "Something went wrong" only escapes to the error boundary
+when the cache is genuinely empty (no prior data on device). There is no
+code bug here — the server was just not available when the app needed it.
+
+If you want the app to show a friendlier "Ashley is unreachable, tap to
+retry" screen instead of the Expo error boundary on a fresh install with
+a dead server, that is a possible improvement to the root layout's error
+handling — worth doing, but separate from this incident.
+
+════════════════════════════════════════════════════════
+END
+════════════════════════════════════════════════════════
