@@ -767,3 +767,9 @@ id = "QvdTZm0t7RYjKqVtZcGZ4"
 uri = "file://ForbiddenPhrases_Impl_24Jun2026.txt"
 type = "text"
 title = "Forbidden Phrases Addition — Implementation"
+
+[[outputs]]
+id = "IQXmbfQHrsY1c_RT2EjU-"
+uri = "file://VoiceStreamAbort_Evidence_24Jun2026.txt"
+type = "text"
+title = "Voice Stream Abort on WS Close — Evidence"

@@ -1,0 +1,158 @@
+VOICE STREAM ABORT ON WS CLOSE — EVIDENCE REPORT
+Generated: 24 Jun 2026
+Status: AWAITING APPROVAL — no implementation made
+
+════════════════════════════════════════════════════════════
+Q1. WHERE IS THE WEBSOCKET CLOSE EVENT HANDLED SERVER-SIDE
+════════════════════════════════════════════════════════════
+
+File: artifacts/api-server/src/index.ts
+Lines 458–476
+
+  ws.on("close", (code: number, reason: Buffer) => {
+    // classifies close code → sets lastReconnectCause
+    registry.markRecovering(sessionId);   // ← only action taken
+  });
+
+That is the entirety of the close handler. One call.
+No abort, no stream teardown, no turn cancellation.
+
+════════════════════════════════════════════════════════════
+Q2. IS THE IN-FLIGHT LLM STREAM ABORTED ON WS CLOSE?
+════════════════════════════════════════════════════════════
+
+NO. The stream keeps running after WS close.
+
+Call chain on close:
+  index.ts:474          registry.markRecovering(sessionId)
+  VoiceSessionRegistry.ts:304-344  markRecovering()
+    → session.ws = null
+    → session.state = "recovering"
+    → starts 60-second recovery timer
+    → timer fires → finalise(sessionId, "recovery_timeout")
+  VoiceSessionRegistry.ts:351-393  finalise()
+    → session.state = "closed"
+    → removes from maps
+    → fires CallSummarisationService (async)
+    → does NOT call cancelCurrentTurn() or abort anything
+
+Neither markRecovering() nor finalise() calls cancelCurrentTurn().
+
+The reference that COULD abort the stream:
+  VoiceOrchestrationService.ts:625-626
+    const controller = new AbortController();
+    session.currentAbortController = controller;
+
+  VoiceOrchestrationService.ts:691-698
+    streamChatText({ ..., signal: controller.signal })
+
+  The `for await` loop at line 700-727 checks two guards per chunk:
+    line 702: if (session.currentTurnId !== turnId || !session.llmStreamActive) break;
+
+  But on WS close:
+    - session.llmStreamActive is NOT set to false
+    - session.currentTurnId is NOT cleared
+    - controller.signal.aborted is false
+
+  So the loop runs to completion.
+
+What DOES abort correctly (for comparison):
+  VoiceOrchestrationService.ts:362-375  abortCurrentOutputs()
+    → session.llmStreamActive = false
+    → registry.cancelCurrentTurn(session, "orchestration_abort")
+      → VoiceSessionRegistry.ts:435-455  cancelCurrentTurn()
+        → session.currentAbortController.abort()   ← this is the kill switch
+
+  abortCurrentOutputs() is called on: interrupt, user_command_end, handleInterruption.
+  It is NOT called on: WebSocket close.
+
+The hard budget watchdog (VoiceOrchestrationService.ts:631-659,
+MAX_TURN_BUDGET_MS) will eventually abort, but that is the
+outer wall — could be tens of seconds.
+
+════════════════════════════════════════════════════════════
+Q3. HOW DOES THE CHAT LANE GET BLOCKED
+════════════════════════════════════════════════════════════
+
+Voice and chat do NOT share a server-side session object.
+  - Voice: WebSocket to /api/voice/call, session in VoiceSessionRegistry
+  - Chat:  SSE via /api/chat/stream, per-request AbortController
+
+The "Ashley is typing..." state is mobile-side (useMessages.ts).
+Messages carry status: "streaming" | "complete" | "interrupted".
+usePresenceLoop.ts lines 131-132 explicitly avoids evicting a
+streaming reply: "Don't yank a streaming reply out from under
+the user just because they started typing the next message."
+
+Probable mechanism for the block:
+  1. Voice turn begins → server sends speech_start to mobile.
+  2. Mobile may write an Ashley placeholder with status:"streaming"
+     into the chat history (the voice reply is spoken, but some
+     implementations persist it as a chat message).
+  3. WS closes abruptly → server never sends tts_done,
+     response_end, or call_ended to the mobile.
+  4. Mobile never receives the terminal signal → the "streaming"
+     message is never flipped to "complete" → typing indicator
+     persists → usePresenceLoop refuses to interrupt → new sends
+     are blocked.
+
+Secondary mechanism: the orphaned LLM stream completes after
+the WS has been dead for up to MAX_TURN_BUDGET_MS. If the
+stream completion writes a chat turn to the DB (e.g. via
+CallSummarisationService or a turn-persistence path), the
+mobile may hydrate a partial/stale streaming message.
+
+Definitive confirmation of the exact client-side block path
+requires tracing voice speech_start handling in useVoiceCall.ts
+through to any chat-message writes — that was not found in the
+available grep results. The server-side fix (Q4) eliminates the
+root cause regardless.
+
+════════════════════════════════════════════════════════════
+Q4. MINIMAL FIX
+════════════════════════════════════════════════════════════
+
+Yes — an AbortController signal is already wired (Q2 above).
+The controller is already passed to streamChatText.
+cancelCurrentTurn() already calls .abort() correctly.
+Nothing is wired from WS close → cancelCurrentTurn.
+
+The missing link is ONE call added to markRecovering() in
+VoiceSessionRegistry.ts, immediately after session.ws = null:
+
+  cancelCurrentTurn(session, "ws_close");
+
+This is the right location because:
+  - markRecovering() is the only close-path entry point
+  - cancelCurrentTurn() is already defined and exported in the
+    same file — no new imports, no circular dependency
+  - It kills the LLM stream immediately (via .abort()), clears
+    llmStreamActive, and nulls currentTurnId — all three guards
+    the for-await loop checks
+  - It is safe for reconnect: if the client reconnects within
+    60s (reclaimSession), a new turn starts fresh; the old
+    stream is dead and does not compete
+
+Alternative location: index.ts ws.on("close") handler — call
+VoiceOrchestrationService.abortCurrentOutputs(session) before
+registry.markRecovering(). Also correct, but adds an import.
+markRecovering() is cleaner — the abort is a natural part of
+the session's transition to recovering state.
+
+Scope: 1-line change in VoiceSessionRegistry.ts only.
+No mobile changes. No new imports. Server restart required.
+No EAS build.
+
+════════════════════════════════════════════════════════════
+FILES THAT WILL CHANGE (pending approval)
+════════════════════════════════════════════════════════════
+
+  artifacts/api-server/src/lib/VoiceSessionRegistry.ts
+    markRecovering(), after session.ws = null:
+      + cancelCurrentTurn(session, "ws_close");
+
+  1 line. Server-only. Replit redeploy required. No EAS build.
+
+════════════════════════════════════════════════════════════
+END
+════════════════════════════════════════════════════════════
