@@ -1,0 +1,56 @@
+FORBIDDEN PHRASES ADDITION — IMPLEMENTATION COMPLETE
+Timestamp: 24 Jun 2026
+Commit: pending checkpoint (changes in working tree)
+Last checkpointed HEAD: 796f0d3ee543c3ba008d7fed4459ad4dad58aedc
+
+════════════════════════════════════════════════════════════
+git show --stat HEAD (last checkpoint — pre-implementation)
+════════════════════════════════════════════════════════════
+
+commit 796f0d3ee543c3ba008d7fed4459ad4dad58aedc
+Author: Replit Agent
+Date:   Wed Jun 24 07:51:50 2026 +0000
+
+    Add option to select audio output mode before calls
+
+ artifacts/mobile/app/voice-call.tsx    | 84 +++++++++++++++++++++++++++++++---
+ artifacts/mobile/lib/useVoiceCall.ts   |  4 +-
+ artifacts/mobile/lib/voiceInput.ts     |  6 +--
+ 5 files changed, 172 insertions(+), 10 deletions(-)
+
+(Forbidden phrase changes will appear in the next checkpoint commit.)
+
+════════════════════════════════════════════════════════════
+FILES CHANGED
+════════════════════════════════════════════════════════════
+
+1. artifacts/api-server/src/lib/VoiceOrchestrationService.ts
+   Added to FORBIDDEN_PHRASE_PATTERNS after /can you say that again/i:
+     /could you say that again/i,
+     /didn't quite catch that/i,
+     /i didn't quite catch that/i,
+     /could you repeat yourself/i,
+     /\bsay that again\b/i,
+
+   Note: "can you say that again" was already present at line 101 — not duplicated.
+   Array now has 27 patterns (was 22).
+
+2. artifacts/api-server/src/lib/ashleyCoreSpec.ts
+   Added to RULE B forbidden phrase list after "can you say that again":
+     "could you say that again", "didn't quite catch that",
+     "I didn't quite catch that", "could you repeat yourself", "say that again"
+
+   Note: "can you say that again" was already present — not duplicated.
+
+════════════════════════════════════════════════════════════
+VERDICT
+════════════════════════════════════════════════════════════
+
+Server-side only. No mobile changes. No EAS build needed.
+Replit redeploy (or API Server workflow restart) required
+to pick up the changes in production.
+
+live in dev https://Ashley-Sidecar.replit.app
+════════════════════════════════════════════════════════════
+END
+════════════════════════════════════════════════════════════

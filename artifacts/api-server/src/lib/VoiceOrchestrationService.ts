@@ -99,6 +99,11 @@ const FORBIDDEN_PHRASE_PATTERNS: RegExp[] = [
   /i didn't hear you/i,
   /\bpardon\b/i,
   /can you say that again/i,
+  /could you say that again/i,
+  /didn't quite catch that/i,
+  /i didn't quite catch that/i,
+  /could you repeat yourself/i,
+  /\bsay that again\b/i,
   /i couldn't hear you/i,
   /sorry about that/i,
   // Forbidden terms of address — Ashley uses Kane's name or nothing
