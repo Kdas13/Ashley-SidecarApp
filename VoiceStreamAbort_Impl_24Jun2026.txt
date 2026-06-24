@@ -1,0 +1,70 @@
+VOICE STREAM ABORT ON WS CLOSE — IMPLEMENTATION COMPLETE
+Timestamp: 24 Jun 2026
+Commit: pending checkpoint (change in working tree)
+Last checkpointed HEAD: cfa5be764416e892d7dc441fc48492f34110ceea
+
+════════════════════════════════════════════════════════════
+git show --stat HEAD (last checkpoint — pre-implementation)
+════════════════════════════════════════════════════════════
+
+commit cfa5be764416e892d7dc441fc48492f34110ceea
+Author: Replit Agent
+Date:   Wed Jun 24 08:57:18 2026 +0000
+
+    Add evidence report detailing why voice streams aren't aborted on WebSocket closure
+
+ VoiceStreamAbort_Evidence_24Jun2026.txt | 158 ++++++++++++++++++++++++++++
+ 2 files changed, 164 insertions(+)
+
+(Implementation change will appear in the next checkpoint commit.)
+
+════════════════════════════════════════════════════════════
+CHANGE MADE
+════════════════════════════════════════════════════════════
+
+File: artifacts/api-server/src/lib/VoiceSessionRegistry.ts
+Function: markRecovering()
+Location: immediately after session.ws = null (line 313)
+
+Added:
+  cancelCurrentTurn(session, "ws_close");
+
+Full context (lines 311-313 post-edit):
+  session.state = "recovering";
+  session.ws = null;
+  cancelCurrentTurn(session, "ws_close");   ← new
+
+════════════════════════════════════════════════════════════
+WHAT THIS DOES
+════════════════════════════════════════════════════════════
+
+cancelCurrentTurn() (VoiceSessionRegistry.ts lines 435-455):
+  - Calls session.currentAbortController.abort()
+  - Sets session.currentAbortController = null
+  - Clears session.currentTurnId
+  - Clears session.currentResponseId
+
+Effect on the LLM stream in VoiceOrchestrationService.ts:
+  - controller.signal.aborted becomes true → streamChatText
+    throws AbortError → caught at line 737 as expected
+    cancellation (no error log, no error TTS)
+  - for-await loop at line 702 breaks on next iteration
+    (llmStreamActive also cleared by cancelCurrentTurn)
+  - hard budget timeout cleared in finally block (line 750)
+  - Stream terminates cleanly within one polling interval
+    rather than running for up to MAX_TURN_BUDGET_MS
+
+The "ws_close" reason string appears in the audit log so
+the cause of cancellation is attributable in log traces.
+
+════════════════════════════════════════════════════════════
+VERDICT
+════════════════════════════════════════════════════════════
+
+Server-side only. One line. No mobile changes. No EAS build.
+Replit redeploy (or API Server workflow restart) required.
+
+live in dev https://Ashley-Sidecar.replit.app
+════════════════════════════════════════════════════════════
+END
+════════════════════════════════════════════════════════════

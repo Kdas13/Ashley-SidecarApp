@@ -307,6 +307,7 @@ export function markRecovering(sessionId: string): void {
 
   session.state = "recovering";
   session.ws = null;
+  cancelCurrentTurn(session, "ws_close");
 
   // Snapshot the generation at the time we start the timer.
   const generationAtStart = session.connectionGeneration;
