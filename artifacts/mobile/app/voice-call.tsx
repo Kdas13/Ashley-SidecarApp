@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Animated,
   Pressable,
@@ -9,6 +9,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, Stack } from "expo-router";
+import InCallManager from "react-native-incall-manager";
 import { useVoiceCall, type VoiceCallPhase } from "@/lib/useVoiceCall";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -120,6 +121,7 @@ function DebugLog({ entries }: { entries: string[] }): React.JSX.Element {
 
 export default function VoiceCallScreen(): React.JSX.Element {
   const insets = useSafeAreaInsets();
+  const [audioMode, setAudioMode] = useState<"speaker" | "headset" | null>(null);
   const {
     phase,
     userTranscript,
@@ -131,15 +133,15 @@ export default function VoiceCallScreen(): React.JSX.Element {
     disconnect,
     submitNow,
     interrupt,
-  } = useVoiceCall();
+  } = useVoiceCall({ headsetMode: audioMode === "headset" });
 
   const micOpen = phase === "listening" || phase === "user_speaking";
   const connected = phase !== "idle" && phase !== "connecting" && phase !== "ended";
   const isEnded = phase === "ended";
 
   useEffect(() => {
-    connect();
-  }, [connect]);
+    if (audioMode) connect();
+  }, [audioMode, connect]);
 
   useEffect(() => {
     if (phase === "ended") {
@@ -149,7 +151,50 @@ export default function VoiceCallScreen(): React.JSX.Element {
     return undefined;
   }, [phase]);
 
-  const onHangUp = useCallback(() => disconnect(), [disconnect]);
+  const onHangUp = useCallback(() => {
+    if (audioMode === "headset") InCallManager.stop();
+    disconnect();
+  }, [audioMode, disconnect]);
+
+  useEffect(() => {
+    return () => {
+      if (audioMode === "headset") InCallManager.stop();
+    };
+  }, [audioMode]);
+
+  if (audioMode === null) {
+    return (
+      <>
+        <Stack.Screen options={{ headerShown: false }} />
+        <View
+          style={[
+            styles.root,
+            { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 36, justifyContent: "center" },
+          ]}
+        >
+          <Text style={styles.name}>Ashley</Text>
+          <Text style={styles.chooserSubtitle}>How do you want to call?</Text>
+          <View style={styles.chooserButtons}>
+            <Pressable
+              onPress={() => setAudioMode("speaker")}
+              style={({ pressed }) => [styles.chooserBtn, pressed && { opacity: 0.7 }]}
+            >
+              <Text style={styles.chooserBtnText}>Speaker</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                InCallManager.start({ media: "audio" });
+                setAudioMode("headset");
+              }}
+              style={({ pressed }) => [styles.chooserBtn, styles.chooserBtnHeadset, pressed && { opacity: 0.7 }]}
+            >
+              <Text style={styles.chooserBtnText}>Headset</Text>
+            </Pressable>
+          </View>
+        </View>
+      </>
+    );
+  }
 
   return (
     <>
@@ -402,6 +447,35 @@ const styles = StyleSheet.create({
     color: "#ef4444",
     fontSize: 14,
     fontFamily: "Inter_500Medium",
+  },
+  chooserSubtitle: {
+    color: "rgba(255,255,255,0.5)",
+    fontSize: 15,
+    fontFamily: "Inter_400Regular",
+    marginBottom: 40,
+  },
+  chooserButtons: {
+    width: "100%",
+    paddingHorizontal: 24,
+    gap: 14,
+  },
+  chooserBtn: {
+    paddingVertical: 16,
+    paddingHorizontal: 32,
+    backgroundColor: "rgba(96,165,250,0.12)",
+    borderRadius: 28,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(96,165,250,0.4)",
+    alignItems: "center",
+  },
+  chooserBtnHeadset: {
+    backgroundColor: "rgba(167,139,250,0.12)",
+    borderColor: "rgba(167,139,250,0.4)",
+  },
+  chooserBtnText: {
+    color: "#ffffff",
+    fontSize: 16,
+    fontFamily: "Inter_600SemiBold",
   },
   debugPanel: {
     width: "100%",

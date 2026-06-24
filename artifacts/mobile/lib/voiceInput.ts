@@ -60,7 +60,7 @@ const AUDIO_OPTIONS = {
   wavFile: "voice_input.wav",
 };
 
-export function useVoiceRecorder(): VoiceRecorder {
+export function useVoiceRecorder({ headsetMode = false }: { headsetMode?: boolean } = {}): VoiceRecorder {
   const meteringRef = useRef<number | null>(null);
   const [metering, setMetering] = useState<number | null>(null);
   const [state, setState] = useState<VoiceRecorderState>("idle");
@@ -153,7 +153,7 @@ export function useVoiceRecorder(): VoiceRecorder {
     // instead of the built-in mic. The 300ms delay lets SCO negotiate before
     // AudioRecord latches the input route.
     try {
-      if (Platform.OS === "android") {
+      if (Platform.OS === "android" && headsetMode) {
         InCallManager.start({ media: "audio" });
         await new Promise<void>((resolve) => setTimeout(resolve, 300));
       }
@@ -199,7 +199,7 @@ export function useVoiceRecorder(): VoiceRecorder {
       try {
         filePath = await AudioRecord.stop();
         // Release BT SCO and restore normal audio mode after recording ends.
-        if (Platform.OS === "android") {
+        if (Platform.OS === "android" && headsetMode) {
           InCallManager.stop();
         }
         audioLog("STT.finish.stopped", { durationMs, filePath });

@@ -155,7 +155,7 @@ function toBase64(arr: Uint8Array): string {
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
-export function useVoiceCall(): {
+export function useVoiceCall({ headsetMode = false }: { headsetMode?: boolean } = {}): {
   phase: VoiceCallPhase;
   sessionId: string | null;
   userTranscript: string;
@@ -206,7 +206,7 @@ export function useVoiceCall(): {
   const flushInFlightRef = useRef(0);
 
   const playNextRef = useRef<() => Promise<void>>(async () => {});
-  const recorder = useVoiceRecorder();
+  const recorder = useVoiceRecorder({ headsetMode });
 
   // ── VAD state ─────────────────────────────────────────────────────────────
 

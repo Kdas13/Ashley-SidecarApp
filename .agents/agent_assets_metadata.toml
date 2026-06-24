@@ -755,3 +755,9 @@ id = "AnE4lbix5aoDMeTtw5oEW"
 uri = "file://PreCallModeSelector_Evidence_24Jun2026.txt"
 type = "text"
 title = "Pre-Call Mode Selector — Evidence Report"
+
+[[outputs]]
+id = "obkRKhFzro6s45qgjn5PI"
+uri = "file://PreCallModeSelector_Impl_24Jun2026.txt"
+type = "text"
+title = "Pre-Call Mode Selector — Implementation"
