@@ -1,0 +1,226 @@
+IMAGE GALLERY SYSTEM — EVIDENCE REPORT
+Generated: 24 Jun 2026
+Status: AWAITING APPROVAL — no implementation made
+
+════════════════════════════════════════════════════════════
+Q1. WHERE IS THE IMAGE GALLERY IMPLEMENTED
+════════════════════════════════════════════════════════════
+
+File: artifacts/mobile/app/visuals.tsx
+Screen title: "Visual memory"
+
+This is a dedicated screen, reached from the main navigation.
+It shows ONLY user-uploaded images (role === "user" + imageUrl set).
+Ashley-generated selfies (role === "assistant") are NOT shown here —
+they exist as messages in the chat history but the gallery filters
+them out explicitly (line 47: if (m.role !== "user") continue).
+
+Layout: FlatList of sections, one section per ImageCategory.
+Each section is a 3-column grid of thumbnails.
+Thumbnails show imageCaption (below thumbnail, 2 lines max) and
+a bookmark badge if imageRemembered === true.
+Sections are shown in a fixed order (CATEGORY_ORDER, line 28-35).
+Empty categories are hidden.
+
+No search, no filter, no edit, no delete, no tap-to-expand.
+Read-only display.
+
+════════════════════════════════════════════════════════════
+Q2. DATA STRUCTURE AND STORAGE BACKEND
+════════════════════════════════════════════════════════════
+
+Images are NOT stored as separate entities.
+They are fields on Message rows in the chat messages DB table.
+Each uploaded image produces a user Message row with:
+
+  imageUrl:           string | null  — absolute URL (Object Storage)
+  imageCategory:      ImageCategory | null
+  imageCaption:       string | null  — free text, set at upload
+  imageAnalysisMode:  ImageAnalysisMode | null
+  imageRemembered:    boolean | null  — user bookmark
+  imageMimeType:      string | null
+  imageDescription:   string | null  — Ashley's vision analysis
+  selfieVibe:         string | null  — for AI-generated selfies only
+  imageUrls:          (string|null)[] | null  — multi-image packets
+  selfieVibeList:     string[] | null  — multi-image pending vibes
+  visualPacketId:     string | null   — groups multi-image messages
+
+ImageCategory enum (6 values, storage.ts line 155-161):
+  art_progress | ashley_identity | app_screenshot
+  medical | clothing_design | other
+
+ImageAnalysisMode enum (6 values):
+  quick | critique | stepbystep | debug | extract | compare
+
+Storage backend: Replit Object Storage.
+  artifacts/api-server/src/lib/storage.ts imports objectStorageClient
+  (line 6). Uploaded images are written to object storage; the
+  resulting stable URL is stored in messages.imageUrl. Images are
+  NOT stored locally on the device — the URL comes back from the
+  server and is cached in AsyncStorage as part of the message.
+
+The DB schema for the messages table (in the api-server Drizzle
+schema) includes all of these fields as nullable columns.
+
+════════════════════════════════════════════════════════════
+Q3. UPLOAD FLOW
+════════════════════════════════════════════════════════════
+
+All in artifacts/mobile/app/chat.tsx.
+
+Step 1 — Picker (line ~833):
+  User taps paperclip. expo-image-picker opens.
+  Up to 4 images can be selected in one pick.
+  HEIC images are converted to JPEG via expo-image-manipulator.
+  Large images are compressed (quality 0.7) if > threshold.
+  Hard cap at 15 MB base64 per image.
+
+Step 2 — Upload modal (lines ~248-258):
+  State held in component:
+    imageCategory:  useState<ImageCategory>("other")
+    imageMode:      useState<ImageAnalysisMode>("quick")
+    imageCaption:   useState<string>("")
+  User sets category (picker), mode (picker), and caption (text input).
+  Caption is optional.
+
+Step 3 — Send (line ~1010+):
+  POST /chat/image with body:
+    { userMessage: { id, content }, image | images, category, mode,
+      clientNow, clientTimezone, mobileSelectedCount }
+  Note: caption is in userMessage.content (the text typed alongside
+  the image), not a dedicated caption field in the schema — the
+  server populates imageCaption from this.
+
+Step 4 — Server (chat.ts line 5959):
+  Validates via ChatImageBodySchema (Zod).
+  Saves image binary to Replit Object Storage.
+  Inserts a message row with imageUrl = stored URL,
+    imageCategory, imageCaption, imageAnalysisMode.
+  Passes image to Claude Vision for analysis.
+  Stores Ashley's vision reply as the assistant message.
+  Returns Ashley's text response to the mobile.
+
+Step 5 — Gallery update:
+  On next useMessages() refetch, the new message with imageUrl
+  appears in visuals.tsx automatically (no separate gallery API).
+
+════════════════════════════════════════════════════════════
+Q4. EXISTING TAG OR CATEGORY SYSTEM
+════════════════════════════════════════════════════════════
+
+YES — a category system exists.
+
+Six fixed enum values (ImageCategory). Selected at upload time
+from a picker in the chat modal. Immutable after upload (no
+edit-category UI exists). Stored in messages.imageCategory.
+The visuals.tsx gallery groups by this field.
+
+imageCaption is a free text field set at upload. It is shown
+under each thumbnail. It is not searchable or filterable.
+It functions as a description, not a tag.
+
+There is NO free-form tag system. No multi-tag support.
+No ability to edit category or caption after upload.
+
+════════════════════════════════════════════════════════════
+Q5. WHAT IS NEEDED TO ADD THE TWO FEATURES
+════════════════════════════════════════════════════════════
+
+── Feature A: Tag field on upload / edit ───────────────────
+
+What exists: imageCategory (fixed enum) + imageCaption (text).
+What is missing: free-form, multi-value tags.
+
+Minimal path — add tags as a string array on Message:
+  1. DB migration: add tags TEXT[] column to messages table
+     (nullable, default null). One raw SQL migration, applied via
+     executeSql — same pattern as all other migrations in this repo.
+
+  2. storage.ts: add tags?: string[] | null to the Message type.
+
+  3. chat.ts:
+     - Add tags: z.array(z.string().max(32)).max(10).optional()
+       to ChatImageBodySchema.
+     - Persist tags when inserting the message row.
+     - Expose tags in the PUT /chat/image/:id edit endpoint.
+
+  4. chat.tsx: add a tag-entry UI to the upload modal (text input
+     with chip display; each enter/comma creates a chip).
+
+  5. visuals.tsx: optionally filter/search by tag.
+
+Alternative: repurpose imageCaption for space-separated tags
+(no migration needed, but loses caption semantics).
+
+── Feature B: Contextual background image on screens ───────
+
+What exists: nothing. All screens use solid backgroundColor.
+
+What is needed:
+
+  1. Matching logic — deciding which stored image is "relevant"
+     to the current conversation:
+     - Simple: match on imageCategory. If recent messages contain
+       art vocabulary → show an art_progress image. Rules are
+       static and deterministic, no LLM call needed.
+     - Better: match on imageCaption/tags keywords against recent
+       message text. Still client-side, no new API call.
+     - Best: server-side endpoint that returns a suggested imageUrl
+       given recent message context (LLM semantic match). More
+       powerful but adds latency and cost.
+     Recommended starting point: client-side keyword/category match.
+
+  2. Shared state — a React context (or TanStack Query key) that
+     exposes { backgroundImageUrl: string | null }. Updated when
+     the match changes. Lives in _layout.tsx or a dedicated
+     BackgroundContext.
+
+  3. Screen integration — three screens to update:
+     - chat.tsx: replace root View with ImageBackground; add
+       blurred overlay so text remains readable. Existing dark
+       background (#0B0F18) becomes the overlay tint.
+     - index.tsx (home screen): same pattern.
+     - voice-call.tsx: already full-screen dark; blurred image
+       behind existing UI with ~0.15 opacity works well.
+
+  4. Image source constraint: the background images must already
+     be stored on-device or served from a fast CDN. Object Storage
+     URLs are served over HTTPS and load reliably. No caching
+     infrastructure change needed — expo-image handles it.
+
+  Key dependencies between A and B:
+    - Feature B works with the existing imageCategory/imageCaption
+      fields — tags (Feature A) would make matching richer but are
+      not a prerequisite.
+    - Feature A (tags) can be shipped independently without B.
+    - Feature B can be shipped using only existing category + caption
+      data without Feature A.
+
+  Scope estimate for B (client-side matching only):
+    - BackgroundContext: ~50 lines
+    - Matching function (category/keyword): ~30 lines
+    - Screen updates (3 screens): ~20 lines each
+    - No server changes, no migration, no EAS build required for
+      context/matching/screen changes — Expo Go reload sufficient.
+
+════════════════════════════════════════════════════════════
+FILES THAT WOULD CHANGE (for reference)
+════════════════════════════════════════════════════════════
+
+Feature A (tags):
+  artifacts/mobile/lib/storage.ts           — Message type
+  artifacts/mobile/app/chat.tsx             — upload modal UI
+  artifacts/api-server/src/routes/chat.ts   — schema + persistence
+  DB migration                               — tags column
+  artifacts/mobile/app/visuals.tsx          — optional tag filter
+
+Feature B (contextual background):
+  artifacts/mobile/app/_layout.tsx          — BackgroundContext provider
+  artifacts/mobile/lib/backgroundMatcher.ts — new: matching logic
+  artifacts/mobile/app/chat.tsx             — ImageBackground
+  artifacts/mobile/app/index.tsx            — ImageBackground
+  artifacts/mobile/app/voice-call.tsx       — ImageBackground
+
+════════════════════════════════════════════════════════════
+END
+════════════════════════════════════════════════════════════

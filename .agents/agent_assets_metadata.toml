@@ -779,3 +779,9 @@ id = "0gEuQesL8Pwku5raj0VxS"
 uri = "file://VoiceStreamAbort_Impl_24Jun2026.txt"
 type = "text"
 title = "Voice Stream Abort — Implementation"
+
+[[outputs]]
+id = "155s9Q5yM36cUYFhECj8M"
+uri = "file://ImageGallery_Evidence_24Jun2026.txt"
+type = "text"
+title = "Image Gallery System — Evidence"
