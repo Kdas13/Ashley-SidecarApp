@@ -1,0 +1,186 @@
+PRE-CALL AUDIO MODE SELECTOR — EVIDENCE REPORT
+Generated: 24 Jun 2026
+Status: AWAITING APPROVAL — no implementation made
+
+════════════════════════════════════════════════════════════
+Q1. WHERE DOES THE CALL START
+════════════════════════════════════════════════════════════
+
+File:  artifacts/mobile/app/voice-call.tsx
+
+There is no explicit "Start call" button. Navigating to the
+voice-call screen IS the trigger. connect() fires immediately
+on mount via a bare useEffect:
+
+  Line 130–134  useVoiceCall() returns { connect, disconnect, … }
+  Line 140–142  useEffect(() => { connect(); }, [connect]);
+
+connect() opens the WebSocket. Its definition:
+  artifacts/mobile/lib/useVoiceCall.ts  line 960
+
+The button rendered at lines 231–243 is the hang-up button.
+Its label reads "Call Ashley" when phase === "idle" but it
+is bound to onHangUp → disconnect(), not connect(). It does
+not initiate a call; that wording is cosmetic dead code.
+
+Consequence for mode selector: the gate must be ABOVE the
+useEffect that calls connect(). The selector cannot live
+after connect() fires; it must prevent connect() from
+running until a mode is chosen.
+
+════════════════════════════════════════════════════════════
+Q2. InCallManager CALLS IN voiceInput.ts
+════════════════════════════════════════════════════════════
+
+File: artifacts/mobile/lib/voiceInput.ts
+
+Import:
+  Line  19    import InCallManager from "react-native-incall-manager";
+
+start() — called when mic opens:
+  Lines 155–159
+    if (Platform.OS === "android") {
+      InCallManager.start({ media: "audio" });
+      await new Promise<void>((resolve) => setTimeout(resolve, 300));
+    }
+  InCallManager.start() fires BEFORE AudioRecord.start() at line 160.
+  The 300ms delay is the SCO negotiation window.
+
+stop() — called when recording ends (inside finish()):
+  Lines 201–204
+    if (Platform.OS === "android") {
+      InCallManager.stop();
+    }
+  This is inside the finish() closure; both stop() and cancel()
+  in the public API route through finish().
+
+No other InCallManager calls exist anywhere in the codebase.
+
+════════════════════════════════════════════════════════════
+Q3. MINIMAL UI CHANGE FOR MODE SELECTOR
+════════════════════════════════════════════════════════════
+
+Recommendation: conditional render inside voice-call.tsx.
+No modal, no bottom sheet, no new file.
+
+Rationale:
+- The screen is already a fullscreen dark view (bg #0a0a0a).
+- Two large centred buttons match the existing aesthetic
+  (same style class as hangUpBtn / sendBtn).
+- A modal would require an imperative open() trigger and
+  adds lifecycle complexity with no benefit.
+- A bottom sheet (e.g. @gorhom/bottom-sheet) is not in the
+  dependency tree and is overkill for a binary choice.
+
+Mechanism:
+  Add local state: const [audioMode, setAudioMode] =
+    useState<"speaker" | "headset" | null>(null);
+
+  When audioMode === null: render a pre-call chooser view
+  (two buttons, "Speaker" / "Headset") instead of the
+  existing call UI.
+
+  When audioMode is set: render the existing call UI.
+  The useEffect that calls connect() is gated on audioMode
+  being non-null:
+    useEffect(() => { if (audioMode) connect(); }, [audioMode, connect]);
+
+  The useVoiceCall hook receives headsetMode: audioMode === "headset".
+
+This is a ~25-line change to voice-call.tsx: one state
+declaration, one conditional render, one gated useEffect.
+No new component file needed.
+
+════════════════════════════════════════════════════════════
+Q4. PASSING SELECTED MODE TO voiceInput.ts
+════════════════════════════════════════════════════════════
+
+Mechanism: prop (parameter) threading. No context needed.
+
+Current call chain:
+  voice-call.tsx            useVoiceCall()          [no args]
+  useVoiceCall.ts line 209  useVoiceRecorder()      [no args]
+
+Proposed change:
+  voice-call.tsx            useVoiceCall({ headsetMode: audioMode === "headset" })
+  useVoiceCall.ts           accepts { headsetMode: boolean }, passes to:
+  useVoiceRecorder({ headsetMode })
+  voiceInput.ts             guards InCallManager behind headsetMode
+
+A boolean prop is the right mechanism here:
+- Single value, no need for cross-component broadcast.
+- Keeps both hooks pure and testable.
+- No React context: context is appropriate when multiple
+  unrelated subtrees need the value; here it flows
+  point-to-point down one call chain.
+- A ref would work but is harder to read and unnecessary
+  since the value is chosen once before the call starts
+  and doesn't change mid-call.
+
+════════════════════════════════════════════════════════════
+Q5. SPEAKER vs HEADSET MODE BEHAVIOUR CONFIRMATION
+════════════════════════════════════════════════════════════
+
+SPEAKER MODE
+  InCallManager is completely absent. The guard:
+    if (Platform.OS === "android" && headsetMode) { ... }
+  means neither InCallManager.start() nor InCallManager.stop()
+  are ever called. voiceInput.ts behaves exactly as it did
+  before commit b30e026. AudioRecord uses VOICE_COMMUNICATION
+  (audioSource 7) which gives AEC/NS/AGC but routes through
+  the built-in mic and speaker, not BT SCO.
+
+HEADSET MODE — two implementation options, decision needed:
+
+  Option A — Early fire (matches the question's intent):
+    InCallManager.start() is called in voice-call.tsx the
+    moment the user taps "Headset", BEFORE connect() fires
+    and BEFORE recorder.start() is called. This gives ~1–2s
+    of SCO negotiation time during the natural setup window
+    (connecting phase). voiceInput.ts in headset mode skips
+    its own InCallManager.start() call (it's already running).
+    InCallManager.stop() still lives in voiceInput.ts finish().
+
+  Option B — Original position (inside recorder.start()):
+    voiceInput.ts keeps InCallManager.start() at line 157,
+    guarded by headsetMode. No change to timing. Simpler
+    to implement but loses the early-start benefit; SCO
+    negotiation competes with the first AudioRecord.start().
+
+  Option A is the correct choice if the goal is to resolve
+  the BT SCO latency issue (OPEN-1 in the audit). The
+  "natural setup window" argument only holds if InCallManager
+  fires before AudioRecord latches the input route.
+
+  RECOMMENDATION: Option A. One InCallManager.start() call
+  in the mode selector handler in voice-call.tsx; voiceInput.ts
+  guards with headsetMode to skip its own start(); stop() stays
+  in voiceInput.ts.
+
+════════════════════════════════════════════════════════════
+FILES THAT WILL CHANGE (pending approval)
+════════════════════════════════════════════════════════════
+
+  artifacts/mobile/app/voice-call.tsx
+    - Add audioMode state
+    - Add pre-call chooser conditional render
+    - Gate connect() useEffect on audioMode !== null
+    - Fire InCallManager.start() in headset mode handler (Option A)
+    - Pass headsetMode to useVoiceCall
+
+  artifacts/mobile/lib/useVoiceCall.ts
+    - Accept { headsetMode: boolean } param
+    - Pass headsetMode to useVoiceRecorder()
+
+  artifacts/mobile/lib/voiceInput.ts
+    - Accept { headsetMode: boolean } param in useVoiceRecorder
+    - Guard InCallManager.start() behind headsetMode
+    - Guard InCallManager.stop() behind headsetMode
+
+  No server changes. Mobile-only.
+  EAS build required for production APK.
+  Expo Go reload sufficient for dev testing.
+
+════════════════════════════════════════════════════════════
+END
+════════════════════════════════════════════════════════════

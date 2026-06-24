@@ -749,3 +749,9 @@ id = "zX5tsMa85AiBnJvZFsCON"
 uri = "file://VoiceCall_SystemAudit_23Jun2026.txt"
 type = "text"
 title = "Voice Call System Audit — 23 Jun 2026"
+
+[[outputs]]
+id = "AnE4lbix5aoDMeTtw5oEW"
+uri = "file://PreCallModeSelector_Evidence_24Jun2026.txt"
+type = "text"
+title = "Pre-Call Mode Selector — Evidence Report"
