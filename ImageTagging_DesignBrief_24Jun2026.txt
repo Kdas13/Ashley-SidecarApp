@@ -1,0 +1,246 @@
+IMAGE TAGGING SYSTEM — DESIGN BRIEF CONFIRMATION
+Generated: 24 Jun 2026
+Status: AWAITING APPROVAL — no implementation made
+
+════════════════════════════════════════════════════════════
+Q1. DB MIGRATION
+════════════════════════════════════════════════════════════
+
+Column to add:
+  ALTER TABLE messages ADD COLUMN IF NOT EXISTS tags TEXT[];
+
+Pattern used in this repo:
+  drizzle-kit generate is BROKEN in this repo (path bug —
+  see memory entry drizzle-kit-path-bug.md). All migrations are
+  written as raw SQL and applied manually via executeSql in the
+  code_execution sandbox. No migration files exist in the repo;
+  there is no drizzle/migrations directory.
+
+Safety assessment — SAFE:
+  ADD COLUMN IF NOT EXISTS is a non-destructive DDL operation.
+  PostgreSQL adds the column with NULL for all existing rows,
+  which matches the nullable default. IF NOT EXISTS makes it
+  idempotent. No lock escalation, no data loss, no backfill needed.
+  TEXT[] is a native PostgreSQL array type; Drizzle ORM supports
+  it via the .array() modifier on a text() column definition.
+
+Two steps required:
+  Step 1 — DB: executeSql → ALTER TABLE messages ADD COLUMN IF NOT
+    EXISTS tags TEXT[];
+  Step 2 — Schema: add to lib/db/src/schema/ashley.ts:
+    tags: text("tags").array(),
+  Then rebuild the lib: pnpm run typecheck:libs so downstream
+  @workspace/db types include the new field.
+
+════════════════════════════════════════════════════════════
+Q2. BACKEND CHANGES
+════════════════════════════════════════════════════════════
+
+── lib/db/src/schema/ashley.ts ────────────────────────────
+
+Add after imageRemembered (line 225):
+  tags: text("tags").array(),
+
+The generated Message type then includes:
+  tags: string[] | null
+
+── artifacts/mobile/lib/storage.ts ────────────────────────
+
+Message type (around line 196) currently has:
+  imageRemembered?: boolean | null;
+
+Add after it:
+  tags?: string[] | null;
+
+── artifacts/api-server/src/routes/chat.ts ─────────────────
+
+1. ChatImageBodySchema (line ~5922) — add:
+   tags: z.array(z.string().min(1).max(64)).max(20).optional(),
+
+2. Message insert at POST /chat/image (lines ~6040-6060) —
+   add tags to the insert payload where imageCategory etc. are set.
+
+3. New endpoint — PUT /chat/image/:id/tags:
+   Pattern mirrors POST /messages/:id/remember (line 6386).
+   Body: { tags: string[] }
+   Auth: same deviceId ownership check.
+   Action: db.update(messagesTable).set({ tags }).where(...)
+   Returns: updated message row.
+
+   Schema:
+     const UpdateTagsBodySchema = z.object({
+       tags: z.array(z.string().min(1).max(64)).max(20),
+     });
+
+No other backend files change.
+
+════════════════════════════════════════════════════════════
+Q3. UPLOAD MODAL UI — chat.tsx
+════════════════════════════════════════════════════════════
+
+FEASIBLE. Changes are localised to the image upload modal
+section of chat.tsx (roughly lines 248-1040).
+
+Current state:
+  const [imageCategory, setImageCategory] = useState<ImageCategory>("other");
+  → a simple single-select picker
+
+Proposed state:
+  const [imageTags, setImageTags] = useState<string[]>([]);
+  const [customTagInput, setCustomTagInput] = useState<string>("");
+
+Suggested chips (19, Title Case as specified):
+  Morning, Evening, Night, Relaxed, Focused, Home, Driving,
+  Shopping, Outdoors, Work, Exercise, Technology, Food, Art,
+  Music, Family, Football, Casual, Serious, Playful
+
+Tap to select/deselect each chip. Selected chips are highlighted
+(primary colour border + background tint). Custom tag: text input,
+press Enter / comma → adds chip. Max 20 tags total per image.
+
+UI fits naturally in the existing modal (which already has
+imageMode picker + imageCaption input). The chip grid sits
+where the category picker currently is.
+
+RISK — imageCategory removal:
+  The current schema + gallery use imageCategory for grouping.
+  If we remove the category picker and only collect tags,
+  existing uploaded images retain their imageCategory value
+  in the DB but have tags = null. All existing images land
+  in "Untagged" on the gallery migration day.
+  DECISION REQUIRED: is that acceptable (intentional triage),
+  or should the old imageCategory be grandfathered in as a
+  pre-seeded tag so existing images get preserved grouping?
+
+  Recommended approach: on image upload, if the user selects
+  tags that include one of the 6 legacy category names (mapped
+  from Title Case), write imageCategory too for backwards compat.
+  OR simply accept that existing images move to Untagged — the
+  triage queue is the point.
+
+════════════════════════════════════════════════════════════
+Q4. GALLERY VIEW — visuals.tsx
+════════════════════════════════════════════════════════════
+
+FEASIBLE. Current file is 245 lines. Proposed changes:
+
+1. Untagged section at TOP:
+   Images where tags is null or tags.length === 0.
+   Includes both user-uploaded and Ashley-generated images
+   (per Q5 below). Rendered before all tag sections.
+
+2. Tag-driven sections:
+   Replace CATEGORY_ORDER / CATEGORY_LABEL with dynamic
+   tag sections. All distinct tags across all images are
+   collected; one section per tag. Images with multiple tags
+   appear in EACH matching section (not just one).
+   Sections sorted alphabetically, or by image count (choice
+   needed — recommend alphabetical for predictability).
+
+3. Three-dot menu per thumbnail:
+   Each gridCell gets a three-dot ("...") button (top-right,
+   same corner as existing rememberedBadge). Tap opens an
+   ActionSheet or a modal tag picker for that image.
+   Sends PUT /chat/image/:id/tags on save.
+   useMessages() refetch clears stale data after save.
+
+COMPLEXITY FLAG:
+   "Image appears in multiple sections" means the FlatList
+   data structure changes from sections → a flat list where
+   one image row can appear multiple times. With many tags
+   and many images this is fine — it's the same pattern as
+   iOS Photos "Albums" view. No performance concern at the
+   scale of a single user's uploads.
+
+   The current FlatList keyed by s.category becomes a
+   FlatList keyed by tag. Section item keys must include
+   both tag + image id to avoid duplicate key warnings.
+
+════════════════════════════════════════════════════════════
+Q5. ASHLEY-GENERATED IMAGES IN GALLERY
+════════════════════════════════════════════════════════════
+
+FEASIBLE. Current filter in visuals.tsx line 47:
+  if (m.role !== "user") continue;
+
+Remove this guard. Ashley messages with imageUrl set are
+included in the untagged queue. Ashley messages with
+selfieVibe set but imageUrl === null (pending generation)
+should still be excluded — add:
+  if (!m.imageUrl) continue;  ← already implicit via line 48
+
+Ashley messages have:
+  imageDescription: the vision-analysis text (e.g. "Ashley
+    standing in a sun-lit kitchen in casual clothes")
+  selfieVibe: the raw vibe/prompt string
+
+These two fields can be shown in the "Edit Tags" modal as
+SUGGESTED TAGS — parse significant nouns/adjectives from
+imageDescription and offer them as pre-selected chips.
+This gives a natural tagging assist for generated images
+without an additional LLM call (description already exists).
+
+User-uploaded images have imageCaption for the same purpose.
+
+No server change needed for this. It is purely a gallery UI
+change.
+
+════════════════════════════════════════════════════════════
+RISK SUMMARY
+════════════════════════════════════════════════════════════
+
+LOW RISK:
+  - DB migration (ADD COLUMN IF NOT EXISTS, TEXT[], safe)
+  - schema/ashley.ts (.array() modifier, standard Drizzle)
+  - New PUT /chat/image/:id/tags endpoint (mirrors existing pattern)
+  - Ashley images in gallery (one-line filter change)
+
+MEDIUM RISK:
+  - imageCategory → tags replacement in upload modal:
+    Existing images lose their category grouping and land in
+    Untagged. Needs a decision (acceptable vs. grandfather).
+  - Drizzle type rebuild: after editing ashley.ts, must run
+    pnpm run typecheck:libs before the API server compiles.
+    If @workspace/db dist/ is stale, the server won't see
+    the new tags field at runtime. BUILD STEP IS REQUIRED.
+
+NO RISK:
+  - storage.ts change (mobile type only, no runtime impact
+    until the new endpoint is called)
+
+════════════════════════════════════════════════════════════
+FILES THAT WILL CHANGE
+════════════════════════════════════════════════════════════
+
+  lib/db/src/schema/ashley.ts            — add tags column
+  artifacts/mobile/lib/storage.ts        — add tags to Message type
+  artifacts/api-server/src/routes/chat.ts — schema + insert + new endpoint
+  artifacts/mobile/app/chat.tsx          — replace category picker with tag chips
+  artifacts/mobile/app/visuals.tsx       — Untagged section, tag sections,
+                                           three-dot menu, ashley images
+
+DB:
+  ALTER TABLE messages ADD COLUMN IF NOT EXISTS tags TEXT[];
+  (applied via executeSql in code_execution — NOT drizzle-kit)
+
+════════════════════════════════════════════════════════════
+OPEN DECISION REQUIRED BEFORE IMPLEMENTATION
+════════════════════════════════════════════════════════════
+
+Do existing images (currently grouped by imageCategory) get
+moved to Untagged on migration day, or should imageCategory
+values be seeded as tags automatically?
+
+Options:
+  A. Accept Untagged for all existing images — triage queue
+     is the intended result anyway.
+  B. One-time SQL: UPDATE messages SET tags = ARRAY[image_category]
+     WHERE image_category IS NOT NULL AND tags IS NULL;
+     This seeds one tag per existing image from their category,
+     so the gallery doesn't go blank.
+
+Recommended: Option B as a second migration step.
+No code change — just an additional executeSql at migration time.
+════════════════════════════════════════════════════════════
+END
+════════════════════════════════════════════════════════════
