@@ -19,6 +19,11 @@ A personal AI companion mobile app providing local-first, stateless AI chat with
     - `AI_INTEGRATIONS_GEMINI_BASE_URL`, `AI_INTEGRATIONS_GEMINI_API_KEY` (auto-set by the Gemini integration; required if `ASHLEY_TEXT_PROVIDER=gemini`)
     - `ASHLEY_TEXT_PROVIDER` (`gemini` default — Gemini 2.5 Flash for the chat lane; set to `anthropic` to flip back to Claude Sonnet 4.6 — see Architecture decisions below)
     - `ASHLEY_SELFIE_DAILY_CAP` (integer, default 5 — per-device daily cap on selfie generation)
+    - `ASHLEY_IMAGE_PROVIDER` — `fal` (current), `zencreator`, `replicate`, or `pollo`. Unset = gpt-image-1 fallback.
+    - **ZenCreator image provider** (set `ASHLEY_IMAGE_PROVIDER=zencreator` to activate):
+        - `Ashley_v3_Adult` — ZenCreator API key (Bearer token). Already in Replit Secrets.
+        - `ZENCREATOR_TOOL` — tool name from `GET https://api.zencreator.pro/api/public/v1/tools`. Required; server throws on startup if missing when provider=zencreator.
+        - `ZENCREATOR_EXTRA_INPUT` — optional JSON string of additional input fields merged into `{ prompt, width, height }` — use for LoRA weights, negative prompts, model overrides, etc.
     - **Safeguard reminders** (set on the Safeguard API artifact):
         - `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` — generate with `pnpm dlx web-push generate-vapid-keys`. Without these the reminder worker logs a warning and stays idle; the public key is also exposed by `GET /safeguard-api/me/push/public-key`.
         - `VAPID_SUBJECT` — `mailto:` or `https://` URL for the push service to contact (defaults to `mailto:safeguard-pilot@example.org`).
