@@ -22,7 +22,8 @@ Set `ASHLEY_IMAGE_PROVIDER=zencreator` in env.
 
 ## API flow
 
-1. `POST /api/public/v1/generations` body: `{ tool, input: { prompt, width, height, ...extra } }` → `{ id, status }`
+1. `POST /api/public/v1/generations` body: `{ tool, input: { positive_prompt, width, height, ...extra } }` → `{ id, status }`
+   - Field is `positive_prompt`, NOT `prompt` — confirmed in ZenCreator docs quickstart example. Sending `prompt` returns 422.
 2. Poll `GET /api/public/v1/generations/{id}` → `{ id, status, progress, error }` (status enum: queued/processing/succeeded/partial/failed)
 3. On succeeded/partial: `GET /api/public/v1/generations/{id}/result` → `{ outputs: [{ asset_id, url, download_url }] }`
 4. Download from `download_url ?? url`, return as base64

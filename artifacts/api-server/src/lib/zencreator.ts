@@ -104,7 +104,7 @@ export async function generateImageWithZenCreator(
   }
 
   const input: Record<string, unknown> = {
-    prompt,
+    positive_prompt: prompt,
     width,
     height,
     ...extraInput,
