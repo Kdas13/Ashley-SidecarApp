@@ -2,10 +2,12 @@ import express, { type Express, type RequestHandler } from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
 import router from "./routes";
+import adminRouter from "./routes/admin.js";
 import { logger } from "./lib/logger";
 import { requireApiKey } from "./middleware/auth";
 import { requireDeviceId } from "./middleware/deviceId";
 import { apiRateLimit } from "./middleware/rateLimit";
+import { adminAuth } from "./middleware/adminAuth.js";
 
 const app: Express = express();
 
@@ -101,5 +103,6 @@ const gate: RequestHandler = (req, res, next) => {
 };
 
 app.use("/api", gate, router);
+app.use("/admin", adminAuth, adminRouter);
 
 export default app;

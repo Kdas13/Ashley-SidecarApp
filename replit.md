@@ -19,6 +19,8 @@ A personal AI companion mobile app providing local-first, stateless AI chat with
     - `AI_INTEGRATIONS_GEMINI_BASE_URL`, `AI_INTEGRATIONS_GEMINI_API_KEY` (auto-set by the Gemini integration; required if `ASHLEY_TEXT_PROVIDER=gemini`)
     - `ASHLEY_TEXT_PROVIDER` (`gemini` default — Gemini 2.5 Flash for the chat lane; set to `anthropic` to flip back to Claude Sonnet 4.6 — see Architecture decisions below)
     - `ASHLEY_SELFIE_DAILY_CAP` (integer, default 5 — per-device daily cap on selfie generation)
+    - `ADMIN_API_KEY` — secret key for all `/admin/*` routes; generate with `node -e "require('crypto').randomBytes(16).toString('hex')"`. Without it, admin routes return 503.
+    - `BASE44_SERVICE_ROLE_KEY` — Base44 project service role key (from Base44 project settings panel). Without it, `postInboxMessage` and `postProposal` are no-ops.
     - `ASHLEY_IMAGE_PROVIDER` — `fal` (current), `zencreator`, `replicate`, or `pollo`. Unset = gpt-image-1 fallback.
     - **ZenCreator image provider** (set `ASHLEY_IMAGE_PROVIDER=zencreator` to activate):
         - `Ashley_v3_Adult` — ZenCreator API key (Bearer token). Already in Replit Secrets.

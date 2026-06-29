@@ -1,0 +1,656 @@
+================================================================================
+WREN BRIEF — ASHLEY ADMIN API LAYER
+Date: 29 June 2026
+Status: READY TO IMPLEMENT
+================================================================================
+
+WHAT THIS IS
+------------
+A new set of admin REST endpoints added to Ashley's existing Replit Node.js
+backend. These endpoints allow the Base44 dashboard (Ashley Command Centre) to
+read and control Ashley's backend without touching the existing HMAC device
+authentication system.
+
+This is NOT the full Ashley build. This is a thin admin API layer that sits
+alongside the existing server. The core logic already exists — Wren is mostly
+connecting existing data to new routes with a different auth method.
+
+WHAT ALREADY EXISTS (do not rebuild these)
+------------------------------------------
+- Node.js Express server on Replit
+- Postgres database with messages, memories, feature flags tables
+- Worker heartbeat system (workers_heartbeat table)
+- GET /health endpoint returning queue depths and worker status
+- Image move worker and storage purge worker
+- HMAC device authentication middleware (hmacAuth)
+
+WHAT WREN NEEDS TO BUILD
+-------------------------
+1. Admin API key authentication middleware
+2. /admin/* route handlers (listed below)
+3. Ashley-to-Base44 write capability (Base44 SDK integration)
+4. Store Base44 Service Role Key in Replit Secrets
+
+================================================================================
+STEP 1 — ADMIN API KEY MIDDLEWARE
+================================================================================
+
+File: src/middleware/adminAuth.ts
+
+All /admin/* routes must check for this header:
+  X-Admin-API-Key: <value from ADMIN_API_KEY Replit Secret>
+
+Implementation:
+
+  import { Request, Response, NextFunction } from "express";
+
+  const ADMIN_API_KEY = process.env.ADMIN_API_KEY?.trim();
+  if (!ADMIN_API_KEY) {
+    console.error("STARTUP FATAL: ADMIN_API_KEY not set"); process.exit(1);
+  }
+
+  export function adminAuth(req: Request, res: Response, next: NextFunction): void {
+    const key = (req.headers["x-admin-api-key"] as string ?? "").trim();
+    if (!key || key !== ADMIN_API_KEY) {
+      res.status(401).json({ error: "unauthorized" }); return;
+    }
+    next();
+  }
+
+Add to Replit Secrets:
+  ADMIN_API_KEY = <generate a random 32-char string>
+
+Apply adminAuth middleware to ALL /admin/* routes.
+This is completely separate from the existing HMAC device auth.
+Do NOT modify existing HMAC routes.
+
+================================================================================
+STEP 2 — ADMIN ROUTES
+================================================================================
+
+File: src/routes/admin.ts
+
+Mount at: app.use("/admin", adminAuth, adminRouter)
+
+--- HEALTH ---
+
+GET /health (no auth required — Base44 uses this as a ping)
+  Already exists. Ensure it returns:
+  {
+    "status": "ok",
+    "queues": {
+      "move_pending": N,
+      "move_failed": N,
+      "purge_pending": N,
+      "purge_failed": N
+    },
+    "workers": {
+      "image_move": {
+        "last_run_at": "ISO-8601 or null",
+        "last_run_ok": true/false,
+        "stale": true/false
+      },
+      "storage_purge": {
+        "last_run_at": "ISO-8601 or null",
+        "last_run_ok": true/false,
+        "stale": true/false
+      }
+    }
+  }
+
+--- QUICK COMMANDS (no request body, return { "success": true }) ---
+
+POST /admin/memory/consolidate
+  Trigger memory consolidation job.
+  If not yet implemented: return { "success": true, "note": "not_yet_implemented" }
+
+POST /admin/workers/clear-stuck
+  Reset stuck workers:
+  UPDATE image_move_queue SET status='pending', locked_at=NULL, worker_id=NULL
+    WHERE status IN ('copying','verifying') AND locked_at < NOW() - INTERVAL '10 minutes'
+  Return { "success": true, "cleared": N }
+
+POST /admin/capabilities/reload
+  Reload server capabilities (clear any cached config).
+  Return { "success": true }
+
+POST /admin/health/full
+  Run all 6 health checks and return combined results.
+  See HEALTH CHECK RESPONSE SCHEMA below.
+
+POST /admin/cache/flush
+  Clear any in-memory caches (signed URL cache, capabilities cache).
+  Return { "success": true }
+
+--- HEALTH CHECKS (all return same schema) ---
+
+HEALTH CHECK RESPONSE SCHEMA:
+  {
+    "status": "pass" | "warn" | "fail",
+    "summary": "one-line string shown in dashboard",
+    "findings": [
+      {
+        "level": "info" | "warning" | "error",
+        "message": "string",
+        "action": "string (optional suggested fix)"
+      }
+    ]
+  }
+
+POST /admin/health/memory
+  Check: query memories table for NULL content, invalid categories,
+  zero reuse_count entries older than 30 days.
+  Return findings per item.
+
+POST /admin/health/memory-integrity
+  Check: look for orphaned memory entries, duplicate memory content
+  (Jaccard similarity > 0.9), entries missing required fields.
+  Return findings.
+
+POST /admin/health/prompts
+  Check: are any Tier 2 prompts empty, any Tier 3 templates with no content.
+  Return findings.
+
+POST /admin/health/providers
+  Check: ping each configured provider API (Gemini, Claude, ElevenLabs, Deepgram).
+  For each: response time in ms, status pass/warn/fail.
+  Return findings.
+
+POST /admin/health/workers
+  Check: workers_heartbeat table. Flag any worker with stale=true or last_run_ok=false.
+  Return findings.
+
+POST /admin/health/context-size
+  Estimate: count tokens in system prompt + active memories + recent conversation.
+  Return estimated token count and percentage of context window used.
+  Use rough estimate (1 token ≈ 4 chars) if no tokeniser available.
+
+--- MEMORY ---
+
+GET /admin/memories?limit=100&offset=0&category=&state=&search=
+  SELECT id, content, category, importance_weight, state, reuse_count,
+         created_at, updated_at
+  FROM memories
+  WHERE ($category = '' OR category = $category)
+    AND ($state = '' OR state = $state)
+    AND ($search = '' OR content ILIKE '%' || $search || '%')
+  ORDER BY updated_at DESC
+  LIMIT $limit OFFSET $offset
+  Return: { memories: [...], total: N }
+
+POST /admin/memory/add
+  Body: { content: string, category: string, importance_weight: number }
+  INSERT INTO memories (content, category, importance_weight, state, reuse_count)
+  VALUES ($content, $category, $importance_weight, 'active', 0)
+  Return: { success: true, id: newId }
+
+POST /admin/memory/update
+  Body: { id: string, content?: string, category?: string,
+          importance_weight?: number, state?: string }
+  UPDATE memories SET ... WHERE id = $id
+  Return: { success: true }
+
+DELETE /admin/memories/:id
+  UPDATE memories SET state = 'deleted', updated_at = NOW() WHERE id = $id
+  (soft delete — do not hard delete)
+  Return: { success: true }
+
+--- CONVERSATIONS ---
+
+GET /admin/conversations?limit=100&offset=0&search=&from=&to=
+  SELECT id, created_at, message_count, summary
+  FROM conversations (or equivalent sessions table)
+  ORDER BY created_at DESC
+  LIMIT $limit OFFSET $offset
+  Return: { conversations: [...], total: N }
+
+GET /admin/conversations/:id
+  SELECT id, role, content, created_at FROM messages
+  WHERE conversation_id = $id
+  ORDER BY created_at ASC
+  Return: { messages: [...] }
+
+DELETE /admin/conversations/:id
+  DELETE FROM messages WHERE conversation_id = $id
+  DELETE FROM conversations WHERE id = $id
+  Return: { success: true }
+
+DELETE /admin/conversations/:id/messages/:msgId
+  DELETE FROM messages WHERE id = $msgId AND conversation_id = $id
+  Return: { success: true }
+
+--- FEATURE FLAGS ---
+
+GET /admin/flags
+  SELECT id, name, description, category, enabled, updated_at
+  FROM feature_flags
+  ORDER BY category, name
+  Return: { flags: [...] }
+
+POST /admin/flags/toggle
+  Body: { flag_id: string, enabled: boolean }
+  UPDATE feature_flags SET enabled = $enabled, updated_at = NOW()
+  WHERE id = $flag_id
+  Return: { success: true }
+
+--- PROVIDERS ---
+
+GET /admin/providers
+  Return current provider configuration:
+  {
+    "active_llm": "gemini" | "claude" | "openai",
+    "providers": [
+      { "id": "gemini", "name": "Gemini 2.5 Flash", "active": true/false },
+      { "id": "claude", "name": "Claude Sonnet", "active": true/false },
+      { "id": "openai", "name": "OpenAI GPT-4o", "active": true/false }
+    ],
+    "fallback_order": ["gemini", "claude", "openai"]
+  }
+
+POST /admin/providers/set-active
+  Body: { provider: "gemini" | "claude" | "openai" }
+  Update active LLM provider in server config/database.
+  Return: { success: true, active: provider }
+
+--- SPEND ---
+
+GET /admin/spend?period=today|week|month
+  Pull usage data from provider APIs where available.
+  Where real-time billing not available: return usage units + estimated cost.
+  Return:
+  {
+    "period": "today",
+    "last_updated": "ISO-8601",
+    "providers": [
+      {
+        "id": "gemini",
+        "name": "Gemini 2.5 Flash",
+        "tokens_in": N,
+        "tokens_out": N,
+        "estimated_cost_gbp": N,
+        "data_lag_hours": N
+      }
+    ],
+    "total_estimated_gbp": N
+  }
+
+POST /admin/spend/threshold
+  Body: { provider: string, daily_cap_gbp: number, weekly_cap_gbp: number }
+  Store cap values in database (create spend_caps table if not exists).
+  Return: { success: true }
+
+--- CONTEXT DOCUMENTS ---
+
+GET /admin/documents
+  SELECT id, filename, upload_date, status, word_count, token_count, summary
+  FROM context_documents
+  ORDER BY upload_date DESC
+  Return: { documents: [...] }
+
+DELETE /admin/documents/:id
+  DELETE FROM context_documents WHERE id = $id
+  Return: { success: true }
+
+--- INBOX REPLY ---
+
+POST /admin/inbox/reply
+  Body: { reference_code: string, reply: string }
+  This injects Kane's reply into Ashley's context as a priority note.
+  Implementation:
+    INSERT INTO priority_notes (reference_code, content, created_at)
+    VALUES ($reference_code, $reply, NOW())
+  Ashley's context builder picks up priority_notes on next conversation turn.
+  Return: { success: true }
+
+--- PROPOSALS ---
+
+POST /admin/proposals/execute
+  Body: { proposal_id: string, proposal_type: string, proposed_change: object }
+  Route proposal_type to the correct admin endpoint:
+    add-memory            -> POST /admin/memory/add (proposed_change as body)
+    modify-memory         -> POST /admin/memory/update (proposed_change as body)
+    change-flag           -> POST /admin/flags/toggle (proposed_change as body)
+    change-provider       -> POST /admin/providers/set-active (proposed_change as body)
+    new-tier3-prompt      -> POST /admin/prompts/create (proposed_change as body)
+    adjust-spend-threshold-> POST /admin/spend/threshold (proposed_change as body)
+  After execution: mark proposal as executed in Base44 via SDK (see Step 3)
+  Return: { success: true }
+
+POST /admin/proposals/reject
+  Body: { proposal_id: string, proposal_type: string, kane_note: string }
+  Store rejection feedback:
+    INSERT INTO proposal_rejections (proposal_id, proposal_type, kane_note, created_at)
+    VALUES ($proposal_id, $proposal_type, $kane_note, NOW())
+  This table is read by Ashley's context builder so she learns from rejections.
+  Return: { success: true }
+
+--- PROMPTS ---
+
+POST /admin/prompts/create
+  Body: { tier: 1|2|3, name: string, content: string, description: string }
+  If tier === 1: reject with 403 (Tier 1 only editable manually)
+  INSERT INTO prompts (tier, name, content, description, version, created_at)
+  VALUES ($tier, $name, $content, $description, 1, NOW())
+  Return: { success: true, id: newId }
+
+================================================================================
+STEP 3 — ASHLEY WRITES TO BASE44
+================================================================================
+
+Ashley's backend needs to write inbox messages and proposals directly to Base44's
+database using the Base44 SDK.
+
+Install Base44 SDK:
+  npm install @base44/sdk
+
+Configure (add to Replit Secrets):
+  BASE44_SERVICE_ROLE_KEY = <get this from Base44 project settings panel>
+
+Usage (src/lib/base44Client.ts):
+
+  import { createClient } from "@base44/sdk";
+
+  const base44 = createClient({
+    serviceRoleKey: process.env.BASE44_SERVICE_ROLE_KEY!,
+  });
+
+  export async function postInboxMessage(
+    content: string,
+    priority: "info" | "warning" | "urgent",
+    referenceCode: string,
+  ): Promise<void> {
+    await base44.entities.InboxMessage.create({
+      content,
+      priority,
+      reference_code: referenceCode,
+      status: "unread",
+      created_at: new Date().toISOString(),
+    });
+    // If priority === "urgent": Base44 automatically fires email notification
+  }
+
+  export async function postProposal(
+    proposalType: string,
+    proposedChange: object,
+    reasoning: string,
+  ): Promise<void> {
+    const VALID_TYPES = [
+      "add-memory", "modify-memory", "change-flag",
+      "change-provider", "new-tier3-prompt", "adjust-spend-threshold"
+    ];
+    if (!VALID_TYPES.includes(proposalType)) {
+      throw new Error(`Invalid proposal type: ${proposalType}`);
+    }
+    await base44.entities.Proposal.create({
+      proposal_type: proposalType,
+      proposed_change: JSON.stringify(proposedChange),
+      reasoning,
+      status: "pending",
+      created_at: new Date().toISOString(),
+    });
+  }
+
+When to call postInboxMessage:
+  - Worker error after 3 consecutive failures -> priority "warning"
+  - Spend cap threshold approached (>80%) -> priority "warning"
+  - Backend error rate spike -> priority "urgent"
+  - Memory consolidation complete -> priority "info"
+
+When to call postProposal:
+  - Ashley detects a memory that should be updated -> "modify-memory"
+  - Ashley detects a flag that should be toggled -> "change-flag"
+  (Only call these when Ashley's orchestration layer is active — Phase 2)
+
+================================================================================
+STEP 4 — DATABASE ADDITIONS
+================================================================================
+
+Run these migrations in Postgres (Replit Shell):
+
+  -- Spend caps storage
+  CREATE TABLE IF NOT EXISTS spend_caps (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    provider     TEXT NOT NULL,
+    daily_cap_gbp  DECIMAL(10,4),
+    weekly_cap_gbp DECIMAL(10,4),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
+  -- Priority notes (Kane's inbox replies injected into Ashley's context)
+  CREATE TABLE IF NOT EXISTS priority_notes (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    reference_code TEXT NOT NULL,
+    content        TEXT NOT NULL,
+    read           BOOLEAN NOT NULL DEFAULT false,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
+  -- Proposal rejection log (Ashley learns from rejections)
+  CREATE TABLE IF NOT EXISTS proposal_rejections (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    proposal_id   TEXT NOT NULL,
+    proposal_type TEXT NOT NULL,
+    kane_note     TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
+  -- Feature flags (if not already exists)
+  CREATE TABLE IF NOT EXISTS feature_flags (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        TEXT NOT NULL UNIQUE,
+    description TEXT,
+    category    TEXT NOT NULL DEFAULT 'general',
+    enabled     BOOLEAN NOT NULL DEFAULT false,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
+  -- Prompts (if not already exists)
+  CREATE TABLE IF NOT EXISTS prompts (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tier        INTEGER NOT NULL CHECK (tier IN (1,2,3)),
+    name        TEXT NOT NULL,
+    content     TEXT NOT NULL,
+    description TEXT,
+    version     INTEGER NOT NULL DEFAULT 1,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
+================================================================================
+STEP 5 — SERVER STARTUP ADDITIONS
+================================================================================
+
+In server startup (after DB ready):
+
+  import { startNonceCleanup } from "./middleware/auth";
+  import { adminRouter } from "./routes/admin";
+
+  // Mount admin routes
+  app.use("/admin", adminAuth, adminRouter);
+
+  // Start nonce cleanup
+  startNonceCleanup();
+
+  // Log admin API ready
+  console.log("[admin] Admin API layer ready");
+
+================================================================================
+STEP 6 — REPLIT SECRETS TO ADD
+================================================================================
+
+  ADMIN_API_KEY       = <generate: node -e "require('crypto').randomBytes(16).toString('hex')">
+  BASE44_SERVICE_ROLE_KEY = <from Base44 project settings panel>
+
+================================================================================
+COMPLETION CRITERIA
+================================================================================
+
+The admin API layer is complete when:
+
+  □ GET /health returns 200 with queue depths and worker heartbeats
+  □ Base44 dashboard "Backend Offline" badge turns green
+  □ Memory tab in dashboard shows memories (after connecting URL + key in Settings)
+  □ POST /admin/workers/clear-stuck returns { success: true }
+  □ POST /admin/health/full returns structured health check results
+  □ POST /admin/inbox/reply inserts a row in priority_notes
+  □ Base44 SDK connected — postInboxMessage() sends a test message to inbox
+  □ All /admin/* routes return 401 without X-Admin-API-Key header
+  □ All /admin/* routes return 200 with correct X-Admin-API-Key header
+
+DO NOT start the full Ashley build until these are verified working.
+This is a standalone deliverable. One job at a time.
+
+================================================================================
+FILES TO CREATE
+================================================================================
+
+  src/middleware/adminAuth.ts      (Step 1)
+  src/routes/admin.ts              (Step 2 — all admin routes)
+  src/lib/base44Client.ts          (Step 3 — Base44 SDK wrapper)
+
+Files to modify:
+  server.ts or app.ts              (mount admin router, call startNonceCleanup)
+
+================================================================================
+REFERENCE
+================================================================================
+
+Base44 integration brief: Ashley_Command_Centre_Integration_Brief_29Jun2026.txt
+Ashley architectural plan: Ashley_ImageTagging_ArchitecturalPlan_v1_13_27Jun2026.txt
+
+Auth header Base44 expects: X-Admin-API-Key
+Auth header Base44 sends (outbound): X-Admin-API-Key (same key, stored in Base44 Settings)
+
+=== END OF BRIEF ===
+=== ASHLEY COMMAND CENTRE — SETUP BRIEF ===
+Generated: 29 Jun 2026
+
+--------------------------------------------------------------------------------
+OUTBOUND API (Dashboard -> Ashley Backend)
+--------------------------------------------------------------------------------
+
+Backend Base URL : Set in Settings -> Backend Connection
+Admin API Key    : Set in Settings -> Backend Connection
+Auth Header      : X-Admin-API-Key: <your Admin API Key>
+Note             : Return HTTP 401 if header is missing or incorrect.
+                   Apply this check to every /admin/* route.
+
+--------------------------------------------------------------------------------
+INBOUND (Ashley Backend -> Dashboard)
+--------------------------------------------------------------------------------
+
+Ashley writes directly to the dashboard database using the Base44 SDK.
+Base44 Service Role Key : Found in your Base44 project settings panel.
+Entities Ashley can write to: InboxMessage, Proposal
+
+--------------------------------------------------------------------------------
+WEBHOOK (Phase 2 only — not required for Phase 1)
+--------------------------------------------------------------------------------
+
+Endpoint    : <dashboard-origin>/api/webhook/ashley
+Auth Header : X-Webhook-Secret: <from Settings -> Inbound Webhook>
+
+--------------------------------------------------------------------------------
+PROPOSAL TYPE REGISTRY (only these 6 types are valid in Phase 1)
+--------------------------------------------------------------------------------
+
+add-memory             -> POST /admin/memory/add
+modify-memory          -> POST /admin/memory/update
+change-flag            -> POST /admin/flags/toggle
+change-provider        -> POST /admin/providers/set-active
+new-tier3-prompt       -> POST /admin/prompts/create
+adjust-spend-threshold -> POST /admin/spend/threshold
+
+Ashley cannot submit proposal types outside this list without Kane
+first registering the new type in the dashboard.
+
+--------------------------------------------------------------------------------
+REQUIRED ADMIN ENDPOINTS (Phase 1)
+--------------------------------------------------------------------------------
+
+GET    /health                           (heartbeat — any 200 JSON response)
+POST   /admin/memory/consolidate         (no body)
+POST   /admin/workers/clear-stuck        (no body)
+POST   /admin/capabilities/reload        (no body)
+POST   /admin/health/full                (no body)
+POST   /admin/cache/flush                (no body)
+POST   /admin/health/memory              (no body)
+POST   /admin/health/memory-integrity    (no body)
+POST   /admin/health/prompts             (no body)
+POST   /admin/health/providers           (no body)
+POST   /admin/health/workers             (no body)
+POST   /admin/health/context-size        (no body)
+POST   /admin/inbox/reply                { reference_code, reply }
+POST   /admin/proposals/execute          { proposal_id, proposal_type, proposed_change }
+POST   /admin/proposals/reject           { proposal_id, proposal_type, kane_note }
+POST   /admin/providers/set-active       { provider: "gemini"|"claude"|"openai" }
+GET    /admin/conversations?limit=100
+GET    /admin/conversations/:id
+DELETE /admin/conversations/:id
+DELETE /admin/conversations/:id/messages/:msgId
+
+--------------------------------------------------------------------------------
+HEALTH CHECK RESPONSE SCHEMA
+(applies to all 6 POST /admin/health/* endpoints)
+--------------------------------------------------------------------------------
+
+{
+  "status":   "pass" | "warn" | "fail",
+  "summary":  "one-line string shown in dashboard",
+  "findings": [
+    {
+      "level":   "info" | "warning" | "error",
+      "message": "string",
+      "action":  "string (optional suggested fix)"
+    }
+  ]
+}
+
+--------------------------------------------------------------------------------
+ALL OTHER POST COMMANDS
+--------------------------------------------------------------------------------
+
+No request body required.
+Any 200 JSON response is accepted.
+Recommended response: { "success": true }
+
+--------------------------------------------------------------------------------
+AUTHENTICATION SUMMARY
+--------------------------------------------------------------------------------
+
+Every /admin/* request from Base44 will include:
+  Header: X-Admin-API-Key: <your key>
+
+Return 401 if the header is missing or the key doesn't match.
+This is the only authentication required for Phase 1.
+
+--------------------------------------------------------------------------------
+PROPOSAL REJECTION FLOW
+--------------------------------------------------------------------------------
+
+When Kane rejects a proposal, Base44 POSTs to:
+  POST /admin/proposals/reject
+  Body: { proposal_id, proposal_type, kane_note }
+
+Ashley's backend should receive this and use kane_note as structured
+feedback so Ashley understands why the proposal was rejected and can
+learn from it. This prevents Ashley repeatedly proposing the same things.
+
+--------------------------------------------------------------------------------
+PHASE 2 PLACEHOLDER ENDPOINTS
+(not required for Phase 1 — Base44 shows "Waiting for backend data feed")
+--------------------------------------------------------------------------------
+
+These screens exist in the dashboard but are inactive until Ashley's
+backend implements the corresponding endpoints:
+
+  Decision Log          : GET /admin/decisions
+  Agent Performance     : GET /admin/agents/performance
+  Memory Audit Trail    : GET /admin/memory/audit
+  Prompt Testing        : POST /admin/prompts/test
+
+Base44 will display the required endpoint path and expected response
+schema on each placeholder screen so the backend developer knows
+exactly what to implement to activate each feature.
+
+=== END OF BRIEF ===
