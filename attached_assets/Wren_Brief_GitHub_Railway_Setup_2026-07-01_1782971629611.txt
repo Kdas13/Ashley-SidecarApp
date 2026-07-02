@@ -1,0 +1,69 @@
+WREN BRIEF — MICHAEL ORCHESTRATOR: GITHUB + RAILWAY SETUP
+
+1 July 2026
+
+================================================================
+GOAL
+================================================================
+
+Get the michael_skeleton.zip codebase live on GitHub and deployed to
+Railway as a persistent, always-on service, ready for further
+development.
+
+================================================================
+CONTEXT FOR WREN
+================================================================
+
+Michael is a TypeScript/Node.js orchestration agent (placeholder name)
+that will run the NRNL clothing brand autonomously under human approval
+gates. The skeleton codebase already exists (michael_skeleton.zip, in
+Google Drive) with a working constitution-refresh pattern, pricing tests
+passing, and a clean TypeScript build confirmed in a prior session.
+
+================================================================
+STEPS
+================================================================
+
+1. Create a private GitHub repository named "michael-orchestrator" under
+   Kane's account.
+
+2. Push the michael_skeleton.zip contents to the main branch — includes
+   src/index.ts, src/core/ (agentLoop, pricing, constitutionGuard,
+   activityLog, db, constitution), pricing test file, README,
+   package.json, package-lock.json, tsconfig.json.
+
+3. Connect the repo to Railway. Kane's Railway account is already set
+   up (Hobby plan, GitHub connected, deployment region EU West/
+   Amsterdam) — create the project by deploying directly from the
+   michael-orchestrator GitHub repo rather than starting from an empty
+   project.
+
+4. Set environment variables in Railway:
+   - MICHAEL_DB_PATH
+   - PORT
+   - Any API keys as they get added (none live yet — this is a
+     placeholder for future steps, not a blocker now)
+
+5. Confirm the deployment stays persistent/always-on, not session-bound
+   or sleeping on idle — this is a hard requirement from the
+   constitution (Section 8, hosting notes). Verify this works correctly
+   on the Hobby plan tier before considering this step done.
+
+6. Verify the constitution refresh guard is working live — confirm the
+   deployed instance correctly stamps the active constitution version
+   on activity log entries, matching what was confirmed working in
+   local testing.
+
+7. Report back with: the live Railway deployment URL, confirmation of
+   persistent uptime, and any errors or blockers hit along the way.
+
+================================================================
+OUT OF SCOPE FOR THIS BRIEF
+================================================================
+
+No API keys are being added yet, no actual agent logic changes, no
+production data — this is purely repo creation + deployment plumbing.
+
+================================================================
+END OF BRIEF
+================================================================
