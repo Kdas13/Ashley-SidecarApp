@@ -797,3 +797,9 @@ id = "hAYhF61NNYgSZGOevbvI7"
 uri = "file://ProductionCrash_Diagnosis_24Jun2026.txt"
 type = "text"
 title = "Production Crash Diagnosis"
+
+[[outputs]]
+id = "lUD1NnuR8uzlHUjvRz2Db"
+uri = "file://michael-data-model-report.txt"
+type = "text"
+title = "Michael Data Model Fix Report"

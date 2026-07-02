@@ -1,0 +1,263 @@
+MICHAEL ORCHESTRATOR — DATA MODEL FIX REPORT
+Commit: eea5cb7b76b0
+Date: 2026-07-02
+Constitution version: v3-2026-07-02-v6
+================================================================================
+
+All six items from the Section 4/8 re-read are addressed. Report below.
+
+────────────────────────────────────────────────────────────────────────────────
+ITEM 1 — GENERIC APPROVAL REQUEST SYSTEM
+────────────────────────────────────────────────────────────────────────────────
+
+All 11 gate types now route through one queue. Endpoints:
+
+  GET   /dashboard/approval-requests
+        List all. Filter: ?gate_type=gate-vendor&status=pending&projectId=nrnl
+
+  GET   /dashboard/approval-requests/:id
+        Single request.
+
+  POST  /dashboard/approval-requests
+        Create. Body: { projectId, gateId, summary, payload }
+        Validates gateId against constitution. Returns 400 for unknown gate.
+
+  POST  /dashboard/approval-requests/:id/approve
+        Approve. Optional body: { note }
+
+  POST  /dashboard/approval-requests/:id/approve-with-edits
+        Approve with edit instructions. Required body: { editsNote }
+
+  POST  /dashboard/approval-requests/:id/reject
+        Reject. Optional body: { note }
+
+Status values:
+  pending / approved / approved_with_edits / rejected / notified
+
+"notified" is used for autonomous-pause notifications (ads-3) — visible on
+the dashboard but does not require Kane action to resolve.
+
+Every row carries:
+  constitutionVersion — the version active when the request was created
+  gateId              — one of the 11 valid values below
+  summary             — human-readable one-liner
+  payload             — JSON, type-specific per gate
+
+Valid gate IDs (all 11):
+  gate-vendor            Vendor selection (final pick)
+  gate-design            Design sign-off (all generated images)
+  gate-pricing           Pricing / margin / sell price before go-live
+  gate-ads               Ad spend and creative (per-campaign)
+  gate-payment-account   Bank/payment account setup
+  gate-comms             Brand-representing outbound comms
+  gate-email             Per-draft email approval
+  gate-vendor-non-ukeu   Non-UK/EU vendor (fallback tier)
+  gate-new-channel       New marketing channel/platform
+  gate-customer-service  Refund / replacement / policy exception
+  gate-quota             Search quota at 90% of monthly cap (NEW in v6)
+
+
+────────────────────────────────────────────────────────────────────────────────
+ITEM 2 — STOREFRONT STATE
+────────────────────────────────────────────────────────────────────────────────
+
+New table: storefront_project_state (one row per project, auto-created on
+first read). The existing per-design storefront_state table is kept for
+per-design live/not-live tracking. Both are returned together.
+
+  GET   /dashboard/storefront/:projectId
+        Returns project-level state plus all per-design live statuses.
+
+  PATCH /dashboard/storefront/:projectId
+        Update any combination of:
+          syncStatus            in_sync / pending_sync / sync_error
+          catalogSnapshot       JSON — current live catalog contents
+          pricingSnapshot       JSON — current live pricing
+          pendingChangesSummary JSON — queued changes not yet live
+          lastSyncError         Text — last error message if sync failed
+
+Fields on project-level state:
+  syncStatus, lastSyncError, catalogSnapshot, pricingSnapshot,
+  pendingChangesSummary, lastSyncedAt, updatedAt
+
+
+────────────────────────────────────────────────────────────────────────────────
+ITEM 3 — AD CAMPAIGN ENTITY
+────────────────────────────────────────────────────────────────────────────────
+
+New columns added to ad_campaigns:
+  approved_budget_cap     The fixed cap approved via gate-ads
+  current_spend           Actual spend to date
+  ad_set_allocations      JSON — reallocation within cap
+  approval_request_id     Links to the gate-ads ApprovalRequest
+  pause_reason            Required for autonomous pause (ads-3)
+  paused_at               Timestamp of pause
+  ended_at                Timestamp of end
+  approved_at             Timestamp of Kane approval
+  platform_campaign_id    External platform reference (Meta etc.)
+
+Endpoints:
+
+  GET   /dashboard/campaigns
+        List. Filter: ?projectId=&status=
+
+  GET   /dashboard/campaigns/:id
+        Single campaign, full field set.
+
+  POST  /dashboard/campaigns
+        Create draft. Body: { projectId, platform, audienceSegment,
+        targetCollection, creativeAssetUrls }
+        Status starts as "draft". Gate-ads ApprovalRequest required before launch.
+
+  POST  /dashboard/campaigns/:id/increase-cap
+  PATCH /dashboard/campaigns/:id/increase-cap
+        HARD BLOCKED — always returns 403.
+        Response includes constitutionRule: "ads-2" and constitutionVersion.
+        This is enforced at the request level, not advisory.
+
+  PATCH /dashboard/campaigns/:id/reallocate
+        Reallocate ad sets within approved cap (ads-1).
+        Body: { allocations: { "adSetName": amount } }
+        Enforced: sum of allocations must not exceed approved_budget_cap.
+        Returns 400 with exact numbers if it would breach.
+
+  PATCH /dashboard/campaigns/:id/pause
+        Autonomous pause (ads-3). Allowed without approval.
+        Body: { projectId, pauseReason }
+        pauseReason is required — returns 400 without it.
+        Routes through runConstitutionalAction: action is logged to
+        activity_log with constitution_version. Also creates a "notified"
+        ApprovalRequest so it surfaces on the dashboard.
+
+  PATCH /dashboard/campaigns/:id/resume
+        BLOCKED — returns 403. Instructs caller to submit a gate-ads
+        ApprovalRequest with payload { campaignId, action: "resume" }.
+        Constitution rule: ads-4.
+
+Spend-control summary:
+  ads-1  Reallocation within cap: allowed, enforced numerically
+  ads-2  Cap increase: blocked at API layer (403), no workaround possible
+  ads-3  Autonomous pause: allowed, requires reason, auto-logs + notifies
+  ads-4  Resume / launch / cross-campaign budget move: blocked, gate required
+
+
+────────────────────────────────────────────────────────────────────────────────
+ITEM 4 — ORDER ENTITY
+────────────────────────────────────────────────────────────────────────────────
+
+Tables (orders + order_sub_orders) already existed. Now exposed via API.
+Three new columns added to orders: combined_shipping, split_shipment,
+shipping_note.
+
+  GET   /dashboard/orders
+        Paginated list. Filter: ?projectId=&status=&limit=&offset=
+        Returns order-level data (no sub-orders).
+
+  GET   /dashboard/orders/:id
+        Single order plus all sub-orders in full.
+
+Sub-order fields include: vendor_id, design_id, construction_method,
+quantity, size, colour, cost_to_make, sell_price, tax_reserve,
+shipping_reserve, net_profit, vendor_shipping_status,
+vendor_tracking_number, expected_delivery_window.
+
+
+────────────────────────────────────────────────────────────────────────────────
+ITEM 5 — ACTIVITY LOG CONSTITUTION VERSION — CONFIRMED ALREADY PRESENT
+────────────────────────────────────────────────────────────────────────────────
+
+No code change needed. Documenting for the audit trail.
+
+activity_log.constitution_version TEXT NOT NULL has been in the schema
+since the first commit. runConstitutionalAction() stamps it on every write.
+rowToDecision() exposes it as constitutionVersion on every response from
+GET /dashboard/decisions and GET /dashboard/decisions/:id.
+
+Every action that touches the LLM or mutates state — vendor ethics check,
+email approval, image generation, supplier search, general chat reply,
+campaign pause — goes through runConstitutionalAction. The version recorded
+is the version that was live at the moment of execution, not the current
+version at time of read. This is the mechanism described in Section 2:
+"diagnose as rule-was-wrong vs rule-wasn't-followed."
+
+The field is already live in production.
+
+
+────────────────────────────────────────────────────────────────────────────────
+ITEM 6 — VENDOR FULL SECTION 8 FIELD SET
+────────────────────────────────────────────────────────────────────────────────
+
+New columns added via additive migration (existing data untouched):
+
+  forced_labour_check_status      PASS / FAIL / ESCALATE_TO_KANE / PENDING
+  forced_labour_check_evidence    Free text (sources, audit notes)
+  forced_labour_check_date        ISO date of check
+  workplace_culture_check_status  PASS / FAIL / ESCALATE_TO_KANE / PENDING
+  workplace_culture_check_notes   Free text
+  workplace_culture_check_date    ISO date of check
+  geographic_tier                 uk / eu / non_uk_eu
+  cost_structure_type             pay_per_order / subscription / bulk_tiered
+  construction_method_qualifications  JSON array of qualified methods:
+                                  vinyl_print, dtg, embroidery,
+                                  screen_print, etc.
+  approval_request_id             Links to gate-vendor ApprovalRequest
+  vendor_contact_name
+  vendor_contact_email
+  vendor_website
+
+All fields returned by:
+  GET  /dashboard/vendors
+  GET  /dashboard/vendors/:id
+
+Update endpoints:
+  PATCH /dashboard/vendors/:id
+        Update any vendor field. Accepts camelCase or snake_case body keys.
+        Safe to call with a partial body — only provided fields are updated.
+
+  POST  /dashboard/vendors/:id/check-status
+        Dedicated endpoint for ethics check results. Accepts:
+          forcedLabourStatus, forcedLabourEvidence, forcedLabourDate,
+          workplaceCultureStatus, workplaceCultureNotes, workplaceCultureDate,
+          geographicTier, costStructureType, constructionMethodQualifications
+        Returns: { success, vendorId, fieldsUpdated: [...] }
+
+
+────────────────────────────────────────────────────────────────────────────────
+CONSTITUTION CHANGE — v3-2026-07-02-v6
+────────────────────────────────────────────────────────────────────────────────
+
+gate-quota added:
+  "Search quota reaches 90% of monthly cap (18,000 of 20,000 calls).
+   Requires Kane sign-off to continue high-volume search activity for the
+   remainder of the month."
+
+ads-2 rule updated: "API blocks this at the request level" added to rule text.
+ads-3 rule updated: "must record pause_reason, log to activity_log with
+  constitution_version, and surface notification to Kane" made explicit.
+ads-4 rule updated: "Each requires a fresh gate-ads ApprovalRequest" made
+  explicit.
+
+Scheduled daily check (07:00 UTC) now runs quota_threshold_alert task:
+  If combined search calls >= 18,000, creates a gate-quota ApprovalRequest
+  (pending). Deduped — only one pending alert per project per month.
+
+
+────────────────────────────────────────────────────────────────────────────────
+RAILWAY — NO ACTION REQUIRED
+────────────────────────────────────────────────────────────────────────────────
+
+All changes are code-only. No new environment variables needed. Existing
+Railway env vars remain the same:
+
+  OPENAI_API_KEY        gpt-image-1 image generation
+  BFL_API_KEY           Flux Pro 1.1 image generation
+  GMAIL_USER            Email sending
+  GMAIL_APP_PASSWORD    Email sending
+  TAVILY_API_KEY        Web search
+  BRAVE_API_KEY         Web search
+  ANTHROPIC_API_KEY     Claude (all LLM calls)
+
+Railway will auto-deploy from the commit on main. No manual step needed.
+
+================================================================================
+END OF REPORT
