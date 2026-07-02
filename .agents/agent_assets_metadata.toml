@@ -803,3 +803,9 @@ id = "lUD1NnuR8uzlHUjvRz2Db"
 uri = "file://michael-data-model-report.txt"
 type = "text"
 title = "Michael Data Model Fix Report"
+
+[[outputs]]
+id = "X0ARjYS9XcYfSWL7KinsV"
+uri = "file://reports/michael_test_report.txt"
+type = "text"
+title = "Michael Orchestrator - Live Verification Report"

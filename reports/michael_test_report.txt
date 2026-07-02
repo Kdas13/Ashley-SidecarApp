@@ -1,0 +1,63 @@
+MICHAEL ORCHESTRATOR — LIVE VERIFICATION REPORT
+Railway production URL: https://michael-orchestrator-production.up.railway.app
+Timestamp: 2026-07-02T21:13Z
+
+DEPLOY STATUS
+- /health returned constitutionVersion "v3-2026-07-02-v6" (unchanged — expected, none of the
+  three pending commits touch the constitution).
+- Confirmed the deploy is actually live (not stale) by hitting GET /dashboard/knowledge, which
+  did not exist before commit e38a81f602a1 — it returned 200 with real JSON, not 404. All three
+  commits (e38a81f602a1, e4139381b529, 025a50b149e0) are confirmed live on Railway.
+
+TEST 1 — Chat session memory (history param)
+  Sent a message telling Michael to remember "4471", then a follow-up with that turn pushed
+  back in as `history`, asking "what number did I just tell you".
+  Result: PASS — replied "The number you asked me to remember is 4471."
+
+TEST 2 — Knowledge log capture, mid-range importance
+  Sent: "From now on, always use recyclable mailers for every NRNL shipment, no exceptions."
+  Result: PASS — captured in GET /dashboard/knowledge as ruleText "All NRNL shipments must use
+  recyclable mailers, no exceptions.", importance=6, rationale correctly explains it's a standing
+  operational mandate with brand/compliance weight but no safety/ethics severity. vendorId/match
+  both null (correct — no vendor named).
+
+TEST 3 — Knowledge log capture + vendor flag, severity-10 anchor
+  Sent: a claim that a (fictional, for-test-only) "TestCorp Textiles Ltd" has a CONFIRMED,
+  documented child labour finding.
+  Result: PASS — captured with importance=10, rationale cites ethics-geo-2 and the max-severity
+  anchor correctly, vendorNameMatch captured "TestCorp Textiles Ltd" as text. vendorId stayed
+  null because no vendor row named TestCorp exists in the (currently empty) vendors table — this
+  is correct behaviour, not a bug: maybeFlagVendor only writes to vendors when it can resolve an
+  actual row. NOTE: the vendors table in production is currently empty (GET /dashboard/vendors →
+  0 rows), so the auto-block DB write itself has never been exercised against a real row yet.
+  That will self-verify the first time a real vendor gets a score-10 entry.
+
+TEST 4 — Knowledge log non-capture, sub-threshold noise
+  Sent: an anonymous, unverified single forum comment about a supplier, no name given.
+  Result: PASS — correctly NOT captured in the knowledge log at all (isRule classified false),
+  confirming the model isn't logging every message, only ones that read as an actual durable
+  rule/finding. Chat reply itself also correctly declined to treat it as actionable evidence.
+
+TEST 5 — Check 3 (adverse media / corruption pattern screening on vendor ethics check)
+  NOT TESTED LIVE. I searched the entire repo (GitHub code search, not just the files I'd
+  edited) for any caller of dispatchTriggeredTask with taskType "vendor_ethics_check" — zero
+  matches outside the switch-case that handles it. Nothing in any dashboard route, chat intent,
+  or scheduled cron job currently triggers a vendor ethics check at all, in production, today.
+  This isn't specific to my change — Checks 1 and 2 (forced/child labour, workplace culture)
+  have the exact same problem and have presumably never fired live either.
+  This means: Check 3 is implemented and I'm confident it's wired correctly into
+  handleVendorEthicsCheck (verified by reading the pushed code on GitHub), but I have not
+  and currently cannot verify its live behaviour, because there is no live path that invokes it.
+  I am not calling this one done. Two ways to close this out — your call:
+    (a) I add a dashboard route (e.g. POST /dashboard/vendors/:id/ethics-check, or a
+        "run ethics check" trigger tied to supplier search) so this can actually be exercised
+        and monitored going forward, then retest with a real case, or
+    (b) leave it as dead code reachable only via a future automation you have planned, and
+        accept it as implemented-but-unverified until that automation exists.
+
+SUMMARY
+  Confirmed live and working: chat history/memory, knowledge log capture, importance scoring
+  (mid, max, and sub-threshold anchors all behaved correctly), scoring rationale quality.
+  Not yet verifiable: vendor auto-block DB write (no real vendor exists to trigger it) and the
+  new Check 3 corruption-pattern screening (no live trigger path exists for vendor_ethics_check
+  at all, pre-existing gap, not new to this change).
