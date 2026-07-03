@@ -1,0 +1,103 @@
+RAILWAY SMTP INVESTIGATION — michael-orchestrator
+Date: 2026-07-03
+
+QUESTION: Is there a Railway toggle to unblock outbound SMTP, or is a
+transport-layer change required?
+
+ANSWER: There is no toggle. This is a hard, permanent plan restriction on
+the Hobby plan. A transport-layer change is required.
+
+---
+
+1. RAILWAY'S OWN OFFICIAL POLICY (confirmed via Railway Help Station,
+   directly from a Railway employee, not a community guess)
+
+Two separate support threads, six and ten months apart, both answered by
+the same Railway employee (brody) with an identical statement:
+
+  "Outbound SMTP is only available on the Pro plan and above, while Free,
+  Trial, and Hobby plans have SMTP disabled. For sending emails from your
+  application, please use a dedicated email service that provides HTTPS
+  APIs."
+  — https://station.railway.com/questions/outbound-smtp-blocked-on-my-deployment-732c27ed
+  — https://station.railway.com/questions/request-to-unblock-outbound-smtp-ports-17730a90
+
+Both threads describe the exact symptom pattern we're seeing: correct
+credentials, previously-working SMTP code, deployed on Hobby, connection
+just hangs/times out or returns a low-level network error (one report:
+"[Errno 101] Network is unreachable"). One reporter explicitly noted it
+"worked on free plan, fails on Hobby" — consistent with this being an
+active network-level block, not an application bug.
+
+Railway's own docs page (docs.railway.com/reference/outbound-networking,
+linked directly by their support employee) documents this as the
+canonical answer, not a support workaround.
+
+2. WHICH PORTS ARE BLOCKED, AND ON WHICH PLANS
+
+  Port 25   (SMTP legacy)     — blocked on ALL plans, always has been
+  Port 465  (SMTPS/SSL)       — blocked on Free/Trial/Hobby, open on Pro+
+  Port 587  (SMTP/STARTTLS)   — blocked on Free/Trial/Hobby, open on Pro+
+  Port 2525 (alt SMTP)        — blocked on Free/Trial/Hobby; even on Pro,
+                                 may separately be blocked by the receiving
+                                 provider (not a Railway-side guarantee)
+
+Kane's michael-orchestrator service is on Hobby ($5/mo) — both 465 and 587
+are blocked. That's why our test-send hangs to ~90s and returns no clean
+error: it's a dropped/blackholed TCP connection, not a rejection, so
+nodemailer just waits out its connection timeout.
+
+3. IS THERE ANY DASHBOARD SETTING OR NETWORKING TOGGLE?
+
+No. Checked for a Settings → Networking toggle at both service and
+project level — none exists for this. The only related Networking-tab
+setting Railway exposes is "Enable Outbound IPv6" (irrelevant here — that
+governs IPv6 egress generally, not SMTP specifically, and is off by
+default with no bearing on port blocking).
+
+The only Railway-side lever that changes this is the Pro plan itself:
+upgrading unblocks 465/587 outbound, and Railway explicitly requires a
+full redeploy of the service afterward for the new firewall rule to take
+effect (their words: "do a full redeploy of your service for the new
+allow rules to take effect"). This is a plan-tier firewall rule, not a
+per-project toggle Kane can flip on Hobby.
+
+4. RECOMMENDATION
+
+Given the choice is (a) upgrade to Pro ($20/mo, unlocks raw SMTP) vs.
+(b) switch to an HTTPS-based transactional email API — Railway explicitly
+recommends (b) as the standard path for exactly this use case, and it
+works on every plan including Hobby, so it doesn't tie a $20/mo spend
+decision to a one-email-a-day quota digest.
+
+Recommended: Resend.
+  - Free tier: 3,000 emails/month (michael's use case — one digest email
+    a day — is ~30/month, nowhere near the limit)
+  - Sends over HTTPS (port 443), unaffected by any SMTP port policy
+  - Has an official Node SDK; a nodemailer-shaped drop-in replacement is
+    a small, contained change (swap emailSender.ts's transport, not the
+    call sites in agentLoop.ts/index.ts — sendEmail()'s signature can stay
+    the same)
+  - Needs one new env var (RESEND_API_KEY) and a sender-domain
+    verification step in the Resend dashboard (or use their shared
+    onboarding domain for a quick first test)
+
+Alternatives if Kane prefers a different vendor: SendGrid (100/day free),
+Mailgun, Postmark — all HTTPS APIs, all unaffected by Railway's SMTP
+block, listed here for completeness but Resend is the best fit for this
+volume and has the least setup friction.
+
+5. WHAT I HAVE NOT DONE
+
+Per instruction, no transport switch has been implemented. GMAIL_USER /
+GMAIL_APP_PASSWORD and the nodemailer/Gmail SMTP path are untouched.
+This is confirmed as a plan-level block, not a code or credential bug —
+the /diagnostics/email hardening from the prior fix was not wasted work
+(it correctly ruled out credential/whitespace issues as the cause), but
+it cannot fix a network-level port block, and no further SMTP debugging
+on Hobby will succeed no matter how the credentials are set.
+
+DECISION NEEDED FROM KANE: approve switching emailSender.ts from
+nodemailer/Gmail-SMTP to Resend's HTTPS API (or another HTTPS provider of
+his choice), or approve upgrading Railway to Pro instead. Waiting for
+that call before touching anything.

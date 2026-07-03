@@ -809,3 +809,9 @@ id = "X0ARjYS9XcYfSWL7KinsV"
 uri = "file://reports/michael_test_report.txt"
 type = "text"
 title = "Michael Orchestrator - Live Verification Report"
+
+[[outputs]]
+id = "aNNu92HnnfXqgPPqlUNNP"
+uri = "file://reports/railway_smtp_investigation.txt"
+type = "text"
+title = "Railway SMTP Investigation"
