@@ -14,7 +14,7 @@ Every report must include, before being sent:
 
 Only after both checks pass may the report use the words "done," "live," or "complete."
 
-**Why:** Reports had been calling things done based on a successful GitHub push, while the live Railway service was still running an older build (e.g. data-model fix reported as live while /health still showed v4, not v6). Railway has no auto-deploy webhook configured — every deploy is manual. Even when a webhook is set up, builds can fail silently. Committing and deploying are separate acts; the report must verify the second one actually happened.
+**Why:** Reports had been calling things done based on a successful GitHub push, while the live Railway service was still running an older build (e.g. data-model fix reported as live while /health still showed v4, not v6). Correction (2026-07-05): Railway *does* auto-deploy on push to `main` — confirmed twice now by curling `/health` ~30-60s after a push and seeing `deployedCommit` update to match, with no manual deploy step taken. The risk isn't "no webhook," it's that a build can still fail or lag, so the verification step stays mandatory regardless — never assume "pushed" means "live" without checking `/health`.
 
 **How to apply:**
 
