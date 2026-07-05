@@ -821,3 +821,9 @@ id = "HuAT2aGphx9Pc8NIENAUa"
 uri = "file://attached_assets/reports/raw_hoodie_openai_reference_test.png"
 type = "image"
 title = "RAW hoodie — gpt-image-1.5 reference test"
+
+[[outputs]]
+id = "scMFilzgSgX4c7fzuxQ3-"
+uri = "file://vendor_dashboard_report.txt"
+type = "text"
+title = "Vendors Tab: ethics re-check, data source, archive/delete"

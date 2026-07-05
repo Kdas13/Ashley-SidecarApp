@@ -1,0 +1,123 @@
+MICHAEL — VENDORS TAB: ETHICS RE-CHECK, DATA SOURCE, ARCHIVE/DELETE
+Verified live on Railway (michael-orchestrator-production.up.railway.app)
+
+====================================================================
+1. ETHICS CHECKS RE-RUN FOR BOTH STALE VENDORS — DONE, VERIFIED
+====================================================================
+
+Called the real trigger (POST /dashboard/vendors/ethics-check) for both:
+
+- Gildan       -> verdict: REJECTED (activityLogId 175)
+- HanesBrands  -> verdict: REJECTED (activityLogId 176)
+
+Both resolve through the hardcoded PERMANENT_VENDOR_DISQUALIFICATIONS list
+in src/core/agentLoop.ts (added on your 2026-07-03 ruling) — the reasoning
+text returned matches your original decision word-for-word for each, and
+Kane/2026-07-03 is preserved as decidedBy/decidedAt (the disqualification
+is never re-evaluated or re-worded by a fresh model run, by design).
+
+Confirmed via GET /dashboard/vendors after the re-run:
+  Gildan       | status: rejected | ethicsCheckVerdict: REJECTED | logId: 175
+  HanesBrands  | status: rejected | ethicsCheckVerdict: REJECTED | logId: 176
+
+====================================================================
+2. VENDORS TAB DATA SOURCE — CONFIRMED, AND ONE REAL BUG FOUND + FIXED
+====================================================================
+
+Confirmed: the Base44 Vendors tab is a no-code frontend that calls this
+repo's API directly — GET /dashboard/vendors (list) and
+GET /dashboard/vendors/:id (detail). Both read straight from the local
+SQLite `vendors` table via getDb(). There is no caching layer and no other
+data source in between — whatever is in that table is what the tab shows,
+live, on every load.
+
+The bug: the ethics_check_verdict / ethics_check_reasoning / ethics_check_date
+/ ethics_check_activity_log_id columns were being written correctly by
+runFormalVendorEthicsCheck, but the API response mapper (rowToVendor) never
+included them. So even a vendor that WAS correctly re-checked would show the
+result nowhere on the Vendors tab — you'd only see the older, generic
+`ethicalVerificationStatus`/`forcedLabourCheckStatus` fields, not the actual
+verdict/reasoning/decision-date from the formal check. This is very likely
+why the two vendors "looked stale" even before I re-ran anything: the tab
+was never wired to display the field that proves a formal check happened.
+
+Fixed and deployed: rowToVendor now also returns adverseMediaCheckStatus/
+Notes/Date and ethicsCheckVerdict/Reasoning/Date/ActivityLogId. Confirmed
+live in the GET /dashboard/vendors response above — both fields are now
+populated for Gildan and HanesBrands.
+
+Also fixed in the same pass: the permanent-disqualification code path in
+runFormalVendorEthicsCheck wrote the activity_log row AFTER already running
+the vendor UPDATE, so ethics_check_activity_log_id was always left NULL.
+Reordered so the log write happens first and its id is persisted on the
+vendor row — confirmed non-null (175/176) after re-running both checks.
+
+====================================================================
+3. DELETE / ARCHIVE FROM THE VENDORS TAB
+====================================================================
+
+Backend now supports both, live:
+
+- DELETE /dashboard/vendors/:id  (already existed, unchanged)
+    Permanently destroys the row. PIN-gated: body { "pin": "<KANE_APPROVAL_PIN>" }.
+    Irreversible — use for genuine mistakes/duplicates only.
+
+- POST /dashboard/vendors/:id/archive  (NEW)
+    Soft-delete: sets archived_at, row and full ethics-check history survive.
+    PIN-gated the same way: body { "pin": "<KANE_APPROVAL_PIN>" }.
+    Archived vendors are excluded from GET /dashboard/vendors by default.
+
+- POST /dashboard/vendors/:id/unarchive  (NEW)
+    Restores an archived vendor back into the default list. Same PIN gate.
+
+- GET /dashboard/vendors?includeArchived=true  (NEW query param)
+    Shows archived vendors too, for an "Archived" view if you ever want one.
+
+Smoke-tested live (no PIN available to me, so I couldn't run a full
+archive/restore cycle end-to-end, but confirmed the routes are registered,
+reachable, and correctly PIN-gated — both new endpoints return HTTP 403
+"Invalid or missing approval PIN" rather than 404, and the
+?includeArchived=true param is accepted without error):
+
+  POST /vendors/<id>/archive    (wrong pin) -> 403 Invalid or missing approval PIN
+  POST /vendors/<id>/unarchive  (wrong pin) -> 403 Invalid or missing approval PIN
+  GET  /vendors?includeArchived=true        -> 200, count: 2 (as expected, none archived)
+
+IMPORTANT — the actual button doesn't exist yet: Base44 is a separate
+no-code editor, not code in this git repo, so I cannot add UI elements to
+the Vendors tab myself. The backend is ready; wiring a "Delete" and/or
+"Archive" button into the Base44 card view is a Base44-editor task on your
+end. Exact call shape for a button:
+
+  Archive button:
+    POST https://michael-orchestrator-production.up.railway.app/dashboard/vendors/{id}/archive
+    headers: x-api-key: <MICHAEL_API_KEY>, Content-Type: application/json
+    body: { "pin": "<your KANE_APPROVAL_PIN>" }
+
+  Delete button (permanent):
+    DELETE https://michael-orchestrator-production.up.railway.app/dashboard/vendors/{id}
+    same headers/body shape as above
+
+If you want, next step could be a genuine soft-delete/restore UI concept
+mocked up, or I can just hand you the two curl-equivalent Base44 action
+configs directly — say the word.
+
+====================================================================
+4. DEPLOYMENT VERIFICATION (per standing rule — commit != deployment)
+====================================================================
+
+Two commits pushed and confirmed live via direct /health checks:
+
+  commit e87b070 (ethics-check field surfacing + archive/unarchive routes)
+    -> curled /health, deployedCommit matched e87b070591d0eba3ac3cd240031e4ed41ee12ac7
+
+  commit 4eb3e89 (activity_log_id fix)
+    -> curled /health, deployedCommit matched 4eb3e8915d92c2c1ca8027aac121e2efd803d055
+
+Spot-checks against the live changed endpoints (not just a 404 check):
+  - POST /dashboard/vendors/ethics-check for Gildan and HanesBrands both
+    returned 200 with verdict REJECTED and the correct hardcoded reasoning.
+  - GET /dashboard/vendors confirmed ethicsCheckVerdict/ethicsCheckDate/
+    ethicsCheckActivityLogId populated for both rows post-fix.
+  - POST .../archive and .../unarchive both returned 403 (route exists,
+    correctly PIN-gated) rather than 404 (route missing).
