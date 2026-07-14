@@ -1,0 +1,61 @@
+name: Echo Foundation 0.4 Android APK
+
+on:
+  push:
+    branches: [echo/foundation-0.4-checkpoint]
+    paths:
+      - '.github/workflows/echo-foundation-0.4-apk.yml'
+      - 'echo-foundation/source/0.4.0/apps/mobile/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: echo-foundation-0.4-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    name: Build installable debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: echo-foundation/source/0.4.0/apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.1'
+          cache: npm
+          cache-dependency-path: echo-foundation/source/0.4.0/apps/mobile/package.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install pinned mobile dependencies
+        run: npm install --no-audit --no-fund
+      - name: Verify Expo source
+        run: |
+          npm run typecheck
+          npx expo-doctor
+      - name: Generate Android project
+        env:
+          CI: '1'
+        run: npx expo prebuild --platform android --clean --no-install
+      - name: Build debug APK
+        working-directory: echo-foundation/source/0.4.0/apps/mobile/android
+        env:
+          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+      - name: Name APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk Echo-Foundation-0.4.0-debug.apk
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Echo-Foundation-0.4.0-debug-APK
+          path: echo-foundation/source/0.4.0/apps/mobile/Echo-Foundation-0.4.0-debug.apk
+          if-no-files-found: error
+          retention-days: 30
