@@ -1,0 +1,50 @@
+name: Ashley Sidecar Migration CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "artifacts/api-server/**"
+      - "lib/db/**"
+      - "lib/integrations/**"
+      - "scripts/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "railway.toml"
+      - ".github/workflows/sidecar-migration-ci.yml"
+  push:
+    branches:
+      - "migration/railway-phase-1"
+    paths:
+      - "artifacts/api-server/**"
+      - "lib/db/**"
+      - "lib/integrations/**"
+      - "scripts/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "railway.toml"
+      - ".github/workflows/sidecar-migration-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  sidecar-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql://ci_user:ci_password@127.0.0.1:5432/ci_placeholder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.26.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run ci:sidecar
