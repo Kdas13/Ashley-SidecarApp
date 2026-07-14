@@ -7,13 +7,19 @@ on:
     paths:
       - '.github/workflows/echo-foundation-0.4-checkpoint.yml'
       - 'echo-foundation/checkpoints/0.4.0/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/echo-foundation-0.4-checkpoint.yml'
+      - 'echo-foundation/checkpoints/0.4.0/**'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: echo-foundation-0.4-checkpoint-${{ github.ref }}
+  group: echo-foundation-0.4-checkpoint-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
