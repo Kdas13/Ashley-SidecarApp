@@ -2,24 +2,22 @@ name: Echo Foundation 0.4 Checkpoint CI
 
 on:
   push:
-    branches:
-      - echo/foundation-0.4-checkpoint
+    branches: [echo/foundation-0.4-checkpoint]
     paths:
       - '.github/workflows/echo-foundation-0.4-checkpoint.yml'
-      - 'echo-foundation/checkpoints/0.4.0/**'
+      - 'echo-foundation/source/0.4.0/**'
   pull_request:
-    branches:
-      - main
+    branches: [main]
     paths:
       - '.github/workflows/echo-foundation-0.4-checkpoint.yml'
-      - 'echo-foundation/checkpoints/0.4.0/**'
+      - 'echo-foundation/source/0.4.0/**'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: echo-foundation-0.4-checkpoint-${{ github.event.pull_request.number || github.ref }}
+  group: echo-foundation-0.4-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -27,52 +25,44 @@ jobs:
     name: Core verification
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: echo-foundation/source/0.4.0
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22.13.1'
-      - name: Extract committed checkpoint
-        run: |
-          mkdir -p "$RUNNER_TEMP/echo04"
-          unzip -q echo-foundation/checkpoints/0.4.0/Echo_Foundation_0_4_0_VERIFIED_LOCAL.zip -d "$RUNNER_TEMP/echo04"
-          test -f "$RUNNER_TEMP/echo04/echo-foundation-0.4.0-release/package-lock.json"
-      - name: Install locked dependencies
-        working-directory: ${{ runner.temp }}/echo04/echo-foundation-0.4.0-release
-        run: npm ci
+          cache: npm
+          cache-dependency-path: echo-foundation/source/0.4.0/package.json
+      - name: Install pinned dependencies
+        run: npm install --no-audit --no-fund
       - name: Strict TypeScript
-        working-directory: ${{ runner.temp }}/echo04/echo-foundation-0.4.0-release
         run: npm run typecheck
       - name: Automated tests
-        working-directory: ${{ runner.temp }}/echo04/echo-foundation-0.4.0-release
         run: npm test
       - name: Production builds
-        working-directory: ${{ runner.temp }}/echo04/echo-foundation-0.4.0-release
         run: npm run build
       - name: Mobile source syntax
-        working-directory: ${{ runner.temp }}/echo04/echo-foundation-0.4.0-release
         run: npm run check:mobile-syntax
 
   mobile:
     name: Expo verification
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: echo-foundation/source/0.4.0/apps/mobile
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22.13.1'
-      - name: Extract committed checkpoint
-        run: |
-          mkdir -p "$RUNNER_TEMP/echo04"
-          unzip -q echo-foundation/checkpoints/0.4.0/Echo_Foundation_0_4_0_VERIFIED_LOCAL.zip -d "$RUNNER_TEMP/echo04"
-          test -f "$RUNNER_TEMP/echo04/echo-foundation-0.4.0-release/apps/mobile/package-lock.json"
-      - name: Install mobile dependencies
-        working-directory: ${{ runner.temp }}/echo04/echo-foundation-0.4.0-release/apps/mobile
-        run: npm ci
+          cache: npm
+          cache-dependency-path: echo-foundation/source/0.4.0/apps/mobile/package.json
+      - name: Install pinned mobile dependencies
+        run: npm install --no-audit --no-fund
       - name: Mobile TypeScript
-        working-directory: ${{ runner.temp }}/echo04/echo-foundation-0.4.0-release/apps/mobile
         run: npm run typecheck
-      - name: Expo doctor
-        working-directory: ${{ runner.temp }}/echo04/echo-foundation-0.4.0-release/apps/mobile
+      - name: Expo Doctor
         run: npm run doctor

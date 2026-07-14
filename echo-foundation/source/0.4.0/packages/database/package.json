@@ -1,0 +1,24 @@
+{
+  "name": "@echo/database",
+  "version": "0.4.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "migrate": "tsx src/migrate.ts"
+  },
+  "dependencies": {
+    "pg": "8.22.0"
+  },
+  "devDependencies": {
+    "@types/pg": "8.15.6"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts"
+}

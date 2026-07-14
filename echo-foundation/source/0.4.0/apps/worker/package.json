@@ -1,0 +1,16 @@
+{
+  "name": "@echo/worker",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "dotenv": "17.4.2",
+    "@echo/database": "0.4.0"
+  }
+}

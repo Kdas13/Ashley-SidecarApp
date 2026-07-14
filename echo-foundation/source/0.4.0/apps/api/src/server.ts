@@ -1,0 +1,10 @@
+import 'dotenv/config';
+import { buildApp } from './app.js';
+import { createPool } from '@echo/database';
+const pool = process.env.DATABASE_URL ? createPool() : undefined;
+const app = await buildApp({ ...(pool ? { pool } : {}), ...(process.env.ECHO_OWNER_USER_ID ? { ownerUserId: process.env.ECHO_OWNER_USER_ID } : {}) });
+const port = Number(process.env.PORT ?? 8080);
+await app.listen({ host: '0.0.0.0', port });
+const stop = async () => { await app.close(); await pool?.end(); process.exit(0); };
+process.on('SIGINT', stop);
+process.on('SIGTERM', stop);

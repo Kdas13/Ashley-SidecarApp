@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "Echo",
+    "slug": "echo-ashley-v4",
+    "version": "0.4.0",
+    "orientation": "portrait",
+    "scheme": "echo",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "android": { "package": "uk.co.kanestewart.echo", "adaptiveIcon": { "backgroundColor": "#0A0A0C" }, "permissions": [], "versionCode": 4 },
+    "plugins": ["expo-router", "expo-secure-store", "expo-document-picker", "expo-file-system"],
+    "experiments": { "typedRoutes": true },
+    "runtimeVersion": { "policy": "appVersion" },
+    "extra": { "release": "0.4.0" }
+  }
+}
