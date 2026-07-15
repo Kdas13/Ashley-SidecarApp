@@ -2,6 +2,7 @@ import { Stack } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { checkHealth } from '../src/api';
+import { ECHO_MODEL } from '../src/openai';
 import { clearOpenAiKey, getOpenAiKey } from '../src/settings';
 
 export default function Developer() {
@@ -35,7 +36,7 @@ export default function Developer() {
     <Text style={styles.title}>System diagnostics</Text>
     <Status label="Echo API" value={api} good={api.startsWith('Connected')} />
     <Status label="OpenAI key" value={modelKey === null ? 'Checking…' : modelKey ? 'Stored securely on this device' : 'Not configured'} good={modelKey === true} />
-    <Status label="Model" value="GPT-5.6 Luna" good />
+    <Status label="Model" value={ECHO_MODEL} good />
     <Status label="Paid calls" value="Manual Send only · no automatic retry" good />
     <Status label="Background jobs" value="Disabled" good />
     <Status label="Human approval gates" value="Financial, destructive, external, production, identity and memory-sensitive actions" good />
@@ -48,7 +49,7 @@ export default function Developer() {
 function Status({ label, value, good }: { label: string; value: string; good: boolean }) {
   return <View style={styles.card}>
     <Text style={styles.label}>{label}</Text>
-    <Text selectable style={good ? styles.good : styles.bad}>{good ? '● ' : '● '}{value}</Text>
+    <Text selectable style={good ? styles.good : styles.bad}>● {value}</Text>
   </View>;
 }
 
