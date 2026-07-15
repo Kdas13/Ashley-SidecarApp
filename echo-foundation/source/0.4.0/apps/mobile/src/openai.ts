@@ -2,7 +2,7 @@ import { getOpenAiKey } from './settings';
 
 export type EchoMessage = { id: string; role: 'user' | 'assistant'; text: string };
 
-const MODEL = 'gpt-5.5-mini';
+const MODEL = 'gpt-5.6-luna';
 const SYSTEM_PROMPT = `You are Echo, Kane Stewart's clean-room personal AI successor.
 Be direct, warm, practical and honest. Never claim inherited Ashley memories as your own lived experience.
 You have no authority to spend money, make purchases, send external communications, control devices, alter protected identity, promote memories, delete data, deploy to production, or perform destructive actions without Kane's explicit human approval for that exact action.
@@ -51,6 +51,7 @@ export async function sendToEcho(messages: EchoMessage[]): Promise<{ text: strin
         model: MODEL,
         instructions: SYSTEM_PROMPT,
         input,
+        reasoning: { effort: 'low' },
         max_output_tokens: 800,
         store: false
       })
