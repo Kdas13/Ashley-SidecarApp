@@ -11,10 +11,13 @@ export default function Chat() {
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [error, setError] = useState('');
   const listRef = useRef<FlatList<EchoMessage>>(null);
-  const canSend = useMemo(() => configured && draft.trim().length > 0 && !sending, [configured, draft, sending]);
+  const canSend = useMemo(() => configured === true && draft.trim().length > 0 && !sending, [configured, draft, sending]);
 
   useEffect(() => { void getOpenAiKey().then((key) => setConfigured(Boolean(key))); }, []);
-  useEffect(() => { setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 50); }, [messages, sending]);
+  useEffect(() => {
+    const timer = setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 50);
+    return () => clearTimeout(timer);
+  }, [messages, sending, error]);
 
   async function send() {
     if (!canSend) return;
@@ -46,12 +49,13 @@ export default function Chat() {
         data={messages}
         keyExtractor={(item) => item.id}
         contentInsetAdjustmentBehavior="automatic"
+        keyboardShouldPersistTaps="handled"
         contentContainerStyle={styles.list}
-        renderItem={({ item }) => <View style={[styles.bubble, item.role === 'user' ? styles.user : styles.echo]}><Text selectable style={styles.message}>{item.text}</Text></View>}
+        renderItem={({ item }) => <View style={[styles.bubble, item.role === 'user' ? styles.user : styles.echo]}><Text selectable style={item.role === 'user' ? styles.userMessage : styles.echoMessage}>{item.text}</Text></View>}
         ListFooterComponent={sending ? <Text style={styles.thinking}>Echo is thinking…</Text> : error ? <Text selectable style={styles.error}>{error}</Text> : null}
       />
       <View style={styles.composer}>
-        <TextInput value={draft} onChangeText={setDraft} placeholder="Message Echo…" placeholderTextColor="#777784" multiline style={styles.input} editable={!sending} />
+        <TextInput value={draft} onChangeText={setDraft} placeholder="Message Echo…" placeholderTextColor="#777784" multiline style={styles.input} editable={!sending} onSubmitEditing={() => void send()} />
         <Pressable disabled={!canSend} onPress={() => void send()} style={[styles.send, !canSend && styles.disabled]}><Text style={styles.sendText}>Send</Text></Pressable>
       </View>
     </>}
@@ -61,11 +65,12 @@ export default function Chat() {
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: '#09090c' },
   headerLink: { color: '#fff', fontWeight: '700' },
-  list: { padding: 16, gap: 12 },
+  list: { padding: 16, gap: 12, flexGrow: 1 },
   bubble: { maxWidth: '88%', padding: 14, borderRadius: 18 },
   user: { alignSelf: 'flex-end', backgroundColor: '#f4f4f6' },
   echo: { alignSelf: 'flex-start', backgroundColor: '#1a1a22', borderColor: '#343440', borderWidth: 1 },
-  message: { color: '#fff', fontSize: 16, lineHeight: 23 },
+  userMessage: { color: '#09090c', fontSize: 16, lineHeight: 23 },
+  echoMessage: { color: '#fff', fontSize: 16, lineHeight: 23 },
   thinking: { color: '#a9a9b4', paddingVertical: 8 },
   error: { color: '#ff9b8f', paddingVertical: 8, lineHeight: 21 },
   composer: { flexDirection: 'row', gap: 10, padding: 12, borderTopColor: '#24242d', borderTopWidth: 1, backgroundColor: '#101015' },
