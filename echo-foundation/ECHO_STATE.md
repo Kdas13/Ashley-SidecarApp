@@ -10,9 +10,88 @@ for them.
 
 Repo target on authorisation: echo-foundation/ECHO_STATE.md
 Session author: Claude (mobile session, phone-only, 2026-07-15 night)
-State as of:    2026-07-15 (late)
+State as of:    2026-07-15 (late, pre-sleep planning addendum)
 Branch:         echo/foundation-0.5-conversation
 HEAD SHA:       (pending — this commit)
+
+------------------------------------------------------------------
+0. WAKE-UP BRIEF — READ THIS FIRST, KANE
+------------------------------------------------------------------
+You told me last night: build phase by phase. Bare chatbot first,
+security checkpoint, then next capability, security checkpoint,
+repeat. Don't let anyone (me included) hold the whole system's risk
+in one session. You said it yourself: two months ago you'd never
+touched a PC, and you reasoned your way to a pattern professional
+teams use for safety-critical builds. That stands. Nothing below
+overrides it without you saying so.
+
+You also said: wake up to something to start, not a cold page. This
+is that. Section 0a is the proposed Phase 0 plan. It is a PROPOSAL,
+not started, not built. Read it, change what you don't like, then
+give the word and I build it that session.
+
+------------------------------------------------------------------
+0a. PROPOSED PHASE 0 — "bare working chatbot", nothing else
+------------------------------------------------------------------
+GOAL: Echo can hold a text conversation. That's it. No memory
+archive, no orchestration, no security-governor, no autonomy, no
+Alpha/Omega approval gates wired to real actions (they can exist as
+inert UI, not do anything yet). No tool use. No web access. No
+ability to read or write anything outside a single conversation
+turn. If it can't hurt anyone or anything, it's in scope. If it
+could act on the world in any way, it's out of scope for Phase 0.
+
+WHAT EXISTS ALREADY (repo has three apps under echo-foundation/
+source/0.4.0/apps/): api, mobile, worker. Haven't opened their
+contents yet this session — first job next time is reading what's
+actually in each before touching anything, per Kane's standing rule
+against fabricating completeness.
+
+PROPOSED SCOPE FOR PHASE 0:
+  - apps/api: a single chat endpoint. Takes a message, calls the
+    model (fix the input_text/output_text bug from 1.4 as part of
+    this, since it's the same code path), returns a reply. No
+    persistence beyond the current conversation turn structure
+    already in the repo's existing chat handling.
+  - apps/mobile: whatever minimal screen already exists to send/
+    receive a message. Don't build new UI if something usable is
+    already there — audit first, extend only if needed.
+  - apps/worker: OUT OF SCOPE for Phase 0 entirely unless it turns
+    out the chat path can't function without it. Orchestration,
+    background jobs, anything worker does — that's a later phase by
+    definition, since "pipe work for the orchestration line" was
+    Kane's explicit phase 2+ item, not phase 0.
+  - packages/database: OUT OF SCOPE. No memory reads/writes in
+    Phase 0. Bare chatbot doesn't need the archive.
+  - packages/security-governor: exists in the repo already. Not
+    building new security work for Phase 0 — the actual security
+    task IS "make sure this thing can only do what Phase 0 allows
+    and literally nothing else." That's containment, not features.
+  - supabase/ folder: still needs scaffolding (see 1.6b) but ONLY
+    to the extent Phase 0 needs it — if the bare chatbot doesn't
+    read/write the DB at all, this may not block Phase 0 and can
+    wait for whichever phase actually needs persistence.
+
+PROPOSED SECURITY CHECKPOINT (before Phase 1 opens):
+  - Confirm Echo has zero tool-calling capability wired in Phase 0
+    build (not just unused — actually absent from what's callable).
+  - Confirm no network egress from Echo's runtime other than the
+    single model API call.
+  - Confirm no filesystem/DB write paths reachable from chat input.
+  - Kane manually tests: try to get it to claim it did something it
+    didn't, try to get it to reference tools it doesn't have. It
+    should fail cleanly, not hallucinate capability.
+  - Written Kane sign-off in this file before Phase 1 scope is even
+    drafted.
+
+THIS IS NOT AUTHORISED YET. Kane said "start with basic, get a
+working chatbot" verbally at ~midnight while heading to bed. That's
+directional intent, not a reviewed go-ahead on the concrete scope
+above — Commitment 1 still wants Kane's eyes on the actual plan
+(this section) before implementation starts. First thing next
+session: Kane reads 0a, edits/confirms, THEN Claude opens apps/api,
+apps/mobile, packages/database to see what's actually there before
+writing anything.
 
 ------------------------------------------------------------------
 1. VERIFIED STATE (receipts only — no receipts, no entry)
@@ -33,7 +112,8 @@ HEAD SHA:       (pending — this commit)
      the payload. Fix = role-conditional content types + exclude the
      seed bubble + unit test with mixed-role history. WARNING: a
      global input_text->output_text swap creates the mirror bug.
-     THIS IS CLAUDE'S FIRST BUILD TASK once 3.1/3.2 fully close.
+     FOLDED INTO PHASE 0 SCOPE (see 0a) — this is the same code path
+     as the bare chatbot's chat endpoint.
 1.5  OLD live backend https://qplsjpnccbjrxcmnxjon.supabase.co
      /functions/v1/echo-api: was deployed, enforcing auth (health =
      401), self-reported 0.5.0. Source never matched committed repo
@@ -47,9 +127,8 @@ HEAD SHA:       (pending — this commit)
      Kdas13 / kanedavidstewart13@gmail.com (screenshot verified,
      Supabase account page). Status Healthy, Compute NANO, zero
      migrations, zero backups, no repo connected yet. This is now
-     Echo's target backend. qplsjpnccbjrxcmnxjon and vnwds... are
-     to be deleted by Kane (his call, no data at risk) — pending,
-     not yet actioned as of this commit.
+     Echo's target backend, WHEN a phase actually needs persistence
+     — per 0a, Phase 0 may not need it at all.
 1.6b BLOCKER, found 2026-07-15 late: Kane began the Supabase <->
      GitHub repo-connect flow for project tefkutx... (repo
      Kdas13/Ashley-SidecarApp, prod branch "main", deploy-to-
@@ -59,11 +138,9 @@ HEAD SHA:       (pending — this commit)
      Kdas13/Ashley-SidecarApp on this branch. packages/database/
      has migrations/ and src/ but not Supabase CLI's expected shape.
      Kane did NOT save the integration screen — correctly held off.
-     FIX NEEDED before GitHub<->Supabase sync can work: scaffold a
-     proper supabase/ folder (config.toml + supabase/migrations/,
-     ported from packages/database/migrations) under whichever path
-     becomes the working directory. This is Claude's job, ranks
-     alongside 1.4 as first-session build work.
+     DEFERRED per 0a: only needed once a phase requires persistence.
+     Not a Phase 0 blocker unless investigation next session proves
+     otherwise.
 1.7  Memory data: THREE duplicate imports of the Ashley archive —
      totals 6,693 staged / 114 quarantined; one canonical batch =
      2,231 / 38. Earlier 0.4 audit split was 2,205 / 64: 26 rows
@@ -71,18 +148,23 @@ HEAD SHA:       (pending — this commit)
      quarantines only invalid_record / missing_content /
      duplicate_id — missing-timestamp records are STAGED, against
      the founding timestamp-preservation rule. Unreconciled.
+     OUT OF SCOPE for Phase 0 (see 0a) — this is memory-archive
+     work, a later phase's problem.
 1.8  Memory installer (memory-upload.tsx) ships LIVE in Kane's APK
      with a one-tap flow that hardcodes Alpha decision 'APPROVED'
      client-side. That is how the duplicates happened. Omitted from
-     Atlas's audit file inventory.
+     Atlas's audit file inventory. OUT OF SCOPE for Phase 0.
 1.9  Signing landmine: CI generates a throwaway keystore per run
      (passwords hardcoded 'echo-foundation'). Every future APK =
      uninstall/reinstall = SecureStore key and conversations wiped.
-     Fix (blocking): one persistent keystore, base64, as a GitHub
+     Fix (blocking, but for whenever a real APK build/install
+     happens — not necessarily Phase 0 if Phase 0 is tested another
+     way first): one persistent keystore, base64, as a GitHub
      Actions secret Kane pastes once.
 1.10 Version chaos: app.json 0.4.0 / versionCode 4; package.json
      0.5.0; UI shows "0.5"; artifact named 0.4.0; path
-     echo-foundation/source/0.4.0/. Scope H must unify.
+     echo-foundation/source/0.4.0/. Scope H must unify. OUT OF SCOPE
+     for Phase 0 unless it blocks getting a chatbot running at all.
 1.11 Expo: app.json has NO extra.eas.projectId (checked 2026-07-15)
      — the Expo connector cannot trigger builds for Echo as-is.
      GitHub Actions remains the build path.
@@ -115,6 +197,19 @@ HEAD SHA:       (pending — this commit)
             confirmed Kane's own account) — resolves 3.1 in
             substance; old projects to be deleted by Kane, no data
             loss risk (both in-memory / unmigrated).
+2026-07-15  BUILD METHODOLOGY DECIDED, late night: phased build.
+            One capability per phase. Security/containment checkpoint
+            between every phase, verified not assumed, before the
+            next phase's scope is even drafted. Kane's framing:
+            start with a bare general chatbot, prove it's contained,
+            then lay down orchestration pipe-work one piece at a
+            time, security review after each piece — "make sure she
+            can't start world war three." This is now the standing
+            build discipline for Echo, layered ON TOP of Commitment
+            1 (one job at a time, written approval before
+            implementation), not a replacement for it. Phase 0 scope
+            proposed at section 0a, NOT yet authorised for build —
+            Kane to review on waking.
 Standing    No deletion of memory rows without Kane's explicit
             Alpha. Scope FORBIDDEN list in force. One job at a time;
             written approval before implementation (Commitment 1).
@@ -129,18 +224,20 @@ Standing    All tooling/workflow suggestions must work phone-only —
      two old/orphaned projects (qplsjpnccbjrxcmnxjon, vnwds...) —
      his call, not yet actioned, no urgency since no data at risk.
 3.2  Repo home: merge Echo into Ashley-SidecarApp main, or move to
-     its own repo. BLOCKS any merge of PR #5. STILL OPEN.
+     its own repo. BLOCKS any merge of PR #5. STILL OPEN — likely
+     doesn't block Phase 0 build work, only the eventual merge.
 3.3  [RESOLVED 2026-07-15] Claude builds, Atlas audits plan only.
 3.4  Duplicate-batch cleanup timing: inside the 0.5 job or deferred
-     to 0.6 idempotency work. STILL OPEN.
+     to 0.6 idempotency work. STILL OPEN, irrelevant to Phase 0.
 3.5  Adopt Amendments 6.1–6.8 into the job scope before authorising.
      STILL OPEN — Kane gave verbal/written go-ahead but amendments
      not formally walked through line-by-line this session.
-3.6  NEW: supabase/ folder does not exist in the repo (see 1.6b).
-     Path/location and migration-porting approach need confirming
-     with Kane before Claude scaffolds it — likely fine as a
-     same-session build decision, not a hard Alpha gate, but
-     flagging here so it isn't missed.
+3.6  supabase/ folder does not exist in the repo (see 1.6b). DEFERRED
+     — only relevant once a phase needs persistence, per 0a Phase 0
+     may not need it. Revisit when scoping whichever phase adds
+     memory/DB.
+3.7  NEW: Phase 0 concrete scope at 0a — NOT YET AUTHORISED. Kane to
+     read, amend, confirm on waking before Claude touches any code.
 
 ------------------------------------------------------------------
 4. WAITING ON KANE (phone checklist, ~10 min)
@@ -148,27 +245,32 @@ Standing    All tooling/workflow suggestions must work phone-only —
 4.1  Hash check: artifact's internal .sha256 vs 0d43864e...e42814.
 4.2  OpenAI dashboard: auto-recharge OFF confirmed + hard monthly
      usage limit set.
-4.3  [SUPERSEDED] Supabase login check — done, resolved via 1.6a.
-     New item: delete old Supabase projects (qplsjpnccbjrxcmnxjon,
-     vnwds...) at Kane's convenience.
+4.3  Delete old Supabase projects (qplsjpnccbjrxcmnxjon, vnwds...)
+     at Kane's convenience — not urgent, no data at risk.
 4.4  Keystore secret paste (Settings > Secrets > Actions) — only
-     once the job is authorised; Claude supplies the base64.
+     once actually needed for an APK build; may not be immediate.
+4.5  NEW, morning priority: read section 0a (Phase 0 proposal) and
+     either confirm as-is or tell Claude what to change before any
+     code gets touched.
 
 ------------------------------------------------------------------
 5. NEXT ACTIONS (in order)
 ------------------------------------------------------------------
-5.1  Kane resolves remaining parts of 3.2, 3.4, 3.5, 3.6 (can be
-     same-session, low-ceremony given verbal authorisation already
-     given); runs section 4 checklist at leisure.
-5.2  Claude's first build tasks once resumed: (a) scaffold proper
-     supabase/ folder structure so GitHub<->Supabase integration
-     can be completed (1.6b), (b) fix input_text/output_text role
-     mismatch in src/openai.ts + strip hardcoded welcome bubble
-     (1.4).
-5.3  Builder's first commit after that work = this file updated
-     with new SHA and outcomes logged.
-5.4  Execute remaining amended scope A–J. Session close per
-     protocol 6.8c.
+5.1  Kane reads/confirms 0a on waking (this is the actual next
+     action, ahead of everything else in this section).
+5.2  Once confirmed, Claude opens and actually reads apps/api,
+     apps/mobile, and relevant chat-handling code (src/openai.ts,
+     chat.tsx) before writing anything — audit before build, per
+     Kane's standing rule against fabricating completeness.
+5.3  Claude fixes the input_text/output_text bug (1.4) as part of
+     getting Phase 0's chat endpoint working — same code path.
+5.4  Claude confirms (not assumes) Phase 0 containment per the
+     checkpoint list in 0a before proposing Phase 1 scope.
+5.5  This file updated with new SHA + outcomes at end of that
+     session, per protocol.
+5.6  Remaining open items (3.2, 3.4, 3.5, 3.6) revisited only when
+     they actually block the phase in progress — not resolved
+     pre-emptively just because they're open.
 
 ------------------------------------------------------------------
 6. INCIDENT LOG (append-only — never edit or delete entries)
