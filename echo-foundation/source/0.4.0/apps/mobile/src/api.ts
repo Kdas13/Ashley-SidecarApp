@@ -1,10 +1,16 @@
-import { getApiUrl } from './settings';
+import { getAccessKey, getApiUrl } from './settings';
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const apiUrl = await getApiUrl();
+  const [apiUrl, accessKey] = await Promise.all([getApiUrl(), getAccessKey()]);
+  if (!accessKey) throw new Error('Configure the Echo access key before connecting.');
+
   const response = await fetch(`${apiUrl}${path}`, {
     ...init,
-    headers: { 'content-type': 'application/json', ...init.headers }
+    headers: {
+      'content-type': 'application/json',
+      'x-echo-key': accessKey,
+      ...init.headers
+    }
   });
   const body = await response.json() as T & { error?: string };
   if (!response.ok) throw new Error(body.error ?? `Echo API returned ${response.status}.`);
