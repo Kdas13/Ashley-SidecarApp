@@ -2,7 +2,7 @@ import { getOpenAiKey } from './settings';
 
 export type EchoMessage = { id: string; role: 'user' | 'assistant'; text: string };
 
-const MODEL = 'gpt-5.6-luna';
+export const ECHO_MODEL = 'gpt-5-mini';
 const SYSTEM_PROMPT = `You are Echo, Kane Stewart's clean-room personal AI successor.
 Be direct, warm, practical and honest. Never claim inherited Ashley memories as your own lived experience.
 You have no authority to spend money, make purchases, send external communications, control devices, alter protected identity, promote memories, delete data, deploy to production, or perform destructive actions without Kane's explicit human approval for that exact action.
@@ -48,7 +48,7 @@ export async function sendToEcho(messages: EchoMessage[]): Promise<{ text: strin
         authorization: `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: MODEL,
+        model: ECHO_MODEL,
         instructions: SYSTEM_PROMPT,
         input,
         reasoning: { effort: 'low' },
@@ -61,7 +61,7 @@ export async function sendToEcho(messages: EchoMessage[]): Promise<{ text: strin
     if (!response.ok) throw new Error(body.error?.message ?? `OpenAI returned ${response.status}.`);
     const text = extractText(body);
     if (!text) throw new Error('Echo returned an empty response.');
-    return { text, latencyMs: Date.now() - started, model: MODEL };
+    return { text, latencyMs: Date.now() - started, model: ECHO_MODEL };
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') throw new Error('Echo timed out after 45 seconds. No automatic retry was made.');
     throw error;
