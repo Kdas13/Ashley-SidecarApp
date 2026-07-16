@@ -97,3 +97,14 @@ jobs:
           git add atlas-one-apk-output/download-url.txt atlas-one-apk-output/Atlas-One-v1.1.0.apk.sha256
           git commit -m "Publish verified Atlas One APK download [skip ci]"
           git push
+
+      - name: Record build result
+        if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        run: |
+          mkdir -p atlas-one-apk-output
+          printf 'status=%s\ncommit=%s\nrun=%s\n' "${{ job.status }}" "${{ github.sha }}" "${{ github.run_id }}" > atlas-one-apk-output/build-status.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add atlas-one-apk-output/build-status.txt
+          git commit -m "Record Atlas One APK build result [skip ci]" || true
+          git push || true
