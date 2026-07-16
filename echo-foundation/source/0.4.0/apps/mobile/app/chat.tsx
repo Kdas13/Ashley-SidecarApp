@@ -4,8 +4,17 @@ import { FlatList, KeyboardAvoidingView, Pressable, StyleSheet, Text, TextInput,
 import { EchoMessage, sendToEcho } from '../src/openai';
 import { getOpenAiKey } from '../src/settings';
 
+// Rendered on open so the screen is not empty. Echo never said this, so it is
+// marked local and never reaches the model — see EchoMessage.local in src/openai.ts.
+const WELCOME: EchoMessage = {
+  id: 'welcome',
+  role: 'assistant',
+  text: 'Hello, Kane. Echo is online. What are we working on?',
+  local: true
+};
+
 export default function Chat() {
-  const [messages, setMessages] = useState<EchoMessage[]>([{ id: 'welcome', role: 'assistant', text: 'Hello, Kane. Echo is online. What are we working on?' }]);
+  const [messages, setMessages] = useState<EchoMessage[]>([WELCOME]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [configured, setConfigured] = useState<boolean | null>(null);
