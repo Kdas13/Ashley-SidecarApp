@@ -1,4 +1,34 @@
 ==================================================================
+STATUS: SHELVED — 2026-07-16
+==================================================================
+This file (Amendment 6.8 baton protocol) is no longer the live
+continuity system for Echo. Kane's decision, 2026-07-16: Echo's
+project state now lives in the Echo Build System Google Drive
+folder (structure originally proposed by Atlas, contents audited
+and corrected by Claude the same day — see BP-0002-CONVERSATION-FIX
+in 06_Completed Packs for that audit).
+
+Reason for the switch: Drive is provider-independent, not just
+AI-independent. Any AI system — not just one that can read this
+repo and write commits — can open the Drive, claim a Build Pack,
+and complete it, per the boot sequence in 00_READ_ME_FIRST. That
+lets Kane pick whichever model suits each piece of work and start a
+fresh chat per phase without losing continuity.
+
+This file is NOT deleted. Everything below this header is preserved
+exactly as it stood at hand-off — verified state (section 1),
+decisions log (section 2), open gates (section 3), and the
+append-only incident log (section 6) are all real history and
+should not be treated as stale or wrong. They are simply no longer
+being added to here. If Echo's continuity system is ever moved back
+to this repo, this file is the correct point to resume from.
+
+Do not update this file. Do not treat it as authoritative for
+current state. Current state: Echo Build System Drive folder,
+Project Dashboard document.
+==================================================================
+
+==================================================================
 ECHO_STATE — session baton for the Echo / Ashley-V4 project
 ==================================================================
 Protocol: Scope Amendment 6.8 (see Echo_0_5_Hostile_Audit_CLAUDE_
@@ -114,6 +144,16 @@ writing anything.
      global input_text->output_text swap creates the mirror bug.
      FOLDED INTO PHASE 0 SCOPE (see 0a) — this is the same code path
      as the bare chatbot's chat endpoint.
+
+     STATUS UPDATE 2026-07-16: FIXED. Commits 95c888f3 (openai.ts,
+     role-derived content types, buildInput extracted as pure
+     function) and 612d66f9 (chat.tsx, welcome bubble marked
+     local). 16/16 logic checks passed against the committed file
+     in an isolated test harness (mixed-role history, mirror-bug
+     guard, local-message exclusion, 12-message window behaviour).
+     CI: Core verification green, Expo verification (incl. mobile
+     tsc --noEmit) green. Full writeup: Echo Build System Drive,
+     06_Completed Packs, BP-0002-CONVERSATION-FIX.
 1.5  OLD live backend https://qplsjpnccbjrxcmnxjon.supabase.co
      /functions/v1/echo-api: was deployed, enforcing auth (health =
      401), self-reported 0.5.0. Source never matched committed repo
@@ -129,6 +169,14 @@ writing anything.
      migrations, zero backups, no repo connected yet. This is now
      Echo's target backend, WHEN a phase actually needs persistence
      — per 0a, Phase 0 may not need it at all.
+
+     NOTE 2026-07-16: CI's Supabase Preview check is now pointing at
+     tefkutxlcjosxnkxszhz (visible in PR #5 checks), contradicting
+     1.6b below which says Kane did not save the integration screen.
+     Unconfirmed whether Kane saved it after this file was written,
+     or whether it was picked up at account level. Not investigated
+     further — Phase 0 needed no persistence, so it did not block.
+     Flag for whoever next touches Supabase wiring.
 1.6b BLOCKER, found 2026-07-15 late: Kane began the Supabase <->
      GitHub repo-connect flow for project tefkutx... (repo
      Kdas13/Ashley-SidecarApp, prod branch "main", deploy-to-
@@ -161,6 +209,11 @@ writing anything.
      happens — not necessarily Phase 0 if Phase 0 is tested another
      way first): one persistent keystore, base64, as a GitHub
      Actions secret Kane pastes once.
+
+     STATUS 2026-07-16: STILL UNFIXED. Phase 0 verification was done
+     via cloned-branch test harness (logic proven, not on-device),
+     not via installing the APK — this landmine is the reason why.
+     Carries forward as open work; see Drive Dashboard.
 1.10 Version chaos: app.json 0.4.0 / versionCode 4; package.json
      0.5.0; UI shows "0.5"; artifact named 0.4.0; path
      echo-foundation/source/0.4.0/. Scope H must unify. OUT OF SCOPE
@@ -210,6 +263,32 @@ writing anything.
             implementation), not a replacement for it. Phase 0 scope
             proposed at section 0a, NOT yet authorised for build —
             Kane to review on waking.
+2026-07-16  PHASE 0 AUTHORISED AND BUILT. Kane reviewed 0a, corrected
+            Claude's wrong architectural assumption (apps/api has no
+            chat endpoint; chat is mobile-only, straight to OpenAI),
+            said "Go for it." Result: see 1.4 status update. Full
+            audit trail, test evidence, and handover now live in the
+            Echo Build System Drive rather than this file — see
+            shelving note at top of this document.
+2026-07-16  Echo continuity system moved from this file (repo-based,
+            Amendment 6.8) to a Google Drive folder structure. Origin:
+            Atlas built the Drive scaffolding (folder structure,
+            README boot sequence, templates) same day, before his
+            lockout, as a side effect of the audit-only role. Claude
+            audited the actual content Atlas put inside it and found
+            it hollow — 15 Build Pack headers (BP-0002 through
+            BP-0016) with identical structure and no completed
+            architecture, an unfilled AI Handover template as the
+            only file in that folder, an unfilled Test Results
+            template as the only file in that folder. Kane's
+            decision: keep the structural system (it's sound), archive
+            the hollow content as unimplemented planning stubs, and
+            make Phase 0's real fix the first properly-evidenced
+            Build Pack. Reason for the switch itself: provider-
+            independence — any AI model can pick up a Build Pack from
+            Drive with zero prior context, not just one that can read
+            this repo. This file is shelved, not deleted, per Kane's
+            explicit instruction.
 Standing    No deletion of memory rows without Kane's explicit
             Alpha. Scope FORBIDDEN list in force. One job at a time;
             written approval before implementation (Commitment 1).
@@ -236,41 +315,24 @@ Standing    All tooling/workflow suggestions must work phone-only —
      — only relevant once a phase needs persistence, per 0a Phase 0
      may not need it. Revisit when scoping whichever phase adds
      memory/DB.
-3.7  NEW: Phase 0 concrete scope at 0a — NOT YET AUTHORISED. Kane to
-     read, amend, confirm on waking before Claude touches any code.
+3.7  [RESOLVED 2026-07-16] Phase 0 scope authorised, built, verified.
+     All items above marked "carries forward" now live in the Drive
+     Dashboard as open work, not in this section — this file is no
+     longer being updated (see shelving note, top of document).
 
 ------------------------------------------------------------------
 4. WAITING ON KANE (phone checklist, ~10 min)
 ------------------------------------------------------------------
-4.1  Hash check: artifact's internal .sha256 vs 0d43864e...e42814.
-4.2  OpenAI dashboard: auto-recharge OFF confirmed + hard monthly
-     usage limit set.
-4.3  Delete old Supabase projects (qplsjpnccbjrxcmnxjon, vnwds...)
-     at Kane's convenience — not urgent, no data at risk.
-4.4  Keystore secret paste (Settings > Secrets > Actions) — only
-     once actually needed for an APK build; may not be immediate.
-4.5  NEW, morning priority: read section 0a (Phase 0 proposal) and
-     either confirm as-is or tell Claude what to change before any
-     code gets touched.
+This section is frozen. Any items still outstanding (keystore
+secret, old Supabase project deletion, hash check) now live in the
+Echo Build System Drive, Project Dashboard document, not here.
 
 ------------------------------------------------------------------
 5. NEXT ACTIONS (in order)
 ------------------------------------------------------------------
-5.1  Kane reads/confirms 0a on waking (this is the actual next
-     action, ahead of everything else in this section).
-5.2  Once confirmed, Claude opens and actually reads apps/api,
-     apps/mobile, and relevant chat-handling code (src/openai.ts,
-     chat.tsx) before writing anything — audit before build, per
-     Kane's standing rule against fabricating completeness.
-5.3  Claude fixes the input_text/output_text bug (1.4) as part of
-     getting Phase 0's chat endpoint working — same code path.
-5.4  Claude confirms (not assumes) Phase 0 containment per the
-     checkpoint list in 0a before proposing Phase 1 scope.
-5.5  This file updated with new SHA + outcomes at end of that
-     session, per protocol.
-5.6  Remaining open items (3.2, 3.4, 3.5, 3.6) revisited only when
-     they actually block the phase in progress — not resolved
-     pre-emptively just because they're open.
+This section is frozen. Next actions for Echo now live in the Echo
+Build System Drive, Project Dashboard document — "Next Recommended
+Build Pack" field, updated at the end of every completed pack.
 
 ------------------------------------------------------------------
 6. INCIDENT LOG (append-only — never edit or delete entries)
@@ -303,5 +365,24 @@ Standing    All tooling/workflow suggestions must work phone-only —
             supabase/ folder in the expected shape. Caught before
             saving — no live misconfiguration occurred. Logged so
             future sessions don't repeat the same attempt blind.
+2026-07-16  Atlas, in his retained audit-only role, built the Echo
+            Build System Drive folder structure (sound) and
+            populated it with 15 architecture Build Pack headers
+            (BP-0002 through BP-0016), all marked READY, none
+            containing actual completed architecture — identical
+            section skeletons with empty "Completion Summary"
+            fields. The AI Handover and Test Results folders each
+            contained only their own blank templates — no session
+            ever produced a real filled-in handover or test record,
+            despite the README's own Rule Zero explicitly requiring
+            one before ending a session. Same failure pattern as the
+            four-hour GitHub incident: confident forward motion
+            (fifteen documents in one session) with nothing verified
+            underneath when checked. Caught by Claude's audit before
+            any of it was treated as real architecture to build
+            from. Result: BP-0002 through BP-0016 archived as
+            unimplemented planning stubs (see Drive 10_Archive), not
+            deleted. Continuity system itself judged sound and kept;
+            content judged hollow and quarantined.
 
-End of state.
+End of state. Frozen 2026-07-16 — see shelving note at top.
