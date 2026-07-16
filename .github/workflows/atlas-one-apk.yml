@@ -6,10 +6,15 @@ on:
     paths:
       - "atlas-one-apk-source/**"
       - ".github/workflows/atlas-one-apk.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "atlas-one-apk-source/**"
+      - ".github/workflows/atlas-one-apk.yml"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-apk:
@@ -62,7 +67,7 @@ jobs:
           sha256sum Atlas-One-v1.1.0.apk | tee Atlas-One-v1.1.0.apk.sha256
           unzip -t Atlas-One-v1.1.0.apk
 
-      - name: Upload APK
+      - name: Upload GitHub artifact
         uses: actions/upload-artifact@v4
         with:
           name: Atlas-One-v1.1.0-APK
@@ -71,3 +76,24 @@ jobs:
             Atlas-One-v1.1.0.apk.sha256
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish temporary direct download
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        run: |
+          URL="$(curl --fail --silent --show-error -F 'file=@Atlas-One-v1.1.0.apk' -F 'secret=' -F 'expires=168' https://0x0.st)"
+          case "$URL" in
+            https://*) ;;
+            *) echo "Invalid upload response: $URL" >&2; exit 1 ;;
+          esac
+          mkdir -p atlas-one-apk-output
+          printf '%s\n' "$URL" > atlas-one-apk-output/download-url.txt
+          cp Atlas-One-v1.1.0.apk.sha256 atlas-one-apk-output/Atlas-One-v1.1.0.apk.sha256
+
+      - name: Commit verified download pointer
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add atlas-one-apk-output/download-url.txt atlas-one-apk-output/Atlas-One-v1.1.0.apk.sha256
+          git commit -m "Publish verified Atlas One APK download [skip ci]"
+          git push
