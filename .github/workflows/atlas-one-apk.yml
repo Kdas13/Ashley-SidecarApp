@@ -1,0 +1,73 @@
+name: Atlas One APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "atlas-one-apk-source/**"
+      - ".github/workflows/atlas-one-apk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Restore Atlas One source
+        run: |
+          mkdir -p atlas-one-apk
+          base64 --decode atlas-one-apk-source/payload.b64 > /tmp/atlas-one-apk.tgz
+          echo "5663d41968f48c10d38ecab4f2323b3183ad46d70086af9bb1dd90e425b296ea  /tmp/atlas-one-apk.tgz" | sha256sum --check
+          tar -xzf /tmp/atlas-one-apk.tgz -C atlas-one-apk
+
+      - name: Install dependencies
+        working-directory: atlas-one-apk
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck
+        working-directory: atlas-one-apk
+        run: npm run typecheck
+
+      - name: Generate Android project
+        working-directory: atlas-one-apk
+        run: npx expo prebuild --platform android --clean --no-install
+
+      - name: Build installable APK
+        working-directory: atlas-one-apk/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Verify and stage APK
+        run: |
+          cp atlas-one-apk/android/app/build/outputs/apk/debug/app-debug.apk Atlas-One-v1.1.0.apk
+          test -s Atlas-One-v1.1.0.apk
+          sha256sum Atlas-One-v1.1.0.apk | tee Atlas-One-v1.1.0.apk.sha256
+          unzip -t Atlas-One-v1.1.0.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Atlas-One-v1.1.0-APK
+          path: |
+            Atlas-One-v1.1.0.apk
+            Atlas-One-v1.1.0.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
