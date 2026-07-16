@@ -6,6 +6,11 @@ on:
     paths:
       - "atlas-one-apk-source/**"
       - ".github/workflows/atlas-one-apk.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "atlas-one-apk-source/**"
+      - ".github/workflows/atlas-one-apk.yml"
   workflow_dispatch:
 
 permissions:
