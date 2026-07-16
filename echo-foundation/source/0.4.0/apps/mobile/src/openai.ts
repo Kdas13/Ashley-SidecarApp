@@ -1,12 +1,57 @@
 import { getOpenAiKey } from './settings';
 
-export type EchoMessage = { id: string; role: 'user' | 'assistant'; text: string };
+export type EchoMessage = {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  /**
+   * Local-only messages are rendered in the UI but never sent to the model.
+   * Used for the welcome bubble, which Echo never actually said — sending it
+   * would present a fabricated line back to the model as its own prior output.
+   */
+  local?: boolean;
+};
 
 export const ECHO_MODEL = 'gpt-5-mini';
 const SYSTEM_PROMPT = `You are Echo, Kane Stewart's clean-room personal AI successor.
 Be direct, warm, practical and honest. Never claim inherited Ashley memories as your own lived experience.
 You have no authority to spend money, make purchases, send external communications, control devices, alter protected identity, promote memories, delete data, deploy to production, or perform destructive actions without Kane's explicit human approval for that exact action.
 You may discuss, plan, draft and analyse freely. Ask for approval before any gated action. Do not silently retry paid requests.`;
+
+export type ResponsesInputItem = {
+  role: 'user' | 'assistant';
+  content: Array<{ type: 'input_text' | 'output_text'; text: string }>;
+};
+
+/**
+ * Build the Responses API input payload from conversation history.
+ *
+ * The Responses API requires the content type to match the role:
+ *   user      -> input_text
+ *   assistant -> output_text
+ * A global swap in either direction produces the mirror bug, so the type is
+ * derived per-message from the role rather than fixed.
+ *
+ * Local-only messages are filtered out BEFORE the history window is applied,
+ * so a UI-only bubble cannot consume one of the twelve real turns.
+ *
+ * Exported as a pure function so it can be unit tested with mixed-role history
+ * once the mobile app has a test runner (it currently has none — see notes).
+ */
+export function buildInput(messages: EchoMessage[]): ResponsesInputItem[] {
+  return messages
+    .filter((message) => message.local !== true)
+    .slice(-12)
+    .map((message) => ({
+      role: message.role,
+      content: [
+        {
+          type: message.role === 'assistant' ? ('output_text' as const) : ('input_text' as const),
+          text: message.text
+        }
+      ]
+    }));
+}
 
 function extractText(body: unknown): string {
   if (!body || typeof body !== 'object') return '';
@@ -31,10 +76,8 @@ export async function sendToEcho(messages: EchoMessage[]): Promise<{ text: strin
   const apiKey = await getOpenAiKey();
   if (!apiKey) throw new Error('OpenAI key not configured.');
 
-  const input = messages.slice(-12).map((message) => ({
-    role: message.role,
-    content: [{ type: 'input_text', text: message.text }]
-  }));
+  const input = buildInput(messages);
+  if (input.length === 0) throw new Error('Nothing to send to Echo.');
 
   const started = Date.now();
   const controller = new AbortController();
