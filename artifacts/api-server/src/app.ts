@@ -70,13 +70,15 @@ app.use((req, res, next) => {
 app.use(express.urlencoded({ extended: true }));
 
 // Public paths that bypass auth + rate limiting + device-id check:
-//   /api/healthz                → liveness probe (used by Replit deploy)
+//   /api/healthz                → process liveness probe
+//   /api/readyz                 → deployment readiness probe
 //   /api/selfies/:filename      → static image serving for <Image> tags
 //                                  (selfie URLs already use unguessable UUIDs;
 //                                  RN <Image> can't attach Authorization)
 const isPublicApiPath = (path: string): boolean => {
   return (
     path === "/healthz" ||
+    path === "/readyz" ||
     path.startsWith("/selfies/") ||
     path.startsWith("/user-images/")
   );
