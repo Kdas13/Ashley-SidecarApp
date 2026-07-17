@@ -1,0 +1,110 @@
+name: Atlas One v1.5 APK
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "atlas-one-v1.5/**"
+      - "atlas-one-v1.5-app/**"
+      - ".github/workflows/atlas-one-v1.5-apk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout v1.5 branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Restore current installable Atlas One source
+        run: |
+          git fetch origin atlas-one-v1-4-document-image-fix:refs/remotes/origin/atlas-one-v1-4-document-image-fix
+          mkdir -p /tmp/v14 atlas-one-apk
+          git show origin/atlas-one-v1-4-document-image-fix:atlas-one-v1.4-source/App.patch.gz.b64 > /tmp/v14/App-v1.4.patch.gz.b64
+          git show origin/atlas-one-v1-4-document-image-fix:atlas-one-v1.4.2-source/App.patch.gz.b64 > /tmp/v14/App-v1.4.2.patch.gz.b64
+          git show origin/atlas-one-v1-4-document-image-fix:atlas-one-v1.4.2-source/package.json > /tmp/v14/package.json
+          git show origin/atlas-one-v1-4-document-image-fix:atlas-one-v1.4.2-source/app.json > /tmp/v14/app.json
+          base64 --decode atlas-one-apk-source/payload.b64 > /tmp/atlas-one-apk.tgz
+          echo "5663d41968f48c10d38ecab4f2323b3183ad46d70086af9bb1dd90e425b296ea  /tmp/atlas-one-apk.tgz" | sha256sum --check
+          tar -xzf /tmp/atlas-one-apk.tgz -C atlas-one-apk
+          base64 --decode /tmp/v14/App-v1.4.patch.gz.b64 | gzip -d > /tmp/App-v1.4.patch
+          (cd atlas-one-apk && patch --batch --forward -p0 < /tmp/App-v1.4.patch)
+          base64 --decode /tmp/v14/App-v1.4.2.patch.gz.b64 | gzip -d > /tmp/App-v1.4.2.patch
+          (cd atlas-one-apk && patch --batch --forward -p1 < /tmp/App-v1.4.2.patch)
+          cp /tmp/v14/package.json atlas-one-apk/package.json
+          cp /tmp/v14/app.json atlas-one-apk/app.json
+
+      - name: Apply active v1.5 foundation runtime
+        run: |
+          mkdir -p atlas-one-apk/src/foundation
+          cp atlas-one-v1.5/src/mobile-runtime.ts atlas-one-apk/src/foundation/mobile-runtime.ts
+          base64 --decode atlas-one-v1.5-app/App.patch.gz.b64 | gzip -d > /tmp/App-v1.5.patch
+          (cd atlas-one-apk && patch --batch --forward -p1 < /tmp/App-v1.5.patch)
+          cp atlas-one-v1.5-app/package.json atlas-one-apk/package.json
+          cp atlas-one-v1.5-app/app.json atlas-one-apk/app.json
+          grep -q "ATLAS ONE v1.5 CONVERSATION STATE" atlas-one-apk/src/foundation/mobile-runtime.ts
+          grep -q "Persistent Android workspace" atlas-one-apk/App.tsx
+          grep -q "artifact_registry" atlas-one-apk/App.tsx
+          grep -q "assessCandidateResponse" atlas-one-apk/App.tsx
+
+      - name: Install dependencies
+        working-directory: atlas-one-apk
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck
+        working-directory: atlas-one-apk
+        run: npm run typecheck
+
+      - name: Generate Android project
+        working-directory: atlas-one-apk
+        run: npx expo prebuild --platform android --clean --no-install
+
+      - name: Build Android release APK
+        working-directory: atlas-one-apk/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Verify signed APK and embedded v1.5 runtime
+        run: |
+          cp atlas-one-apk/android/app/build/outputs/apk/release/app-release.apk Atlas-One-v1.5.0.apk
+          test -s Atlas-One-v1.5.0.apk
+          unzip -t Atlas-One-v1.5.0.apk
+          unzip -p Atlas-One-v1.5.0.apk assets/index.android.bundle > /tmp/index.android.bundle
+          grep -a -q "ATLAS ONE v1.5 CONVERSATION STATE" /tmp/index.android.bundle
+          grep -a -q "Persistent Android workspace" /tmp/index.android.bundle
+          grep -a -q "workspace_index" /tmp/index.android.bundle
+          grep -a -q "near_duplicate" /tmp/index.android.bundle
+          ZIPALIGN="$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          "$ZIPALIGN" -c -P 16 4 Atlas-One-v1.5.0.apk
+          "$APKSIGNER" verify --verbose --print-certs Atlas-One-v1.5.0.apk | tee Atlas-One-v1.5.0-signature.txt
+          sha256sum Atlas-One-v1.5.0.apk | tee Atlas-One-v1.5.0.apk.sha256
+
+      - name: Upload verified APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Atlas-One-v1.5.0-APK
+          path: |
+            Atlas-One-v1.5.0.apk
+            Atlas-One-v1.5.0.apk.sha256
+            Atlas-One-v1.5.0-signature.txt
+          if-no-files-found: error
+          retention-days: 30

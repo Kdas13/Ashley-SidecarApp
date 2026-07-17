@@ -1,0 +1,38 @@
+name: Atlas One v1.5 Foundation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "atlas-one-v1.5/**"
+      - ".github/workflows/atlas-one-v1.5-foundation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        working-directory: atlas-one-v1.5
+        run: npm install --no-audit --no-fund
+      - name: Typecheck
+        working-directory: atlas-one-v1.5
+        run: npm run typecheck
+      - name: Test
+        working-directory: atlas-one-v1.5
+        run: npm test
+      - name: Verify foundation modules
+        run: |
+          test -f atlas-one-v1.5/src/conversation/state-engine.ts
+          test -f atlas-one-v1.5/src/conversation/response-gate.ts
+          test -f atlas-one-v1.5/src/artifacts/registry.ts
+          test -f atlas-one-v1.5/src/workspace/android-workspace.ts
+          test -f atlas-one-v1.5/src/storage/migrations/001_foundation.sql

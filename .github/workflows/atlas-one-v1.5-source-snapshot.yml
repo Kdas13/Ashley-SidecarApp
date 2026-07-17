@@ -1,0 +1,51 @@
+name: Atlas One v1.5 Source Snapshot
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/atlas-one-v1.5-source-snapshot.yml"
+      - "atlas-one-v1.5/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout v1.5 branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore current installable Atlas One source
+        run: |
+          git fetch origin atlas-one-v1-4-document-image-fix:refs/remotes/origin/atlas-one-v1-4-document-image-fix
+          mkdir -p /tmp/v14 atlas-one-v1.5-app
+          git show origin/atlas-one-v1-4-document-image-fix:atlas-one-v1.4-source/App.patch.gz.b64 > /tmp/v14/App-v1.4.patch.gz.b64
+          git show origin/atlas-one-v1-4-document-image-fix:atlas-one-v1.4.2-source/App.patch.gz.b64 > /tmp/v14/App-v1.4.2.patch.gz.b64
+          git show origin/atlas-one-v1-4-document-image-fix:atlas-one-v1.4.2-source/package.json > /tmp/v14/package.json
+          git show origin/atlas-one-v1-4-document-image-fix:atlas-one-v1.4.2-source/app.json > /tmp/v14/app.json
+          base64 --decode atlas-one-apk-source/payload.b64 > /tmp/atlas-one-apk.tgz
+          echo "5663d41968f48c10d38ecab4f2323b3183ad46d70086af9bb1dd90e425b296ea  /tmp/atlas-one-apk.tgz" | sha256sum --check
+          tar -xzf /tmp/atlas-one-apk.tgz -C atlas-one-v1.5-app
+          base64 --decode /tmp/v14/App-v1.4.patch.gz.b64 | gzip -d > /tmp/App-v1.4.patch
+          (cd atlas-one-v1.5-app && patch --batch --forward -p0 < /tmp/App-v1.4.patch)
+          base64 --decode /tmp/v14/App-v1.4.2.patch.gz.b64 | gzip -d > /tmp/App-v1.4.2.patch
+          (cd atlas-one-v1.5-app && patch --batch --forward -p1 < /tmp/App-v1.4.2.patch)
+          cp /tmp/v14/package.json atlas-one-v1.5-app/package.json
+          cp /tmp/v14/app.json atlas-one-v1.5-app/app.json
+          mkdir -p atlas-one-v1.5-app/src/foundation
+          cp -R atlas-one-v1.5/src/. atlas-one-v1.5-app/src/foundation/
+          tar -czf Atlas-One-v1.5-source.tgz -C atlas-one-v1.5-app .
+
+      - name: Upload reconstructed source
+        uses: actions/upload-artifact@v4
+        with:
+          name: Atlas-One-v1.5-source
+          path: Atlas-One-v1.5-source.tgz
+          if-no-files-found: error
+          retention-days: 7
