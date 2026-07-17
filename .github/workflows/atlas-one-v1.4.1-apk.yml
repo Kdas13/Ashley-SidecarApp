@@ -36,20 +36,15 @@ jobs:
           base64 --decode atlas-one-apk-source/payload.b64 > /tmp/atlas-one-apk.tgz
           echo "5663d41968f48c10d38ecab4f2323b3183ad46d70086af9bb1dd90e425b296ea  /tmp/atlas-one-apk.tgz" | sha256sum --check
           tar -xzf /tmp/atlas-one-apk.tgz -C atlas-one-apk
-          base64 --decode atlas-one-v1.4-source/App.patch.gz.b64 | gzip -d > /tmp/App-v1.4.patch
-          cd atlas-one-apk
-          patch --batch --forward -p0 < /tmp/App-v1.4.patch
-          cp ../atlas-one-v1.4-source/package.json package.json
-          cp ../atlas-one-v1.4-source/app.json app.json
+          cp atlas-one-v1.4-source/package.json atlas-one-apk/package.json
+          cp atlas-one-v1.4-source/app.json atlas-one-apk/app.json
 
-      - name: Apply artifact context and duplicate-response fix
+      - name: Install full artifact-context source
         run: |
-          base64 --decode atlas-one-v1.4.1-source/App.patch.gz.b64 | gzip -d > /tmp/App-v1.4.1.patch
-          cd atlas-one-apk
-          patch --batch --forward -p0 < /tmp/App-v1.4.1.patch
-          grep -q "isArtifactAccessQuestion" App.tsx
-          grep -q "app-private working copy" App.tsx
-          ! grep -q "const fallback = artifacts.length" App.tsx
+          base64 --decode atlas-one-v1.4.1-source/App.tsx.gz.b64 | gzip -d > atlas-one-apk/App.tsx
+          grep -q "isArtifactAccessQuestion" atlas-one-apk/App.tsx
+          grep -q "app-private working copy" atlas-one-apk/App.tsx
+          ! grep -q "const fallback = artifacts.length" atlas-one-apk/App.tsx
 
       - name: Install dependencies
         working-directory: atlas-one-apk
