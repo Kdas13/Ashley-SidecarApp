@@ -1,0 +1,32 @@
+name: Atlas One v1.4 Source Snapshot
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/atlas-one-v1.4-source-snapshot.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore v1.4 source
+        run: |
+          mkdir -p atlas-one-source
+          base64 --decode atlas-one-v1.4-source/App.tsx.b64.part00 > atlas-one-source/App.tsx
+          cp atlas-one-v1.4-source/package.json atlas-one-source/package.json
+          cp atlas-one-v1.4-source/app.json atlas-one-source/app.json
+          cp atlas-one-apk-source/payload.b64 /tmp/base.b64
+          base64 --decode /tmp/base.b64 > /tmp/base.tgz
+          tar -xzf /tmp/base.tgz -C atlas-one-source tsconfig.json
+          tar -czf Atlas-One-v1.4-source.tgz -C atlas-one-source .
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: Atlas-One-v1.4-source
+          path: Atlas-One-v1.4-source.tgz
+          retention-days: 7
