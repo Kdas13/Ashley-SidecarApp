@@ -27,7 +27,9 @@ jobs:
       - name: Restore modular v1.5 source
         run: |
           mkdir -p atlas-one-v1.5
-          base64 --decode atlas-one-v1.5-source/source.tgz.b64 > /tmp/atlas-one-v1.5-source.tgz
+          cat atlas-one-v1.5-source/source.part*.b64 > /tmp/atlas-one-v1.5-source.b64
+          test "$(wc -c < /tmp/atlas-one-v1.5-source.b64)" -eq 54288
+          base64 --decode /tmp/atlas-one-v1.5-source.b64 > /tmp/atlas-one-v1.5-source.tgz
           echo "14d75d8afbd74c41e9a231dd52c53d194f66354b5a7e220636ce33116d657df7  /tmp/atlas-one-v1.5-source.tgz" | sha256sum --check
           tar -xzf /tmp/atlas-one-v1.5-source.tgz -C atlas-one-v1.5
       - name: Install
