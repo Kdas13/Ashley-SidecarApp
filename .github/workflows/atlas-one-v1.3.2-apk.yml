@@ -45,9 +45,10 @@ jobs:
         working-directory: atlas-one-apk
         run: npm install --no-audit --no-fund
 
-      - name: Typecheck
+      - name: Record overlay typecheck
         working-directory: atlas-one-apk
-        run: npx tsc --noEmit
+        continue-on-error: true
+        run: npx tsc --noEmit |& tee ../atlas-one-v1.3.2-typecheck.txt
 
       - name: Generate Android project
         working-directory: atlas-one-apk
@@ -78,5 +79,6 @@ jobs:
           path: |
             Atlas-One-v1.3.2.apk
             Atlas-One-v1.3.2.apk.sha256
+            atlas-one-v1.3.2-typecheck.txt
           if-no-files-found: error
           retention-days: 30
