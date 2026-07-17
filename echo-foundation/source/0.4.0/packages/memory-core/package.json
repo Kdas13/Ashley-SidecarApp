@@ -1,0 +1,25 @@
+{
+  "name": "@echo/memory-core",
+  "version": "0.4.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "validate:archive": "tsx src/cli.ts",
+    "prepare:archive": "tsx src/prepare-cli.ts"
+  },
+  "dependencies": {
+    "@echo/contracts": "0.4.0",
+    "fflate": "0.8.3",
+    "@echo/database": "0.4.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts"
+}

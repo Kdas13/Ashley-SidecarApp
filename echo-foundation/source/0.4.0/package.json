@@ -1,0 +1,39 @@
+{
+  "name": "echo-foundation",
+  "version": "0.4.0",
+  "private": true,
+  "description": "Echo / Ashley V4 clean-room foundation and approval-gated AI development pipeline.",
+  "workspaces": [
+    "apps/api",
+    "apps/worker",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "npm run build:packages && npm --workspace @echo/api run build && npm --workspace @echo/worker run build",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run build:packages && npm run test:workspaces",
+    "test:ci": "npm run typecheck && npm run test && npm run check:mobile-syntax",
+    "dev:api": "npm --workspace @echo/api run dev",
+    "dev:worker": "npm --workspace @echo/worker run dev",
+    "dev:mobile": "npm --prefix apps/mobile run start",
+    "validate:memory": "tsx packages/memory-core/src/cli.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck:mobile": "npm --prefix apps/mobile run typecheck",
+    "build:packages": "npm --workspace @echo/contracts run build && npm --workspace @echo/database run build && npm --workspace @echo/security-governor run build && npm --workspace @echo/orchestration run build && npm --workspace @echo/memory-core run build",
+    "test:core": "npm run typecheck && npm run test && npm run build",
+    "prepare:memory": "tsx packages/memory-core/src/prepare-cli.ts",
+    "test:workspaces": "npm run test --workspaces --if-present",
+    "check:mobile-syntax": "node scripts/check-mobile-syntax.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.1",
+    "prettier": "3.9.5",
+    "tsx": "4.23.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  }
+}

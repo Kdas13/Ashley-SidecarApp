@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": [
+      "ES2023"
+    ],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "useUnknownInCatchVariables": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "baseUrl": ".",
+    "paths": {
+      "@echo/contracts": [
+        "packages/contracts/src/index.ts"
+      ],
+      "@echo/security-governor": [
+        "packages/security-governor/src/index.ts"
+      ],
+      "@echo/orchestration": [
+        "packages/orchestration/src/index.ts"
+      ],
+      "@echo/memory-core": [
+        "packages/memory-core/src/index.ts"
+      ],
+      "@echo/database": [
+        "packages/database/src/index.ts"
+      ]
+    }
+  }
+}

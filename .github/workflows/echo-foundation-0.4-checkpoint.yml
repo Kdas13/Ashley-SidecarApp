@@ -1,0 +1,80 @@
+name: Echo Foundation 0.4 Checkpoint CI
+
+on:
+  push:
+    branches: [echo/foundation-0.4-checkpoint]
+    paths:
+      - '.github/workflows/echo-foundation-0.4-checkpoint.yml'
+      - 'echo-foundation/source/0.4.0/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/echo-foundation-0.4-checkpoint.yml'
+      - 'echo-foundation/source/0.4.0/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: echo-foundation-0.4-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: Core verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: echo-foundation/source/0.4.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.1'
+          cache: npm
+          cache-dependency-path: echo-foundation/source/0.4.0/package.json
+      - name: Install pinned dependencies
+        run: npm install --no-audit --no-fund
+      - name: Strict TypeScript
+        run: npm run typecheck
+      - name: Automated tests
+        run: npm test
+      - name: Production builds
+        run: npm run build
+      - name: Mobile source syntax
+        run: npm run check:mobile-syntax
+
+  mobile:
+    name: Expo verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: echo-foundation/source/0.4.0/apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.13.1'
+          cache: npm
+          cache-dependency-path: echo-foundation/source/0.4.0/apps/mobile/package.json
+      - name: Install pinned mobile dependencies
+        run: npm install --no-audit --no-fund
+      - name: Mobile TypeScript
+        run: npm run typecheck
+      - name: Expo Doctor
+        run: |
+          set +e
+          npx expo-doctor --verbose > expo-doctor.log 2>&1
+          status=$?
+          cat expo-doctor.log
+          exit $status
+      - name: Upload Expo Doctor diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: expo-doctor-diagnostics
+          path: echo-foundation/source/0.4.0/apps/mobile/expo-doctor.log
+          if-no-files-found: error
