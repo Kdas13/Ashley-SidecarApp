@@ -44,14 +44,14 @@ jobs:
         run: |
           base64 --decode atlas-one-v1.4.2-source/App.patch.gz.b64 | gzip -d > /tmp/App-v1.4.2.patch
           cd atlas-one-apk
-          patch --batch --forward -p0 < /tmp/App-v1.4.2.patch
+          patch --batch --forward -p1 < /tmp/App-v1.4.2.patch
           cp ../atlas-one-v1.4.2-source/package.json package.json
           cp ../atlas-one-v1.4.2-source/app.json app.json
           grep -q "ANTI-LOOP CORRECTION" App.tsx
           grep -q "Existing app-private artifacts" App.tsx
           grep -q "requestsNewDocument" App.tsx
           grep -q "isArtifactConfirmationEcho" App.tsx
-          ! grep -q "|| /\\\\b(txt|pdf|docx|markdown|downloadable file)" App.tsx
+          ! grep -q "downloadable file).*txt" App.tsx
 
       - name: Install dependencies
         working-directory: atlas-one-apk
