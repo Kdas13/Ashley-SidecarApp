@@ -17,13 +17,6 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
       - name: Restore modular v1.5 source
         run: |
           mkdir -p atlas-one-v1.5
@@ -32,9 +25,38 @@ jobs:
           base64 --decode /tmp/atlas-one-v1.5-source.b64 > /tmp/atlas-one-v1.5-source.tgz
           echo "14d75d8afbd74c41e9a231dd52c53d194f66354b5a7e220636ce33116d657df7  /tmp/atlas-one-v1.5-source.tgz" | sha256sum --check
           tar -xzf /tmp/atlas-one-v1.5-source.tgz -C atlas-one-v1.5
-      - name: Install
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: atlas-one-v1.5/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install dependencies with bounded retries
         working-directory: atlas-one-v1.5
-        run: npm ci --no-audit --no-fund
+        env:
+          NPM_CONFIG_FETCH_RETRIES: "5"
+          NPM_CONFIG_FETCH_RETRY_FACTOR: "2"
+          NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "10000"
+          NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "60000"
+          NPM_CONFIG_FETCH_TIMEOUT: "120000"
+        run: |
+          set -o pipefail
+          for attempt in 1 2 3; do
+            echo "npm install attempt ${attempt}/3"
+            rm -rf node_modules
+            if timeout 360 npm ci --no-audit --no-fund --prefer-offline 2>&1 | tee "/tmp/npm-ci-${attempt}.log"; then
+              test -f node_modules/expo/package.json
+              exit 0
+            fi
+            tail -100 "/tmp/npm-ci-${attempt}.log" || true
+            npm cache verify || true
+            sleep $((attempt * 10))
+          done
+          echo "Dependency installation failed after three bounded attempts" >&2
+          exit 1
       - name: Typecheck
         working-directory: atlas-one-v1.5
         run: npm run typecheck
