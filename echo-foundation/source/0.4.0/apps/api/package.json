@@ -1,0 +1,23 @@
+{
+  "name": "@echo/api",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@echo/contracts": "0.4.0",
+    "@echo/memory-core": "0.4.0",
+    "@echo/orchestration": "0.4.0",
+    "@fastify/cors": "11.3.0",
+    "@fastify/helmet": "13.1.0",
+    "dotenv": "17.4.2",
+    "fastify": "5.10.0",
+    "@echo/database": "0.4.0"
+  }
+}
