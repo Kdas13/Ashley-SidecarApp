@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "Atlas One",
+    "slug": "atlas-one-apk",
+    "version": "1.4.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "android": {
+      "package": "com.kdas13.atlasone",
+      "versionCode": 14,
+      "permissions": [
+        "INTERNET"
+      ],
+      "predictiveBackGestureEnabled": true
+    },
+    "plugins": [
+      "expo-secure-store",
+      "expo-sqlite",
+      "expo-document-picker",
+      "expo-sharing"
+    ]
+  }
+}
