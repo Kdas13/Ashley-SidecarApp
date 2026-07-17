@@ -19,7 +19,7 @@ permissions:
 jobs:
   build-apk:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -54,25 +54,26 @@ jobs:
         working-directory: atlas-one-apk
         run: npx expo prebuild --platform android --clean --no-install
 
-      - name: Build installable APK
+      - name: Build self-contained release APK
         working-directory: atlas-one-apk/android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease --no-daemon
 
-      - name: Verify and stage APK
+      - name: Verify embedded application bundle
         run: |
-          cp atlas-one-apk/android/app/build/outputs/apk/debug/app-debug.apk Atlas-One-v1.1.0.apk
-          test -s Atlas-One-v1.1.0.apk
-          sha256sum Atlas-One-v1.1.0.apk | tee Atlas-One-v1.1.0.apk.sha256
-          unzip -t Atlas-One-v1.1.0.apk
+          cp atlas-one-apk/android/app/build/outputs/apk/release/app-release.apk Atlas-One-v1.1.1.apk
+          test -s Atlas-One-v1.1.1.apk
+          unzip -t Atlas-One-v1.1.1.apk
+          unzip -l Atlas-One-v1.1.1.apk | grep -q 'assets/index.android.bundle'
+          sha256sum Atlas-One-v1.1.1.apk | tee Atlas-One-v1.1.1.apk.sha256
 
-      - name: Upload APK
+      - name: Upload verified APK
         uses: actions/upload-artifact@v4
         with:
-          name: Atlas-One-v1.1.0-APK
+          name: Atlas-One-v1.1.1-APK
           path: |
-            Atlas-One-v1.1.0.apk
-            Atlas-One-v1.1.0.apk.sha256
+            Atlas-One-v1.1.1.apk
+            Atlas-One-v1.1.1.apk.sha256
           if-no-files-found: error
           retention-days: 30
