@@ -1,0 +1,29 @@
+name: Atlas One Source Snapshot
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/atlas-one-source-snapshot.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore mobile source
+        run: |
+          mkdir -p atlas-one-source
+          base64 --decode atlas-one-apk-source/payload.b64 > /tmp/atlas-one-apk.tgz
+          echo "5663d41968f48c10d38ecab4f2323b3183ad46d70086af9bb1dd90e425b296ea  /tmp/atlas-one-apk.tgz" | sha256sum --check
+          tar -xzf /tmp/atlas-one-apk.tgz -C atlas-one-source
+          tar -czf Atlas-One-mobile-source.tgz -C atlas-one-source .
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: Atlas-One-mobile-source
+          path: Atlas-One-mobile-source.tgz
+          retention-days: 7
