@@ -1,0 +1,95 @@
+name: Atlas One v1.4.1 APK
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "atlas-one-v1.4.1-source/**"
+      - ".github/workflows/atlas-one-v1.4.1-apk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Restore Atlas One v1.4 source
+        run: |
+          mkdir -p atlas-one-apk
+          base64 --decode atlas-one-apk-source/payload.b64 > /tmp/atlas-one-apk.tgz
+          echo "5663d41968f48c10d38ecab4f2323b3183ad46d70086af9bb1dd90e425b296ea  /tmp/atlas-one-apk.tgz" | sha256sum --check
+          tar -xzf /tmp/atlas-one-apk.tgz -C atlas-one-apk
+          base64 --decode atlas-one-v1.4-source/App.patch.gz.b64 | gzip -d > /tmp/App-v1.4.patch
+          cd atlas-one-apk
+          patch --batch --forward -p0 < /tmp/App-v1.4.patch
+          cp ../atlas-one-v1.4-source/package.json package.json
+          cp ../atlas-one-v1.4-source/app.json app.json
+
+      - name: Apply artifact context and duplicate-response fix
+        run: |
+          base64 --decode atlas-one-v1.4.1-source/App.patch.gz.b64 | gzip -d > /tmp/App-v1.4.1.patch
+          cd atlas-one-apk
+          patch --batch --forward -p0 < /tmp/App-v1.4.1.patch
+          grep -q "isArtifactAccessQuestion" App.tsx
+          grep -q "app-private working copy" App.tsx
+          ! grep -q "const fallback = artifacts.length" App.tsx
+
+      - name: Install dependencies
+        working-directory: atlas-one-apk
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck
+        working-directory: atlas-one-apk
+        run: npm run typecheck
+
+      - name: Generate Android project
+        working-directory: atlas-one-apk
+        run: npx expo prebuild --platform android --clean --no-install
+
+      - name: Build Android release APK
+        working-directory: atlas-one-apk/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Verify installability and embedded fix
+        run: |
+          cp atlas-one-apk/android/app/build/outputs/apk/release/app-release.apk Atlas-One-v1.4.1.apk
+          test -s Atlas-One-v1.4.1.apk
+          unzip -t Atlas-One-v1.4.1.apk
+          unzip -p Atlas-One-v1.4.1.apk assets/index.android.bundle > /tmp/index.android.bundle
+          grep -a -q "app-private working copy" /tmp/index.android.bundle
+          grep -a -q "isArtifactAccessQuestion" /tmp/index.android.bundle
+          ZIPALIGN="$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          "$ZIPALIGN" -c -P 16 4 Atlas-One-v1.4.1.apk
+          "$APKSIGNER" verify --verbose --print-certs Atlas-One-v1.4.1.apk | tee Atlas-One-v1.4.1-signature.txt
+          sha256sum Atlas-One-v1.4.1.apk | tee Atlas-One-v1.4.1.apk.sha256
+
+      - name: Upload verified APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Atlas-One-v1.4.1-APK
+          path: |
+            Atlas-One-v1.4.1.apk
+            Atlas-One-v1.4.1.apk.sha256
+            Atlas-One-v1.4.1-signature.txt
+          if-no-files-found: error
+          retention-days: 30
